@@ -5,7 +5,8 @@
   "scripts": {
     "start": "expo start",
     "ios": "expo run:ios",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "android": "expo run:android"
   },
   "dependencies": {
     "@kingstinct/react-native-healthkit": "^9.0.0",
@@ -16,7 +17,7 @@
     "expo-router": "~4.0.0",
     "expo-secure-store": "~14.0.0",
     "expo-status-bar": "~2.0.0",
-    "react": "18.3.2",
+    "react": "18.3.1",
     "react-native": "0.76.5",
     "expo-file-system": "~18.0.0",
     "expo-sharing": "~12.0.0",

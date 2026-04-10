@@ -34,8 +34,7 @@
           "color": "#FF6B35"
         }
       ],
-      "@kingstinct/react-native-healthkit",
-      "expo-sharing"
+      "@kingstinct/react-native-healthkit"
     ],
     "experiments": {
       "typedRoutes": true
