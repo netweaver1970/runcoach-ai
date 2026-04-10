@@ -34,7 +34,13 @@
           "color": "#FF6B35"
         }
       ],
-      "@kingstinct/react-native-healthkit"
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "RunCoach AI reads your running workouts, heart rate, VO2 max, HRV, and sleep data to provide personalised coaching advice.",
+          "NSHealthUpdateUsageDescription": "RunCoach AI does not write to Apple Health."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
