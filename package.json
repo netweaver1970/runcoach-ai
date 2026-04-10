@@ -6,7 +6,7 @@
     "start": "expo start",
     "ios": "expo run:ios",
     "lint": "expo lint",
-    "android": "expo run:android"
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@kingstinct/react-native-healthkit": "^9.0.0",

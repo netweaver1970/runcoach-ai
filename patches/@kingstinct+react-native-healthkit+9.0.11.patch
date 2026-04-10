@@ -1,0 +1,15 @@
+diff --git a/node_modules/@kingstinct/react-native-healthkit/ios/QuantityTypeModule.swift b/node_modules/@kingstinct/react-native-healthkit/ios/QuantityTypeModule.swift
+index cc347d6..9558e56 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/ios/QuantityTypeModule.swift
++++ b/node_modules/@kingstinct/react-native-healthkit/ios/QuantityTypeModule.swift
+@@ -95,9 +95,7 @@ func getAnyMapValue(_ anyMap: AnyMap, key: String) -> Any? {
+     if anyMap.isString(key: key) {
+         return anyMap.getString(key: key)
+     }
+-    if anyMap.isBigInt(key: key) {
+-        return anyMap.getBigInt(key: key)
+-    }
++    // isBigInt/getBigInt removed in nitro-modules 0.35+ — not used in HealthKit data
+     if anyMap.isNull(key: key) {
+         return nil
+     }
