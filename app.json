@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "RunCoach AI",
+    "slug": "running-coach-ai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FF6B35"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.yourname.runcoachai",
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "RunCoach AI reads your running workouts, heart rate, VO2 max, HRV, and sleep data to provide personalised coaching advice.",
+        "NSHealthUpdateUsageDescription": "RunCoach AI does not write to Apple Health.",
+        "UIBackgroundModes": ["fetch", "remote-notification"]
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true,
+        "com.apple.developer.healthkit.background-delivery": true
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#FF6B35"
+        }
+      ],
+      "@kingstinct/react-native-healthkit",
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "scheme": "runcoach"
+  }
+}
