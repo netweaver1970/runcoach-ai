@@ -384,7 +384,7 @@ async function fetchWorkoutSamples(w: {
     ).catch(() => []),
     (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.distanceWalkingRunning,
-      { from, to, unit: 'meter', ascending: true, limit: 500 }
+      { from, to, unit: 'm', ascending: true, limit: 500 }
     ).catch(() => []),
     (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.runningPower,
@@ -432,8 +432,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       to: now,
       limit: 500,
       ascending: false,
-      energyUnit: 'kilocalorie',
-      distanceUnit: 'meter',
+      energyUnit: 'kcal',    // HKUnit string — "kilocalorie" crashes on iOS 26
+      distanceUnit: 'm',     // HKUnit string — "meter" is invalid; use "m"
     }).catch(() => []),
   ]);
 
@@ -519,7 +519,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   ] = await Promise.all([
     (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.vo2Max,
-      { from: eightWeeksAgo, to: now, unit: 'ml/kg·min', ascending: true, limit: 60 }
+      { from: eightWeeksAgo, to: now, unit: 'mL/kg·min', ascending: true, limit: 60 }
     ).catch(() => []),
     (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
