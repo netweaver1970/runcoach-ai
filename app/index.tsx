@@ -47,16 +47,21 @@ export default function HomeScreen() {
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
   const [syncMonths, setSyncMonthsState] = useState<SyncMonths>(3);
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
-  const appState = useRef(AppState.currentState);
+  const appState     = useRef(AppState.currentState);
+  // Ref so `load` never needs syncMonths in its dependency array (avoids double-load)
+  const syncMonthsRef = useRef<SyncMonths>(3);
 
-  // Load persisted sync-months preference once on mount
+  // Load persisted sync-months preference once on mount (does NOT trigger a re-load)
   useEffect(() => {
-    getSyncMonths().then(setSyncMonthsState);
+    getSyncMonths().then((m) => {
+      syncMonthsRef.current = m;
+      setSyncMonthsState(m);
+    });
   }, []);
 
   // ── Core load function ──────────────────────────────────────────────────
   const load = useCallback(async (isRefresh = false, monthsOverride?: SyncMonths) => {
-    const months = monthsOverride ?? syncMonths;
+    const months = monthsOverride ?? syncMonthsRef.current;
     if (!isRefresh) {
       setLoading(true);
       setLoadingStep(null);
@@ -86,7 +91,7 @@ export default function HomeScreen() {
       setLoadingStep(null);
       setRefreshing(false);
     }
-  }, [syncMonths]);
+  }, []); // stable — reads syncMonths via ref
 
   // ── Change sync range ───────────────────────────────────────────────────
   const promptSyncMonths = useCallback(() => {
@@ -98,6 +103,7 @@ export default function HomeScreen() {
         ...options.map((m) => ({
           text: `${m} month${m > 1 ? 's' : ''}${m === syncMonths ? ' ✓' : ''}`,
           onPress: async () => {
+            syncMonthsRef.current = m;
             await setSyncMonths(m);
             setSyncMonthsState(m);
             load(false, m);
