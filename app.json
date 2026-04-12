@@ -25,6 +25,7 @@
       }
     },
     "plugins": [
+      "./plugins/withDisableLldb",
       "expo-router",
       "expo-secure-store",
       [
