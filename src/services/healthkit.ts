@@ -1,8 +1,22 @@
-import HealthKit, {
-  HKQuantityTypeIdentifier,
-  HKCategoryTypeIdentifier,
-  HKWorkoutActivityType,
-} from '@kingstinct/react-native-healthkit';
+import HealthKit from '@kingstinct/react-native-healthkit';
+
+// In @kingstinct/react-native-healthkit v9, the enums are TypeScript-only types
+// (their JS files export {}). Use string/numeric literals at runtime.
+const HKQuantityTypeIdentifier = {
+  heartRate:                   'heartRate',
+  heartRateVariabilitySDNN:    'heartRateVariabilitySDNN',
+  restingHeartRate:            'restingHeartRate',
+  vo2Max:                      'vo2Max',
+  distanceWalkingRunning:      'distanceWalkingRunning',
+  bodyMass:                    'bodyMass',
+} as const;
+
+const HKCategoryTypeIdentifier = {
+  sleepAnalysis: 'sleepAnalysis',
+} as const;
+
+// HKWorkoutActivityType.running = 37 (Apple HealthKit numeric constant)
+const HK_WORKOUT_RUNNING = 37;
 import {
   HealthSnapshot,
   RunWorkout,
@@ -107,27 +121,28 @@ export async function subscribeToWorkoutChanges(
 
 export async function requestPermissions(): Promise<boolean> {
   try {
-    // runningPower requires watchOS 9+ / iOS 16+; request it separately so
-    // older devices don't fail the whole permission request.
+    // In v9, HKQuantityTypeIdentifier/HKCategoryTypeIdentifier are TypeScript-only
+    // types — at runtime they are empty objects. Use string literals directly.
     const baseTypes = [
-      HKQuantityTypeIdentifier.heartRate,
-      HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
-      HKQuantityTypeIdentifier.restingHeartRate,
-      HKQuantityTypeIdentifier.vo2Max,
-      HKQuantityTypeIdentifier.distanceWalkingRunning,
-      HKQuantityTypeIdentifier.bodyMass,
-      HKCategoryTypeIdentifier.sleepAnalysis,
-    ];
-    await HealthKit.requestAuthorization([], baseTypes as any);
+      'heartRate',
+      'heartRateVariabilitySDNN',
+      'restingHeartRate',
+      'vo2Max',
+      'distanceWalkingRunning',
+      'bodyMass',
+      'sleepAnalysis',
+    ] as any[];
+    await HealthKit.requestAuthorization([], baseTypes);
     try {
       await HealthKit.requestAuthorization([], ['HKQuantityTypeIdentifierRunningPower'] as any);
     } catch {
       // Device doesn't support running power — continue without it
     }
     return true;
-  } catch (err) {
+  } catch (err: any) {
+    const msg = err?.message ?? err?.toString() ?? 'unknown error';
     console.error('HealthKit auth error:', err);
-    return false;
+    throw new Error(`HealthKit auth failed: ${msg}`);
   }
 }
 
@@ -417,7 +432,7 @@ export async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
     distanceUnit: 'meter',
   });
   const runWorkouts = allWorkouts
-    .filter((w) => w.workoutActivityType === HKWorkoutActivityType.running)
+    .filter((w) => w.workoutActivityType === HK_WORKOUT_RUNNING)
     .slice(0, 15);
 
   // ── Heart rate, distance, and running power (fetched in parallel) ───────────
