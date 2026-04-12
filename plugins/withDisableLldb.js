@@ -1,18 +1,46 @@
 /**
- * Expo config plugin — disable LLDB on the LaunchAction of the Xcode scheme.
+ * Expo config plugin — two fixes for building on iOS 26 beta devices:
  *
- * iOS 26 beta (and some other pre-release OSes) does not allow LLDB to attach,
- * so Xcode aborts the run with "Could not attach — IDEDebugSessionErrorDomain 3".
- * Switching the LaunchAction to the PosixSpawn launcher (no debugger) lets the
- * app deploy and run normally without a debug session.
+ * 1. NODE_BINARY (.xcode.env.local)
+ *    Expo 52 requires Node 18. If the system default is Node 20+ the Xcode
+ *    bundle-embedding phase silently fails (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
+ *    leaving the app with no JS bundle → crash after splash.
+ *    This plugin writes .xcode.env.local pointing at the Homebrew node@18 binary.
  *
- * This plugin re-applies the patch every time `expo prebuild` regenerates the
- * xcscheme, so we never need to manually chmod 444 the scheme again.
+ * 2. xcscheme (LaunchAction)
+ *    iOS 26 beta doesn't allow LLDB to attach, so Xcode aborts with
+ *    "Could not attach — IDEDebugSessionErrorDomain 3".
+ *    The LaunchAction is switched to:
+ *      - buildConfiguration = Release  (embeds JS bundle; no Metro needed)
+ *      - selectedDebuggerIdentifier = ""
+ *      - selectedLauncherIdentifier = PosixSpawn
+ *    The scheme file is then locked (chmod 444) so Xcode can't revert it.
  */
 
 const { withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
+
+// ── Node 18 path (Homebrew) ───────────────────────────────────────────────────
+const NODE18_BINARY = '/opt/homebrew/opt/node@18/bin/node';
+
+function writeNodeEnv(platformRoot) {
+  const envLocalPath = path.join(platformRoot, '.xcode.env.local');
+  const content = `export NODE_BINARY=${NODE18_BINARY}\n`;
+  try {
+    const existing = fs.existsSync(envLocalPath)
+      ? fs.readFileSync(envLocalPath, 'utf8')
+      : '';
+    if (existing.trim() === content.trim()) {
+      console.log('[withDisableLldb] .xcode.env.local already correct');
+    } else {
+      fs.writeFileSync(envLocalPath, content, 'utf8');
+      console.log(`[withDisableLldb] wrote .xcode.env.local → NODE_BINARY=${NODE18_BINARY} ✓`);
+    }
+  } catch (e) {
+    console.warn('[withDisableLldb] could not write .xcode.env.local:', e.message);
+  }
+}
 
 /**
  * Patch the LaunchAction:
@@ -51,6 +79,9 @@ module.exports = function withDisableLldb(config) {
 
       const original = fs.readFileSync(schemePath, 'utf8');
       const patched  = patchScheme(original);
+
+      // Ensure NODE_BINARY in .xcode.env.local points to Node 18
+      writeNodeEnv(cfg.modRequest.platformProjectRoot);
 
       // Unlock before writing (file may be read-only from a previous run)
       try { fs.chmodSync(schemePath, 0o644); } catch {}
