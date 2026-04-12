@@ -14,10 +14,18 @@ const { withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
-/** Replace only the LaunchAction debugger/launcher identifiers, leave TestAction alone. */
+/**
+ * Patch the LaunchAction:
+ *  - buildConfiguration → Release  (embeds the JS bundle; no Metro needed)
+ *  - selectedDebuggerIdentifier → "" (iOS 26 beta cannot attach LLDB)
+ *  - selectedLauncherIdentifier → PosixSpawn (launch without debugger)
+ * TestAction is left untouched.
+ */
 function patchScheme(xml) {
-  // Match the LaunchAction element and replace only its debugger/launcher attributes
   return xml.replace(
+    /(<LaunchAction\s[^>]*?)buildConfiguration\s*=\s*"[^"]*"/,
+    '$1buildConfiguration = "Release"'
+  ).replace(
     /(<LaunchAction[\s\S]*?selectedDebuggerIdentifier\s*=\s*)"[^"]*"([\s\S]*?selectedLauncherIdentifier\s*=\s*)"[^"]*"/,
     '$1""$2"Xcode.DebuggerFoundation.Launcher.PosixSpawn"'
   );
