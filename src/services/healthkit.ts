@@ -1,18 +1,19 @@
 import HealthKit from '@kingstinct/react-native-healthkit';
 
 // In @kingstinct/react-native-healthkit v9, the enums are TypeScript-only types
-// (their JS files export {}). Use string/numeric literals at runtime.
+// (their JS files export {}). The native NitroModules bridge expects the full
+// Apple HealthKit identifier strings (e.g. "HKQuantityTypeIdentifierHeartRate").
 const HKQuantityTypeIdentifier = {
-  heartRate:                   'heartRate',
-  heartRateVariabilitySDNN:    'heartRateVariabilitySDNN',
-  restingHeartRate:            'restingHeartRate',
-  vo2Max:                      'vo2Max',
-  distanceWalkingRunning:      'distanceWalkingRunning',
-  bodyMass:                    'bodyMass',
+  heartRate:                   'HKQuantityTypeIdentifierHeartRate',
+  heartRateVariabilitySDNN:    'HKQuantityTypeIdentifierHeartRateVariabilitySDNN',
+  restingHeartRate:            'HKQuantityTypeIdentifierRestingHeartRate',
+  vo2Max:                      'HKQuantityTypeIdentifierVO2Max',
+  distanceWalkingRunning:      'HKQuantityTypeIdentifierDistanceWalkingRunning',
+  bodyMass:                    'HKQuantityTypeIdentifierBodyMass',
 } as const;
 
 const HKCategoryTypeIdentifier = {
-  sleepAnalysis: 'sleepAnalysis',
+  sleepAnalysis: 'HKCategoryTypeIdentifierSleepAnalysis',
 } as const;
 
 // HKWorkoutActivityType.running = 37 (Apple HealthKit numeric constant)
@@ -124,13 +125,13 @@ export async function requestPermissions(): Promise<boolean> {
     // In v9, HKQuantityTypeIdentifier/HKCategoryTypeIdentifier are TypeScript-only
     // types — at runtime they are empty objects. Use string literals directly.
     const baseTypes = [
-      'heartRate',
-      'heartRateVariabilitySDNN',
-      'restingHeartRate',
-      'vo2Max',
-      'distanceWalkingRunning',
-      'bodyMass',
-      'sleepAnalysis',
+      'HKQuantityTypeIdentifierHeartRate',
+      'HKQuantityTypeIdentifierHeartRateVariabilitySDNN',
+      'HKQuantityTypeIdentifierRestingHeartRate',
+      'HKQuantityTypeIdentifierVO2Max',
+      'HKQuantityTypeIdentifierDistanceWalkingRunning',
+      'HKQuantityTypeIdentifierBodyMass',
+      'HKCategoryTypeIdentifierSleepAnalysis',
     ] as any[];
     await HealthKit.requestAuthorization([], baseTypes);
     try {
