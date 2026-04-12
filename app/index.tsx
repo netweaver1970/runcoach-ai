@@ -23,7 +23,7 @@ import {
   formatPace,
   subscribeToWorkoutChanges,
 } from '../src/services/healthkit';
-import { getApiKey } from '../src/services/claude';
+import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths } from '../src/services/claude';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel } from '../src/types';
 
 type RunFilter = 'All' | WorkoutLabel;
@@ -39,17 +39,28 @@ const RUN_FILTERS: { label: string; value: RunFilter; emoji: string }[] = [
 
 export default function HomeScreen() {
   const router = useRouter();
-  const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [hasApiKey, setHasApiKey] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [runFilter, setRunFilter] = useState<RunFilter>('All');
+  const [snapshot, setSnapshot]         = useState<HealthSnapshot | null>(null);
+  const [loading, setLoading]           = useState(true);
+  const [refreshing, setRefreshing]     = useState(false);
+  const [hasApiKey, setHasApiKey]       = useState(false);
+  const [exporting, setExporting]       = useState(false);
+  const [runFilter, setRunFilter]       = useState<RunFilter>('All');
+  const [syncMonths, setSyncMonthsState] = useState<SyncMonths>(3);
+  const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
   const appState = useRef(AppState.currentState);
 
+  // Load persisted sync-months preference once on mount
+  useEffect(() => {
+    getSyncMonths().then(setSyncMonthsState);
+  }, []);
+
   // ── Core load function ──────────────────────────────────────────────────
-  const load = useCallback(async (isRefresh = false) => {
-    if (!isRefresh) setLoading(true);
+  const load = useCallback(async (isRefresh = false, monthsOverride?: SyncMonths) => {
+    const months = monthsOverride ?? syncMonths;
+    if (!isRefresh) {
+      setLoading(true);
+      setLoadingStep(null);
+    }
     try {
       const granted = await requestPermissions();
       if (!granted) {
@@ -59,16 +70,43 @@ export default function HomeScreen() {
         );
         return;
       }
-      const [snap, key] = await Promise.all([fetchHealthSnapshot(), getApiKey()]);
+      const [snap, key] = await Promise.all([
+        fetchHealthSnapshot({
+          months,
+          onProgress: (step, pct) => setLoadingStep({ step, pct }),
+        }),
+        getApiKey(),
+      ]);
       setSnapshot(snap);
       setHasApiKey(!!key);
     } catch (err: any) {
       Alert.alert('Error loading health data', err.message);
     } finally {
       setLoading(false);
+      setLoadingStep(null);
       setRefreshing(false);
     }
-  }, []);
+  }, [syncMonths]);
+
+  // ── Change sync range ───────────────────────────────────────────────────
+  const promptSyncMonths = useCallback(() => {
+    const options: SyncMonths[] = [1, 3, 6, 12];
+    Alert.alert(
+      'History range',
+      'How many months of runs to load?',
+      [
+        ...options.map((m) => ({
+          text: `${m} month${m > 1 ? 's' : ''}${m === syncMonths ? ' ✓' : ''}`,
+          onPress: async () => {
+            await setSyncMonths(m);
+            setSyncMonthsState(m);
+            load(false, m);
+          },
+        })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]
+    );
+  }, [syncMonths, load]);
 
   // ── Initial load ────────────────────────────────────────────────────────
   useEffect(() => { load(); }, [load]);
@@ -124,7 +162,20 @@ export default function HomeScreen() {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#FF6B35" />
-        <Text style={styles.loadingText}>Loading your health data…</Text>
+        <Text style={styles.loadingText}>
+          {loadingStep?.step ?? 'Connecting to Apple Health…'}
+        </Text>
+        <View style={styles.progressTrack}>
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${loadingStep?.pct ?? 0}%` },
+            ]}
+          />
+        </View>
+        {loadingStep && (
+          <Text style={styles.progressPct}>{loadingStep.pct}%</Text>
+        )}
       </View>
     );
   }
@@ -202,11 +253,14 @@ export default function HomeScreen() {
         {/* Recent runs */}
         <View style={styles.sectionRow}>
           <Text style={styles.sectionTitle}>Recent Runs</Text>
-          {runFilter !== 'All' && (
-            <Text style={styles.filterCount}>
-              {runs.length} of {allRuns.length}
-            </Text>
-          )}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {runFilter !== 'All' && (
+              <Text style={styles.filterCount}>{runs.length} of {allRuns.length}</Text>
+            )}
+            <TouchableOpacity onPress={promptSyncMonths} style={styles.monthsBtn}>
+              <Text style={styles.monthsBtnText}>{syncMonths}M ▾</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Filter chips */}
@@ -243,7 +297,7 @@ export default function HomeScreen() {
               </>
             ) : (
               <>
-                <Text style={styles.emptyText}>No runs in the last 4 weeks.</Text>
+                <Text style={styles.emptyText}>No runs in the last {syncMonths} month{syncMonths > 1 ? 's' : ''}.</Text>
                 <Text style={styles.emptySubtext}>
                   Make sure your Apple Watch is syncing to Health.
                 </Text>
@@ -466,7 +520,19 @@ function RunCard({ run }: { run: RunWorkout }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F5F5F5' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText: { marginTop: 12, color: '#666', fontSize: 15 },
+  loadingText: { marginTop: 12, color: '#666', fontSize: 15, textAlign: 'center' },
+  progressTrack: {
+    marginTop: 16, width: 220, height: 6, borderRadius: 3,
+    backgroundColor: '#eee', overflow: 'hidden',
+  },
+  progressFill: { height: 6, borderRadius: 3, backgroundColor: '#FF6B35' },
+  progressPct: { marginTop: 6, fontSize: 12, color: '#aaa' },
+
+  monthsBtn: {
+    borderRadius: 8, borderWidth: 1, borderColor: '#ddd',
+    backgroundColor: '#fff', paddingHorizontal: 8, paddingVertical: 3,
+  },
+  monthsBtnText: { fontSize: 11, color: '#888', fontWeight: '600' },
 
   recoveryCard: {
     backgroundColor: '#fff', margin: 12, marginBottom: 8, borderRadius: 16,

@@ -10,6 +10,7 @@ const HKQuantityTypeIdentifier = {
   vo2Max:                      'HKQuantityTypeIdentifierVO2Max',
   distanceWalkingRunning:      'HKQuantityTypeIdentifierDistanceWalkingRunning',
   bodyMass:                    'HKQuantityTypeIdentifierBodyMass',
+  runningPower:                'HKQuantityTypeIdentifierRunningPower',
 } as const;
 
 const HKCategoryTypeIdentifier = {
@@ -18,6 +19,7 @@ const HKCategoryTypeIdentifier = {
 
 // HKWorkoutActivityType.running = 37 (Apple HealthKit numeric constant)
 const HK_WORKOUT_RUNNING = 37;
+
 import {
   HealthSnapshot,
   RunWorkout,
@@ -28,7 +30,7 @@ import {
   NightlyHRV,
   DailyRecovery,
 } from '../types';
-import { classifyAndCacheRuns, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
+import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import { getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG } from './claude';
 
 // ─── HKCategoryValueSleepAnalysis numeric values ──────────────────────────────
@@ -42,11 +44,6 @@ const SLEEP_VALUE_TO_LABEL: Record<number, SleepStageLabel> = {
   5: 'asleepREM',
 };
 
-/**
- * Weights used for the HRV weighted average.
- * Deep sleep is the most reliable window for parasympathetic HRV.
- * Awake and inBed segments are excluded (weight 0).
- */
 const STAGE_WEIGHT: Record<SleepStageLabel, number> = {
   asleepDeep: 3,
   asleepREM: 2,
@@ -96,17 +93,10 @@ function toDateStr(iso: string): string {
 
 // ─── Workout subscription ─────────────────────────────────────────────────────
 
-/**
- * Subscribe to new running workout data in HealthKit.
- * Returns a cleanup function — call it on component unmount.
- * Falls back silently if the package version doesn't support observers.
- */
 export async function subscribeToWorkoutChanges(
   onNewWorkout: () => void
 ): Promise<() => void> {
   try {
-    // @kingstinct/react-native-healthkit v9 exposes subscribeToChanges
-    // which returns a Promise<() => void> (the unsubscribe fn)
     const unsubscribe = await (HealthKit as any).subscribeToChanges(
       HKQuantityTypeIdentifier.distanceWalkingRunning,
       onNewWorkout
@@ -122,23 +112,17 @@ export async function subscribeToWorkoutChanges(
 
 export async function requestPermissions(): Promise<boolean> {
   try {
-    // In v9, HKQuantityTypeIdentifier/HKCategoryTypeIdentifier are TypeScript-only
-    // types — at runtime they are empty objects. Use string literals directly.
-    const baseTypes = [
+    const allTypes = [
       'HKQuantityTypeIdentifierHeartRate',
       'HKQuantityTypeIdentifierHeartRateVariabilitySDNN',
       'HKQuantityTypeIdentifierRestingHeartRate',
       'HKQuantityTypeIdentifierVO2Max',
       'HKQuantityTypeIdentifierDistanceWalkingRunning',
       'HKQuantityTypeIdentifierBodyMass',
+      'HKQuantityTypeIdentifierRunningPower',
       'HKCategoryTypeIdentifierSleepAnalysis',
     ] as any[];
-    await HealthKit.requestAuthorization([], baseTypes);
-    try {
-      await HealthKit.requestAuthorization([], ['HKQuantityTypeIdentifierRunningPower'] as any);
-    } catch {
-      // Device doesn't support running power — continue without it
-    }
+    await HealthKit.requestAuthorization([], allTypes);
     return true;
   } catch (err: any) {
     const msg = err?.message ?? err?.toString() ?? 'unknown error';
@@ -147,23 +131,21 @@ export async function requestPermissions(): Promise<boolean> {
   }
 }
 
-/**
- * Resolve body mass: SecureStore (user preference) → HealthKit → default.
- * If HealthKit provides a value not yet stored, it is cached in SecureStore.
- */
+// ─── Body mass ────────────────────────────────────────────────────────────────
+
 export async function resolveBodyMassKg(): Promise<number> {
   const stored = await getBodyMassKg();
-  if (stored !== DEFAULT_BODY_MASS_KG) return stored; // user explicitly set a value
+  if (stored !== DEFAULT_BODY_MASS_KG) return stored;
 
   try {
-    const samples = await HealthKit.queryQuantitySamples(
+    const samples = await (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.bodyMass,
       { unit: 'kg', limit: 1, ascending: false }
     );
     if (samples.length > 0) {
       const kg = Math.round(samples[0].quantity);
       if (kg >= 30 && kg <= 250) {
-        await saveBodyMassKg(kg); // cache for future use
+        await saveBodyMassKg(kg);
         return kg;
       }
     }
@@ -175,16 +157,11 @@ export async function resolveBodyMassKg(): Promise<number> {
 
 // ─── Sleep parsing ────────────────────────────────────────────────────────────
 
-/**
- * Given raw sleep category samples, group them into nightly sessions.
- * A new session starts when there is a gap of >3 hours between samples.
- */
 function groupIntoSessions(
   rawSamples: { startDate: string; endDate: string; value: number }[]
 ): SleepSession[] {
   if (rawSamples.length === 0) return [];
 
-  // Sort chronologically
   const sorted = [...rawSamples].sort(
     (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
   );
@@ -195,7 +172,6 @@ function groupIntoSessions(
   for (let i = 1; i < sorted.length; i++) {
     const gap = minutesBetween(current[current.length - 1].endDate, sorted[i].startDate);
     if (gap > 180) {
-      // >3 hour gap → new session
       sessions.push(buildSession(current));
       current = [sorted[i]];
     } else {
@@ -204,7 +180,6 @@ function groupIntoSessions(
   }
   sessions.push(buildSession(current));
 
-  // Only keep sessions that include actual sleep (not just inBed)
   return sessions.filter((s) => s.totalMinutes >= 30);
 }
 
@@ -239,7 +214,7 @@ function buildSession(
   const wakeTime = samples[samples.length - 1].endDate;
 
   return {
-    date: toDateStr(wakeTime), // date the person woke up
+    date: toDateStr(wakeTime),
     bedtime,
     wakeTime,
     totalMinutes: sleepMinutes,
@@ -253,14 +228,6 @@ function buildSession(
 
 // ─── HRV weighted average ─────────────────────────────────────────────────────
 
-/**
- * Compute the stage-weighted RMSSD average for one night.
- *
- * Apple Watch stores HRV under HKQuantityTypeIdentifierHeartRateVariabilitySDNN,
- * but the values are computed using RMSSD (root mean square of successive
- * differences). We take all HRV readings that fall within the sleep window
- * and weight each by the sleep stage it lands in.
- */
 function computeWeightedRMSSD(
   session: SleepSession,
   hrvSamples: { startDate: string; quantity: number }[]
@@ -268,7 +235,6 @@ function computeWeightedRMSSD(
   const sessionStart = new Date(session.bedtime).getTime();
   const sessionEnd = new Date(session.wakeTime).getTime();
 
-  // Filter HRV samples to this sleep window
   const nightSamples = hrvSamples.filter((s) => {
     const t = new Date(s.startDate).getTime();
     return t >= sessionStart && t <= sessionEnd;
@@ -278,10 +244,8 @@ function computeWeightedRMSSD(
     return { weightedRMSSD: 0, annotatedSamples: [] };
   }
 
-  // Assign each HRV sample to a sleep stage
   const annotatedSamples: NightlyHRV['samples'] = nightSamples.map((s) => {
     const sampleTime = new Date(s.startDate).getTime();
-    // Find which segment this sample falls in
     const seg = session.segments.find((sg) => {
       const start = new Date(sg.startDate).getTime();
       const end = new Date(sg.endDate).getTime();
@@ -291,7 +255,6 @@ function computeWeightedRMSSD(
     return { timestamp: s.startDate, rmssd: Math.round(s.quantity), stage };
   });
 
-  // Weighted average: sum(rmssd * stageWeight) / sum(stageWeight)
   let weightedSum = 0;
   let totalWeight = 0;
   annotatedSamples.forEach(({ rmssd, stage }) => {
@@ -308,10 +271,6 @@ function computeWeightedRMSSD(
 
 // ─── Overnight resting HR ─────────────────────────────────────────────────────
 
-/**
- * Average heart rate during actual sleep stages (excludes awake/inBed).
- * Elevated overnight HR relative to baseline is a recovery stress signal.
- */
 function computeOvernightHR(
   session: SleepSession,
   hrSamples: { startDate: string; quantity: number }[]
@@ -341,20 +300,13 @@ function computeOvernightHR(
 
 // ─── Recovery score ───────────────────────────────────────────────────────────
 
-/**
- * Blended recovery score: 65% HRV (weighted RMSSD) + 35% overnight resting HR.
- * Both signals use z-score normalization against 30-day rolling history.
- * RHR contribution is inverted (higher HR = lower score).
- * Falls back to HRV-only if overnight HR history is insufficient (<3 nights).
- */
 function computeRecoveryScore(
   todayRMSSD: number,
   todayOvernightHR: number,
-  history: NightlyHRV[] // sorted oldest → newest, NOT including today
+  history: NightlyHRV[]
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number } {
   const recent = history.slice(-30).filter((n) => n.weightedRMSSD > 0);
 
-  // ── HRV component ────────────────────────────────────────────────────────
   let hrvScore = 70;
   let mean = todayRMSSD;
   let stddev = 1;
@@ -367,10 +319,9 @@ function computeRecoveryScore(
     hrvScore = Math.min(100, Math.max(0, 50 + z * 25));
   }
 
-  // ── Overnight HR component (inverted: high HR → low score) ───────────────
   const recentWithHR = recent.filter((n) => n.overnightHR > 0);
   let overnightHRBaseline = todayOvernightHR;
-  let rhrScore = 50; // neutral default
+  let rhrScore = 50;
 
   if (recentWithHR.length >= 3 && todayOvernightHR > 0) {
     const hrValues = recentWithHR.map((n) => n.overnightHR);
@@ -378,16 +329,14 @@ function computeRecoveryScore(
     const hrStddev =
       Math.sqrt(hrValues.reduce((a, b) => a + (b - hrMean) ** 2, 0) / hrValues.length) || 1;
     overnightHRBaseline = Math.round(hrMean);
-    const hrZ = (todayOvernightHR - hrMean) / hrStddev; // positive = elevated = bad
+    const hrZ = (todayOvernightHR - hrMean) / hrStddev;
     rhrScore = Math.min(100, Math.max(0, 50 - hrZ * 25));
   }
 
-  // ── Blend ────────────────────────────────────────────────────────────────
   const useRHR = todayOvernightHR > 0 && recentWithHR.length >= 3;
   const rawScore = useRHR ? 0.65 * hrvScore + 0.35 * rhrScore : hrvScore;
   const score = Math.round(rawScore);
 
-  // ── Trend (based on HRV 7-day) ───────────────────────────────────────────
   const last7 = recent.slice(-7);
   const avg7 =
     last7.length > 0
@@ -408,105 +357,237 @@ function scoreToLabel(score: number): DailyRecovery['label'] {
 }
 
 function scoreToColor(score: number): string {
-  if (score >= 80) return '#27ae60'; // green
-  if (score >= 60) return '#f39c12'; // amber
-  if (score >= 40) return '#e67e22'; // orange
-  return '#c0392b';                  // red
+  if (score >= 80) return '#27ae60';
+  if (score >= 60) return '#f39c12';
+  if (score >= 40) return '#e67e22';
+  return '#c0392b';
+}
+
+// ─── Per-workout data fetcher ─────────────────────────────────────────────────
+
+/**
+ * Fetch raw HR, distance and running-power samples for a single workout.
+ * Each query is isolated — failures return empty arrays (never crash the app).
+ */
+async function fetchWorkoutSamples(w: {
+  startDate: string;
+  endDate: string;
+}): Promise<{ hr: any[]; dist: any[]; power: any[] }> {
+  // Add a 30-second buffer either side so boundary samples aren't missed
+  const from = new Date(new Date(w.startDate).getTime() - 30_000);
+  const to   = new Date(new Date(w.endDate).getTime()   + 30_000);
+
+  const [hr, dist, power] = await Promise.all([
+    (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.heartRate,
+      { from, to, unit: 'count/min', ascending: true, limit: 2000 }
+    ).catch(() => []),
+    (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.distanceWalkingRunning,
+      { from, to, unit: 'meter', ascending: true, limit: 500 }
+    ).catch(() => []),
+    (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.runningPower,
+      { from, to, unit: 'W', ascending: true, limit: 1000 }
+    ).catch(() => []),  // running power is optional; silently missing on older hardware
+  ]);
+
+  return { hr, dist, power };
+}
+
+function toPerRunData(hr: any[], dist: any[], power: any[]): PerRunData {
+  return {
+    hrValues:       hr.map((s: any) => s.quantity as number),
+    hrTimestampsMs: hr.map((s: any) => new Date(s.startDate).getTime()),
+    distSegs:       dist.map((s: any) => ({ t: new Date(s.startDate).getTime(), m: s.quantity as number })),
+    powerSegs:      power.map((s: any) => ({ t: new Date(s.startDate).getTime(), w: s.quantity as number })),
+  };
 }
 
 // ─── Main fetch ───────────────────────────────────────────────────────────────
 
-export async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
-  const now = new Date();
-  const fourWeeksAgo = daysAgo(28);
-  const eightWeeksAgo = daysAgo(56);
-  const twoWeeksAgo = daysAgo(14);
-  const thirtyDaysAgo = daysAgo(30);
+export interface FetchOptions {
+  /** How many months of history to load (1 | 3 | 6 | 12, default 3) */
+  months?: number;
+  /** Called with a human-readable step name and 0-100 progress percentage */
+  onProgress?: (step: string, pct: number) => void;
+}
 
-  // ── Running workouts ──────────────────────────────────────────────────────
-  const allWorkouts = await HealthKit.queryWorkoutSamples({
-    from: fourWeeksAgo,
-    to: now,
-    limit: 40,
-    ascending: false,
-    energyUnit: 'kilocalorie',
-    distanceUnit: 'meter',
-  });
-  const runWorkouts = allWorkouts
-    .filter((w) => w.workoutActivityType === HK_WORKOUT_RUNNING)
-    .slice(0, 15);
+export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<HealthSnapshot> {
+  const months = Math.max(1, Math.min(12, opts.months ?? 3));
+  const progress = (step: string, pct: number) => opts.onProgress?.(step, Math.round(pct));
 
-  // ── Heart rate, distance, and running power (fetched in parallel) ───────────
-  const [hrSamples, distanceSamples, powerSamplesRaw] = await Promise.all([
-    HealthKit.queryQuantitySamples(
-      HKQuantityTypeIdentifier.heartRate,
-      { from: fourWeeksAgo, to: now, unit: 'count/min', ascending: true, limit: 3000 }
-    ),
-    HealthKit.queryQuantitySamples(
-      HKQuantityTypeIdentifier.distanceWalkingRunning,
-      { from: fourWeeksAgo, to: now, unit: 'meter', ascending: true, limit: 8000 }
-    ),
-    // runningPower: watchOS 9+ / iOS 16+. Returns [] silently on older devices.
-    HealthKit.queryQuantitySamples(
-      'HKQuantityTypeIdentifierRunningPower' as any,
-      { from: fourWeeksAgo, to: now, unit: 'W', ascending: true, limit: 8000 }
-    ).catch(() => [] as any[]),
+  const now          = new Date();
+  const sinceDate    = daysAgo(months * 30);
+  const thirtyDaysAgo  = daysAgo(30);
+  const twoWeeksAgo    = daysAgo(14);
+  const eightWeeksAgo  = daysAgo(56);
+
+  // ── Step 1: Load cache + workout list in parallel ─────────────────────────
+  progress('Loading workouts…', 5);
+  const [existingCache, allWorkouts] = await Promise.all([
+    loadWorkoutCache(),
+    (HealthKit.queryWorkoutSamples as any)({
+      from: sinceDate,
+      to: now,
+      limit: 500,
+      ascending: false,
+      energyUnit: 'kilocalorie',
+      distanceUnit: 'meter',
+    }).catch(() => []),
   ]);
 
-  // Build per-run PerRunData (HR values + timestamps + distance segments)
+  const runWorkouts: any[] = (allWorkouts as any[])
+    .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING)
+    .slice(0, 80);
+
+  progress(`Found ${runWorkouts.length} runs — checking cache…`, 12);
+
+  // ── Step 2: Identify which workouts need fresh data ───────────────────────
+  const cachedAnalyses = existingCache?.analyses ?? {};
+  const uncached = runWorkouts.filter((w: any) => !cachedAnalyses[w.uuid]);
+
+  // Pre-populate perRunData for cached runs (classifier will use cache, not raw data)
   const perRunData = new Map<string, PerRunData>();
-  const rawRuns: RunWorkout[] = runWorkouts.map((w) => {
-    const startMs = new Date(w.startDate).getTime();
-    const endMs   = new Date(w.endDate).getTime();
+  runWorkouts.forEach((w: any) => {
+    if (cachedAnalyses[w.uuid]) {
+      perRunData.set(w.uuid, { hrValues: [], hrTimestampsMs: [], distSegs: [], powerSegs: [] });
+    }
+  });
 
-    const runHR = hrSamples.filter(s => {
-      const t = new Date(s.startDate).getTime();
-      return t >= startMs && t <= endMs;
-    });
-    const hrValues       = runHR.map(s => s.quantity);
-    const hrTimestampsMs = runHR.map(s => new Date(s.startDate).getTime());
+  // ── Step 3: Fetch raw samples for uncached workouts (batched, 4 at a time) ──
+  let allNewHRValues: number[] = [];
+  const BATCH = 4;
 
-    const distSegs = distanceSamples
-      .filter(s => {
-        const t = new Date(s.startDate).getTime();
-        return t >= startMs && t <= endMs;
-      })
-      .map(s => ({ t: new Date(s.startDate).getTime(), m: s.quantity }));
+  if (uncached.length > 0) {
+    for (let i = 0; i < uncached.length; i += BATCH) {
+      const batch = uncached.slice(i, i + BATCH);
+      const done  = Math.min(i + BATCH, uncached.length);
+      progress(
+        `Syncing run ${done} of ${uncached.length}…`,
+        12 + (done / uncached.length) * 48,
+      );
 
-    const powerSegs = (powerSamplesRaw as any[])
-      .filter(s => {
-        const t = new Date(s.startDate).getTime();
-        return t >= startMs && t <= endMs;
-      })
-      .map(s => ({ t: new Date(s.startDate).getTime(), w: s.quantity as number }));
+      const results = await Promise.all(batch.map(fetchWorkoutSamples));
 
-    perRunData.set(w.uuid, { hrValues, hrTimestampsMs, distSegs, powerSegs });
+      results.forEach(({ hr, dist, power }, idx) => {
+        const w = batch[idx];
+        const data = toPerRunData(hr, dist, power);
+        perRunData.set(w.uuid, data);
+        allNewHRValues = allNewHRValues.concat(data.hrValues);
+      });
+    }
+  }
 
-    const avgHR = hrValues.length > 0
-      ? Math.round(hrValues.reduce((a, b) => a + b, 0) / hrValues.length)
-      : undefined;
-    const distanceM = w.totalDistance?.quantity ?? 0;
-    const durationS = w.duration;
+  progress('Processing run data…', 62);
+
+  // ── Step 4: Build rawRuns ─────────────────────────────────────────────────
+  const rawRuns: RunWorkout[] = runWorkouts.map((w: any) => {
+    const data = perRunData.get(w.uuid);
+    const hrValues = data?.hrValues ?? [];
+
+    // Prefer fresh HR avg; fall back to cached avg HR from previous sync
+    const avgHR =
+      hrValues.length > 0
+        ? Math.round(hrValues.reduce((a, b) => a + b, 0) / hrValues.length)
+        : (cachedAnalyses[w.uuid]?.avgHR ?? undefined);
+
+    const distanceM = (w.totalDistance?.quantity ?? 0) as number;
+    const durationS = w.duration as number;
+
     return {
-      uuid: w.uuid,
-      date: w.startDate,
-      duration: durationS,
-      distance: distanceM,
-      calories: w.totalEnergyBurned?.quantity ?? 0,
-      avgHeartRate: avgHR,
-      pace: distanceM > 0 ? durationS / (distanceM / METERS_PER_KM) : 0,
+      uuid:          w.uuid,
+      date:          w.startDate,
+      duration:      durationS,
+      distance:      distanceM,
+      calories:      (w.totalEnergyBurned?.quantity ?? 0) as number,
+      avgHeartRate:  avgHR,
+      pace:          distanceM > 0 ? durationS / (distanceM / METERS_PER_KM) : 0,
     };
   });
 
-  const allHRValues = hrSamples.map(s => s.quantity);
-  const [{ runs: classifiedRuns, maxHR }, bodyMassKg] = await Promise.all([
-    classifyAndCacheRuns(rawRuns, perRunData, allHRValues),
+  // ── Step 5: Wellness data + workout classification (parallel) ─────────────
+  progress('Fetching wellness data…', 65);
+
+  const [
+    vo2maxSamples,
+    allHRVSamples,
+    restingHRSamples,
+    rawSleepSamples,
+    bodyMassKg,
+    { runs: classifiedRuns, maxHR },
+  ] = await Promise.all([
+    (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.vo2Max,
+      { from: eightWeeksAgo, to: now, unit: 'ml/kg·min', ascending: true, limit: 60 }
+    ).catch(() => []),
+    (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
+      { from: thirtyDaysAgo, to: now, unit: 'ms', ascending: true, limit: 500 }
+    ).catch(() => []),
+    (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.restingHeartRate,
+      { from: twoWeeksAgo, to: now, unit: 'count/min', ascending: true, limit: 30 }
+    ).catch(() => []),
+    (HealthKit.queryCategorySamples as any)(
+      HKCategoryTypeIdentifier.sleepAnalysis,
+      { from: thirtyDaysAgo, to: now, ascending: true, limit: 2000 }
+    ).catch(() => []),
     resolveBodyMassKg(),
+    classifyAndCacheRuns(rawRuns, perRunData, allNewHRValues, existingCache),
   ]);
 
-  // Fill in estimated power for any run without native sensor power.
-  // Formula: P = speed(m/s) × mass(kg) × 1.04  (flat-ground metabolic approximation)
-  const runs = classifiedRuns.map(run => {
+  // ── Step 6: Sleep analysis ────────────────────────────────────────────────
+  progress('Analyzing sleep & recovery…', 80);
+
+  const sleepSessions = groupIntoSessions(
+    (rawSleepSamples as any[]).map((s: any) => ({
+      startDate: s.startDate,
+      endDate:   s.endDate,
+      value:     s.value as number,
+    }))
+  );
+
+  // Fetch HR for each sleep session's window individually — much more efficient
+  // than pulling all HR for 30 days and filtering.
+  let sleepHRSamples: { startDate: string; quantity: number }[] = [];
+  if (sleepSessions.length > 0) {
+    const nightHRResults = await Promise.all(
+      sleepSessions.slice(-30).map((session) =>
+        (HealthKit.queryQuantitySamples as any)(
+          HKQuantityTypeIdentifier.heartRate,
+          {
+            from:      new Date(session.bedtime),
+            to:        new Date(session.wakeTime),
+            unit:      'count/min',
+            ascending: true,
+            limit:     300,
+          }
+        ).catch(() => [])
+      )
+    );
+    sleepHRSamples = (nightHRResults as any[][]).flat().map((s: any) => ({
+      startDate: s.startDate as string,
+      quantity:  s.quantity as number,
+    }));
+  }
+
+  // ── Step 7: Nightly HRV + overnight HR ───────────────────────────────────
+  const hrvSamplesForSleep = (allHRVSamples as any[]).map((s: any) => ({
+    startDate: s.startDate as string,
+    quantity:  s.quantity as number,
+  }));
+
+  const nightlyHRV: NightlyHRV[] = sleepSessions.map((session) => {
+    const { weightedRMSSD, annotatedSamples } = computeWeightedRMSSD(session, hrvSamplesForSleep);
+    const overnightHR = computeOvernightHR(session, sleepHRSamples);
+    return { date: session.date, samples: annotatedSamples, weightedRMSSD, overnightHR };
+  });
+
+  // ── Step 8: Power estimation for runs without native sensor ──────────────
+  progress('Classifying workouts…', 90);
+
+  const runs = classifiedRuns.map((run) => {
     const hasNativePower = (run.workPower ?? 0) > 0;
     const pace = run.workPace ?? run.pace;
     if (hasNativePower || !pace || pace <= 0) return run;
@@ -515,68 +596,17 @@ export async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
       secs > 0 ? Math.round((1000 / secs) * bodyMassKg * 1.04) : 0;
 
     const workPower = estimate(pace);
-
-    // Also back-fill per-interval power from per-rep pace
-    const intervals = (run.intervals ?? []).map(rep =>
-      rep.avgPowerW > 0 ? rep
-        : { ...rep, avgPowerW: estimate(rep.avgPaceSecs) }
+    const intervals = (run.intervals ?? []).map((rep: any) =>
+      rep.avgPowerW > 0 ? rep : { ...rep, avgPowerW: estimate(rep.avgPaceSecs) }
     );
 
     return { ...run, workPower, isEstimatedPower: true, intervals };
   });
 
-  // ── VO2 Max ───────────────────────────────────────────────────────────────
-  const vo2maxSamples = await HealthKit.queryQuantitySamples(
-    HKQuantityTypeIdentifier.vo2Max,
-    { from: eightWeeksAgo, to: now, unit: 'ml/kg·min', ascending: true, limit: 60 }
-  );
-
-  // ── All HRV samples (RMSSD via SDNN key) — 30 days for baseline ───────────
-  const allHRVSamples = await HealthKit.queryQuantitySamples(
-    HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
-    { from: thirtyDaysAgo, to: now, unit: 'ms', ascending: true, limit: 500 }
-  );
-
-  // ── Resting HR ────────────────────────────────────────────────────────────
-  const restingHRSamples = await HealthKit.queryQuantitySamples(
-    HKQuantityTypeIdentifier.restingHeartRate,
-    { from: twoWeeksAgo, to: now, unit: 'count/min', ascending: true, limit: 30 }
-  );
-
-  // ── Sleep (30 days) ───────────────────────────────────────────────────────
-  const rawSleepSamples = await HealthKit.queryCategorySamples(
-    HKCategoryTypeIdentifier.sleepAnalysis,
-    { from: thirtyDaysAgo, to: now, ascending: true, limit: 2000 }
-  );
-
-  const sleepSessions = groupIntoSessions(
-    rawSleepSamples.map((s) => ({
-      startDate: s.startDate,
-      endDate: s.endDate,
-      value: s.value as number,
-    }))
-  );
-
-  // ── Nightly weighted RMSSD + overnight HR ────────────────────────────────
-  const rawHRForSleep = hrSamples.map((s) => ({ startDate: s.startDate, quantity: s.quantity }));
-  const nightlyHRV: NightlyHRV[] = sleepSessions.map((session) => {
-    const { weightedRMSSD, annotatedSamples } = computeWeightedRMSSD(
-      session,
-      allHRVSamples.map((s) => ({ startDate: s.startDate, quantity: s.quantity }))
-    );
-    const overnightHR = computeOvernightHR(session, rawHRForSleep);
-    return {
-      date: session.date,
-      samples: annotatedSamples,
-      weightedRMSSD,
-      overnightHR,
-    };
-  });
-
-  // ── Today's recovery ──────────────────────────────────────────────────────
+  // ── Step 9: Today's recovery ──────────────────────────────────────────────
   const todayStr = toDateStr(now.toISOString());
   const tonightSession = sleepSessions.findLast((s) => s.date === todayStr);
-  const tonightHRV = nightlyHRV.findLast((n) => n.date === todayStr);
+  const tonightHRV     = nightlyHRV.findLast((n) => n.date === todayStr);
 
   let todayRecovery: DailyRecovery | null = null;
   if (tonightHRV && tonightHRV.weightedRMSSD > 0) {
@@ -587,46 +617,48 @@ export async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
       historyBeforeToday
     );
     todayRecovery = {
-      date: todayStr,
-      weightedRMSSD: tonightHRV.weightedRMSSD,
-      overnightHR: tonightHRV.overnightHR,
+      date:                todayStr,
+      weightedRMSSD:       tonightHRV.weightedRMSSD,
+      overnightHR:         tonightHRV.overnightHR,
       overnightHRBaseline,
-      recoveryScore: score,
-      baseline7Day: baseline,
+      recoveryScore:       score,
+      baseline7Day:        baseline,
       trend,
-      sleep: tonightSession ?? null,
-      label: scoreToLabel(score),
-      color: scoreToColor(score),
+      sleep:               tonightSession ?? null,
+      label:               scoreToLabel(score),
+      color:               scoreToColor(score),
     };
   }
 
+  progress('Done', 100);
+
   return {
     runs,
-    vo2max: vo2maxSamples.map((s) => ({
-      date: s.startDate,
+    vo2max: (vo2maxSamples as any[]).map((s: any) => ({
+      date:  s.startDate,
       value: Math.round(s.quantity * 10) / 10,
     })),
-    hrv: allHRVSamples
-      .filter((s) => new Date(s.startDate) >= twoWeeksAgo)
-      .map((s) => ({ date: s.startDate, value: Math.round(s.quantity) })),
-    restingHR: restingHRSamples.map((s) => ({
-      date: s.startDate,
+    hrv: (allHRVSamples as any[])
+      .filter((s: any) => new Date(s.startDate) >= twoWeeksAgo)
+      .map((s: any) => ({ date: s.startDate, value: Math.round(s.quantity) })),
+    restingHR: (restingHRSamples as any[]).map((s: any) => ({
+      date:  s.startDate,
       value: Math.round(s.quantity),
     })),
-    weeklyMileage: computeWeeklyMileage(runs),
+    weeklyMileage:    computeWeeklyMileage(runs),
     todayRecovery,
     recentNightlyHRV: nightlyHRV.slice(-14),
-    recentSleep: sleepSessions.slice(-14),
+    recentSleep:      sleepSessions.slice(-14),
     workoutTypeStats: computeWorkoutTypeStats(runs),
-    estimatedMaxHR: maxHR,
-    fetchedAt: now.toISOString(),
+    estimatedMaxHR:   maxHR,
+    fetchedAt:        now.toISOString(),
   };
 }
 
 function computeWeeklyMileage(runs: RunWorkout[]): WeeklyMileage[] {
   const weeks: Record<string, number> = {};
   runs.forEach((run) => {
-    const date = new Date(run.date);
+    const date   = new Date(run.date);
     const monday = new Date(date);
     monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
     const key = monday.toISOString().split('T')[0];

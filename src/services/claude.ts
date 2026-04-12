@@ -20,8 +20,21 @@ export async function deleteApiKey(): Promise<void> {
   return SecureStore.deleteItemAsync(API_KEY_KEY);
 }
 
-const BODY_MASS_KEY = 'body_mass_kg';
+const BODY_MASS_KEY  = 'body_mass_kg';
+const SYNC_MONTHS_KEY = 'sync_months';
 export const DEFAULT_BODY_MASS_KG = 70;
+
+const VALID_MONTHS = [1, 3, 6, 12] as const;
+export type SyncMonths = (typeof VALID_MONTHS)[number];
+
+export async function getSyncMonths(): Promise<SyncMonths> {
+  const raw = await SecureStore.getItemAsync(SYNC_MONTHS_KEY);
+  const n = raw ? parseInt(raw, 10) : 3;
+  return (VALID_MONTHS as readonly number[]).includes(n) ? (n as SyncMonths) : 3;
+}
+export async function setSyncMonths(months: SyncMonths): Promise<void> {
+  await SecureStore.setItemAsync(SYNC_MONTHS_KEY, String(months));
+}
 
 export async function getBodyMassKg(): Promise<number> {
   const raw = await SecureStore.getItemAsync(BODY_MASS_KEY);

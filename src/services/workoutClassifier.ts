@@ -403,7 +403,7 @@ function classifyWithoutSamples(
   else if (avgPct >= 0.77) label = 'Tempo';
   else if (avgPct < 0.64) label = 'Recovery';
   else label = 'Z2';
-  return { label, confidence: 'low', zones: blankZones, hrCV: 0, maxHRObserved: 0 };
+  return { label, confidence: 'low', zones: blankZones, hrCV: 0, maxHRObserved: 0, workPace: 0, workPower: 0 };
 }
 
 function labelByDominantZone(z: ZoneDistribution, durationMin: number): WorkoutLabel {
@@ -420,10 +420,14 @@ function labelByDominantZone(z: ZoneDistribution, durationMin: number): WorkoutL
 export async function classifyAndCacheRuns(
   runs: RunWorkout[],
   perRunData: Map<string, PerRunData>,
-  allHRValues: number[],
+  /** HR values from newly-fetched (uncached) workouts only — used to update maxHR */
+  newHRValues: number[],
+  /** Pre-fetched cache from the caller (avoids a second disk read) */
+  preFetchedCache?: WorkoutCache | null,
 ): Promise<{ runs: RunWorkout[]; maxHR: number }> {
-  const existing = await loadWorkoutCache();
+  const existing = preFetchedCache !== undefined ? preFetchedCache : await loadWorkoutCache();
   const cachedMaxHR = existing?.estimatedMaxHR;
+  const allHRValues = newHRValues;
   const maxHR = estimateMaxHR(allHRValues, cachedMaxHR);
 
   const analyses: Record<string, WorkoutAnalysis> = existing?.analyses ?? {};
