@@ -1,5 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
-import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel } from '../types';
+import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout } from '../types';
 
 const API_KEY_KEY = 'anthropic_api_key';
 export const MODEL      = 'claude-haiku-4-5-20251001';
@@ -302,9 +302,10 @@ function buildDataBlock(snap: HealthSnapshot): string {
         const stime  = `${Math.floor(s.durationSec/60)}:${(s.durationSec%60).toString().padStart(2,'0')}`;
         const spkm   = s.distanceM > 0 ? s.durationSec / (s.distanceM / 1000) : 0;
         const space  = spkm > 0 ? fp(spkm) : '';
-        const shr    = s.avgHR   > 0 ? `HR${s.avgHR}`   : '';
-        const spwr   = s.avgPower > 0 ? `${s.avgPower}W` : '';
-        return `  ${s.label}: ${sdist} ${stime}${space ? ` @${space}` : ''}${shr ? ` ${shr}` : ''}${spwr ? ` ${spwr}` : ''}`;
+        const shr    = s.avgHR     > 0 ? `HR${s.avgHR}`        : '';
+        const spwr   = s.avgPower  > 0 ? `${s.avgPower}W`      : '';
+        const scad   = s.cadenceSPM > 0 ? `${s.cadenceSPM}spm` : '';
+        return `  ${s.label}: ${sdist} ${stime}${space ? ` @${space}` : ''}${shr ? ` ${shr}` : ''}${spwr ? ` ${spwr}` : ''}${scad ? ` ${scad}` : ''}`;
       });
       extra = '\n' + segStrs.join('\n');
     } else if (r.intervals && r.intervals.length > 0) {
@@ -406,12 +407,18 @@ Rules: cite real numbers, 2–4 sentences per section, skip sections with no dat
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
 
-function buildChatSystemPrompt(snap: HealthSnapshot, memoryNote?: string): string {
+function buildChatSystemPrompt(
+  snap:          HealthSnapshot,
+  memoryNote?:   string,
+  localContext?: string,   // e.g. "Brussels · Thu 17 Apr 17:30"
+): string {
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
   });
 
-  let prompt = `You are a personal running coach in a runner's iPhone app. Today: ${today}.
+  const timeHeader = localContext ? localContext : `Today: ${today}`;
+
+  let prompt = `You are a personal running coach in a runner's iPhone app. ${timeHeader}.
 Concise answers, phone-friendly. Cite numbers. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
 ${buildDataBlock(snap)}`;
@@ -435,10 +442,66 @@ const MEMORY_UPDATE_PROMPT = `Based on the conversation so far, write a short co
 
 Write in second person ("The runner..."). Be concise — this note is injected into future sessions. If nothing significant was discussed, return an empty string.`;
 
+// ─── New-run analysis block ───────────────────────────────────────────────────
+// Builds a compact user message that auto-triggers run analysis when a new
+// run is detected since the last chat session. Token-efficient: only includes
+// fields that differ from the global data block.
+
+export function buildNewRunUserMessage(
+  newRun:   RunWorkout,
+  prevRuns: RunWorkout[], // up to 5 previous of the same type
+): string {
+  const lbl  = newRun.label ?? 'Unknown';
+  const dist = (newRun.distance / 1000).toFixed(2);
+  const pace = fp(newRun.workPace ?? newRun.pace);
+  const hr   = newRun.workHR
+    ? `wHR ${newRun.workHR}bpm`
+    : newRun.avgHeartRate ? `HR ${Math.round(newRun.avgHeartRate)}bpm` : '';
+  const pwr  = (newRun.workPower ?? 0) > 0 ? ` ${newRun.workPower}W` : '';
+
+  let newBlock = `${lbl} · ${fd(newRun.date)} · ${dist}km · ${fdur(newRun.duration)} · @${pace} · ${hr}${pwr}`;
+
+  if (newRun.segments && newRun.segments.length > 0) {
+    const segStrs = newRun.segments.map(s => {
+      const sdist = s.distanceM >= 1000 ? `${(s.distanceM / 1000).toFixed(2)}km` : `${s.distanceM}m`;
+      const stime = `${Math.floor(s.durationSec / 60)}:${(s.durationSec % 60).toString().padStart(2, '0')}`;
+      const spkm  = s.distanceM > 0 ? s.durationSec / (s.distanceM / 1000) : 0;
+      const sp    = spkm > 0 ? `@${fp(spkm)}` : '';
+      const sh    = s.avgHR     > 0 ? `HR${s.avgHR}`        : '';
+      const sw    = s.avgPower  > 0 ? `${s.avgPower}W`      : '';
+      const sc    = s.cadenceSPM > 0 ? `${s.cadenceSPM}spm` : '';
+      return `  ${s.label}: ${sdist} ${stime} ${[sp,sh,sw,sc].filter(Boolean).join(' ')}`.trimEnd();
+    });
+    newBlock += '\n' + segStrs.join('\n');
+  } else if (newRun.intervals && newRun.intervals.length > 0) {
+    const hrs   = newRun.intervals.map(i => i.avgHR).join('/');
+    const paces = newRun.intervals.map(i => fp(i.avgPaceSecs)).filter(p => p !== '—').join('/');
+    const pwrs  = newRun.intervals.some(i => (i.avgPowerW ?? 0) > 0)
+      ? ` pwr:${newRun.intervals.map(i => i.avgPowerW > 0 ? `${i.avgPowerW}W` : '—').join('/')}`
+      : '';
+    newBlock += `\n  reps:${newRun.intervals.length} HR${hrs}${paces ? ` @${paces}` : ''}${pwrs}`;
+  }
+
+  const prevLines = prevRuns.slice(0, 5).map(r => {
+    const d  = (r.distance / 1000).toFixed(2);
+    const p  = fp(r.workPace ?? r.pace);
+    const rh = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${Math.round(r.avgHeartRate)}` : '');
+    const rp = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
+    return `  ${fd(r.date)}: ${d}km ${fdur(r.duration)} @${p} ${rh}${rp}`.trimEnd();
+  }).join('\n') || '  (none yet)';
+
+  return `I just finished a new ${lbl} run. Analyze it and compare with my previous ${lbl} runs:\n\nNew run:\n${newBlock}\n\nPrevious ${lbl} runs:\n${prevLines}`;
+}
+
+// ─── Memory note updater ──────────────────────────────────────────────────────
+// After each exchange, ask Claude to update a short running memory note so
+// goals, patterns, and agreements persist across chat sessions.
+
 export async function updateMemoryNote(
   history:        ChatMessage[],
   currentMemory:  string,
   snap:           HealthSnapshot,
+  localContext?:  string,
 ): Promise<string> {
   const apiKey = await getApiKey();
   if (!apiKey) return currentMemory;
@@ -460,7 +523,7 @@ export async function updateMemoryNote(
       body: JSON.stringify({
         model: CHAT_MODEL,
         max_tokens: 300,
-        system: buildChatSystemPrompt(snap, currentMemory),
+        system: buildChatSystemPrompt(snap, currentMemory, localContext),
         messages: contextMessages,
       }),
     });
@@ -512,9 +575,10 @@ export async function generateCoachingReport(snap: HealthSnapshot): Promise<Coac
 // ─── Chat API call ────────────────────────────────────────────────────────────
 
 export async function getChatResponse(
-  snap:       HealthSnapshot,
-  history:    ChatMessage[],
-  memoryNote?: string,
+  snap:          HealthSnapshot,
+  history:       ChatMessage[],
+  memoryNote?:   string,
+  localContext?: string,
 ): Promise<string> {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Add it in Settings first.');
@@ -529,7 +593,7 @@ export async function getChatResponse(
     body: JSON.stringify({
       model: CHAT_MODEL,
       max_tokens: 1024,
-      system: buildChatSystemPrompt(snap, memoryNote),
+      system: buildChatSystemPrompt(snap, memoryNote, localContext),
       messages: history,
     }),
   });

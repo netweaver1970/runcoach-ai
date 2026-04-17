@@ -15,9 +15,36 @@ import {
   Alert,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
-import { getChatResponse, updateMemoryNote, ChatMessage, CHAT_MODEL } from '../src/services/claude';
-import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
+import {
+  getChatResponse,
+  updateMemoryNote,
+  buildNewRunUserMessage,
+  ChatMessage,
+  CHAT_MODEL,
+} from '../src/services/claude';
+import {
+  loadChatPersistence,
+  saveChatPersistence,
+  clearChatPersistence,
+  toApiMessages,
+  makeMsg,
+  PersistedMessage,
+} from '../src/services/chatMemory';
 import { HealthSnapshot } from '../src/types';
+
+// ─── Local context (location + time) ─────────────────────────────────────────
+// Derive city name from IANA timezone — no location permissions needed.
+
+function getLocalContext(): string {
+  const tz   = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const city = tz.split('/').pop()?.replace(/_/g, ' ') ?? '';
+  const time = new Date().toLocaleString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short',
+    hour: '2-digit', minute: '2-digit',
+    timeZone: tz,
+  });
+  return city ? `${city} · ${time}` : time;
+}
 
 // ─── Quick-action chips ───────────────────────────────────────────────────────
 
@@ -60,23 +87,20 @@ export default function ChatScreen() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const { height: screenHeight } = useWindowDimensions();
-  const listRef   = useRef<FlatList>(null);
-  const inputRef  = useRef<TextInput>(null);
-  // Keep a ref to the current ChatMessage history so the memory updater
-  // always sees the latest version without needing it as a dependency.
-  const historyRef = useRef<ChatMessage[]>([]);
+  const listRef      = useRef<FlatList>(null);
+  const inputRef     = useRef<TextInput>(null);
 
-  // ── Dynamic keyboard height ──────────────────────────────────────────────────
-  // Read the actual keyboard frame from the OS rather than using a hardcoded
-  // keyboardVerticalOffset. This handles any keyboard (SwiftKey, Gboard, etc.)
-  // regardless of extra toolbars or number rows.
+  // Full persisted history (with timestamps). Only toApiMessages() result goes to the API.
+  const historyRef        = useRef<PersistedMessage[]>([]);
+  const lastSeenRunRef    = useRef<string | undefined>(undefined);
+  const localContextRef   = useRef<string>(getLocalContext());
+
+  // ── Dynamic keyboard height ─────────────────────────────────────────────────
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide'        : 'keyboardDidHide';
 
     const onShow = (e: KeyboardEvent) => {
-      // screenY is the top edge of the keyboard in screen coordinates.
-      // screenHeight - screenY = full keyboard height including any toolbars.
       const kbH = screenHeight - e.endCoordinates.screenY;
       setKeyboardHeight(Math.max(0, kbH));
     };
@@ -87,7 +111,7 @@ export default function ChatScreen() {
     return () => { sub1.remove(); sub2.remove(); };
   }, [screenHeight]);
 
-  // ── Load persisted history on mount ─────────────────────────────────────────
+  // ── Load persisted history on mount ────────────────────────────────────────
   useEffect(() => {
     if (!snapshot) {
       setMessages([{ id: 'err', role: 'system', content: 'No health data loaded. Go back and try again.' }]);
@@ -95,9 +119,14 @@ export default function ChatScreen() {
       return;
     }
 
+    // Refresh localContext at load time (time may have changed since module init)
+    localContextRef.current = getLocalContext();
+
     loadChatPersistence().then(saved => {
+      const latestRun = snapshot.runs[0] ?? null;
+
       if (saved && saved.messages.length > 0) {
-        // Restore previous conversation — no greeting, just a thin divider
+        // Restore previous conversation
         const savedAt  = new Date(saved.savedAt);
         const dateStr  = savedAt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
         const timeStr  = savedAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -113,8 +142,28 @@ export default function ChatScreen() {
         }));
         setMessages([divider, ...restored]);
         setMemoryNote(saved.memoryNote ?? '');
-        historyRef.current = saved.messages;
+        historyRef.current     = saved.messages;
+        lastSeenRunRef.current = saved.lastSeenRunUUID;
         setShowChips(false);
+
+        // ── Auto new-run analysis ──────────────────────────────────────────
+        // Trigger only when: we have a tracked lastSeenRunUUID AND the newest
+        // run is different (i.e., a new run completed since the last chat).
+        if (
+          latestRun &&
+          saved.lastSeenRunUUID &&
+          latestRun.uuid !== saved.lastSeenRunUUID
+        ) {
+          const sameType = snapshot.runs
+            .filter(r => r.uuid !== latestRun.uuid && r.label === latestRun.label)
+            .slice(0, 5);
+          const userText = buildNewRunUserMessage(latestRun, sameType);
+          lastSeenRunRef.current = latestRun.uuid;
+          setIsLoaded(true);
+          // Auto-send after a short delay so the restored history renders first
+          setTimeout(() => autoSend(userText), 400);
+          return;
+        }
       } else {
         // Fresh start — show greeting
         const rec = snapshot.todayRecovery;
@@ -126,10 +175,59 @@ export default function ChatScreen() {
           greeting += "Sleep data hasn't synced yet, so I don't have your recovery score. I can still answer questions about your recent runs and fitness trends.\n\nWhat would you like to know?";
         }
         setMessages([{ id: 'greeting', role: 'assistant', content: greeting }]);
+
+        // Track lastSeenRunUUID from the start so future new runs trigger analysis
+        if (latestRun) lastSeenRunRef.current = latestRun.uuid;
       }
+
       setIsLoaded(true);
     });
   }, []);
+
+  // ── autoSend — silently injects a user message + gets Claude response ───────
+  // Used for the new-run analysis trigger. Adds a visible "thinking" state.
+  const autoSend = useCallback(async (text: string) => {
+    if (!snapshot) return;
+
+    const loadingId = 'auto-loading';
+    const userMsg: Message    = { id: 'auto-user', role: 'user', content: text };
+    const loadingMsg: Message = { id: loadingId, role: 'assistant', content: '', loading: true };
+    setMessages(prev => [...prev, userMsg, loadingMsg]);
+    setSending(true);
+    setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+
+    const now       = new Date().toISOString();
+    const persisted = makeMsg('user', text, now);
+    const apiHistory: ChatMessage[] = toApiMessages([...historyRef.current, persisted]);
+
+    try {
+      const reply    = await getChatResponse(snapshot, apiHistory, memoryNote, localContextRef.current);
+      const replyMsg = makeMsg('assistant', reply);
+      const full: PersistedMessage[] = [...historyRef.current, persisted, replyMsg];
+      historyRef.current = full;
+      lastSeenRunRef.current = snapshot.runs[0]?.uuid;
+
+      setMessages(prev => [
+        ...prev.filter(m => m.id !== loadingId),
+        { id: 'auto-reply', role: 'assistant', content: reply },
+      ]);
+
+      updateMemoryNote(toApiMessages(full), memoryNote, snapshot, localContextRef.current)
+        .then(updatedMemory => {
+          setMemoryNote(updatedMemory);
+          saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
+        })
+        .catch(() => saveChatPersistence(full, memoryNote, lastSeenRunRef.current));
+    } catch (err: any) {
+      setMessages(prev => [
+        ...prev.filter(m => m.id !== loadingId),
+        { id: 'auto-err', role: 'system', content: `⚠️ ${err.message}` },
+      ]);
+    } finally {
+      setSending(false);
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  }, [snapshot, memoryNote]);
 
   // ── New conversation ─────────────────────────────────────────────────────────
   const handleNewChat = useCallback(() => {
@@ -143,7 +241,6 @@ export default function ChatScreen() {
           onPress: async () => {
             await clearChatPersistence();
             historyRef.current = [];
-            // Re-show greeting
             const rec = snapshot?.todayRecovery;
             let greeting = '👋 Starting fresh! ';
             if (rec && rec.weightedRMSSD > 0) {
@@ -170,55 +267,51 @@ export default function ChatScreen() {
     setInput('');
     Keyboard.dismiss();
 
-    const userMsg: Message    = { id: Date.now().toString(),       role: 'user',      content: trimmed };
-    const loadingMsg: Message = { id: 'loading',                   role: 'assistant', content: '', loading: true };
+    const now        = new Date().toISOString();
+    const persisted  = makeMsg('user', trimmed, now);
+    const loadingId  = 'loading-' + now;
+
+    const userMsg: Message    = { id: now,      role: 'user',      content: trimmed };
+    const loadingMsg: Message = { id: loadingId, role: 'assistant', content: '', loading: true };
 
     setMessages(prev => [...prev, userMsg, loadingMsg]);
     setSending(true);
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
 
-    // Build API history: previous turns + new user message
-    const apiHistory: ChatMessage[] = [
-      ...historyRef.current,
-      { role: 'user', content: trimmed },
-    ];
+    // Build API history: persisted messages (with time-gap labels) + new user turn
+    const apiHistory: ChatMessage[] = toApiMessages([...historyRef.current, persisted]);
 
     try {
-      const reply = await getChatResponse(snapshot, apiHistory, memoryNote);
-
-      // Full history now includes the assistant reply
-      const fullHistory: ChatMessage[] = [
-        ...apiHistory,
-        { role: 'assistant', content: reply },
-      ];
-      historyRef.current = fullHistory;
+      const reply    = await getChatResponse(snapshot, apiHistory, memoryNote, localContextRef.current);
+      const replyMsg = makeMsg('assistant', reply);
+      const full: PersistedMessage[] = [...historyRef.current, persisted, replyMsg];
+      historyRef.current = full;
 
       setMessages(prev => [
-        ...prev.filter(m => m.id !== 'loading'),
-        { id: Date.now().toString() + 'a', role: 'assistant', content: reply },
+        ...prev.filter(m => m.id !== loadingId),
+        { id: now + 'a', role: 'assistant', content: reply },
       ]);
 
-      // Update memory note in the background after every reply, then persist
-      updateMemoryNote(fullHistory, memoryNote, snapshot)
+      // Update memory + persist in background
+      updateMemoryNote(toApiMessages(full), memoryNote, snapshot, localContextRef.current)
         .then(updatedMemory => {
           setMemoryNote(updatedMemory);
-          saveChatPersistence(fullHistory, updatedMemory);
+          saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
         })
         .catch(() => {
-          // If memory update fails, still save with current memory
-          saveChatPersistence(fullHistory, memoryNote);
+          saveChatPersistence(full, memoryNote, lastSeenRunRef.current);
         });
 
     } catch (err: any) {
       setMessages(prev => [
-        ...prev.filter(m => m.id !== 'loading'),
-        { id: 'err' + Date.now(), role: 'system', content: `⚠️ ${err.message}` },
+        ...prev.filter(m => m.id !== loadingId),
+        { id: 'err' + now, role: 'system', content: `⚠️ ${err.message}` },
       ]);
     } finally {
       setSending(false);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     }
-  }, [messages, sending, snapshot, memoryNote]);
+  }, [sending, snapshot, memoryNote]);
 
   // ── Render message ──────────────────────────────────────────────────────────
   const renderMessage = ({ item }: { item: Message }) => {
@@ -261,7 +354,7 @@ export default function ChatScreen() {
         }}
       />
       <View style={{ flex: 1, paddingBottom: keyboardHeight }}>
-        {/* Memory indicator — subtle pill when a memory note exists */}
+        {/* Memory indicator */}
         {memoryNote.length > 0 && (
           <TouchableOpacity
             style={styles.memoryPill}
