@@ -53,9 +53,20 @@ export interface WorkoutCache {
   analyses: Record<string, WorkoutAnalysis>; // uuid → analysis
   estimatedMaxHR: number;
   lastUpdated: string;
+  version?: number; // bumped when classifier logic changes to force re-analysis
 }
 
 // ─── Runs ────────────────────────────────────────────────────────────────────
+
+/** One structured workout phase from HKWorkoutActivity */
+export interface WorkoutSegment {
+  label:       string;  // Warmup | Work | Recovery | Cooldown | Walk
+  durationSec: number;
+  distanceM:   number;
+  avgHR:       number;  // 0 if unavailable
+  avgPower:    number;  // watts; 0 if unavailable
+  cadenceSPM:  number;  // steps/min; 0 if unavailable
+}
 
 export interface RunWorkout {
   uuid: string;
@@ -75,6 +86,7 @@ export interface RunWorkout {
   workPower?: number;         // avg power during work segments (watts)
   isEstimatedPower?: boolean; // true when power is derived from pace, not measured by sensor
   intervals?: IntervalRep[];  // per-rep data (Intervals sessions only)
+  segments?: WorkoutSegment[]; // HK structured workout phases (empty for standard runs)
 }
 
 export interface WeeklyMileage {
@@ -126,6 +138,7 @@ export interface DailyRecovery {
   overnightHR: number;         // avg HR during sleep stages; 0 if no data
   overnightHRBaseline: number; // rolling avg overnight HR for comparison
   recoveryScore: number;
+  sleepScore: number;          // 0-100 sleep quality score
   baseline7Day: number;        // HRV 30-day rolling mean
   trend: 'rising' | 'falling' | 'stable';
   sleep: SleepSession | null;
@@ -167,4 +180,23 @@ export interface CoachingReport {
   content: string;
   generatedAt: string;
   model: string;
+}
+
+// ─── Power zone thresholds (user-configurable) ────────────────────────────────
+
+/**
+ * User-defined watt boundaries for automatic run-type classification.
+ * A value of 0 means "not configured" — the threshold is ignored.
+ *
+ *   <= recoveryMax              → Recovery
+ *   recoveryMax < w <= z2Max   → Z2
+ *   tempoMin <= w <= tempoMax  → Tempo
+ *   >= intervalsMin            → Intervals
+ */
+export interface PowerZones {
+  recoveryMax:  number;  // watts
+  z2Max:        number;  // watts
+  tempoMin:     number;  // watts
+  tempoMax:     number;  // watts
+  intervalsMin: number;  // watts
 }

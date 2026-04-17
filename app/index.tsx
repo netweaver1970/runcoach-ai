@@ -12,7 +12,7 @@ import {
   AppState,
   AppStateStatus,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import {
@@ -23,8 +23,9 @@ import {
   formatPace,
   subscribeToWorkoutChanges,
 } from '../src/services/healthkit';
-import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths } from '../src/services/claude';
+import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides } from '../src/services/claude';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel } from '../src/types';
+// WorkoutLabel is used by the RunFilter type and RUN_FILTERS array
 
 type RunFilter = 'All' | WorkoutLabel;
 
@@ -47,9 +48,11 @@ export default function HomeScreen() {
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
   const [syncMonths, setSyncMonthsState] = useState<SyncMonths>(3);
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
-  const appState     = useRef(AppState.currentState);
+  const appState      = useRef(AppState.currentState);
   // Ref so `load` never needs syncMonths in its dependency array (avoids double-load)
-  const syncMonthsRef = useRef<SyncMonths>(3);
+  const syncMonthsRef  = useRef<SyncMonths>(3);
+  // Guard against concurrent loads (AppState + subscription can both fire at startup)
+  const isLoadingRef   = useRef(false);
 
   // Load persisted sync-months preference once on mount (does NOT trigger a re-load)
   useEffect(() => {
@@ -61,8 +64,14 @@ export default function HomeScreen() {
 
   // ── Core load function ──────────────────────────────────────────────────
   const load = useCallback(async (isRefresh = false, monthsOverride?: SyncMonths) => {
+    // Prevent concurrent loads (AppState + workout subscription can both fire at startup)
+    if (isLoadingRef.current) return;
+    isLoadingRef.current = true;
+
     const months = monthsOverride ?? syncMonthsRef.current;
-    if (!isRefresh) {
+    if (isRefresh) {
+      setRefreshing(true);  // Set inside load so it's always paired with the finally reset
+    } else {
       setLoading(true);
       setLoadingStep(null);
     }
@@ -87,6 +96,7 @@ export default function HomeScreen() {
     } catch (err: any) {
       Alert.alert('Error loading health data', err.message);
     } finally {
+      isLoadingRef.current = false;
       setLoading(false);
       setLoadingStep(null);
       setRefreshing(false);
@@ -117,6 +127,29 @@ export default function HomeScreen() {
   // ── Initial load ────────────────────────────────────────────────────────
   useEffect(() => { load(); }, [load]);
 
+  // ── Re-apply overrides when returning from workout detail ─────────────────
+  // IMPORTANT: do NOT close over `snapshot` here — useCallback(fn, []) captures
+  // it as null (initial render).  Use functional setSnapshot(prev =>) instead
+  // so we always operate on the latest state regardless of when the callback fires.
+  useFocusEffect(useCallback(() => {
+    // Re-check the API key every time we return to this screen (e.g. after
+    // the user saves a key in Settings) so the Chat button appears immediately.
+    getApiKey().then((k) => setHasApiKey(!!k)).catch(() => {});
+
+    getRunOverrides().then((overrides) => {
+      setSnapshot((prev) => {
+        if (!prev) return prev;
+        let changed = false;
+        const newRuns = prev.runs.map((r) => {
+          const ov = overrides[r.uuid];
+          if (ov && r.label !== ov) { changed = true; return { ...r, label: ov, confidence: 'high' as const }; }
+          return r;
+        });
+        return changed ? { ...prev, runs: newRuns } : prev;
+      });
+    }).catch(() => {});
+  }, [])); // [] is intentional — functional updates handle stale state
+
   // ── AppState: refresh when app comes back to foreground ─────────────────
   // This catches the common case: user finishes a run → opens app.
   useEffect(() => {
@@ -139,9 +172,11 @@ export default function HomeScreen() {
 
   // ── Pull-to-refresh ─────────────────────────────────────────────────────
   const onRefresh = useCallback(() => {
-    setRefreshing(true);
+    // setRefreshing(true) is now called inside load() so the guard can't leave it stuck
     load(true);
   }, [load]);
+
+  // Run type override is now handled inside the workout detail screen.
 
   // ── Export snapshot as JSON (for CLI use) ───────────────────────────────
   const exportSnapshot = useCallback(async () => {
@@ -207,8 +242,13 @@ export default function HomeScreen() {
         }
         contentContainerStyle={{ paddingBottom: 32 }}
       >
-        {/* Recovery Card — top priority */}
-        <RecoveryCard recovery={recovery} onRefresh={onRefresh} refreshing={refreshing} />
+        {/* Wellness rings — top priority */}
+        <WellnessRings
+          recovery={recovery}
+          onRefresh={onRefresh}
+          refreshing={refreshing}
+          onShowHistory={() => router.push({ pathname: '/history' as any, params: { type: 'hrv' } })}
+        />
 
         {/* Coach buttons */}
         {!hasApiKey ? (
@@ -241,9 +281,34 @@ export default function HomeScreen() {
 
         {/* Stats row */}
         <View style={styles.statsRow}>
-          <StatCard label="This week" value={`${totalKmThisWeek} km`} />
-          {latestVO2 && <StatCard label="VO₂ Max" value={`${latestVO2.value}`} />}
-          {latestRHR && <StatCard label="Resting HR" value={`${latestRHR.value} bpm`} />}
+          <TouchableOpacity
+            style={styles.statCard}
+            onPress={() => router.push({ pathname: '/history' as any, params: { type: 'km' } })}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.statValue}>{totalKmThisWeek} km</Text>
+            <Text style={styles.statLabel}>This week ›</Text>
+          </TouchableOpacity>
+          {latestVO2 && (
+            <TouchableOpacity
+              style={styles.statCard}
+              onPress={() => router.push({ pathname: '/history' as any, params: { type: 'vo2' } })}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.statValue}>{latestVO2.value}</Text>
+              <Text style={styles.statLabel}>VO₂ Max ›</Text>
+            </TouchableOpacity>
+          )}
+          {latestRHR && (
+            <TouchableOpacity
+              style={styles.statCard}
+              onPress={() => router.push({ pathname: '/history' as any, params: { type: 'rhr' } })}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.statValue}>{latestRHR.value} bpm</Text>
+              <Text style={styles.statLabel}>Resting HR ›</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={[styles.statCard, styles.exportCard]}
             onPress={exportSnapshot}
@@ -311,68 +376,122 @@ export default function HomeScreen() {
             )}
           </View>
         ) : (
-          runs.map((run) => <RunCard key={run.uuid} run={run} />)
+          runs.map((run) => (
+            <RunCard key={run.uuid} run={run} />
+          ))
         )}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-// ─── Recovery Card ────────────────────────────────────────────────────────────
+// ─── Ring arc component ───────────────────────────────────────────────────────
 
-type RecoveryCardProps = {
+function Ring({
+  size, strokeWidth, progress, color, label, value,
+}: {
+  size: number; strokeWidth: number; progress: number;
+  color: string; label: string; value: string;
+}) {
+  const p     = Math.min(1, Math.max(0, progress));
+  const angle = p * 360;
+  const half  = size / 2;
+
+  const rightRotate = `${angle <= 180 ? angle - 90 : 90}deg`;
+  const leftVisible = angle > 180;
+  const leftRotate  = `${(angle - 180) - 90}deg`;
+
+  return (
+    <View style={{ alignItems: 'center', gap: 6 }}>
+      <View style={{ width: size, height: size }}>
+        {/* Track ring */}
+        <View style={{
+          position: 'absolute', width: size, height: size,
+          borderRadius: half, borderWidth: strokeWidth,
+          borderColor: color + '28',
+        }} />
+
+        {/* Right half (0 → 180°) — clip to right side of container */}
+        {angle > 0 && (
+          <View style={{
+            position: 'absolute', left: half, top: 0,
+            width: half, height: size, overflow: 'hidden',
+          }}>
+            <View style={{
+              position: 'absolute', left: -half, top: 0,
+              width: size, height: size,
+              borderRadius: half, borderWidth: strokeWidth,
+              borderColor: color,
+              transform: [{ rotate: rightRotate }],
+            }} />
+          </View>
+        )}
+
+        {/* Left half (180 → 360°) — clip to left side of container */}
+        {leftVisible && (
+          <View style={{
+            position: 'absolute', left: 0, top: 0,
+            width: half, height: size, overflow: 'hidden',
+          }}>
+            <View style={{
+              position: 'absolute', left: 0, top: 0,
+              width: size, height: size,
+              borderRadius: half, borderWidth: strokeWidth,
+              borderColor: color,
+              transform: [{ rotate: leftRotate }],
+            }} />
+          </View>
+        )}
+
+        {/* Center label */}
+        <View style={{
+          position: 'absolute', width: size, height: size,
+          alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Text style={{ fontSize: size * 0.24, fontWeight: '800', color, lineHeight: size * 0.28 }}>
+            {value}
+          </Text>
+          <Text style={{ fontSize: size * 0.11, color: '#aaa', letterSpacing: 0.3 }}>
+            {label}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Wellness Rings Card ──────────────────────────────────────────────────────
+
+type WellnessRingsProps = {
   recovery: DailyRecovery | null;
   onRefresh: () => void;
   refreshing: boolean;
+  onShowHistory: () => void;
 };
 
-function RecoveryCard({ recovery, onRefresh, refreshing }: RecoveryCardProps) {
-  // Case 1: No sleep data yet
+function WellnessRings({ recovery, onRefresh, refreshing, onShowHistory }: WellnessRingsProps) {
+  const router = useRouter();
+  const today  = new Date().toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short',
+  });
+
+  const navToRecovery = () => {
+    if (recovery) router.push({ pathname: '/recovery-detail' as any, params: { data: JSON.stringify(recovery) } });
+  };
+  const navToSleep = () => {
+    if (recovery) router.push({ pathname: '/sleep-detail' as any, params: { data: JSON.stringify(recovery) } });
+  };
+
   if (!recovery) {
     return (
-      <View style={[styles.recoveryCard, { borderLeftColor: '#ccc' }]}>
-        <View style={styles.recoveryHeader}>
-          <Text style={styles.recoveryTitle}>Today's Recovery</Text>
+      <View style={styles.wellnessCard}>
+        <View style={styles.wellnessHeader}>
+          <Text style={styles.wellnessTitle}>Today's Wellness</Text>
+          <Text style={styles.wellnessSubtitle}>{today}</Text>
         </View>
-        <Text style={styles.recoveryUnavailable}>
-          🌙  Sleep data not available for recovery calculation.
-        </Text>
+        <Text style={styles.wellnessUnavailable}>🌙  Waiting for sleep data to sync…</Text>
         <Text style={styles.recoveryUnavailableHint}>
-          Apple Health sometimes needs a moment after waking up to sync sleep data.
-        </Text>
-        <TouchableOpacity
-          style={styles.refreshBtn}
-          onPress={onRefresh}
-          disabled={refreshing}
-        >
-          {refreshing
-            ? <ActivityIndicator size="small" color="#FF6B35" />
-            : <Text style={styles.refreshBtnText}>↻  Refresh</Text>}
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // Case 2: Sleep session found but no HRV readings during it
-  if (recovery.weightedRMSSD === 0) {
-    return (
-      <View style={[styles.recoveryCard, { borderLeftColor: '#f39c12' }]}>
-        <View style={styles.recoveryHeader}>
-          <Text style={styles.recoveryTitle}>Today's Recovery</Text>
-          <View style={[styles.recoveryBadge, { backgroundColor: '#f39c12' }]}>
-            <Text style={styles.recoveryBadgeText}>NO HRV</Text>
-          </View>
-        </View>
-        <Text style={styles.recoveryUnavailable}>
-          🫀  Sleep detected but HRV readings not yet available.
-        </Text>
-        {recovery.sleep && (
-          <Text style={styles.sleepText}>
-            🌙  {Math.round(recovery.sleep.totalMinutes / 60 * 10) / 10}h sleep  ·  {recovery.sleep.deepMinutes}m deep  ·  {recovery.sleep.remMinutes}m REM
-          </Text>
-        )}
-        <Text style={styles.recoveryUnavailableHint}>
-          HRV data from sleep is usually synced within 30 minutes of waking up.
+          Apple Health sometimes needs a moment after waking up.
         </Text>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={refreshing}>
           {refreshing
@@ -383,82 +502,91 @@ function RecoveryCard({ recovery, onRefresh, refreshing }: RecoveryCardProps) {
     );
   }
 
-  // Case 3: Full recovery data
-  const { recoveryScore, weightedRMSSD, baseline7Day, trend, label, color, sleep } = recovery;
-  const trendSymbol = trend === 'rising' ? '↑' : trend === 'falling' ? '↓' : '→';
-  const trendColor = trend === 'rising' ? '#27ae60' : trend === 'falling' ? '#c0392b' : '#888';
+  const recScore   = recovery.recoveryScore;
+  const sleepScore = recovery.sleepScore ?? 0;
+  const { color, sleep, weightedRMSSD, overnightHR } = recovery;
+
+  const advice =
+    recScore >= 75 ? 'Great recovery — quality session is fine today.' :
+    recScore >= 55 ? 'Good recovery — moderate intensity is fine.' :
+    recScore >= 35 ? 'Moderate recovery — keep intensity easy.' :
+                     'Low recovery — prioritise rest or easy movement.';
+
+  const noHRV = recovery.weightedRMSSD === 0;
 
   return (
-    <View style={[styles.recoveryCard, { borderLeftColor: color }]}>
-      <View style={styles.recoveryHeader}>
-        <Text style={styles.recoveryTitle}>Today's Recovery</Text>
-        <View style={[styles.recoveryBadge, { backgroundColor: color }]}>
-          <Text style={styles.recoveryBadgeText}>{label.toUpperCase()}</Text>
-        </View>
+    <View style={styles.wellnessCard}>
+      <View style={styles.wellnessHeader}>
+        <Text style={styles.wellnessTitle}>Today's Wellness</Text>
+        <Text style={styles.wellnessSubtitle}>{today}</Text>
       </View>
 
-      <View style={styles.recoveryScoreRow}>
-        <View style={[styles.recoveryScoreCircle, { borderColor: color + '44' }]}>
-          <Text style={[styles.recoveryScoreNumber, { color }]}>{recoveryScore}</Text>
-          <Text style={styles.recoveryScoreLabel}>/100</Text>
-        </View>
-        <View style={styles.recoveryMetrics}>
-          <MetricRow label="RMSSD (sleep)" value={`${weightedRMSSD} ms`} />
-          <MetricRow label="HRV baseline" value={`${baseline7Day} ms`} />
-          {recovery.overnightHR > 0 && (
-            <MetricRow
-              label="Overnight HR"
-              value={`${recovery.overnightHR} bpm`}
-              valueColor={
-                recovery.overnightHRBaseline > 0 && recovery.overnightHR > recovery.overnightHRBaseline + 3
-                  ? '#c0392b'
-                  : recovery.overnightHR < recovery.overnightHRBaseline - 3
-                  ? '#27ae60'
-                  : undefined
-              }
-            />
+      {noHRV ? (
+        <>
+          <Text style={styles.wellnessUnavailable}>🫀  Sleep detected — HRV syncing…</Text>
+          {sleep && (
+            <Text style={styles.sleepText}>
+              🌙  {Math.round(sleep.totalMinutes / 60 * 10) / 10}h  ·  {sleep.deepMinutes}m deep  ·  {sleep.remMinutes}m REM
+            </Text>
           )}
-          <MetricRow label="Trend" value={`${trendSymbol} ${trend}`} valueColor={trendColor} />
-        </View>
-      </View>
+          <View style={styles.ringsRow}>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Ring size={80}  strokeWidth={8}  progress={0}              color="#e74c3c" label="STRAIN"   value="--" />
+            </View>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Ring size={100} strokeWidth={10} progress={0}              color="#888"    label="RECOVERY" value="--" />
+            </View>
+            <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToSleep} activeOpacity={0.75}>
+              <Ring size={80}  strokeWidth={8}  progress={sleepScore/100} color="#8e44ad" label="SLEEP"    value={sleepScore > 0 ? String(sleepScore) : '--'} />
+              <Text style={styles.ringHint}>tap for details</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity style={[styles.refreshBtn, { marginTop: 10 }]} onPress={onRefresh} disabled={refreshing}>
+            {refreshing
+              ? <ActivityIndicator size="small" color="#FF6B35" />
+              : <Text style={styles.refreshBtnText}>↻  Refresh</Text>}
+          </TouchableOpacity>
+        </>
+      ) : (
+        <>
+          <View style={styles.ringsRow}>
+            {/* Strain — placeholder, not tappable yet */}
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Ring size={80}  strokeWidth={8}  progress={0}             color="#e74c3c" label="STRAIN"   value="--" />
+            </View>
+            {/* Recovery — tappable */}
+            <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToRecovery} activeOpacity={0.75}>
+              <Ring size={100} strokeWidth={10} progress={recScore/100}  color={color}   label="RECOVERY" value={String(recScore)} />
+              <Text style={styles.ringHint}>tap for details</Text>
+            </TouchableOpacity>
+            {/* Sleep — tappable */}
+            <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToSleep} activeOpacity={0.75}>
+              <Ring size={80}  strokeWidth={8}  progress={sleepScore/100} color="#8e44ad" label="SLEEP"   value={sleepScore > 0 ? String(sleepScore) : '--'} />
+              <Text style={styles.ringHint}>tap for details</Text>
+            </TouchableOpacity>
+          </View>
 
-      {sleep && (
-        <View style={styles.sleepRow}>
-          <Text style={styles.sleepIcon}>🌙</Text>
-          <Text style={styles.sleepText}>
-            {Math.round(sleep.totalMinutes / 60 * 10) / 10}h  ·  {sleep.deepMinutes}m deep  ·  {sleep.remMinutes}m REM  ·  {sleep.awakeMinutes}m awake
-          </Text>
-        </View>
+          <Text style={[styles.wellnessAdvice, { color }]}>{advice}</Text>
+
+          <View style={styles.wellnessMetrics}>
+            {weightedRMSSD > 0 && (
+              <Text style={styles.wellnessMetric}>RMSSD {weightedRMSSD} ms</Text>
+            )}
+            {overnightHR > 0 && (
+              <Text style={styles.wellnessMetric}>Night HR {overnightHR} bpm</Text>
+            )}
+            {sleep && (
+              <Text style={styles.wellnessMetric}>
+                🌙 {Math.round(sleep.totalMinutes / 60 * 10) / 10}h  ·  {sleep.deepMinutes}m deep  ·  {sleep.remMinutes}m REM
+              </Text>
+            )}
+          </View>
+        </>
       )}
-
-      <Text style={[styles.recoveryAdvice, { color }]}>
-        {recoveryScore >= 80
-          ? 'Great recovery — quality session or long run is fine.'
-          : recoveryScore >= 60
-          ? 'Moderate recovery — keep effort easy to moderate today.'
-          : 'Low recovery — prioritise easy movement or rest.'}
-      </Text>
     </View>
   );
 }
 
-function MetricRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
-  return (
-    <View style={styles.metricRow}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={[styles.metricValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
-    </View>
-  );
-}
-
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.statCard}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-}
 
 const LABEL_STYLE: Record<string, { color: string; bg: string; emoji: string }> = {
   Intervals: { color: '#c0392b', bg: '#fdedec', emoji: '🔴' },
@@ -470,6 +598,7 @@ const LABEL_STYLE: Record<string, { color: string; bg: string; emoji: string }> 
 };
 
 function RunCard({ run }: { run: RunWorkout }) {
+  const router = useRouter();
   const date = new Date(run.date).toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short',
   });
@@ -481,13 +610,34 @@ function RunCard({ run }: { run: RunWorkout }) {
   const displayHR    = run.workHR    ?? run.avgHeartRate;
   const isWorkPace   = !!run.workPace && run.workPace !== run.pace;
 
+  const openDetail = () => {
+    router.push({
+      pathname: '/workout/[id]' as any,
+      params: {
+        id:        run.uuid,
+        startDate: run.date,
+        duration:  String(run.duration),
+        label:     run.label ?? '',
+        date:      run.date,
+        distance:  String(run.distance),
+      },
+    });
+  };
+
   return (
-    <View style={styles.runCard}>
-      {/* Left: start time / date + badge / km */}
+    <TouchableOpacity
+      style={styles.runCard}
+      onPress={openDetail}
+      activeOpacity={0.75}
+    >
+      {/* Left column: [date + time] / [km + badge] */}
       <View style={{ flex: 1 }}>
-        <Text style={styles.runStartTime}>{startTime}</Text>
-        <View style={styles.runCardTopRow}>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6, marginBottom: 4 }}>
           <Text style={styles.runDate}>{date}</Text>
+          <Text style={styles.runStartTime}>{startTime}</Text>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Text style={styles.runDistance}>{formatDistance(run.distance)}</Text>
           {labelStyle && (
             <View style={[styles.workoutBadge, { backgroundColor: labelStyle.bg }]}>
               <Text style={[styles.workoutBadgeText, { color: labelStyle.color }]}>
@@ -497,29 +647,22 @@ function RunCard({ run }: { run: RunWorkout }) {
             </View>
           )}
         </View>
-        <Text style={styles.runDistance}>{formatDistance(run.distance)}</Text>
       </View>
 
-      {/* Right: 2×2 grid — duration | pace / power | HR */}
-      <View style={styles.runStatsGrid}>
-        <View style={styles.runStatsCol}>
-          <Text style={styles.runStat}>{formatDuration(run.duration)}</Text>
-          <Text style={styles.runStatPower}>
-            {(run.workPower ?? 0) > 0
-              ? `⚡ ${run.isEstimatedPower ? '~' : ''}${run.workPower}W`
-              : ''}
+      {/* Right column: 2 rows — (duration · pace) / (HR · power) */}
+      <View style={{ alignItems: 'flex-end', gap: 3 }}>
+        <Text style={[styles.runStat, isWorkPace && styles.runStatWork]}>
+          {formatDuration(run.duration)}{'  '}{formatPace(displayPace)}
+        </Text>
+        {(displayHR != null || (run.workPower ?? 0) > 0) && (
+          <Text style={styles.runStatHR}>
+            {displayHR != null ? `♥ ${displayHR}` : ''}
+            {displayHR != null && (run.workPower ?? 0) > 0 ? '  ' : ''}
+            {(run.workPower ?? 0) > 0 ? `⚡ ${run.isEstimatedPower ? '~' : ''}${run.workPower}W` : ''}
           </Text>
-        </View>
-        <View style={[styles.runStatsCol, { alignItems: 'flex-end' }]}>
-          <Text style={[styles.runStat, isWorkPace && styles.runStatWork]}>
-            {formatPace(displayPace)}
-          </Text>
-          {displayHR != null && (
-            <Text style={styles.runStatHR}>♥ {displayHR} bpm</Text>
-          )}
-        </View>
+        )}
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -540,38 +683,28 @@ const styles = StyleSheet.create({
   },
   monthsBtnText: { fontSize: 11, color: '#888', fontWeight: '600' },
 
-  recoveryCard: {
+  wellnessCard: {
     backgroundColor: '#fff', margin: 12, marginBottom: 8, borderRadius: 16,
-    padding: 16, borderLeftWidth: 5, borderLeftColor: '#ccc',
+    padding: 16,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
   },
-  recoveryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  recoveryTitle: { fontSize: 16, fontWeight: '700', color: '#222' },
-  recoveryBadge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
-  recoveryBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
-  recoveryUnavailable: { fontSize: 15, color: '#555', marginBottom: 4, fontWeight: '500' },
+  wellnessHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  wellnessTitle: { fontSize: 16, fontWeight: '700', color: '#222' },
+  wellnessSubtitle: { fontSize: 12, color: '#aaa' },
+  ringsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', marginBottom: 14 },
+  wellnessAdvice: { fontSize: 13, fontStyle: 'italic', fontWeight: '500', marginBottom: 10 },
+  wellnessMetrics: { gap: 3, borderTopWidth: 1, borderTopColor: '#f5f5f5', paddingTop: 8 },
+  wellnessMetric: { fontSize: 12, color: '#777' },
+  ringHint: { fontSize: 9, color: '#bbb', marginTop: 3 },
+  wellnessUnavailable: { fontSize: 15, color: '#555', marginBottom: 4, fontWeight: '500' },
   recoveryUnavailableHint: { fontSize: 12, color: '#aaa', marginBottom: 12, lineHeight: 18 },
   refreshBtn: {
     alignSelf: 'flex-start', backgroundColor: '#FFF3EE', borderRadius: 8,
     paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: '#FF6B35',
   },
   refreshBtnText: { color: '#FF6B35', fontSize: 14, fontWeight: '700' },
-  recoveryScoreRow: { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 10 },
-  recoveryScoreCircle: {
-    width: 80, height: 80, borderRadius: 40, borderWidth: 3,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  recoveryScoreNumber: { fontSize: 32, fontWeight: '800', lineHeight: 36 },
-  recoveryScoreLabel: { fontSize: 11, color: '#aaa' },
-  recoveryMetrics: { flex: 1, gap: 5 },
-  metricRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  metricLabel: { fontSize: 12, color: '#999' },
-  metricValue: { fontSize: 12, fontWeight: '600', color: '#333' },
-  sleepRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 8, marginBottom: 8, borderTopWidth: 1, borderTopColor: '#f5f5f5' },
-  sleepIcon: { fontSize: 13 },
-  sleepText: { fontSize: 12, color: '#777' },
-  recoveryAdvice: { fontSize: 13, fontStyle: 'italic', fontWeight: '500' },
+  sleepText: { fontSize: 12, color: '#777', marginBottom: 6 },
 
   btnRow: { flexDirection: 'row', marginHorizontal: 12, marginBottom: 8, gap: 8 },
   btnFlex: { flex: 1, marginHorizontal: 0 },
@@ -600,17 +733,19 @@ const styles = StyleSheet.create({
   emptySubtext: { fontSize: 13, color: '#999', textAlign: 'center' },
   emptyLink: { fontSize: 14, color: '#FF6B35', fontWeight: '600' },
 
-  runCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', marginHorizontal: 12, marginBottom: 8, borderRadius: 12, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2 },
-  runCardTopRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 1 },
-  runDate: { fontSize: 12, color: '#999' },
-  runStartTime: { fontSize: 11, color: '#bbb', marginBottom: 2 },
+  runCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#fff', marginHorizontal: 12, marginBottom: 6, borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+  },
+  runDate:     { fontSize: 13, fontWeight: '600', color: '#333' },
+  runStartTime: { fontSize: 13, fontWeight: '700', color: '#555' },
   workoutBadge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   workoutBadgeText: { fontSize: 11, fontWeight: '700' },
-  runDistance: { fontSize: 17, fontWeight: '700', color: '#222', marginTop: 2 },
-  runStatsGrid: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
-  runStatsCol: { alignItems: 'flex-start', gap: 3 },
-  runStat: { fontSize: 13, color: '#555' },
-  runStatWork: { color: '#FF6B35', fontWeight: '600' },
+  runDistance:  { fontSize: 16, fontWeight: '800', color: '#111' },
+  runStat:      { fontSize: 13, color: '#555' },
+  runStatWork:  { color: '#FF6B35', fontWeight: '600' },
   runStatPower: { fontSize: 12, color: '#8e44ad' },
-  runStatHR: { fontSize: 12, color: '#e74c3c' },
+  runStatHR:    { fontSize: 12, color: '#e74c3c' },
 });

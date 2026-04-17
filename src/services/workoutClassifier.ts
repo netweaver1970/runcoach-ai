@@ -12,6 +12,10 @@ import {
 
 const CACHE_FILE = `${FileSystem.documentDirectory}runcoach-workout-cache.json`;
 
+// Bump this whenever classifier logic changes (work-HR/pace/power calculation).
+// Old caches with a lower version are discarded so all runs get re-analysed.
+const CACHE_VERSION = 2;
+
 // ─── Zone boundaries (% of maxHR) ─────────────────────────────────────────────
 const Z1 = 0.60;
 const Z2 = 0.70;
@@ -34,7 +38,10 @@ export async function loadWorkoutCache(): Promise<WorkoutCache | null> {
     const info = await FileSystem.getInfoAsync(CACHE_FILE);
     if (!info.exists) return null;
     const raw = await FileSystem.readAsStringAsync(CACHE_FILE);
-    return JSON.parse(raw) as WorkoutCache;
+    const cache = JSON.parse(raw) as WorkoutCache;
+    // Discard cache if it was built with an older classifier version
+    if ((cache.version ?? 1) < CACHE_VERSION) return null;
+    return cache;
   } catch {
     return null;
   }
@@ -46,6 +53,63 @@ export async function saveWorkoutCache(cache: WorkoutCache): Promise<void> {
 
 export async function clearWorkoutCache(): Promise<void> {
   try { await FileSystem.deleteAsync(CACHE_FILE, { idempotent: true }); } catch {}
+}
+
+/**
+ * Persist a manually-corrected workHR value for a single workout.
+ * Preserves the original classifier value in `workHROriginal` so it can be
+ * restored later with clearWorkHRCorrection().
+ */
+export async function saveWorkHRCorrection(
+  uuid: string,
+  correctedWorkHR: number,
+): Promise<void> {
+  const cache = await loadWorkoutCache();
+  if (!cache || !cache.analyses[uuid]) return;
+  const existing = cache.analyses[uuid] as any;
+  // Only capture original once — don't overwrite it on successive saves
+  const original = existing.workHROriginal ?? existing.workHR;
+  cache.analyses[uuid] = {
+    ...existing,
+    workHR:         correctedWorkHR,
+    workHROriginal: original,
+  } as any;
+  await saveWorkoutCache(cache);
+}
+
+/**
+ * Retrieve the current HR correction status for a workout.
+ * Returns null if the workout hasn't been cached yet.
+ */
+export async function getWorkHRCorrectionInfo(uuid: string): Promise<{
+  correctedHR: number;
+  originalHR:  number;
+  hasCorrection: boolean;
+} | null> {
+  const cache = await loadWorkoutCache();
+  if (!cache || !cache.analyses[uuid]) return null;
+  const a = cache.analyses[uuid] as any;
+  const hasCorrection = a.workHROriginal !== undefined;
+  return {
+    correctedHR:   a.workHR,
+    originalHR:    hasCorrection ? a.workHROriginal : a.workHR,
+    hasCorrection,
+  };
+}
+
+/**
+ * Remove the user HR correction for a workout, restoring the original
+ * classifier-computed value.
+ */
+export async function clearWorkHRCorrection(uuid: string): Promise<void> {
+  const cache = await loadWorkoutCache();
+  if (!cache || !cache.analyses[uuid]) return;
+  const existing = cache.analyses[uuid] as any;
+  if (existing.workHROriginal === undefined) return; // nothing to undo
+  const restored = { ...existing, workHR: existing.workHROriginal };
+  delete restored.workHROriginal;
+  cache.analyses[uuid] = restored as any;
+  await saveWorkoutCache(cache);
 }
 
 // ─── Max HR estimation ─────────────────────────────────────────────────────────
@@ -206,6 +270,90 @@ function buildIntervalReps(
   return reps;
 }
 
+// ─── HR data validation & cleaning ───────────────────────────────────────────
+
+/**
+ * Chest straps (and optical sensors) occasionally produce impossible readings:
+ * dropout spikes at 0-30 bpm, contact-loss spikes above physiological max,
+ * or instantaneous jumps that no human heart can produce.
+ *
+ * Strategy:
+ *   1. Mark a sample invalid if it is outside [30, maxHR*1.15] bpm
+ *      OR if it jumps >50 bpm from the previous valid sample within <15 seconds.
+ *   2. Replace each invalid run with linear interpolation from the nearest
+ *      valid neighbours.  Edge segments use the nearest valid value (clamp).
+ *
+ * The returned array is the same length as `samples`.
+ */
+export function cleanHRSamples(
+  samples: number[],
+  timestampsMs: number[],
+  maxHR: number,
+): number[] {
+  if (samples.length < 3) return samples;
+
+  const hasTs = timestampsMs.length === samples.length && samples.length > 1;
+  const minBpm = 30;
+  const maxBpm = Math.min(220, Math.round(maxHR * 1.15));
+  const maxJump = 50;   // bpm
+  const maxJumpSec = 15; // seconds
+
+  // ── Pass 1: range check ───────────────────────────────────────────────────
+  const valid: boolean[] = samples.map(h => h >= minBpm && h <= maxBpm);
+
+  // ── Pass 2: rate-of-change check ─────────────────────────────────────────
+  let lastValidIdx = -1;
+  for (let i = 0; i < samples.length; i++) {
+    if (!valid[i]) { lastValidIdx = -1; continue; }
+    if (lastValidIdx >= 0) {
+      const dt = hasTs
+        ? (timestampsMs[i] - timestampsMs[lastValidIdx]) / 1000
+        : (i - lastValidIdx) * 5; // assume ~5 s between samples if no timestamps
+      const dHR = Math.abs(samples[i] - samples[lastValidIdx]);
+      if (dt > 0 && dt <= maxJumpSec && dHR > maxJump) {
+        valid[i] = false;
+        continue;
+      }
+    }
+    lastValidIdx = i;
+  }
+
+  // Count invalids — if < 5% of data, skip (avoids altering clean data)
+  const invalidCount = valid.filter(v => !v).length;
+  if (invalidCount === 0) return samples;
+  if (invalidCount === samples.length) return samples; // all bad — can't fix
+
+  // ── Pass 3: interpolate invalid spans ────────────────────────────────────
+  const cleaned = [...samples];
+
+  for (let i = 0; i < cleaned.length; ) {
+    if (valid[i]) { i++; continue; }
+
+    // Find end of invalid span
+    let spanEnd = i;
+    while (spanEnd < cleaned.length && !valid[spanEnd]) spanEnd++;
+
+    // Find valid neighbours
+    const lo = i - 1;           // last valid before span (or -1)
+    const hi = spanEnd;          // first valid after span (or samples.length)
+
+    for (let j = i; j < spanEnd; j++) {
+      if (lo >= 0 && hi < cleaned.length) {
+        // Linear interpolation
+        const t = (j - lo) / (hi - lo);
+        cleaned[j] = Math.round(cleaned[lo] * (1 - t) + cleaned[hi] * t);
+      } else if (lo >= 0) {
+        cleaned[j] = cleaned[lo];
+      } else if (hi < cleaned.length) {
+        cleaned[j] = cleaned[hi];
+      }
+    }
+    i = spanEnd;
+  }
+
+  return cleaned;
+}
+
 // ─── Core classifier ─────────────────────────────────────────────────────────
 
 interface ClassifierInput {
@@ -217,6 +365,7 @@ interface ClassifierInput {
   duration: number;   // seconds
   distance: number;   // metres
   maxHR: number;
+  longRunMinutes: number; // threshold for LongRun (default 75)
 }
 
 interface ClassificationResult {
@@ -307,14 +456,20 @@ function computeWorkPower(
 }
 
 export function classifyRun(input: ClassifierInput): ClassificationResult {
-  const { hrSamples, hrTimestampsMs, distSegs, powerSegs, avgHR, duration, distance, maxHR } = input;
+  const { hrSamples: rawHR, hrTimestampsMs, distSegs, powerSegs,
+          avgHR, duration, distance, maxHR, longRunMinutes } = input;
 
   const durationMin  = duration / 60;
-  const avgPct       = avgHR / maxHR;
+  const avgPct       = maxHR > 0 ? avgHR / maxHR : 0;
   const overallPace  = distance > 0 ? Math.round(duration / (distance / 1000)) : 0;
 
+  // ── Clean HR samples to remove chest-strap artifacts ─────────────────────
+  const hrSamples = rawHR.length >= 3
+    ? cleanHRSamples(rawHR, hrTimestampsMs, maxHR)
+    : rawHR;
+
   if (hrSamples.length < 5) {
-    const base = classifyWithoutSamples(avgPct, durationMin, distance);
+    const base = classifyWithoutSamples(avgPct, durationMin, distance, longRunMinutes);
     return { ...base, workHR: avgHR, workPace: overallPace, workPower: 0, intervals: [] };
   }
 
@@ -338,28 +493,44 @@ export function classifyRun(input: ClassifierInput): ClassificationResult {
   // ── Interval detection ────────────────────────────────────────────────────
   const surges = detectIntervalSurges(hrSamples, maxHR);
 
-  // ── Classification ────────────────────────────────────────────────────────
+  // ── Classification — structural first, then effort, then duration ─────────
+  //
+  // Priority:
+  //   1. Intervals  — structural: ≥2 detected work/rest cycles
+  //   2. LongRun    — duration-based: durationMin ≥ threshold (NOT intervals)
+  //   3. Tempo      — sustained sub-threshold effort (not long, not intervals)
+  //   4. Recovery   — very easy effort
+  //   5. Z2         — default aerobic
+  //   6. Unknown    — fallback (no HR data or ambiguous)
+  //
+  // Deliberately NOT using tight power-zone boundaries here because the zones
+  // aren't well-separated in practice.  Power-zone override is applied in
+  // healthkit.ts AFTER classification.
+  // ─────────────────────────────────────────────────────────────────────────
+
   let label: WorkoutLabel;
   let rawConfidence: number;
 
-  if (surges.length >= 2 || (cv > 0.10 && (zones.z4 + zones.z5) > 0.25)) {
+  if (surges.length >= 2) {
+    // Clear structural evidence of alternating high/low efforts
     label = 'Intervals';
-    rawConfidence = Math.min(1, 0.5 + surges.length * 0.15 + cv * 2);
-  } else if (durationMin >= 70 && avgPct >= 0.64 && avgPct <= 0.82 && cv < 0.08) {
+    rawConfidence = Math.min(1, 0.55 + surges.length * 0.10 + cv * 1.5);
+  } else if (durationMin >= longRunMinutes) {
+    // Long run purely by duration — no HR conditions (power/temp/terrain vary too much)
     label = 'LongRun';
-    rawConfidence = Math.min(1, 0.55 + (durationMin - 70) / 120 + (0.80 - cv));
-  } else if (avgPct >= 0.77 && avgPct <= 0.90 && cv < 0.07 && durationMin >= 15) {
+    rawConfidence = Math.min(1, 0.60 + (durationMin - longRunMinutes) / 60 * 0.15);
+  } else if (avgPct >= 0.77 && cv < 0.10 && durationMin >= 15) {
+    // Sustained higher-effort run — tempo or threshold
     label = 'Tempo';
-    rawConfidence = Math.min(1, 0.6 + (avgPct - 0.77) * 3 + (0.07 - cv) * 5);
-  } else if (avgPct < 0.64 && durationMin <= 60) {
+    rawConfidence = Math.min(1, 0.60 + (avgPct - 0.77) * 2.5 + (0.10 - cv) * 3);
+  } else if (avgPct < 0.64) {
+    // Very easy — recovery or warm-down
     label = 'Recovery';
-    rawConfidence = Math.min(1, 0.6 + (0.64 - avgPct) * 4);
-  } else if (avgPct >= 0.62 && avgPct < 0.77 && cv < 0.08) {
-    label = 'Z2';
-    rawConfidence = Math.min(1, 0.6 + (0.77 - avgPct) * 2 + (0.08 - cv) * 5);
+    rawConfidence = Math.min(1, 0.60 + (0.64 - avgPct) * 4);
   } else {
-    label = labelByDominantZone(zones, durationMin);
-    rawConfidence = 0.40;
+    // Default: aerobic base / zone 2
+    label = 'Z2';
+    rawConfidence = Math.min(1, 0.55 + (0.77 - Math.min(avgPct, 0.77)) * 2 + (0.10 - Math.min(cv, 0.10)) * 3);
   }
 
   // ── Per-interval reps ─────────────────────────────────────────────────────
@@ -367,7 +538,7 @@ export function classifyRun(input: ClassifierInput): ClassificationResult {
     ? buildIntervalReps(hrSamples, hrTimestampsMs, distSegs, powerSegs, surges, duration)
     : [];
 
-  // ── Work HR (duration-weighted avg of reps for intervals) ─────────────────
+  // ── Work HR ───────────────────────────────────────────────────────────────
   let workHR = computeWorkHR(hrSamples, label, maxHR, surges);
   if (label === 'Intervals' && intervals.length > 0) {
     const totalRepDur = intervals.reduce((a, r) => a + r.durationSecs, 0);
@@ -396,23 +567,15 @@ function classifyWithoutSamples(
   avgPct: number,
   durationMin: number,
   distance: number,
+  longRunMinutes: number,
 ): Omit<ClassificationResult, 'workHR' | 'intervals'> {
   const blankZones: ZoneDistribution = { z1: 0, z2: 0, z3: 0, z4: 0, z5: 0 };
   let label: WorkoutLabel;
-  if (durationMin >= 70 && distance >= 12000) label = 'LongRun';
+  if (durationMin >= longRunMinutes && distance >= 8000) label = 'LongRun';
   else if (avgPct >= 0.77) label = 'Tempo';
   else if (avgPct < 0.64) label = 'Recovery';
   else label = 'Z2';
   return { label, confidence: 'low', zones: blankZones, hrCV: 0, maxHRObserved: 0, workPace: 0, workPower: 0 };
-}
-
-function labelByDominantZone(z: ZoneDistribution, durationMin: number): WorkoutLabel {
-  const entries = Object.entries(z) as [keyof ZoneDistribution, number][];
-  const dominant = entries.reduce((a, b) => (b[1] > a[1] ? b : a))[0];
-  if (dominant === 'z5' || dominant === 'z4') return 'Tempo';
-  if (dominant === 'z1') return 'Recovery';
-  if (durationMin >= 70) return 'LongRun';
-  return 'Z2';
 }
 
 // ─── Batch classify with caching ──────────────────────────────────────────────
@@ -424,6 +587,7 @@ export async function classifyAndCacheRuns(
   newHRValues: number[],
   /** Pre-fetched cache from the caller (avoids a second disk read) */
   preFetchedCache?: WorkoutCache | null,
+  longRunMinutes: number = 75,
 ): Promise<{ runs: RunWorkout[]; maxHR: number }> {
   const existing = preFetchedCache !== undefined ? preFetchedCache : await loadWorkoutCache();
   const cachedMaxHR = existing?.estimatedMaxHR;
@@ -462,6 +626,7 @@ export async function classifyAndCacheRuns(
       duration:       run.duration,
       distance:       run.distance,
       maxHR,
+      longRunMinutes,
     });
 
     analyses[run.uuid] = {
@@ -509,6 +674,7 @@ export async function classifyAndCacheRuns(
       analyses,
       estimatedMaxHR: maxHR,
       lastUpdated: new Date().toISOString(),
+      version: CACHE_VERSION,
     });
   }
 
