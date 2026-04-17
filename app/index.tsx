@@ -22,6 +22,7 @@ import {
   formatDuration,
   formatPace,
   subscribeToWorkoutChanges,
+  saveSnapshotCache,
 } from '../src/services/healthkit';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides } from '../src/services/claude';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel } from '../src/types';
@@ -92,6 +93,7 @@ export default function HomeScreen() {
         getApiKey(),
       ]);
       setSnapshot(snap);
+      saveSnapshotCache(snap).catch(() => {});
       setHasApiKey(!!key);
     } catch (err: any) {
       Alert.alert('Error loading health data', err.message);

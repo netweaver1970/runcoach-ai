@@ -1,5 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
-import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout } from '../types';
+import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, KmSplit } from '../types';
 
 const API_KEY_KEY = 'anthropic_api_key';
 export const MODEL      = 'claude-haiku-4-5-20251001';
@@ -190,6 +190,17 @@ export async function setLongRunMinutes(minutes: number): Promise<void> {
   await SecureStore.setItemAsync(LONG_RUN_MINUTES_KEY, String(Math.round(minutes)));
 }
 
+const AI_WEEKS_KEY = 'ai_weeks';
+export const DEFAULT_AI_WEEKS = 8;
+export async function getAiWeeks(): Promise<number> {
+  const raw = await SecureStore.getItemAsync(AI_WEEKS_KEY);
+  const n = raw ? parseInt(raw, 10) : DEFAULT_AI_WEEKS;
+  return (!isNaN(n) && n >= 6 && n <= 52) ? n : DEFAULT_AI_WEEKS;
+}
+export async function setAiWeeks(weeks: number): Promise<void> {
+  await SecureStore.setItemAsync(AI_WEEKS_KEY, String(Math.round(Math.max(6, Math.min(52, weeks)))));
+}
+
 export async function getBodyMassKg(): Promise<number> {
   const raw = await SecureStore.getItemAsync(BODY_MASS_KEY);
   const parsed = raw ? parseFloat(raw) : NaN;
@@ -252,6 +263,19 @@ export async function saveRunOverride(
   return current;
 }
 
+const HR_UNRELIABLE_KEY = 'hr_unreliable_runs';
+export async function getHrUnreliableRuns(): Promise<Record<string, boolean>> {
+  const raw = await SecureStore.getItemAsync(HR_UNRELIABLE_KEY);
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+export async function saveHrUnreliable(uuid: string, unreliable: boolean): Promise<void> {
+  const cur = await getHrUnreliableRuns();
+  if (!unreliable) delete cur[uuid];
+  else cur[uuid] = true;
+  await SecureStore.setItemAsync(HR_UNRELIABLE_KEY, JSON.stringify(cur));
+}
+
 // ─── Compact formatting helpers ───────────────────────────────────────────────
 // All helpers keep output as short as possible to preserve tokens.
 
@@ -283,17 +307,18 @@ const LSHORT: Record<string, string> = {
 
 // ─── Shared data block (used by both prompts) ─────────────────────────────────
 
-function buildDataBlock(snap: HealthSnapshot): string {
+function buildDataBlock(snap: HealthSnapshot, maxRuns = 10): string {
   const { runs, vo2max, restingHR, weeklyMileage, todayRecovery,
           recentNightlyHRV, recentSleep, workoutTypeStats } = snap;
 
   // ── Runs ──────────────────────────────────────────────────────────────────
-  const runLines = runs.slice(0, 10).map(r => {
+  const runLines = runs.slice(0, maxRuns).map(r => {
     const lbl   = LSHORT[r.label ?? 'Unknown'] ?? '?';
     const dist  = (r.distance / 1000).toFixed(1);
     const pace  = fp(r.workPace ?? r.pace);
     const hr    = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${r.avgHeartRate}` : '');
     const power = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
+    const hrFlag = r.hrUnreliable === true ? ' ⚠HR' : '';
     let extra   = '';
     if (r.segments && r.segments.length > 0) {
       // Structured workout (Custom Workout): show per-phase breakdown
@@ -316,7 +341,7 @@ function buildDataBlock(snap: HealthSnapshot): string {
         : '';
       extra = ` reps:${r.intervals.length} HR${hrs}${paces ? ` @${paces}` : ''}${powers}`;
     }
-    return `[${lbl}] ${fd(r.date)} ${dist}km ${fdur(r.duration)} ${pace} ${hr}${power}${extra}`;
+    return `[${lbl}] ${fd(r.date)} ${dist}km ${fdur(r.duration)} ${pace} ${hr}${power}${hrFlag}${extra}`;
   }).join('\n') || 'none';
 
   // ── Type stats ────────────────────────────────────────────────────────────
@@ -367,6 +392,23 @@ function buildDataBlock(snap: HealthSnapshot): string {
     return `${n.date.slice(5)}:${n.weightedRMSSD > 0 ? `${n.weightedRMSSD}ms` : '?'}${slStr}`;
   }).join('  ') || '—';
 
+  // ── Timeline events ───────────────────────────────────────────────────────
+  let timelineBlock = '';
+  if (snap.timelineEvents && snap.timelineEvents.length > 0) {
+    const evLines = snap.timelineEvents
+      .slice(0, 20)
+      .map(ev => {
+        const shortDate = fd(ev.date + 'T00:00:00');
+        if (ev.type === 'status') {
+          return `  ${shortDate}: ${ev.status}${ev.note ? ` (${ev.note})` : ''}`;
+        } else {
+          return `  ${shortDate}: ${ev.supplement ?? ''} ${ev.action ?? ''}${ev.note ? ` (${ev.note})` : ''}`.trimEnd();
+        }
+      })
+      .join('\n');
+    timelineBlock = `\n\nTIMELINE (events):\n${evLines}`;
+  }
+
   return `RUNS (4w, [type] date dist dur pace wHR):
 ${runLines}
 
@@ -380,7 +422,7 @@ RHR (7d bpm): ${rhrLine}
 RECOVERY: ${recBlock}
 
 HRV+SLEEP (10 nights, MM-DD:rmssd|sleep):
-${hrvLines}`;
+${hrvLines}${timelineBlock}`;
 }
 
 // ─── Coaching report prompt ───────────────────────────────────────────────────
@@ -411,6 +453,7 @@ function buildChatSystemPrompt(
   snap:          HealthSnapshot,
   memoryNote?:   string,
   localContext?: string,   // e.g. "Brussels · Thu 17 Apr 17:30"
+  aiWeeks = 10,
 ): string {
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
@@ -418,10 +461,12 @@ function buildChatSystemPrompt(
 
   const timeHeader = localContext ? localContext : `Today: ${today}`;
 
+  const maxRuns = Math.round(aiWeeks * 1.5);
+
   let prompt = `You are a personal running coach in a runner's iPhone app. ${timeHeader}.
 Concise answers, phone-friendly. Cite numbers. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
-${buildDataBlock(snap)}`;
+${buildDataBlock(snap, maxRuns)}`;
 
   if (memoryNote && memoryNote.trim()) {
     prompt += `\n\n## Coaching memory (from previous conversations)\n${memoryNote.trim()}`;
@@ -448,8 +493,9 @@ Write in second person ("The runner..."). Be concise — this note is injected i
 // fields that differ from the global data block.
 
 export function buildNewRunUserMessage(
-  newRun:   RunWorkout,
-  prevRuns: RunWorkout[], // up to 5 previous of the same type
+  newRun:    RunWorkout,
+  prevRuns:  RunWorkout[], // up to 5 previous of the same type
+  kmSplits?: KmSplit[],
 ): string {
   const lbl  = newRun.label ?? 'Unknown';
   const dist = (newRun.distance / 1000).toFixed(2);
@@ -482,6 +528,17 @@ export function buildNewRunUserMessage(
     newBlock += `\n  reps:${newRun.intervals.length} HR${hrs}${paces ? ` @${paces}` : ''}${pwrs}`;
   }
 
+  if (kmSplits && kmSplits.length > 0) {
+    const allHRZero    = kmSplits.every(k => k.avgHR === 0);
+    const allPowerZero = kmSplits.every(k => k.avgPower === 0);
+    const kmLines = kmSplits.map(k => {
+      const hrPart    = (!allHRZero    && k.avgHR    > 0) ? ` HR${k.avgHR}`    : '';
+      const powerPart = (!allPowerZero && k.avgPower > 0) ? ` ${k.avgPower}W`  : '';
+      return `  km${k.km}: @${fp(k.paceSecs)}${hrPart}${powerPart}`;
+    }).join('\n');
+    newBlock += `\nKm splits:\n${kmLines}`;
+  }
+
   const prevLines = prevRuns.slice(0, 5).map(r => {
     const d  = (r.distance / 1000).toFixed(2);
     const p  = fp(r.workPace ?? r.pace);
@@ -502,6 +559,7 @@ export async function updateMemoryNote(
   currentMemory:  string,
   snap:           HealthSnapshot,
   localContext?:  string,
+  aiWeeks?:       number,
 ): Promise<string> {
   const apiKey = await getApiKey();
   if (!apiKey) return currentMemory;
@@ -523,7 +581,7 @@ export async function updateMemoryNote(
       body: JSON.stringify({
         model: CHAT_MODEL,
         max_tokens: 300,
-        system: buildChatSystemPrompt(snap, currentMemory, localContext),
+        system: buildChatSystemPrompt(snap, currentMemory, localContext, aiWeeks),
         messages: contextMessages,
       }),
     });
@@ -579,6 +637,7 @@ export async function getChatResponse(
   history:       ChatMessage[],
   memoryNote?:   string,
   localContext?: string,
+  aiWeeks?:      number,
 ): Promise<string> {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Add it in Settings first.');
@@ -593,7 +652,7 @@ export async function getChatResponse(
     body: JSON.stringify({
       model: CHAT_MODEL,
       max_tokens: 1024,
-      system: buildChatSystemPrompt(snap, memoryNote, localContext),
+      system: buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks),
       messages: history,
     }),
   });

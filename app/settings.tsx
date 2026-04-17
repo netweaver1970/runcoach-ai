@@ -17,6 +17,7 @@ import {
   getApiKey, validateAndSaveApiKey, deleteApiKey, MODEL, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, savePowerZones, DEFAULT_POWER_ZONES,
   getLongRunMinutes, setLongRunMinutes, DEFAULT_LONG_RUN_MINUTES,
+  getAiWeeks, setAiWeeks, DEFAULT_AI_WEEKS,
   ApiKeyValidationResult,
 } from '../src/services/claude';
 import { PowerZones } from '../src/types';
@@ -50,6 +51,8 @@ export default function SettingsScreen() {
   const [powerZonesSaved, setPowerZonesSaved] = useState(false);
   const [longRunMin, setLongRunMin] = useState(String(DEFAULT_LONG_RUN_MINUTES));
   const [longRunSaved, setLongRunSaved] = useState(false);
+  const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
+  const [aiWeeksSaved, setAiWeeksSaved] = useState(false);
   const [coachMemory, setCoachMemory] = useState('');
   const [memorySaved, setMemorySaved] = useState(false);
 
@@ -62,6 +65,7 @@ export default function SettingsScreen() {
     resolveBodyMassKg().then(kg => setBodyMass(String(kg)));
     getPowerZones().then(setPowerZones);
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
+    getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
   }, []);
 
@@ -383,6 +387,40 @@ export default function SettingsScreen() {
               onPress={handleSaveLongRun}
             >
               <Text style={styles.btnText}>{longRunSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+        </Section>
+
+        {/* AI History Depth */}
+        <Section title="AI History Depth">
+          <Text style={styles.hint}>
+            Weeks of run history included in AI prompts. More = richer context but slightly more tokens. Minimum 6 weeks.
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={aiWeeks}
+              onChangeText={setAiWeeksState}
+              placeholder="8"
+              placeholderTextColor="#bbb"
+              keyboardType="number-pad"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>weeks</Text>
+            <TouchableOpacity
+              style={[styles.btn, aiWeeksSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={async () => {
+                const n = parseInt(aiWeeks, 10);
+                if (isNaN(n) || n < 6 || n > 52) {
+                  Alert.alert('Invalid value', 'Enter a number between 6 and 52 weeks.');
+                  return;
+                }
+                await setAiWeeks(n);
+                setAiWeeksSaved(true);
+                setTimeout(() => setAiWeeksSaved(false), 2000);
+              }}
+            >
+              <Text style={styles.btnText}>{aiWeeksSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
         </Section>

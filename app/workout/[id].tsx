@@ -20,12 +20,7 @@ import {
   WorkoutDetailData,
   WorkoutActivity,
 } from '../../src/services/healthkit';
-import { saveRunOverride } from '../../src/services/claude';
-import {
-  saveWorkHRCorrection,
-  getWorkHRCorrectionInfo,
-  clearWorkHRCorrection,
-} from '../../src/services/workoutClassifier';
+import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
 import { WorkoutLabel } from '../../src/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -448,18 +443,10 @@ export default function WorkoutDetailScreen() {
   const [tab,       setTab]       = useState<Tab>('hr');
   const [detail,    setDetail]    = useState<WorkoutDetailData | null>(null);
   const [surges,    setSurges]    = useState<SurgeRegion[]>([]);
-  const [extL,      setExtL]      = useState<number[]>([]);
-  const [extR,      setExtR]      = useState<number[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string | null>(null);
   const [currentLabel, setCurrentLabel] = useState(params.label ?? '');
-
-  // Saved HR correction info (loaded from cache)
-  const [hrCorrectionInfo, setHrCorrectionInfo] = useState<{
-    correctedHR: number;
-    originalHR:  number;
-    hasCorrection: boolean;
-  } | null>(null);
+  const [hrUnreliable, setHrUnreliable] = useState(false);
 
   const duration = parseInt(params.duration ?? '0', 10);
   const distance = parseFloat(params.distance ?? '0');
@@ -479,12 +466,9 @@ export default function WorkoutDetailScreen() {
         : 185;
       const detected = detectSurges(d.hr, maxHR);
       setSurges(detected);
-      setExtL(detected.map(() => 0));
-      setExtR(detected.map(() => 0));
 
-      // Load any saved HR correction from cache (for visual line + undo button)
-      const info = await getWorkHRCorrectionInfo(params.id);
-      setHrCorrectionInfo(info);
+      const map = await getHrUnreliableRuns();
+      setHrUnreliable(map[params.id] ?? false);
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load workout data');
     } finally {
@@ -540,28 +524,6 @@ export default function WorkoutDetailScreen() {
     }
   }, [params.id]);
 
-  // ── Extend ────────────────────────────────────────────────────────────────
-
-  const extendSurge = (idx: number, dir: 'left' | 'right', delta: number) => {
-    if (dir === 'left')  setExtL(prev => prev.map((v, i) => i === idx ? Math.max(0, v + delta) : v));
-    else                 setExtR(prev => prev.map((v, i) => i === idx ? Math.max(0, v + delta) : v));
-  };
-
-  const extendedAvgHR = (surge: SurgeRegion, idx: number): number => {
-    if (!detail || detail.hr.length === 0) return surge.avgHR;
-    const s = surge.startMs - (extL[idx] ?? 0);
-    const e = surge.endMs   + (extR[idx] ?? 0);
-    // Use peakHR as the reference — it's always a genuine reading (strap was
-    // working at that moment). avgHR can be corrupted by drop-out zeros.
-    // Any reading < 80 % of peak is treated as a chest-strap artefact and
-    // excluded. The corrected average is then the mean of the valid readings
-    // only — effectively "faking" the gap period with that valid average.
-    const minValid = Math.round(surge.peakHR * 0.80);
-    const w = detail.hr.filter(p => p.t >= s && p.t <= e && p.v >= minValid);
-    if (w.length === 0) return surge.avgHR;
-    return Math.round(w.reduce((acc, p) => acc + p.v, 0) / w.length);
-  };
-
   // ── Stats ─────────────────────────────────────────────────────────────────
 
   const avgHR    = detail?.hr.length    ? Math.round(detail.hr.reduce((s, p) => s + p.v, 0)    / detail.hr.length)    : null;
@@ -578,33 +540,6 @@ export default function WorkoutDetailScreen() {
   const tabData    = !detail ? [] : tab === 'hr' ? detail.hr : tab === 'power' ? detail.power : detail.pace;
   const tabUnit    = tab === 'hr' ? 'bpm' : tab === 'power' ? 'W' : 'min/km';
 
-  // ── HR correction lines for the graph ─────────────────────────────────────
-  // Only shown on the HR tab.
-  // • While the user is actively extending: a live orange preview line per surge.
-  // • When a correction has been saved: a persistent magenta dashed line.
-  const isExtending = extL.some(v => v > 0) || extR.some(v => v > 0);
-  const hrCorrectionLines: CorrectionLine[] = [];
-  if (tab === 'hr' && detail) {
-    if (isExtending && surges.length > 0) {
-      // Live preview: one line per surge showing the corrected avg for that rep
-      surges.forEach((sg, i) => {
-        const avg = extendedAvgHR(sg, i);
-        hrCorrectionLines.push({
-          value: avg,
-          color: '#FF6B35',
-          label: surges.length === 1 ? `~${avg} bpm` : `Rep ${i + 1}: ~${avg} bpm`,
-        });
-      });
-    } else if (hrCorrectionInfo?.hasCorrection) {
-      // Saved correction: single line at the stored value
-      hrCorrectionLines.push({
-        value: hrCorrectionInfo.correctedHR,
-        color: '#8e44ad',
-        label: `saved ${hrCorrectionInfo.correctedHR} bpm`,
-      });
-    }
-  }
-
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
@@ -619,15 +554,29 @@ export default function WorkoutDetailScreen() {
           <Text style={st.headerDate}>{dateLabel}</Text>
           <Text style={st.headerTime}>{timeLabel}</Text>
         </View>
-        <TouchableOpacity
-          style={[st.labelBadge, { backgroundColor: currentLabel ? ls.bg : '#f5f5f5' }]}
-          onPress={handleOverride}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Text style={[st.labelBadgeText, { color: currentLabel ? ls.color : '#aaa' }]}>
-            {currentLabel ? `${ls.emoji} ${currentLabel} ✎` : '✎ type'}
-          </Text>
-        </TouchableOpacity>
+        <View style={{ gap: 4, alignItems: 'flex-end' }}>
+          <TouchableOpacity
+            style={[st.labelBadge, { backgroundColor: currentLabel ? ls.bg : '#f5f5f5' }]}
+            onPress={handleOverride}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={[st.labelBadgeText, { color: currentLabel ? ls.color : '#aaa' }]}>
+              {currentLabel ? `${ls.emoji} ${currentLabel} ✎` : '✎ type'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[st.hrFlagBtn, hrUnreliable && st.hrFlagBtnActive]}
+            onPress={() => {
+              const next = !hrUnreliable;
+              setHrUnreliable(next);
+              saveHrUnreliable(params.id, next);
+            }}
+          >
+            <Text style={[st.hrFlagText, hrUnreliable && { color: '#c0392b' }]}>
+              {hrUnreliable ? '⚠️ HR unreliable' : '✓ HR ok'}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading ? (
@@ -682,10 +631,10 @@ export default function WorkoutDetailScreen() {
                 detail!.activities.length > 0
                   ? buildActivitiesSessionRegions(detail!.activities)
                   : (currentLabel === 'Intervals' && surges.length > 0
-                      ? buildSessionRegions(surges, detail!.totalMs, extL, extR)
+                      ? buildSessionRegions(surges, detail!.totalMs, [], [])
                       : [])
               }
-              correctionLines={hrCorrectionLines}
+              correctionLines={[]}
             />
           </View>
 
@@ -701,139 +650,13 @@ export default function WorkoutDetailScreen() {
             <SegmentTable activities={detail.activities} />
           )}
 
-          {/* Work sessions */}
-          {surges.length >= 1 && (
-            <View style={st.surgesCard}>
-              <Text style={st.sectionTitle}>Work Sessions</Text>
-              <Text style={st.sectionHint}>
-                Tap ← 30s / 30s → to extend a session window left or right, capturing HR before/after a chest-strap gap.
-              </Text>
-
-              {/* Save HR correction — only shown once any window has been adjusted */}
-              {extL.some(v => v > 0) || extR.some(v => v > 0) ? (
-                <TouchableOpacity
-                  style={st.saveHRBtn}
-                  onPress={async () => {
-                    if (!detail) return;
-                    // Average of valid readings across all extended windows.
-                    // Use peakHR as threshold reference (never corrupted by
-                    // drop-out zeros). Weight by sample count, not duration —
-                    // extending into a gap adds no valid samples so duration
-                    // weighting would still distort the result.
-                    // The corrected value "fakes" the gap period: the valid
-                    // average IS the corrected HR for the full work zone.
-                    let totalHR = 0, totalSamples = 0;
-                    surges.forEach((sg, i) => {
-                      const s = sg.startMs - (extL[i] ?? 0);
-                      const e = sg.endMs   + (extR[i] ?? 0);
-                      const minValid = Math.round(sg.peakHR * 0.80);
-                      const pts = detail.hr.filter(p => p.t >= s && p.t <= e && p.v >= minValid);
-                      pts.forEach(p => { totalHR += p.v; totalSamples++; });
-                    });
-                    const corrected = totalSamples > 0 ? Math.round(totalHR / totalSamples) : 0;
-                    if (corrected <= 0) return;
-                    await saveWorkHRCorrection(params.id, corrected);
-                    // Refresh correction info so the graph line updates immediately
-                    const info = await getWorkHRCorrectionInfo(params.id);
-                    setHrCorrectionInfo(info);
-                    // Reset extend windows now that the correction is saved
-                    setExtL(surges.map(() => 0));
-                    setExtR(surges.map(() => 0));
-                    Alert.alert(
-                      'HR correction saved',
-                      `Work HR updated to ${corrected} bpm. The main screen will reflect this on next load.`,
-                    );
-                  }}
-                >
-                  <Text style={st.saveHRBtnText}>💾 Save HR correction</Text>
-                </TouchableOpacity>
-              ) : null}
-
-              {/* Undo HR correction — shown when a saved correction exists */}
-              {hrCorrectionInfo?.hasCorrection && !isExtending ? (
-                <TouchableOpacity
-                  style={st.undoHRBtn}
-                  onPress={() => {
-                    Alert.alert(
-                      'Undo HR correction',
-                      `This will restore the original classifier value (${hrCorrectionInfo.originalHR} bpm) and remove the ${hrCorrectionInfo.correctedHR} bpm override.`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Undo correction',
-                          style: 'destructive',
-                          onPress: async () => {
-                            await clearWorkHRCorrection(params.id);
-                            setHrCorrectionInfo(prev => prev
-                              ? { ...prev, hasCorrection: false, correctedHR: prev.originalHR }
-                              : null
-                            );
-                            Alert.alert('Undone', `Work HR restored to ${hrCorrectionInfo.originalHR} bpm.`);
-                          },
-                        },
-                      ],
-                    );
-                  }}
-                >
-                  <Text style={st.undoHRBtnText}>↩ Undo HR correction ({hrCorrectionInfo.correctedHR} → {hrCorrectionInfo.originalHR} bpm)</Text>
-                </TouchableOpacity>
-              ) : null}
-
-              {surges.map((sg, i) => {
-                const lExt  = extL[i] ?? 0;
-                const rExt  = extR[i] ?? 0;
-                const computedAvg = extendedAvgHR(sg, i);
-                const extended    = lExt > 0 || rExt > 0;
-
-                return (
-                  <View key={i} style={st.repRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={st.repNum}>Rep {i + 1}</Text>
-                      <Text style={st.repTimes}>
-                        {fmtTime(sg.startMs - lExt)} → {fmtTime(sg.endMs + rExt)}
-                        {'  ·  '}
-                        <Text style={st.repDur}>{fmtTime(sg.endMs - sg.startMs + lExt + rExt)}</Text>
-                      </Text>
-                    </View>
-
-                    <View style={st.repStats}>
-                      <Text style={[st.repHR, extended && { color: '#FF6B35' }]}>
-                        {computedAvg} bpm
-                      </Text>
-                      <Text style={st.repPeak}>peak {sg.peakHR}</Text>
-                    </View>
-
-                    <View style={st.extendBtns}>
-                      <View style={st.extendRow}>
-                        <TouchableOpacity style={st.extBtn} onPress={() => extendSurge(i, 'left', 30_000)}>
-                          <Text style={st.extBtnText}>← 30s</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[st.extBtn, lExt === 0 && st.extBtnOff]}
-                          onPress={() => extendSurge(i, 'left', -30_000)}
-                          disabled={lExt === 0}
-                        >
-                          <Text style={[st.extBtnText, lExt === 0 && { color: '#ccc' }]}>↩</Text>
-                        </TouchableOpacity>
-                      </View>
-                      <View style={st.extendRow}>
-                        <TouchableOpacity
-                          style={[st.extBtn, rExt === 0 && st.extBtnOff]}
-                          onPress={() => extendSurge(i, 'right', -30_000)}
-                          disabled={rExt === 0}
-                        >
-                          <Text style={[st.extBtnText, rExt === 0 && { color: '#ccc' }]}>↩</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity style={st.extBtn} onPress={() => extendSurge(i, 'right', 30_000)}>
-                          <Text style={st.extBtnText}>30s →</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          )}
+          {/* Analyze with Coach button */}
+          <TouchableOpacity
+            style={st.coachBtn}
+            onPress={() => router.push({ pathname: '/chat', params: { focusRunUUID: params.id } } as any)}
+          >
+            <Text style={st.coachBtnText}>💬 Analyze with Coach</Text>
+          </TouchableOpacity>
 
         </ScrollView>
       )}
@@ -996,49 +819,10 @@ const st = StyleSheet.create({
     fontSize: 11, color: '#bbb', textAlign: 'center', marginBottom: 12,
   },
 
-  surgesCard: {
-    backgroundColor: '#fff', borderRadius: 12,
-    padding: 14, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
-  },
-  sectionTitle: {
-    fontSize: 12, fontWeight: '700', color: '#666',
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4,
-  },
-  sectionHint: { fontSize: 12, color: '#aaa', marginBottom: 12, lineHeight: 18 },
+  hrFlagBtn:       { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#ddd', backgroundColor: '#fafafa' },
+  hrFlagBtnActive: { borderColor: '#c0392b', backgroundColor: '#fdedec' },
+  hrFlagText:      { fontSize: 11, color: '#888', fontWeight: '600' },
 
-  repRow: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingVertical: 10, borderTopWidth: 1, borderTopColor: '#f0f0f0', gap: 8,
-  },
-  repNum:    { fontSize: 13, fontWeight: '700', color: '#333', marginBottom: 2 },
-  repTimes:  { fontSize: 12, color: '#888' },
-  repDur:    { fontSize: 12, color: '#FF6B35', fontWeight: '600' },
-  repStats:  { alignItems: 'flex-end', minWidth: 66 },
-  repHR:     { fontSize: 15, fontWeight: '800', color: '#e74c3c' },
-  repPeak:   { fontSize: 11, color: '#aaa', marginTop: 1 },
-
-  saveHRBtn: {
-    backgroundColor: '#FF6B35', borderRadius: 8,
-    paddingVertical: 10, alignItems: 'center', marginBottom: 10,
-  },
-  saveHRBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-
-  undoHRBtn: {
-    borderWidth: 1.5, borderColor: '#8e44ad', borderRadius: 8,
-    paddingVertical: 8, alignItems: 'center', marginBottom: 10,
-    backgroundColor: '#f5eef8',
-  },
-  undoHRBtnText: { color: '#8e44ad', fontWeight: '600', fontSize: 13 },
-
-  extendBtns: { alignItems: 'flex-end', gap: 4 },
-  extendRow:  { flexDirection: 'row', gap: 4 },
-  extBtn: {
-    borderWidth: 1.5, borderColor: '#FF6B35', borderRadius: 6,
-    paddingHorizontal: 7, paddingVertical: 4,
-    backgroundColor: '#FFF3EE',
-  },
-  extBtnOff:  { borderColor: '#eee', backgroundColor: '#fafafa' },
-  extBtnText: { fontSize: 11, color: '#FF6B35', fontWeight: '700' },
+  coachBtn:     { margin: 12, backgroundColor: '#FF6B35', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  coachBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 });

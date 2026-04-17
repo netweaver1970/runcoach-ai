@@ -15,6 +15,7 @@ import {
   Alert,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
+import { loadSnapshotCache } from '../src/services/healthkit';
 import {
   getChatResponse,
   updateMemoryNote,
@@ -75,8 +76,8 @@ interface Message {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
-  const { data } = useLocalSearchParams<{ data: string }>();
-  const snapshot: HealthSnapshot | null = data ? JSON.parse(data) : null;
+  const { data, focusRunUUID } = useLocalSearchParams<{ data?: string; focusRunUUID?: string }>();
+  const [snapshot, setSnapshot]       = useState<HealthSnapshot | null>(data ? JSON.parse(data) : null);
 
   const [messages,       setMessages]       = useState<Message[]>([]);
   const [input,          setInput]          = useState('');
@@ -113,17 +114,25 @@ export default function ChatScreen() {
 
   // ── Load persisted history on mount ────────────────────────────────────────
   useEffect(() => {
-    if (!snapshot) {
-      setMessages([{ id: 'err', role: 'system', content: 'No health data loaded. Go back and try again.' }]);
-      setIsLoaded(true);
-      return;
-    }
-
     // Refresh localContext at load time (time may have changed since module init)
     localContextRef.current = getLocalContext();
 
-    loadChatPersistence().then(saved => {
-      const latestRun = snapshot.runs[0] ?? null;
+    const init = async () => {
+      // If no data passed but focusRunUUID present, load from cache
+      let snap = snapshot;
+      if (!snap && focusRunUUID) {
+        snap = await loadSnapshotCache();
+        if (snap) setSnapshot(snap);
+      }
+
+      if (!snap) {
+        setMessages([{ id: 'err', role: 'system', content: 'No health data loaded. Go back and try again.' }]);
+        setIsLoaded(true);
+        return;
+      }
+
+      const saved = await loadChatPersistence();
+      const latestRun = snap.runs[0] ?? null;
 
       if (saved && saved.messages.length > 0) {
         // Restore previous conversation
@@ -146,6 +155,20 @@ export default function ChatScreen() {
         lastSeenRunRef.current = saved.lastSeenRunUUID;
         setShowChips(false);
 
+        // ── focusRunUUID: analyze a specific run ───────────────────────────
+        if (focusRunUUID) {
+          const focusRun = snap.runs.find(r => r.uuid === focusRunUUID);
+          if (focusRun) {
+            const sameType = snap.runs
+              .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
+              .slice(0, 5);
+            const userText = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits);
+            setIsLoaded(true);
+            setTimeout(() => autoSend(userText), 400);
+            return;
+          }
+        }
+
         // ── Auto new-run analysis ──────────────────────────────────────────
         // Trigger only when: we have a tracked lastSeenRunUUID AND the newest
         // run is different (i.e., a new run completed since the last chat).
@@ -154,7 +177,7 @@ export default function ChatScreen() {
           saved.lastSeenRunUUID &&
           latestRun.uuid !== saved.lastSeenRunUUID
         ) {
-          const sameType = snapshot.runs
+          const sameType = snap.runs
             .filter(r => r.uuid !== latestRun.uuid && r.label === latestRun.label)
             .slice(0, 5);
           const userText = buildNewRunUserMessage(latestRun, sameType);
@@ -165,8 +188,23 @@ export default function ChatScreen() {
           return;
         }
       } else {
+        // ── focusRunUUID on fresh chat ─────────────────────────────────────
+        if (focusRunUUID) {
+          const focusRun = snap.runs.find(r => r.uuid === focusRunUUID);
+          if (focusRun) {
+            const sameType = snap.runs
+              .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
+              .slice(0, 5);
+            const userText = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits);
+            if (latestRun) lastSeenRunRef.current = latestRun.uuid;
+            setIsLoaded(true);
+            setTimeout(() => autoSend(userText), 400);
+            return;
+          }
+        }
+
         // Fresh start — show greeting
-        const rec = snapshot.todayRecovery;
+        const rec = snap.todayRecovery;
         let greeting = '👋 Morning! ';
         if (rec && rec.weightedRMSSD > 0) {
           const emoji = rec.recoveryScore >= 80 ? '🟢' : rec.recoveryScore >= 60 ? '🟡' : '🔴';
@@ -181,7 +219,9 @@ export default function ChatScreen() {
       }
 
       setIsLoaded(true);
-    });
+    };
+
+    init();
   }, []);
 
   // ── autoSend — silently injects a user message + gets Claude response ───────

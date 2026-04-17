@@ -55,63 +55,6 @@ export async function clearWorkoutCache(): Promise<void> {
   try { await FileSystem.deleteAsync(CACHE_FILE, { idempotent: true }); } catch {}
 }
 
-/**
- * Persist a manually-corrected workHR value for a single workout.
- * Preserves the original classifier value in `workHROriginal` so it can be
- * restored later with clearWorkHRCorrection().
- */
-export async function saveWorkHRCorrection(
-  uuid: string,
-  correctedWorkHR: number,
-): Promise<void> {
-  const cache = await loadWorkoutCache();
-  if (!cache || !cache.analyses[uuid]) return;
-  const existing = cache.analyses[uuid] as any;
-  // Only capture original once — don't overwrite it on successive saves
-  const original = existing.workHROriginal ?? existing.workHR;
-  cache.analyses[uuid] = {
-    ...existing,
-    workHR:         correctedWorkHR,
-    workHROriginal: original,
-  } as any;
-  await saveWorkoutCache(cache);
-}
-
-/**
- * Retrieve the current HR correction status for a workout.
- * Returns null if the workout hasn't been cached yet.
- */
-export async function getWorkHRCorrectionInfo(uuid: string): Promise<{
-  correctedHR: number;
-  originalHR:  number;
-  hasCorrection: boolean;
-} | null> {
-  const cache = await loadWorkoutCache();
-  if (!cache || !cache.analyses[uuid]) return null;
-  const a = cache.analyses[uuid] as any;
-  const hasCorrection = a.workHROriginal !== undefined;
-  return {
-    correctedHR:   a.workHR,
-    originalHR:    hasCorrection ? a.workHROriginal : a.workHR,
-    hasCorrection,
-  };
-}
-
-/**
- * Remove the user HR correction for a workout, restoring the original
- * classifier-computed value.
- */
-export async function clearWorkHRCorrection(uuid: string): Promise<void> {
-  const cache = await loadWorkoutCache();
-  if (!cache || !cache.analyses[uuid]) return;
-  const existing = cache.analyses[uuid] as any;
-  if (existing.workHROriginal === undefined) return; // nothing to undo
-  const restored = { ...existing, workHR: existing.workHROriginal };
-  delete restored.workHROriginal;
-  cache.analyses[uuid] = restored as any;
-  await saveWorkoutCache(cache);
-}
-
 // ─── Max HR estimation ─────────────────────────────────────────────────────────
 
 export function estimateMaxHR(allHRValues: number[], cachedMaxHR?: number): number {

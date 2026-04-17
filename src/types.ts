@@ -29,6 +29,26 @@ export interface IntervalRep {
   avgPowerW: number;     // watts; 0 if power data unavailable
 }
 
+export interface KmSplit {
+  km:       number;  // 1-based km number
+  paceSecs: number;  // secs/km for this km
+  avgHR:    number;  // 0 if unavailable
+  avgPower: number;  // watts; 0 if unavailable
+}
+
+export type TimelineEventType = 'status' | 'supplement';
+export type HealthStatus = 'running' | 'injured' | 'sick' | 'holiday';
+
+export interface TimelineEvent {
+  id:          string;
+  date:        string;           // YYYY-MM-DD
+  type:        TimelineEventType;
+  status?:     HealthStatus;
+  supplement?: string;
+  action?:     'start' | 'stop';
+  note?:       string;
+}
+
 export interface WorkoutAnalysis {
   uuid: string;
   date: string;
@@ -87,6 +107,8 @@ export interface RunWorkout {
   isEstimatedPower?: boolean; // true when power is derived from pace, not measured by sensor
   intervals?: IntervalRep[];  // per-rep data (Intervals sessions only)
   segments?: WorkoutSegment[]; // HK structured workout phases (empty for standard runs)
+  kmSplits?:     KmSplit[];
+  hrUnreliable?: boolean;
 }
 
 export interface WeeklyMileage {
@@ -174,6 +196,7 @@ export interface HealthSnapshot {
   workoutTypeStats: WorkoutTypeStats[];   // aggregated per type
   estimatedMaxHR: number;
   fetchedAt: string;
+  timelineEvents: TimelineEvent[];
 }
 
 export interface CoachingReport {

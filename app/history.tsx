@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent,
+  StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent, Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
@@ -11,9 +11,10 @@ import {
   fetchRestingHRHistory,
   fetchHRVHistory,
 } from '../src/services/healthkit';
-import { WeeklyMileage } from '../src/types';
+import { WeeklyMileage, TimelineEvent } from '../src/types';
+import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
 
-type HistoryType = 'km' | 'vo2' | 'rhr' | 'hrv';
+type HistoryType = 'km' | 'vo2' | 'rhr' | 'hrv' | 'timeline';
 type Period = '1M' | '3M' | '6M' | '1Y';
 
 const PERIOD_MONTHS: Record<Period, number> = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12 };
@@ -36,7 +37,7 @@ const PERIOD_BUCKETS: Record<Period, number> = {
 
 interface DataPoint { label: string; value: number; fullDate: string; }
 
-const CONFIGS: Record<HistoryType, {
+const CONFIGS: Record<Exclude<HistoryType, 'timeline'>, {
   title: string; unit: string; color: string; aggregate: 'sum' | 'avg';
 }> = {
   km:  { title: 'Weekly km',    unit: 'km',        color: '#FF6B35', aggregate: 'sum' },
@@ -237,7 +238,7 @@ export default function HistoryScreen() {
   const [innerW, setInnerW]         = useState(0); // width INSIDE chartWrap (padding subtracted)
 
   const histType = (type ?? 'km') as HistoryType;
-  const cfg      = CONFIGS[histType] ?? CONFIGS.km;
+  const cfg      = histType !== 'timeline' ? (CONFIGS[histType] ?? CONFIGS.km) : CONFIGS.km;
 
   const periodMs = PERIOD_MONTHS[period] * 30 * 86_400_000;
   const toDate   = new Date(Date.now() - pageOffset * periodMs);

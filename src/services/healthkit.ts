@@ -1,4 +1,5 @@
 import HealthKit from '@kingstinct/react-native-healthkit';
+import * as FileSystem from 'expo-file-system';
 
 // In @kingstinct/react-native-healthkit v9, the enums are TypeScript-only types
 // (their JS files export {}). The native NitroModules bridge expects the full
@@ -33,13 +34,31 @@ import {
   PowerZones,
   WorkoutLabel,
   WorkoutConfidence,
+  KmSplit,
+  TimelineEvent,
 } from '../types';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import {
   getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, getRunOverrides, isPowerZonesConfigured,
-  getLongRunMinutes,
+  getLongRunMinutes, getHrUnreliableRuns,
 } from './claude';
+import { loadEvents } from './timelineEvents';
+
+// ─── Snapshot cache ───────────────────────────────────────────────────────────
+
+const SNAPSHOT_CACHE_FILE = `${FileSystem.documentDirectory}runcoach-snapshot-cache.json`;
+export async function saveSnapshotCache(snap: HealthSnapshot): Promise<void> {
+  try { await FileSystem.writeAsStringAsync(SNAPSHOT_CACHE_FILE, JSON.stringify(snap)); } catch {}
+}
+export async function loadSnapshotCache(): Promise<HealthSnapshot | null> {
+  try {
+    const info = await FileSystem.getInfoAsync(SNAPSHOT_CACHE_FILE);
+    if (!info.exists) return null;
+    const raw = await FileSystem.readAsStringAsync(SNAPSHOT_CACHE_FILE);
+    return JSON.parse(raw) as HealthSnapshot;
+  } catch { return null; }
+}
 
 // ─── HKCategoryValueSleepAnalysis numeric values ──────────────────────────────
 // 0 = inBed, 1 = asleepUnspecified, 2 = awake, 3 = asleepCore, 4 = asleepDeep, 5 = asleepREM
@@ -579,6 +598,61 @@ function toPerRunData(hr: any[], dist: any[], power: any[]): PerRunData {
   };
 }
 
+function computeKmSplits(
+  distSegs:       { t: number; m: number }[],
+  hrValues:       number[],
+  hrTimestampsMs: number[],
+  powerSegs:      { t: number; w: number }[],
+): KmSplit[] {
+  if (distSegs.length === 0) return [];
+  let acc = 0;
+  const cum = distSegs.map(({ t, m }) => { acc += m; return { t, cumM: acc }; });
+  if (acc < 1000) return [];
+  const hasHR  = hrTimestampsMs.length === hrValues.length && hrValues.length > 0;
+  const hasPow = powerSegs.length > 0;
+  const splits: KmSplit[] = [];
+  let prevT = cum[0].t;
+  const nKm = Math.floor(acc / 1000);
+  for (let km = 1; km <= nKm; km++) {
+    const idx = cum.findIndex(c => c.cumM >= km * 1000);
+    if (idx < 0) break;
+    const endT = cum[idx].t;
+    const durationSec = Math.max(1, (endT - prevT) / 1000);
+    const paceSecs = Math.round(durationSec);
+    let avgHR = 0;
+    if (hasHR) {
+      const hs = hrValues.filter((_, i) => hrTimestampsMs[i] >= prevT && hrTimestampsMs[i] <= endT);
+      if (hs.length > 0) avgHR = Math.round(hs.reduce((a, b) => a + b, 0) / hs.length);
+    }
+    let avgPower = 0;
+    if (hasPow) {
+      const ps = powerSegs.filter(p => p.t >= prevT && p.t <= endT).map(p => p.w);
+      if (ps.length > 0) avgPower = Math.round(ps.reduce((a, b) => a + b, 0) / ps.length);
+    }
+    splits.push({ km, paceSecs, avgHR, avgPower });
+    prevT = endT;
+  }
+  return splits;
+}
+
+function refineWorkStatsFromSegments(segs: WorkoutSegment[]): {
+  wHR: number; wPace: number; wPower: number; wDistance: number;
+} | null {
+  const w = segs.filter(s => s.label === 'Work');
+  if (w.length === 0) return null;
+  const totalDur  = w.reduce((a, s) => a + s.durationSec, 0);
+  const totalDist = w.reduce((a, s) => a + s.distanceM, 0);
+  if (totalDur === 0 || totalDist < 100) return null;
+  const withHR  = w.filter(s => s.avgHR > 0);
+  const withPwr = w.filter(s => s.avgPower > 0);
+  return {
+    wHR:      withHR.length  > 0 ? Math.round(withHR.reduce( (a, s) => a + s.avgHR    * s.durationSec, 0) / withHR.reduce( (a, s) => a + s.durationSec, 0)) : 0,
+    wPace:    Math.round(totalDur / (totalDist / 1000)),
+    wPower:   withPwr.length > 0 ? Math.round(withPwr.reduce((a, s) => a + s.avgPower * s.durationSec, 0) / withPwr.reduce((a, s) => a + s.durationSec, 0)) : 0,
+    wDistance: totalDist,
+  };
+}
+
 // ─── Main fetch ───────────────────────────────────────────────────────────────
 
 export interface FetchOptions {
@@ -799,6 +873,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     powerZones,
     runOverrides,
     longRunMinutes,
+    events,
+    hrUnreliableMap,
   ] = await Promise.all([
     // v9 API: date range in filter.startDate/endDate
     safeQuery(
@@ -833,12 +909,41 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     getPowerZones(),
     getRunOverrides(),
     getLongRunMinutes(),
+    loadEvents(),
+    getHrUnreliableRuns(),
   ]);
 
   // Classify runs AFTER we have longRunMinutes
   const { runs: classifiedRuns, maxHR } = await classifyAndCacheRuns(
     rawRuns, perRunData, allNewHRValues, existingCache, longRunMinutes
   );
+
+  // Refine work stats from structured segments + mark HR unreliable + km splits
+  for (const run of classifiedRuns) {
+    if (run.segments && run.segments.length > 0) {
+      const refined = refineWorkStatsFromSegments(run.segments);
+      if (refined !== null && refined.wHR > 0 && refined.wPace > 0) {
+        run.workHR    = refined.wHR;
+        run.workPace  = refined.wPace;
+        if (refined.wPower > 0) run.workPower = refined.wPower;
+      }
+    }
+    if ((hrUnreliableMap as Record<string, boolean>)[run.uuid]) {
+      run.hrUnreliable = true;
+    }
+  }
+
+  if (uncached.length > 0) {
+    const firstUncached = uncached[0];
+    const data = perRunData.get(firstUncached.uuid);
+    if (data && data.distSegs.length > 0) {
+      const kms = computeKmSplits(data.distSegs, data.hrValues, data.hrTimestampsMs, data.powerSegs);
+      if (kms.length > 0) {
+        const r = classifiedRuns.find(r => r.uuid === firstUncached.uuid);
+        if (r) r.kmSplits = kms;
+      }
+    }
+  }
 
   // ── Step 6: Sleep analysis ────────────────────────────────────────────────
   progress('Analyzing sleep & recovery…', 80);
@@ -1031,6 +1136,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     workoutTypeStats: computeWorkoutTypeStats(runs),
     estimatedMaxHR:   maxHR,
     fetchedAt:        now.toISOString(),
+    timelineEvents:   events as TimelineEvent[],
   };
 }
 
