@@ -6,6 +6,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery, SleepSession } from '../src/types';
 import { fetchSleepHistory, fetchOvernightHRHistory } from '../src/services/healthkit';
+import { useThemedStyles, Palette } from '../src/theme';
 import {
   normaliseKPIs, applyWeights,
   DEFAULT_SLEEP_WEIGHTS, SleepWeights,
@@ -149,6 +150,7 @@ function SubKPICard({
   color: string;
   onPress?: () => void;
 }) {
+  const kpi = useThemedStyles(makeKpi);
   const { mean, sd } = stats(history);
   const current = history.length > 0 ? history[history.length - 1] : 0;
   const status  = history.length > 5
@@ -197,6 +199,7 @@ function SubKPICard({
 export default function SleepDetailScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
   const router   = useRouter();
+  const s = useThemedStyles(makeS);
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
 
   const [history, setHistory]       = useState<SleepSession[]>([]);
@@ -468,14 +471,14 @@ export default function SleepDetailScreen() {
 
 // ─── Sub-KPI styles ───────────────────────────────────────────────────────────
 
-const kpi = StyleSheet.create({
+const makeKpi = (c: Palette) => StyleSheet.create({
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f5f5f5',
+    borderBottomColor: c.border,
     gap: 10,
   },
   left: {
@@ -485,7 +488,7 @@ const kpi = StyleSheet.create({
   label: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#333',
+    color: c.text,
   },
   badge: {
     borderRadius: 5,
@@ -509,76 +512,76 @@ const kpi = StyleSheet.create({
   },
   unit: {
     fontSize: 10,
-    color: '#aaa',
+    color: c.textFaint,
     marginTop: 1,
   },
   arrow: {
     fontSize: 16,
-    color: '#ccc',
+    color: c.textFaint,
     marginTop: 2,
   },
 });
 
 // ─── Screen styles ────────────────────────────────────────────────────────────
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeS = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  title:    { fontSize: 17, fontWeight: '700', color: '#222' },
+  title:    { fontSize: 17, fontWeight: '700', color: c.text },
   center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyText:{ fontSize: 15, color: '#aaa' },
+  emptyText:{ fontSize: 15, color: c.textFaint },
   scroll:   { padding: 12, paddingBottom: 40 },
 
   hero: {
     flexDirection: 'row', alignItems: 'center', gap: 16,
-    backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 16,
+    backgroundColor: c.surface, borderRadius: 16, padding: 16, marginBottom: 16,
     borderLeftWidth: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 5, elevation: 3,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: c.shadowOpacity, shadowRadius: 5, elevation: 3,
   },
   scoreCircle: {
     width: 80, height: 80, borderRadius: 40, borderWidth: 4,
     alignItems: 'center', justifyContent: 'center',
   },
   scoreNumber: { fontSize: 30, fontWeight: '800', lineHeight: 34 },
-  scoreUnit:   { fontSize: 11, color: '#aaa' },
+  scoreUnit:   { fontSize: 11, color: c.textFaint },
   scoreLabel:  { fontSize: 14, fontWeight: '800', marginBottom: 4 },
-  scoreAdvice: { fontSize: 12, color: '#666', lineHeight: 17 },
-  scoreTime:   { fontSize: 11, color: '#aaa', marginTop: 3 },
+  scoreAdvice: { fontSize: 12, color: c.textSub, lineHeight: 17 },
+  scoreTime:   { fontSize: 11, color: c.textFaint, marginTop: 3 },
 
   sectionTitle: {
-    fontSize: 11, fontWeight: '700', color: '#888',
+    fontSize: 11, fontWeight: '700', color: c.textSub,
     textTransform: 'uppercase', letterSpacing: 0.5,
     marginBottom: 6, marginLeft: 4,
   },
 
   kpiList: {
-    backgroundColor: '#fff', borderRadius: 14, overflow: 'hidden', marginBottom: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    backgroundColor: c.surface, borderRadius: 14, overflow: 'hidden', marginBottom: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
 
   breakdownCard: {
-    backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
     gap: 8,
   },
   breakdownRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
   },
   breakdownLabel: {
-    fontSize: 13, color: '#555', width: 100,
+    fontSize: 13, color: c.textSub, width: 100,
   },
   breakdownBar: {
-    flex: 1, height: 5, backgroundColor: '#f0f0f0', borderRadius: 3, overflow: 'hidden',
+    flex: 1, height: 5, backgroundColor: c.surfaceAlt, borderRadius: 3, overflow: 'hidden',
   },
   breakdownFill: {
     height: 5, borderRadius: 3,
   },
   breakdownPct: {
-    fontSize: 12, fontWeight: '700', color: '#555', width: 40, textAlign: 'right',
+    fontSize: 12, fontWeight: '700', color: c.textSub, width: 40, textAlign: 'right',
   },
 });

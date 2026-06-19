@@ -13,6 +13,7 @@ import {
 import { useLocalSearchParams } from 'expo-router';
 import Markdown from 'react-native-markdown-display';
 import { generateCoachingReport } from '../src/services/claude';
+import { useThemedStyles, Palette } from '../src/theme';
 import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
@@ -23,6 +24,8 @@ import { HealthSnapshot, CoachingReport } from '../src/types';
 
 export default function AnalysisScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
+  const styles = useThemedStyles(makeStyles);
+  const markdownStyles = useThemedStyles(makeMarkdownStyles);
   const [report, setReport] = useState<CoachingReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -142,11 +145,11 @@ export default function AnalysisScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeStyles = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText: { marginTop: 16, fontSize: 16, color: '#333', fontWeight: '600' },
-  loadingSubtext: { marginTop: 6, fontSize: 13, color: '#999' },
+  loadingText: { marginTop: 16, fontSize: 16, color: c.text, fontWeight: '600' },
+  loadingSubtext: { marginTop: 6, fontSize: 13, color: c.textFaint },
   errorIcon: { fontSize: 40, marginBottom: 12 },
   errorText: { fontSize: 15, color: '#c0392b', textAlign: 'center', marginBottom: 20, lineHeight: 22 },
   btn: {
@@ -160,43 +163,43 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   actionBtn: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 8,
     paddingVertical: 8,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: c.border,
   },
   actionBtnActive: { backgroundColor: '#FF6B35', borderColor: '#FF6B35' },
-  actionBtnText: { fontSize: 13, color: '#555', fontWeight: '600' },
+  actionBtnText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
   actionBtnActiveText: { color: '#fff' },
-  meta: { fontSize: 12, color: '#aaa', marginBottom: 10, textAlign: 'center' },
+  meta: { fontSize: 12, color: c.textFaint, marginBottom: 10, textAlign: 'center' },
   reportCard: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 14,
     padding: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
+    shadowOpacity: c.shadowOpacity,
     shadowRadius: 6,
     elevation: 3,
   },
   dataSummary: {
     marginTop: 14,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 10,
     padding: 12,
     borderWidth: 1,
-    borderColor: '#eee',
+    borderColor: c.border,
   },
-  dataSummaryTitle: { fontSize: 11, fontWeight: '700', color: '#aaa', textTransform: 'uppercase', marginBottom: 4 },
-  dataSummaryText: { fontSize: 13, color: '#777' },
+  dataSummaryTitle: { fontSize: 11, fontWeight: '700', color: c.textFaint, textTransform: 'uppercase', marginBottom: 4 },
+  dataSummaryText: { fontSize: 13, color: c.textSub },
 });
 
-const markdownStyles = StyleSheet.create({
-  body: { color: '#222', fontSize: 15, lineHeight: 22 },
+const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
+  body: { color: c.text, fontSize: 15, lineHeight: 22 },
   heading2: { fontSize: 16, fontWeight: '700', color: '#FF6B35', marginTop: 16, marginBottom: 4 },
-  strong: { fontWeight: '700', color: '#222' },
+  strong: { fontWeight: '700', color: c.text },
   paragraph: { marginBottom: 8 },
   bullet_list: { marginBottom: 8 },
   list_item: { marginBottom: 4 },

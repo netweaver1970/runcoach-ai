@@ -23,6 +23,7 @@ import {
 import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
 import { getRunMeta, saveRunNote, saveRunTemp, TempSource } from '../../src/services/runMeta';
 import { getLocalWeather } from '../../src/services/weather';
+import { useTheme, useThemedStyles, Palette } from '../../src/theme';
 import { WorkoutLabel, KmSplit } from '../../src/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -281,6 +282,8 @@ function AreaChart({
   pauseIntervals?:  { s: number; e: number }[];
 }) {
   const { width: screenW } = useWindowDimensions();
+  const ac = useThemedStyles(makeAc);
+  const { c: pal } = useTheme();
 
   // Scrubber cursor (hooks before any early return)
   const [cursorX, setCursorX] = useState<number | null>(null);
@@ -478,7 +481,7 @@ function AreaChart({
             <View key={i} style={{
               position: 'absolute',
               top: LABEL_H + toY(tick), left: 0, right: 0,
-              height: 1, backgroundColor: '#e0e0e0',
+              height: 1, backgroundColor: pal.gridline,
             }} />
           ))}
 
@@ -585,6 +588,7 @@ type Sib = { i: string; s: string; du: number; di: number; c: number; l: string 
 
 export default function WorkoutDetailScreen() {
   const router = useRouter();
+  const st = useThemedStyles(makeSt);
   const params = useLocalSearchParams<{
     id:        string;
     startDate: string;
@@ -992,6 +996,7 @@ const SEG_COLORS: Record<string, string> = {
 };
 
 function SegmentTable({ activities }: { activities: WorkoutActivity[] }) {
+  const seg = useThemedStyles(makeSeg);
   const hasHR      = activities.some(a => a.avgHR > 0);
   const hasPower   = activities.some(a => a.avgPower > 0);
   const hasCadence = activities.some(a => a.cadenceSPM > 0);
@@ -1039,19 +1044,19 @@ function SegmentTable({ activities }: { activities: WorkoutActivity[] }) {
   );
 }
 
-const seg = StyleSheet.create({
-  card:      { backgroundColor: '#fff', borderRadius: 14, marginHorizontal: 12, marginBottom: 12,
-               shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06,
+const makeSeg = (c: Palette) => StyleSheet.create({
+  card:      { backgroundColor: c.surface, borderRadius: 14, marginHorizontal: 12, marginBottom: 12,
+               shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity,
                shadowRadius: 4, elevation: 2, overflow: 'hidden' },
-  headerRow: { flexDirection: 'row', backgroundColor: '#f8f8f8', paddingVertical: 6,
-               borderBottomWidth: 1, borderBottomColor: '#eee' },
-  row:       { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  rowAlt:    { backgroundColor: '#fafafa' },
-  hdr:       { color: '#999', fontWeight: '600', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' },
+  headerRow: { flexDirection: 'row', backgroundColor: c.surfaceAlt, paddingVertical: 6,
+               borderBottomWidth: 1, borderBottomColor: c.border },
+  row:       { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.border },
+  rowAlt:    { backgroundColor: c.surfaceAlt },
+  hdr:       { color: c.textFaint, fontWeight: '600', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' },
   labelCol:  { flex: 2.2, paddingLeft: 0 },
   col:       { flex: 1, paddingHorizontal: 3 },
   timeCol:   { flex: 1.4, paddingHorizontal: 3 },
-  num:       { textAlign: 'right', fontSize: 12, color: '#333' },
+  num:       { textAlign: 'right', fontSize: 12, color: c.text },
   badge:     { borderLeftWidth: 3, paddingLeft: 8 },
   labelTxt:  { fontWeight: '600', fontSize: 12 },
 });
@@ -1059,6 +1064,7 @@ const seg = StyleSheet.create({
 // ─── Km splits table ──────────────────────────────────────────────────────────
 
 function KmSplitTable({ splits }: { splits: KmSplit[] }) {
+  const km = useThemedStyles(makeKm);
   if (splits.length === 0) return null;
   const hasHR      = splits.some(s => s.avgHR > 0);
   const hasCadence = splits.some(s => s.avgCadence > 0);
@@ -1114,26 +1120,27 @@ function KmSplitTable({ splits }: { splits: KmSplit[] }) {
   );
 }
 
-const km = StyleSheet.create({
-  card:      { backgroundColor: '#fff', borderRadius: 14, marginHorizontal: 12, marginBottom: 12,
-               shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06,
+const makeKm = (c: Palette) => StyleSheet.create({
+  card:      { backgroundColor: c.surface, borderRadius: 14, marginHorizontal: 12, marginBottom: 12,
+               shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity,
                shadowRadius: 4, elevation: 2, overflow: 'hidden' },
-  title:     { fontSize: 13, fontWeight: '700', color: '#444', paddingHorizontal: 12,
+  title:     { fontSize: 13, fontWeight: '700', color: c.textSub, paddingHorizontal: 12,
                paddingTop: 10, paddingBottom: 6 },
-  headerRow: { flexDirection: 'row', backgroundColor: '#f8f8f8', paddingVertical: 6,
-               borderBottomWidth: 1, borderBottomColor: '#eee' },
-  row:       { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  rowAlt:    { backgroundColor: '#fafafa' },
-  hdr:       { color: '#999', fontWeight: '600', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' },
+  headerRow: { flexDirection: 'row', backgroundColor: c.surfaceAlt, paddingVertical: 6,
+               borderBottomWidth: 1, borderBottomColor: c.border },
+  row:       { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.border },
+  rowAlt:    { backgroundColor: c.surfaceAlt },
+  hdr:       { color: c.textFaint, fontWeight: '600', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' },
   kmCol:     { flex: 0.55, paddingLeft: 12 },
   col:       { flex: 1, paddingHorizontal: 3 },
   timeCol:   { flex: 1.4, paddingHorizontal: 3 },
-  num:       { textAlign: 'right', fontSize: 12, color: '#333' },
+  num:       { textAlign: 'right', fontSize: 12, color: c.text },
 });
 
 // ─── Helper component ─────────────────────────────────────────────────────────
 
 function SummaryBox({ label, value, color }: { label: string; value: string; color?: string }) {
+  const st = useThemedStyles(makeSt);
   return (
     <View style={st.summaryBox}>
       <Text style={[st.summaryVal, color ? { color } : null]}>{value}</Text>
@@ -1144,10 +1151,10 @@ function SummaryBox({ label, value, color }: { label: string; value: string; col
 
 // ─── Chart styles ─────────────────────────────────────────────────────────────
 
-const ac = StyleSheet.create({
-  yLabel:       { fontSize: 11, color: '#555', textAlign: 'right', fontWeight: '500' },
-  xLabel:       { fontSize: 11, color: '#666', fontWeight: '500' },
-  unitLabel:    { fontSize: 10, color: '#888', textAlign: 'center', fontWeight: '500' },
+const makeAc = (c: Palette) => StyleSheet.create({
+  yLabel:       { fontSize: 11, color: c.textSub, textAlign: 'right', fontWeight: '500' },
+  xLabel:       { fontSize: 11, color: c.textSub, fontWeight: '500' },
+  unitLabel:    { fontSize: 10, color: c.textSub, textAlign: 'center', fontWeight: '500' },
   sessionLabel: { fontSize: 9, fontWeight: '700', textAlign: 'center' },
   tip:          { position: 'absolute', top: 0, backgroundColor: 'rgba(20,20,24,0.92)', borderRadius: 7, paddingHorizontal: 7, paddingVertical: 3, alignItems: 'center' },
   tipTime:      { color: '#ddd', fontSize: 10, fontWeight: '700' },
@@ -1156,41 +1163,41 @@ const ac = StyleSheet.create({
 
 // ─── Screen styles ────────────────────────────────────────────────────────────
 
-const st = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeSt = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
 
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
   },
   backBtn:        { paddingRight: 8, minWidth: 52 },
   backText:       { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  headerDate:     { fontSize: 14, fontWeight: '700', color: '#222' },
-  headerTime:     { fontSize: 12, color: '#888', marginTop: 1 },
+  headerDate:     { fontSize: 14, fontWeight: '700', color: c.text },
+  headerTime:     { fontSize: 12, color: c.textSub, marginTop: 1 },
   navRow:         { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 },
   navArrow:       { fontSize: 20, color: '#FF6B35', fontWeight: '800', lineHeight: 22 },
-  navArrowOff:    { color: '#ddd' },
-  navCount:       { fontSize: 11, color: '#999', fontWeight: '600', minWidth: 42, textAlign: 'center' },
+  navArrowOff:    { color: c.textFaint },
+  navCount:       { fontSize: 11, color: c.textSub, fontWeight: '600', minWidth: 42, textAlign: 'center' },
 
-  notesCard:      { backgroundColor: '#fff', borderRadius: 12, padding: 12, marginBottom: 12,
-                    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2 },
+  notesCard:      { backgroundColor: c.surface, borderRadius: 12, padding: 12, marginBottom: 12,
+                    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2 },
   notesHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
-  notesTitle:     { fontSize: 13, fontWeight: '700', color: '#444' },
-  tempChip:       { backgroundColor: '#FFF3EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#FF6B3540' },
+  notesTitle:     { fontSize: 13, fontWeight: '700', color: c.textSub },
+  tempChip:       { backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#FF6B3540' },
   tempChipText:   { fontSize: 13, fontWeight: '700', color: '#FF6B35' },
-  noteInput:      { backgroundColor: '#f7f7f7', borderRadius: 8, padding: 10, fontSize: 14, color: '#222',
+  noteInput:      { backgroundColor: c.surfaceAlt, borderRadius: 8, padding: 10, fontSize: 14, color: c.text,
                     minHeight: 44, maxHeight: 120, textAlignVertical: 'top' },
-  noteHint:       { fontSize: 10, color: '#bbb', marginTop: 5 },
+  noteHint:       { fontSize: 10, color: c.textFaint, marginTop: 5 },
   labelBadge:     { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, minWidth: 70, alignItems: 'center' },
   labelBadgeText: { fontSize: 12, fontWeight: '700' },
 
   center:       { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText:  { marginTop: 8, color: '#888', fontSize: 14 },
+  loadingText:  { marginTop: 8, color: c.textSub, fontSize: 14 },
   errorText:    { fontSize: 15, color: '#c0392b', textAlign: 'center', marginBottom: 16, fontWeight: '600' },
   retryBtn:     { backgroundColor: '#FF6B35', borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },
   retryBtnText: { color: '#fff', fontWeight: '700' },
@@ -1202,30 +1209,30 @@ const st = StyleSheet.create({
   },
   summaryBox: {
     flex: 1, minWidth: 72,
-    backgroundColor: '#fff', borderRadius: 10,
+    backgroundColor: c.surface, borderRadius: 10,
     paddingVertical: 9, alignItems: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
-  summaryVal: { fontSize: 14, fontWeight: '800', color: '#333' },
-  summaryLbl: { fontSize: 10, color: '#888', marginTop: 2, fontWeight: '500' },
+  summaryVal: { fontSize: 14, fontWeight: '800', color: c.text },
+  summaryLbl: { fontSize: 10, color: c.textSub, marginTop: 2, fontWeight: '500' },
 
-  chartLabel: { fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 4, paddingHorizontal: 2 },
+  chartLabel: { fontSize: 12, fontWeight: '700', color: c.textSub, marginBottom: 4, paddingHorizontal: 2 },
 
   chartCard: {
-    backgroundColor: '#fff', borderRadius: 12,
+    backgroundColor: c.surface, borderRadius: 12,
     padding: 12, marginBottom: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
 
   sampleNote: {
-    fontSize: 11, color: '#bbb', textAlign: 'center', marginBottom: 12,
+    fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 12,
   },
 
-  hrFlagBtn:       { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#ddd', backgroundColor: '#fafafa' },
-  hrFlagBtnActive: { borderColor: '#c0392b', backgroundColor: '#fdedec' },
-  hrFlagText:      { fontSize: 11, color: '#888', fontWeight: '600' },
+  hrFlagBtn:       { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt },
+  hrFlagBtnActive: { borderColor: '#c0392b', backgroundColor: c.mode === 'dark' ? '#3a1d1d' : '#fdedec' },
+  hrFlagText:      { fontSize: 11, color: c.textSub, fontWeight: '600' },
 
   analyzeBox:   { backgroundColor: '#FF6B35', alignItems: 'center', justifyContent: 'center', paddingVertical: 0, minHeight: 44 },
   analyzeText:  { fontSize: 13, fontWeight: '700', color: '#fff' },

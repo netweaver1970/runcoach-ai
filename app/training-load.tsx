@@ -14,6 +14,7 @@ import {
 import { useRouter } from 'expo-router';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
 import { tsbStatus } from '../src/services/trainingLoad';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DailyLoad } from '../src/types';
 
 type Period = '1M' | '3M' | '6M' | '1Y';
@@ -54,6 +55,8 @@ function fmtRange(from: string, to: string): string {
 // ─── Triple-line chart (CTL / ATL / TSB) with scrubber cursor ──────────────────
 
 function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
+  const ch = useThemedStyles(makeCh);
+  const { c } = useTheme();
   const [cursorX, setCursorX] = useState<number | null>(null);
   const plotRef  = useRef<View>(null);
   const plotLeft = useRef(0);
@@ -130,7 +133,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
         {scale.ticks.map((t, i) => (
           <View key={i} style={{
             position: 'absolute', top: toY(t), left: 0, right: 0,
-            height: t === 0 ? 1.5 : 1, backgroundColor: t === 0 ? '#bbb' : '#ececec',
+            height: t === 0 ? 1.5 : 1, backgroundColor: t === 0 ? c.textFaint : c.gridline,
           }} />
         ))}
         {renderLine('ctl', CTL_COLOR)}
@@ -170,6 +173,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
 
 export default function TrainingLoadScreen() {
   const router = useRouter();
+  const s = useThemedStyles(makeS);
   const [period, setPeriod]       = useState<Period>('3M');
   const [pageOffset, setPageOffset] = useState(0);
   const [data, setData]           = useState<DailyLoad[]>([]);
@@ -320,9 +324,9 @@ export default function TrainingLoadScreen() {
   );
 }
 
-const ch = StyleSheet.create({
-  yLabel: { fontSize: 10, color: '#555', textAlign: 'right', fontWeight: '500' },
-  xLabel: { fontSize: 10, color: '#666', fontWeight: '600' },
+const makeCh = (c: Palette) => StyleSheet.create({
+  yLabel: { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
+  xLabel: { fontSize: 10, color: c.textSub, fontWeight: '600' },
   tip: {
     position: 'absolute', top: 2, backgroundColor: 'rgba(20,20,24,0.92)',
     borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5,
@@ -331,85 +335,85 @@ const ch = StyleSheet.create({
   tipRow:  { color: '#eee', fontSize: 11, fontWeight: '600', lineHeight: 15 },
 });
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeS = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backBtn: { paddingHorizontal: 4 },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  title: { fontSize: 17, fontWeight: '700', color: '#222' },
+  title: { fontSize: 17, fontWeight: '700', color: c.text },
   periodRow: {
     flexDirection: 'row', gap: 8, padding: 12,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   periodBtn: {
     flex: 1, paddingVertical: 7, borderRadius: 8,
-    borderWidth: 1, borderColor: '#ddd', alignItems: 'center', backgroundColor: '#fff',
+    borderWidth: 1, borderColor: c.border, alignItems: 'center', backgroundColor: c.surface,
   },
-  periodText: { fontSize: 13, color: '#555', fontWeight: '600' },
+  periodText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
   periodTextActive: { color: '#fff' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText: { marginTop: 8, color: '#888', fontSize: 14 },
+  loadingText: { marginTop: 8, color: c.textSub, fontSize: 14 },
   errorText: { fontSize: 15, color: '#c0392b', fontWeight: '700', marginBottom: 8 },
-  errorDetail: { fontSize: 12, color: '#999', textAlign: 'center' },
-  emptyText: { fontSize: 15, color: '#666', textAlign: 'center', marginBottom: 6, fontWeight: '600' },
-  emptyHint: { fontSize: 13, color: '#aaa', textAlign: 'center' },
+  errorDetail: { fontSize: 12, color: c.textFaint, textAlign: 'center' },
+  emptyText: { fontSize: 15, color: c.textSub, textAlign: 'center', marginBottom: 6, fontWeight: '600' },
+  emptyHint: { fontSize: 13, color: c.textFaint, textAlign: 'center' },
   scroll: { padding: 12, paddingBottom: 40 },
 
   summaryRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   summaryBox: {
-    flex: 1, backgroundColor: '#fff', borderRadius: 10, paddingVertical: 10, alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    flex: 1, backgroundColor: c.surface, borderRadius: 10, paddingVertical: 10, alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   summaryVal: { fontSize: 20, fontWeight: '800' },
-  summaryLbl: { fontSize: 10, color: '#888', marginTop: 2, fontWeight: '500' },
+  summaryLbl: { fontSize: 10, color: c.textSub, marginTop: 2, fontWeight: '500' },
 
   statusBanner: {
-    backgroundColor: '#fff', borderRadius: 10, padding: 12, marginBottom: 12,
+    backgroundColor: c.surface, borderRadius: 10, padding: 12, marginBottom: 12,
     borderLeftWidth: 4,
   },
   statusLabel: { fontSize: 15, fontWeight: '800', marginBottom: 2 },
-  statusHint: { fontSize: 13, color: '#666', lineHeight: 18 },
+  statusHint: { fontSize: 13, color: c.textSub, lineHeight: 18 },
 
   chartWrap: {
-    backgroundColor: '#fff', borderRadius: 12,
+    backgroundColor: c.surface, borderRadius: 12,
     padding: CARD_PADDING, paddingBottom: 10, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   navBtn: { paddingHorizontal: 4, paddingVertical: 4 },
   navBtnDisabled: { opacity: 0.25 },
-  navArrow: { fontSize: 28, color: '#333', fontWeight: '600', lineHeight: 32 },
-  navArrowDisabled: { color: '#ccc' },
-  navLabel: { flex: 1, textAlign: 'center', fontSize: 12, color: '#555', fontWeight: '600' },
+  navArrow: { fontSize: 28, color: c.text, fontWeight: '600', lineHeight: 32 },
+  navArrowDisabled: { color: c.textFaint },
+  navLabel: { flex: 1, textAlign: 'center', fontSize: 12, color: c.textSub, fontWeight: '600' },
 
   legendRow: { flexDirection: 'row', justifyContent: 'center', gap: 20, marginTop: 10 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
-  legendText: { fontSize: 12, color: '#666', fontWeight: '600' },
-  scrubHint: { fontSize: 11, color: '#aaa', textAlign: 'center', marginTop: 6, fontStyle: 'italic' },
+  legendText: { fontSize: 12, color: c.textSub, fontWeight: '600' },
+  scrubHint: { fontSize: 11, color: c.textFaint, textAlign: 'center', marginTop: 6, fontStyle: 'italic' },
 
   explainer: {
-    backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 16,
+    backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 16,
     borderLeftWidth: 3, borderLeftColor: '#3B82F6',
   },
-  explainerTitle: { fontSize: 14, fontWeight: '700', color: '#222', marginBottom: 6 },
-  explainerBody: { fontSize: 12, color: '#666', lineHeight: 19 },
+  explainerTitle: { fontSize: 14, fontWeight: '700', color: c.text, marginBottom: 6 },
+  explainerBody: { fontSize: 12, color: c.textSub, lineHeight: 19 },
 
   listHeader: {
-    fontSize: 12, fontWeight: '700', color: '#666',
+    fontSize: 12, fontWeight: '700', color: c.textSub,
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginLeft: 2,
   },
   listRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#fff', borderRadius: 8,
+    backgroundColor: c.surface, borderRadius: 8,
     paddingHorizontal: 14, paddingVertical: 10, marginBottom: 6,
   },
-  listDate: { fontSize: 13, color: '#555' },
+  listDate: { fontSize: 13, color: c.textSub },
   listVals: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   listVal: { fontSize: 14, fontWeight: '700', width: 30, textAlign: 'right' },
-  listLoad: { fontSize: 11, color: '#aaa', fontWeight: '600' },
+  listLoad: { fontSize: 11, color: c.textFaint, fontWeight: '600' },
 });

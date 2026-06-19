@@ -28,6 +28,7 @@ import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, g
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus } from '../src/services/trainingLoad';
 import { loadRunMeta } from '../src/services/runMeta';
+import { useThemedStyles, Palette } from '../src/theme';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain } from '../src/types';
 // WorkoutLabel is used by the RunFilter type and RUN_FILTERS array
 
@@ -44,6 +45,7 @@ const RUN_FILTERS: { label: string; value: RunFilter; emoji: string }[] = [
 
 export default function HomeScreen() {
   const router = useRouter();
+  const styles = useThemedStyles(makeStyles);
   const [snapshot, setSnapshot]         = useState<HealthSnapshot | null>(null);
   const [loading, setLoading]           = useState(true);
   const [refreshing, setRefreshing]     = useState(false);
@@ -482,6 +484,7 @@ const REC_COLORS: Record<string, string> = {
 };
 
 function TrainingRecommendationCard({ rec, loading }: { rec: TrainingRecommendation | null; loading: boolean }) {
+  const recStyles = useThemedStyles(makeRecStyles);
   if (loading && !rec) {
     return (
       <View style={[recStyles.card, { flexDirection: 'row', alignItems: 'center' }]}>
@@ -515,6 +518,7 @@ function TrainingRecommendationCard({ rec, loading }: { rec: TrainingRecommendat
 // ─── Training Load Card (CTL/ATL/TSB) ────────────────────────────────────────
 
 function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: () => void }) {
+  const tl = useThemedStyles(makeTlStyles);
   const latest = series[series.length - 1];
   if (!latest) return null;
   const status = tsbStatus(latest.tsb);
@@ -579,14 +583,14 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
   );
 }
 
-const tl = StyleSheet.create({
+const makeTlStyles = (c: Palette) => StyleSheet.create({
   card: {
     marginHorizontal: 16, marginTop: 4, marginBottom: 4,
-    backgroundColor: '#1C1C1E', borderRadius: 12, padding: 14, gap: 10,
+    backgroundColor: c.surface, borderRadius: 12, padding: 14, gap: 10,
     borderLeftWidth: 4, borderLeftColor: '#3B82F6',
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  title: { fontSize: 15, fontWeight: '700', color: c.text },
   statusPill: {
     fontSize: 11, fontWeight: '700', borderWidth: 1, borderRadius: 8,
     paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden',
@@ -594,17 +598,17 @@ const tl = StyleSheet.create({
   metricsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   metric: { alignItems: 'center', minWidth: 54 },
   metricVal: { fontSize: 22, fontWeight: '800' },
-  metricLbl: { fontSize: 11, color: '#D1D5DB', marginTop: 1, fontWeight: '600' },
-  metricSub: { fontSize: 9, color: '#6B7280', fontWeight: '600' },
-  hint: { fontSize: 12, color: '#9CA3AF', lineHeight: 16 },
+  metricLbl: { fontSize: 11, color: c.textSub, marginTop: 1, fontWeight: '600' },
+  metricSub: { fontSize: 9, color: c.textFaint, fontWeight: '600' },
+  hint: { fontSize: 12, color: c.textSub, lineHeight: 16 },
 });
 
-const recStyles = StyleSheet.create({
+const makeRecStyles = (c: Palette) => StyleSheet.create({
   card: {
     marginHorizontal: 16,
     marginTop: 8,
     marginBottom: 4,
-    backgroundColor: '#1C1C1E',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
     borderLeftWidth: 4,
@@ -622,18 +626,18 @@ const recStyles = StyleSheet.create({
   type: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#fff',
+    color: c.text,
   },
   meta: {
     fontSize: 13,
-    color: '#9CA3AF',
+    color: c.textSub,
     marginTop: 1,
   },
   badge: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#6B7280',
-    backgroundColor: '#2C2C2E',
+    color: c.textSub,
+    backgroundColor: c.surfaceAlt,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
@@ -641,12 +645,12 @@ const recStyles = StyleSheet.create({
   },
   reason: {
     fontSize: 13,
-    color: '#D1D5DB',
+    color: c.text,
     lineHeight: 18,
   },
   loadingText: {
     fontSize: 13,
-    color: '#6B7280',
+    color: c.textFaint,
     marginLeft: 8,
   },
 });
@@ -761,6 +765,7 @@ function ArcRing({ size, strokeWidth, progress, color, trackColor }: {
 const SAFE_COLOR = '#16a085';
 
 function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }) {
+  const styles = useThemedStyles(makeStyles);
   const inner = size - 18;
   const real  = strain ? strain.real : 0;
   const st    = strain ? strainStatus(strain) : { label: '', color: '#888' };
@@ -797,6 +802,7 @@ type WellnessRingsProps = {
 
 function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRingsProps) {
   const router = useRouter();
+  const styles = useThemedStyles(makeStyles);
   const today  = new Date().toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short',
   });
@@ -875,6 +881,7 @@ const LABEL_STYLE: Record<string, { color: string; bg: string; emoji: string }> 
 
 function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] }) {
   const router = useRouter();
+  const styles = useThemedStyles(makeStyles);
   const date = new Date(run.date).toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: '2-digit',
   });
@@ -952,53 +959,53 @@ function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] })
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText: { marginTop: 12, color: '#666', fontSize: 15, textAlign: 'center' },
+const makeStyles = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: c.bg },
+  loadingText: { marginTop: 12, color: c.textSub, fontSize: 15, textAlign: 'center' },
   progressTrack: {
     marginTop: 16, width: 220, height: 6, borderRadius: 3,
-    backgroundColor: '#eee', overflow: 'hidden',
+    backgroundColor: c.border, overflow: 'hidden',
   },
   progressFill: { height: 6, borderRadius: 3, backgroundColor: '#FF6B35' },
-  progressPct: { marginTop: 6, fontSize: 12, color: '#aaa' },
+  progressPct: { marginTop: 6, fontSize: 12, color: c.textFaint },
 
   monthsBtn: {
-    borderRadius: 8, borderWidth: 1, borderColor: '#ddd',
-    backgroundColor: '#fff', paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 8, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.surface, paddingHorizontal: 8, paddingVertical: 3,
   },
-  monthsBtnText: { fontSize: 11, color: '#888', fontWeight: '600' },
+  monthsBtnText: { fontSize: 11, color: c.textSub, fontWeight: '600' },
 
   wellnessCard: {
-    backgroundColor: '#fff', margin: 12, marginBottom: 8, borderRadius: 16,
+    backgroundColor: c.surface, margin: 12, marginBottom: 8, borderRadius: 16,
     paddingHorizontal: 14, paddingVertical: 12,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
+    shadowOpacity: c.shadowOpacity, shadowRadius: 6, elevation: 3,
   },
   wellnessHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  wellnessTitle: { fontSize: 15, fontWeight: '700', color: '#222' },
-  wellnessSubtitle: { fontSize: 12, color: '#aaa' },
+  wellnessTitle: { fontSize: 15, fontWeight: '700', color: c.text },
+  wellnessSubtitle: { fontSize: 12, color: c.textFaint },
   ringsRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', marginBottom: 2 },
-  ringHint: { fontSize: 9, color: '#bbb', marginTop: 3 },
+  ringHint: { fontSize: 9, color: c.textFaint, marginTop: 3 },
   strainCaption: { fontSize: 9, fontWeight: '700' },
-  wellnessUnavailable: { fontSize: 15, color: '#555', marginBottom: 4, fontWeight: '500' },
-  recoveryUnavailableHint: { fontSize: 12, color: '#aaa', marginBottom: 12, lineHeight: 18 },
+  wellnessUnavailable: { fontSize: 15, color: c.textSub, marginBottom: 4, fontWeight: '500' },
+  recoveryUnavailableHint: { fontSize: 12, color: c.textFaint, marginBottom: 12, lineHeight: 18 },
   refreshBtn: {
-    alignSelf: 'flex-start', backgroundColor: '#FFF3EE', borderRadius: 8,
+    alignSelf: 'flex-start', backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE', borderRadius: 8,
     paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: '#FF6B35',
   },
   refreshBtnText: { color: '#FF6B35', fontSize: 14, fontWeight: '700' },
-  sleepText: { fontSize: 12, color: '#777', marginBottom: 6 },
+  sleepText: { fontSize: 12, color: c.textSub, marginBottom: 6 },
 
   calibrateBtn: {
     marginHorizontal: 12, marginBottom: 8, marginTop: 0,
-    backgroundColor: '#1C1C1E', borderRadius: 10,
+    backgroundColor: c.surface, borderRadius: 10,
     paddingHorizontal: 14, paddingVertical: 10,
-    borderWidth: 1, borderColor: '#8e44ad44',
+    borderWidth: 1, borderColor: '#8e44ad55',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
   },
-  calibrateBtnText: { fontSize: 13, fontWeight: '700', color: '#c39bd3' },
-  calibrateBtnSub:  { fontSize: 11, color: '#6b5f74' },
+  calibrateBtnText: { fontSize: 13, fontWeight: '700', color: '#9b59b6' },
+  calibrateBtnSub:  { fontSize: 11, color: c.textSub },
 
   btnRow: { flexDirection: 'row', marginHorizontal: 12, marginBottom: 8, gap: 8 },
   btnFlex: { flex: 1, marginHorizontal: 0 },
@@ -1009,36 +1016,36 @@ const styles = StyleSheet.create({
   coachBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
   statsRow: { flexDirection: 'row', paddingHorizontal: 12, gap: 6, marginBottom: 12 },
-  statCard: { flex: 1, backgroundColor: '#fff', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
+  statCard: { flex: 1, backgroundColor: c.surface, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
 
   statValue: { fontSize: 13, fontWeight: '700', color: '#FF6B35' },
-  statLabel: { fontSize: 10, color: '#888', marginTop: 1 },
+  statLabel: { fontSize: 10, color: c.textSub, marginTop: 1 },
 
   sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: 16, marginBottom: 6 },
-  sectionTitle: { fontSize: 12, fontWeight: '700', color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 },
-  filterCount: { fontSize: 12, color: '#aaa' },
+  sectionTitle: { fontSize: 12, fontWeight: '700', color: c.textSub, textTransform: 'uppercase', letterSpacing: 0.5 },
+  filterCount: { fontSize: 12, color: c.textFaint },
   filterBar: { paddingHorizontal: 12, gap: 6, paddingBottom: 2 },
-  filterChip: { borderRadius: 12, borderWidth: 1, borderColor: '#ddd', backgroundColor: '#fff', paddingHorizontal: 9, paddingVertical: 3 },
+  filterChip: { borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface, paddingHorizontal: 9, paddingVertical: 3 },
   filterChipActive: { backgroundColor: '#FF6B35', borderColor: '#FF6B35' },
-  filterChipText: { fontSize: 11, color: '#666', fontWeight: '500' },
+  filterChipText: { fontSize: 11, color: c.textSub, fontWeight: '500' },
   filterChipTextActive: { color: '#fff', fontWeight: '700' },
   emptyBox: { margin: 16, alignItems: 'center' },
-  emptyText: { fontSize: 15, color: '#555', marginBottom: 6 },
-  emptySubtext: { fontSize: 13, color: '#999', textAlign: 'center' },
+  emptyText: { fontSize: 15, color: c.textSub, marginBottom: 6 },
+  emptySubtext: { fontSize: 13, color: c.textFaint, textAlign: 'center' },
   emptyLink: { fontSize: 14, color: '#FF6B35', fontWeight: '600' },
 
   runCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#fff', marginHorizontal: 12, marginBottom: 6, borderRadius: 12,
+    backgroundColor: c.surface, marginHorizontal: 12, marginBottom: 6, borderRadius: 12,
     paddingHorizontal: 12, paddingVertical: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
-  runDate:     { fontSize: 13, fontWeight: '600', color: '#333' },
-  runStartTime: { fontSize: 13, fontWeight: '700', color: '#555' },
+  runDate:     { fontSize: 13, fontWeight: '600', color: c.text },
+  runStartTime: { fontSize: 13, fontWeight: '700', color: c.textSub },
   workoutBadge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   workoutBadgeText: { fontSize: 11, fontWeight: '700' },
-  runDistance:  { fontSize: 16, fontWeight: '800', color: '#111' },
-  runStat:      { fontSize: 13, color: '#555' },
+  runDistance:  { fontSize: 16, fontWeight: '800', color: c.text },
+  runStat:      { fontSize: 13, color: c.textSub },
   runStatWork:  { color: '#FF6B35', fontWeight: '600' },
   runStatPower: { fontSize: 12, color: '#8e44ad' },
   runStatHR:    { fontSize: 12, color: '#e74c3c' },

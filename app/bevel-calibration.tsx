@@ -27,6 +27,7 @@ import {
   BevelEntry, RecoveryRegressionResult, RecoveryWeights,
 } from '../src/services/bevelCalibration';
 import { fetchSleepHistory, fetchSleepBiometrics, SleepBiometrics } from '../src/services/healthkit';
+import { useThemedStyles, Palette } from '../src/theme';
 import { SleepSession } from '../src/types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -53,6 +54,7 @@ interface NightRow {
 function NightCard({ row, sleepGoalMin, onSave }: {
   row: NightRow; sleepGoalMin: number; onSave: (e: BevelEntry) => void;
 }) {
+  const c = useThemedStyles(makeStyles);
   const bio   = row.bio;
   const s     = row.session;
   const inBed = s.totalMinutes + s.awakeMinutes;
@@ -141,7 +143,7 @@ function NightCard({ row, sleepGoalMin, onSave }: {
               ['Effic',  pct(eff)],
               ['HR dip', bio?.hrDipPct ? `${bio.hrDipPct.toFixed(1)}%` : '—'],
             ] as [string, string][]).map(([lbl, val]) => (
-              <View key={lbl} style={[c.bioCell, { backgroundColor: '#0d0d14' }]}>
+              <View key={lbl} style={c.bioCell}>
                 <Text style={c.bioCellLabel}>{lbl}</Text>
                 <Text style={[c.bioCellVal, { color: '#888' }]}>{val}</Text>
               </View>
@@ -185,6 +187,7 @@ function ResultsPanel({ result, onApply, applied }: {
   onApply: (w: RecoveryWeights) => void;
   applied: boolean;
 }) {
+  const c = useThemedStyles(makeStyles);
   const { weights: w, mae, r2, dataPoints, perDayErrors } = result;
   return (
     <View style={c.resultsCard}>
@@ -250,6 +253,7 @@ function ResultsPanel({ result, onApply, applied }: {
 
 export default function BevelCalibrationScreen() {
   const router = useRouter();
+  const c = useThemedStyles(makeStyles);
   const [rows,         setRows]         = useState<NightRow[]>([]);
   const [entries,      setEntries]      = useState<BevelEntry[]>([]);
   const [loading,      setLoading]      = useState(true);
@@ -427,26 +431,26 @@ export default function BevelCalibrationScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const c = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f0f11' },
+const makeStyles = (t: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: t.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#1a1a1f', borderBottomWidth: 1, borderBottomColor: '#2a2a30',
+    backgroundColor: t.surface, borderBottomWidth: 1, borderBottomColor: t.border,
   },
   backText:  { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  title:     { fontSize: 17, fontWeight: '700', color: '#fff' },
+  title:     { fontSize: 17, fontWeight: '700', color: t.text },
   resetText: { fontSize: 13, color: '#e74c3c', fontWeight: '600' },
   scroll:    { padding: 12, paddingBottom: 60 },
   center:    { alignItems: 'center', paddingVertical: 24 },
-  loadingText: { color: '#888', marginTop: 8, fontSize: 13 },
+  loadingText: { color: t.textSub, marginTop: 8, fontSize: 13 },
 
   explainer: {
-    backgroundColor: '#1a1a1f', borderRadius: 12, padding: 14, marginBottom: 14,
+    backgroundColor: t.surface, borderRadius: 12, padding: 14, marginBottom: 14,
     borderLeftWidth: 3, borderLeftColor: ACCENT,
   },
-  explainerTitle: { fontSize: 14, fontWeight: '700', color: '#fff', marginBottom: 6 },
-  explainerBody:  { fontSize: 12, color: '#aaa', lineHeight: 18 },
+  explainerTitle: { fontSize: 14, fontWeight: '700', color: t.text, marginBottom: 6 },
+  explainerBody:  { fontSize: 12, color: t.textSub, lineHeight: 18 },
   customBadge: {
     marginTop: 8, backgroundColor: ACCENT + '33', borderRadius: 6,
     paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start',
@@ -456,69 +460,69 @@ const c = StyleSheet.create({
   analyseRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14,
   },
-  analyseCount:       { fontSize: 13, color: '#888' },
+  analyseCount:       { fontSize: 13, color: t.textSub },
   analyseBtn:         { backgroundColor: ACCENT, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 9 },
-  analyseBtnDisabled: { backgroundColor: '#333' },
+  analyseBtnDisabled: { backgroundColor: t.border },
   analyseBtnText:     { color: '#fff', fontWeight: '700', fontSize: 13 },
 
   sectionHeader: {
-    fontSize: 11, fontWeight: '700', color: '#555', textTransform: 'uppercase',
+    fontSize: 11, fontWeight: '700', color: t.textFaint, textTransform: 'uppercase',
     letterSpacing: 0.5, marginBottom: 8, marginTop: 4,
   },
 
-  nightCard:    { backgroundColor: '#1a1a1f', borderRadius: 12, marginBottom: 8, overflow: 'hidden' },
+  nightCard:    { backgroundColor: t.surface, borderRadius: 12, marginBottom: 8, overflow: 'hidden' },
   nightHeader:  { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 8 },
-  nightDate:    { fontSize: 13, fontWeight: '700', color: '#fff' },
-  nightSummary: { fontSize: 11, color: '#888', marginTop: 2 },
+  nightDate:    { fontSize: 13, fontWeight: '700', color: t.text },
+  nightSummary: { fontSize: 11, color: t.textSub, marginTop: 2 },
   bevelScore:   { fontSize: 12, fontWeight: '600', marginTop: 2 },
-  bevelMissing: { fontSize: 11, color: '#555', fontStyle: 'italic', marginTop: 2 },
-  chevron:      { fontSize: 16, color: '#555', marginLeft: 4 },
+  bevelMissing: { fontSize: 11, color: t.textFaint, fontStyle: 'italic', marginTop: 2 },
+  chevron:      { fontSize: 16, color: t.textFaint, marginLeft: 4 },
 
-  nightExpanded: { borderTopWidth: 1, borderTopColor: '#2a2a30', padding: 12, gap: 8 },
-  sectionLabel:  { fontSize: 9, fontWeight: '700', color: '#555', textTransform: 'uppercase', letterSpacing: 0.5 },
+  nightExpanded: { borderTopWidth: 1, borderTopColor: t.border, padding: 12, gap: 8 },
+  sectionLabel:  { fontSize: 9, fontWeight: '700', color: t.textFaint, textTransform: 'uppercase', letterSpacing: 0.5 },
 
   inputRow:   { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   inputGroup: { flex: 1 },
-  inputLabel: { fontSize: 10, color: '#888', marginBottom: 4, fontWeight: '600', textTransform: 'uppercase' },
+  inputLabel: { fontSize: 10, color: t.textSub, marginBottom: 4, fontWeight: '600', textTransform: 'uppercase' },
   input: {
-    backgroundColor: '#0f0f14', borderRadius: 8, borderWidth: 1, borderColor: '#2a2a30',
-    color: '#fff', fontSize: 16, fontWeight: '700',
+    backgroundColor: t.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: t.border,
+    color: t.text, fontSize: 16, fontWeight: '700',
     paddingHorizontal: 10, paddingVertical: 9, textAlign: 'center',
   },
   saveBtn:         { backgroundColor: ACCENT, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10 },
-  saveBtnDisabled: { backgroundColor: '#333' },
+  saveBtnDisabled: { backgroundColor: t.border },
   saveBtnText:     { color: '#fff', fontWeight: '700', fontSize: 14 },
 
   resultsCard: {
-    backgroundColor: '#1a1a1f', borderRadius: 12, padding: 14, marginBottom: 14,
+    backgroundColor: t.surface, borderRadius: 12, padding: 14, marginBottom: 14,
     borderWidth: 1, borderColor: ACCENT + '55',
   },
-  resultsTitle: { fontSize: 15, fontWeight: '800', color: '#fff', marginBottom: 2 },
-  resultsSub:   { fontSize: 12, color: '#888' },
+  resultsTitle: { fontSize: 15, fontWeight: '800', color: t.text, marginBottom: 2 },
+  resultsSub:   { fontSize: 12, color: t.textSub },
 
   weightsTable:  { marginTop: 10, borderRadius: 8, overflow: 'hidden' },
   weightsHeader: {
-    flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, backgroundColor: '#0f0f14',
+    flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, backgroundColor: t.surfaceAlt,
   },
   weightsRow: {
     flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 7,
-    borderBottomWidth: 1, borderBottomColor: '#0f0f14',
+    borderBottomWidth: 1, borderBottomColor: t.border,
   },
-  wCol: { flex: 1, fontSize: 12, color: '#888', fontWeight: '600', textAlign: 'center' },
+  wCol: { flex: 1, fontSize: 12, color: t.textSub, fontWeight: '600', textAlign: 'center' },
 
   errRow: {
     flexDirection: 'row', alignItems: 'center', paddingVertical: 5,
-    borderBottomWidth: 1, borderBottomColor: '#1f1f27',
+    borderBottomWidth: 1, borderBottomColor: t.border,
   },
-  errDate:  { flex: 2, fontSize: 12, color: '#888' },
-  errVal:   { flex: 2, fontSize: 12, color: '#ccc', textAlign: 'center' },
+  errDate:  { flex: 2, fontSize: 12, color: t.textSub },
+  errVal:   { flex: 2, fontSize: 12, color: t.text, textAlign: 'center' },
   errDelta: { flex: 1, fontSize: 13, fontWeight: '700', textAlign: 'right' },
 
   applyBtn:     { marginTop: 16, backgroundColor: ACCENT, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
   applyBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
 
   bioRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  bioCell:      { backgroundColor: '#13131a', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, alignItems: 'center', minWidth: 60 },
-  bioCellLabel: { fontSize: 9, color: '#666', fontWeight: '700', textTransform: 'uppercase' },
-  bioCellVal:   { fontSize: 13, fontWeight: '700', color: '#ccc', marginTop: 2 },
+  bioCell:      { backgroundColor: t.surfaceAlt, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, alignItems: 'center', minWidth: 60 },
+  bioCellLabel: { fontSize: 9, color: t.textFaint, fontWeight: '700', textTransform: 'uppercase' },
+  bioCellVal:   { fontSize: 13, fontWeight: '700', color: t.text, marginTop: 2 },
 });

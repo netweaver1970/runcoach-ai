@@ -25,6 +25,7 @@ import {
   LLMProvider,
 } from '../src/services/llm';
 import { PowerZones } from '../src/types';
+import { useTheme, useThemedStyles, Palette, ThemeMode } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -43,6 +44,8 @@ import {
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const { mode, setMode, c } = useTheme();
+  const styles = useThemedStyles(makeStyles);
 
   // ── LLM config ──────────────────────────────────────────────────────────────
   const [provider,      setProvider]      = useState<LLMProvider>('anthropic');
@@ -212,6 +215,25 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+
+        {/* Appearance */}
+        <Section title="Appearance">
+          <Text style={styles.fieldLabel}>Theme</Text>
+          <View style={styles.themeRow}>
+            {([['light', '☀️ Light'], ['dark', '🌙 Dark'], ['system', '⚙️ System']] as [ThemeMode, string][]).map(([m, lbl]) => (
+              <TouchableOpacity
+                key={m}
+                style={[styles.themeBtn, mode === m && styles.themeBtnActive]}
+                onPress={() => setMode(m)}
+              >
+                <Text style={[styles.themeBtnText, mode === m && styles.themeBtnTextActive]}>{lbl}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.hint}>
+            {mode === 'system' ? `Following your phone (currently ${c.mode}).` : `Always ${mode}.`}
+          </Text>
+        </Section>
 
         {/* AI Provider & Model */}
         <Section title="AI Provider & Model">
@@ -664,6 +686,7 @@ export default function SettingsScreen() {
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -672,46 +695,51 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeStyles = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
+  themeRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  themeBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, alignItems: 'center', backgroundColor: c.surfaceAlt },
+  themeBtnActive: { backgroundColor: c.accent, borderColor: c.accent },
+  themeBtnText: { fontSize: 13, fontWeight: '600', color: c.textSub },
+  themeBtnTextActive: { color: c.onAccent },
   scroll: { padding: 16, paddingBottom: 40 },
   section: { marginBottom: 20 },
   sectionTitle: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#888',
+    color: c.textSub,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 8,
     marginLeft: 4,
   },
   sectionBody: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
+    shadowOpacity: c.shadowOpacity,
     shadowRadius: 3,
     elevation: 2,
   },
-  hint: { fontSize: 13, color: '#777', lineHeight: 20, marginBottom: 12 },
+  hint: { fontSize: 13, color: c.textSub, lineHeight: 20, marginBottom: 12 },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: c.border,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
-    color: '#222',
-    backgroundColor: '#fafafa',
+    color: c.text,
+    backgroundColor: c.surfaceAlt,
     marginBottom: 10,
   },
   row: { flexDirection: 'row', gap: 10, alignItems: 'center' },
-  unitLabel: { fontSize: 14, color: '#555', fontWeight: '600' },
+  unitLabel: { fontSize: 14, color: c.textSub, fontWeight: '600' },
   btn: {
     flex: 1,
-    backgroundColor: '#FF6B35',
+    backgroundColor: c.accent,
     borderRadius: 8,
     paddingVertical: 11,
     alignItems: 'center',
@@ -726,12 +754,12 @@ const styles = StyleSheet.create({
   },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  switchLabel: { fontSize: 14, color: '#333', fontWeight: '600', marginBottom: 2 },
-  switchSub: { fontSize: 12, color: '#999' },
+  switchLabel: { fontSize: 14, color: c.text, fontWeight: '600', marginBottom: 2 },
+  switchSub: { fontSize: 12, color: c.textFaint },
   pzRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
-  pzLabel: { fontSize: 13, color: '#555', fontWeight: '600', width: 106 },
+  pzLabel: { fontSize: 13, color: c.textSub, fontWeight: '600', width: 106 },
   pzInput: { flex: 1, marginBottom: 0, paddingVertical: 8, textAlign: 'center', minWidth: 52 },
-  pzUnit: { fontSize: 13, color: '#888', fontWeight: '600', minWidth: 12 },
+  pzUnit: { fontSize: 13, color: c.textSub, fontWeight: '600', minWidth: 12 },
   apiKeyInput: {
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     fontSize: 12,
@@ -743,23 +771,23 @@ const styles = StyleSheet.create({
   },
   providerTab: {
     flex: 1, paddingVertical: 7, borderRadius: 8,
-    backgroundColor: '#f0f0f0', alignItems: 'center',
+    backgroundColor: c.surfaceAlt, alignItems: 'center',
   },
   providerTabActive: {
-    backgroundColor: '#FF6B35',
+    backgroundColor: c.accent,
   },
-  providerTabText: { fontSize: 12, fontWeight: '600', color: '#777' },
+  providerTabText: { fontSize: 12, fontWeight: '600', color: c.textSub },
   providerTabTextActive: { color: '#fff' },
   // Field label
-  fieldLabel: { fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 5, textTransform: 'uppercase', letterSpacing: 0.3 },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: c.textSub, marginBottom: 5, textTransform: 'uppercase', letterSpacing: 0.3 },
   // Model chips
   chipsScroll: { marginTop: 6, marginBottom: 4 },
   chip: {
     borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5,
-    backgroundColor: '#f0f0f0', marginRight: 6,
-    borderWidth: 1, borderColor: '#e0e0e0',
+    backgroundColor: c.surfaceAlt, marginRight: 6,
+    borderWidth: 1, borderColor: c.border,
   },
   chipActive: { backgroundColor: '#FF6B3522', borderColor: '#FF6B35' },
-  chipText: { fontSize: 11, color: '#555', fontWeight: '600' },
+  chipText: { fontSize: 11, color: c.textSub, fontWeight: '600' },
   chipTextActive: { color: '#FF6B35' },
 });

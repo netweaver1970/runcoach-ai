@@ -5,10 +5,12 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery } from '../src/types';
+import { useThemedStyles, Palette } from '../src/theme';
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
 }) {
+  const s = useThemedStyles(makeStyles);
   return (
     <View style={s.row}>
       <View style={{ flex: 1 }}>
@@ -21,6 +23,7 @@ function Row({ label, value, valueColor, sub }: {
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const s = useThemedStyles(makeStyles);
   return (
     <View style={s.section}>
       <Text style={s.sectionTitle}>{title}</Text>
@@ -32,6 +35,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export default function RecoveryDetailScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
   const router   = useRouter();
+  const s = useThemedStyles(makeStyles);
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
 
   if (!recovery) {
@@ -176,50 +180,50 @@ export default function RecoveryDetailScreen() {
   );
 }
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeStyles = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  title:    { fontSize: 17, fontWeight: '700', color: '#222' },
+  title:    { fontSize: 17, fontWeight: '700', color: c.text },
   historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
   center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyText:{ fontSize: 15, color: '#aaa' },
+  emptyText:{ fontSize: 15, color: c.textFaint },
   scroll:   { padding: 12, paddingBottom: 40 },
 
   hero: {
     flexDirection: 'row', alignItems: 'center', gap: 16,
-    backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 14,
+    backgroundColor: c.surface, borderRadius: 16, padding: 16, marginBottom: 14,
     borderLeftWidth: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 5, elevation: 3,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: c.shadowOpacity, shadowRadius: 5, elevation: 3,
   },
   scoreCircle: {
     width: 88, height: 88, borderRadius: 44, borderWidth: 4,
     alignItems: 'center', justifyContent: 'center',
   },
   scoreNumber: { fontSize: 36, fontWeight: '800', lineHeight: 40 },
-  scoreUnit:   { fontSize: 12, color: '#aaa' },
+  scoreUnit:   { fontSize: 12, color: c.textFaint },
   scoreLabel:  { fontSize: 16, fontWeight: '800', marginBottom: 4 },
-  scoreAdvice: { fontSize: 13, color: '#666', lineHeight: 19 },
+  scoreAdvice: { fontSize: 13, color: c.textSub, lineHeight: 19 },
 
   section:      { marginBottom: 14 },
   sectionTitle: {
-    fontSize: 11, fontWeight: '700', color: '#888',
+    fontSize: 11, fontWeight: '700', color: c.textSub,
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, marginLeft: 4,
   },
   card: {
-    backgroundColor: '#fff', borderRadius: 12, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    backgroundColor: c.surface, borderRadius: 12, overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   row: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 14, paddingVertical: 11,
-    borderBottomWidth: 1, borderBottomColor: '#f5f5f5',
+    borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  rowLabel: { fontSize: 13, color: '#333', fontWeight: '500' },
-  rowSub:   { fontSize: 11, color: '#aaa', marginTop: 2 },
-  rowValue: { fontSize: 13, fontWeight: '700', color: '#222' },
+  rowLabel: { fontSize: 13, color: c.text, fontWeight: '500' },
+  rowSub:   { fontSize: 11, color: c.textFaint, marginTop: 2 },
+  rowValue: { fontSize: 13, fontWeight: '700', color: c.text },
 });

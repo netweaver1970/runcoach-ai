@@ -34,6 +34,7 @@ import {
   PersistedMessage,
 } from '../src/services/chatMemory';
 import { HealthSnapshot } from '../src/types';
+import { useThemedStyles, Palette } from '../src/theme';
 
 // ─── Local context (location + time) ─────────────────────────────────────────
 // Derive city name from IANA timezone — no location permissions needed.
@@ -78,6 +79,8 @@ interface Message {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
+  const styles = useThemedStyles(makeStyles);
+  const mdAssistant = useThemedStyles(makeMdAssistant);
   const { data, focusRunUUID, runDetailJson } = useLocalSearchParams<{ data?: string; focusRunUUID?: string; runDetailJson?: string }>();
   const [snapshot, setSnapshot]       = useState<HealthSnapshot | null>(data ? JSON.parse(data) : null);
 
@@ -404,7 +407,7 @@ export default function ChatScreen() {
     return (
       <View style={[styles.bubbleRow, isUser && styles.bubbleRowUser]}>
         <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-          <Markdown style={isUser ? mdStylesUser : mdStylesAssistant}>
+          <Markdown style={isUser ? mdStylesUser : mdAssistant}>
             {item.content}
           </Markdown>
         </View>
@@ -518,13 +521,13 @@ const mdBase = {
   blockquote:  { borderLeftWidth: 3, borderColor: '#ccc', paddingLeft: 10, marginLeft: 0, opacity: 0.8 },
 };
 
-const mdStylesAssistant = StyleSheet.create({
+const makeMdAssistant = (c: Palette) => StyleSheet.create({
   ...mdBase,
-  body:      { ...mdBase.body, color: '#222' },
-  strong:    { ...mdBase.strong, color: '#111' },
-  heading1:  { ...mdBase.heading1, color: '#111' },
-  heading2:  { ...mdBase.heading2, color: '#111' },
-  heading3:  { ...mdBase.heading3, color: '#333' },
+  body:      { ...mdBase.body, color: c.text },
+  strong:    { ...mdBase.strong, color: c.text },
+  heading1:  { ...mdBase.heading1, color: c.text },
+  heading2:  { ...mdBase.heading2, color: c.text },
+  heading3:  { ...mdBase.heading3, color: c.text },
 });
 
 const mdStylesUser = StyleSheet.create({
@@ -545,22 +548,22 @@ const mdStylesUser = StyleSheet.create({
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeStyles = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
   list:      { padding: 12, paddingBottom: 4 },
 
   memoryPill: {
     alignSelf: 'center',
     marginTop: 6,
     marginBottom: 2,
-    backgroundColor: '#f0eaff',
+    backgroundColor: c.mode === 'dark' ? '#2a2440' : '#f0eaff',
     borderWidth: 1,
-    borderColor: '#c9b8f5',
+    borderColor: '#8e44ad55',
     borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 4,
   },
-  memoryPillText: { fontSize: 12, color: '#7c4dcc', fontWeight: '500' },
+  memoryPillText: { fontSize: 12, color: '#9b6dd6', fontWeight: '500' },
 
   bubbleRow:     { marginBottom: 10, flexDirection: 'row' },
   bubbleRowUser: { justifyContent: 'flex-end' },
@@ -575,11 +578,11 @@ const styles = StyleSheet.create({
     maxWidth: '82%',
   },
   bubbleAssistant: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderBottomLeftRadius: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
+    shadowOpacity: c.shadowOpacity,
     shadowRadius: 3,
     elevation: 2,
     minWidth: 48,
@@ -588,11 +591,11 @@ const styles = StyleSheet.create({
   },
 
   systemMsg:     { alignItems: 'center', marginVertical: 8 },
-  systemMsgText: { fontSize: 12, color: '#aaa', textAlign: 'center', fontStyle: 'italic' },
+  systemMsgText: { fontSize: 12, color: c.textFaint, textAlign: 'center', fontStyle: 'italic' },
 
-  chips: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#eee', backgroundColor: '#fff' },
+  chips: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.surface },
   chip: {
-    backgroundColor: '#FFF3EE',
+    backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE',
     borderWidth: 1,
     borderColor: '#FF6B35',
     borderRadius: 20,
@@ -606,21 +609,21 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     padding: 10,
     paddingBottom: 6,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     gap: 8,
   },
   input: {
     flex: 1,
     minHeight: 40,
     maxHeight: 120,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: c.surfaceAlt,
     borderRadius: 20,
     paddingHorizontal: 16,
     paddingVertical: 10,
     fontSize: 15,
-    color: '#222',
+    color: c.text,
   },
   sendBtn: {
     width: 40,
@@ -630,6 +633,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendBtnDisabled: { backgroundColor: '#ccc' },
+  sendBtnDisabled: { backgroundColor: c.textFaint },
   sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '700', lineHeight: 24 },
 });

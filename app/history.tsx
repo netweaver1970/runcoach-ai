@@ -19,6 +19,7 @@ import {
 } from '../src/services/healthkit';
 import { WeeklyMileage, TimelineEvent } from '../src/types';
 import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 type HistoryType = 'km' | 'time' | 'vo2' | 'rhr' | 'hrv' | 'timeline' | 'strain' | 'recovery'
   | 'sleep-total' | 'sleep-deep' | 'sleep-rem' | 'sleep-score' | 'sleep-efficiency'
@@ -245,6 +246,8 @@ function Chart({
   fmtFn?:          (v: number) => string; // override value formatter (e.g. 1-decimal for VO2max)
   zeroBase?:       boolean;     // when false: y-axis zooms in around data range (default true)
 }) {
+  const ch = useThemedStyles(makeCh);
+  const { c: theme } = useTheme();
   // Scrubber cursor (hooks must precede any early return)
   const [cursorX, setCursorX] = useState<number | null>(null);
   const plotRef  = useRef<View>(null);
@@ -362,7 +365,7 @@ function Chart({
           <View key={i} style={{
             position: 'absolute', top: toY(tick), left: 0, right: 0,
             height: tick === 0 ? 1.5 : 1,
-            backgroundColor: tick === 0 ? '#ccc' : '#e8e8e8',
+            backgroundColor: tick === 0 ? theme.textFaint : theme.gridline,
           }} />
         ))}
 
@@ -436,7 +439,7 @@ function Chart({
                   position: 'absolute',
                   top: cy - valueOffset - dotR,
                   left: cx - 20, width: 40,
-                  fontSize: valueFontSize, color: '#111', textAlign: 'center', fontWeight: '700',
+                  fontSize: valueFontSize, color: theme.text, textAlign: 'center', fontWeight: '700',
                 }} numberOfLines={1}>
                   {fmt(d.value)}
                 </Text>
@@ -498,7 +501,7 @@ function Chart({
                       position: 'absolute',
                       top: CHART_H - barH - valueOffset,
                       left: x - 10, width: barW + 20,
-                      fontSize: valueFontSize, color: '#111', textAlign: 'center', fontWeight: '700',
+                      fontSize: valueFontSize, color: theme.text, textAlign: 'center', fontWeight: '700',
                     }} numberOfLines={1}>
                       {fmt(d.value)}
                     </Text>
@@ -545,6 +548,7 @@ function Chart({
 export default function HistoryScreen() {
   const { type } = useLocalSearchParams<{ type: string }>();
   const router   = useRouter();
+  const s = useThemedStyles(makeS);
 
   const [period, setPeriod]             = useState<Period>('3M');
   const [pageOffset, setPageOffset]     = useState(0);
@@ -960,10 +964,10 @@ export default function HistoryScreen() {
 
 // ─── Chart styles ─────────────────────────────────────────────────────────────
 
-const ch = StyleSheet.create({
-  yLabel:     { fontSize: 10, color: '#555', textAlign: 'right', fontWeight: '500' },
-  xLabel:     { fontSize: 10, color: '#666', fontWeight: '600' },
-  xLabelYear: { fontSize: 9,  color: '#666', fontWeight: '600' },
+const makeCh = (c: Palette) => StyleSheet.create({
+  yLabel:     { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
+  xLabel:     { fontSize: 10, color: c.textSub, fontWeight: '600' },
+  xLabelYear: { fontSize: 9,  color: c.textSub, fontWeight: '600' },
   tip: {
     position: 'absolute', top: 0, backgroundColor: 'rgba(20,20,24,0.92)',
     borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, alignItems: 'center',
@@ -974,72 +978,72 @@ const ch = StyleSheet.create({
 
 // ─── Screen styles ────────────────────────────────────────────────────────────
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+const makeS = (c: Palette) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backBtn:  { paddingHorizontal: 4 },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  title:    { fontSize: 17, fontWeight: '700', color: '#222' },
+  title:    { fontSize: 17, fontWeight: '700', color: c.text },
   periodRow: {
     flexDirection: 'row', gap: 8, padding: 12,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   periodBtn: {
     flex: 1, paddingVertical: 7, borderRadius: 8,
-    borderWidth: 1, borderColor: '#ddd', alignItems: 'center', backgroundColor: '#fff',
+    borderWidth: 1, borderColor: c.border, alignItems: 'center', backgroundColor: c.surface,
   },
-  periodText:       { fontSize: 13, color: '#555', fontWeight: '600' },
+  periodText:       { fontSize: 13, color: c.textSub, fontWeight: '600' },
   periodTextActive: { color: '#fff' },
   center:      { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText: { marginTop: 8, color: '#888', fontSize: 14 },
+  loadingText: { marginTop: 8, color: c.textSub, fontSize: 14 },
   errorText:   { fontSize: 15, color: '#c0392b', fontWeight: '700', marginBottom: 8 },
-  errorDetail: { fontSize: 12, color: '#999', textAlign: 'center' },
-  emptyText:   { fontSize: 15, color: '#666', textAlign: 'center', marginBottom: 6, fontWeight: '600' },
-  emptyHint:   { fontSize: 13, color: '#aaa', textAlign: 'center' },
+  errorDetail: { fontSize: 12, color: c.textFaint, textAlign: 'center' },
+  emptyText:   { fontSize: 15, color: c.textSub, textAlign: 'center', marginBottom: 6, fontWeight: '600' },
+  emptyHint:   { fontSize: 13, color: c.textFaint, textAlign: 'center' },
   scroll:      { padding: 12, paddingBottom: 40 },
 
   summaryRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
   summaryBox: {
-    flex: 1, backgroundColor: '#fff', borderRadius: 10, paddingVertical: 10, alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    flex: 1, backgroundColor: c.surface, borderRadius: 10, paddingVertical: 10, alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   summaryVal: { fontSize: 18, fontWeight: '800' },
-  summaryLbl: { fontSize: 11, color: '#888', marginTop: 2, fontWeight: '500' },
+  summaryLbl: { fontSize: 11, color: c.textSub, marginTop: 2, fontWeight: '500' },
 
   chartWrap: {
-    backgroundColor: '#fff', borderRadius: 12,
+    backgroundColor: c.surface, borderRadius: 12,
     padding: CARD_PADDING, paddingBottom: 10, marginBottom: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
 
   navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   navBtn:           { paddingHorizontal: 4, paddingVertical: 4 },
   navBtnDisabled:   { opacity: 0.25 },
-  navArrow:         { fontSize: 28, color: '#333', fontWeight: '600', lineHeight: 32 },
-  navArrowDisabled: { color: '#ccc' },
-  navLabel:         { fontSize: 12, color: '#555', fontWeight: '600', textAlign: 'center' },
-  navLabelPrev:     { fontSize: 10, color: '#999', fontWeight: '500', textAlign: 'center', marginTop: 1 },
+  navArrow:         { fontSize: 28, color: c.text, fontWeight: '600', lineHeight: 32 },
+  navArrowDisabled: { color: c.textFaint },
+  navLabel:         { fontSize: 12, color: c.textSub, fontWeight: '600', textAlign: 'center' },
+  navLabelPrev:     { fontSize: 10, color: c.textFaint, fontWeight: '500', textAlign: 'center', marginTop: 1 },
 
-  chartUnit: { fontSize: 11, color: '#aaa', textAlign: 'right', marginTop: 6, fontWeight: '500' },
+  chartUnit: { fontSize: 11, color: c.textFaint, textAlign: 'right', marginTop: 6, fontWeight: '500' },
 
   modeSwitch:    { flexDirection: 'row', gap: 4 },
   modePill:      { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
-                   borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fff' },
-  modePillText:  { fontSize: 11, fontWeight: '700', color: '#555' },
+                   borderWidth: 1.5, borderColor: c.border, backgroundColor: c.surface },
+  modePillText:  { fontSize: 11, fontWeight: '700', color: c.textSub },
 
   listHeader: {
-    fontSize: 12, fontWeight: '700', color: '#666',
+    fontSize: 12, fontWeight: '700', color: c.textSub,
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginLeft: 2,
   },
   listRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#fff', borderRadius: 8,
+    backgroundColor: c.surface, borderRadius: 8,
     paddingHorizontal: 14, paddingVertical: 10, marginBottom: 6,
   },
-  listDate: { fontSize: 13, color: '#555' },
+  listDate: { fontSize: 13, color: c.textSub },
   listVal:  { fontSize: 14, fontWeight: '700' },
 });
