@@ -204,6 +204,12 @@ const clamp01to100 = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
  * Bevel describes. Gaps between samples are capped so a sparse reading can't
  * represent hours of effort.
  */
+// Only heart rate meaningfully above rest counts toward strain. Below this the
+// effort is sedentary/very-light (sitting, gentle pottering) and Bevel treats it
+// as negligible — without this floor, a whole day of just being awake accumulates
+// a large bogus "passive" baseline.
+const MIN_HRR = 0.15;
+
 export function computeCardioTrimp(
   samples: { t: number; hr: number }[],
   restHR: number,
@@ -218,17 +224,18 @@ export function computeCardioTrimp(
     if (dt <= 0) continue;
     const hr  = sorted[i].hr;
     const hrr = Math.max(0, Math.min(1, (hr - restHR) / (maxHR - restHR)));
-    if (hrr <= 0) continue;
+    if (hrr < MIN_HRR) continue; // skip sedentary/very-light minutes
     trimp += (dt / 60_000) * hrr * 0.64 * Math.exp(1.92 * hrr);
   }
   return Math.round(trimp);
 }
 
-// Log scale: strain% = A·ln(1 + B·TRIMP). Calibrated so a moderate day (~120
-// TRIMP: a tempo-ish run + passive movement) reads ~62%, matching Bevel's example.
-// Logarithmic → diminishing returns (9→10 is far harder than 1→2). Uncapped.
-const STRAIN_LOG_A = 44.7;
-const STRAIN_LOG_B = 0.025;
+// Log scale: strain% = A·ln(1 + B·TRIMP). With the sedentary floor above, a light
+// "active" day reads low single digits (matching Bevel's ~5%) and a hard run day
+// reads ~60%. Logarithmic → diminishing returns; uncapped. These two constants
+// are the calibration knobs if it drifts from Bevel.
+const STRAIN_LOG_A = 65;
+const STRAIN_LOG_B = 0.02;
 
 export function strainFromTrimp(trimp: number): number {
   if (trimp <= 0) return 0;

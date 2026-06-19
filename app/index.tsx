@@ -760,9 +760,6 @@ function ArcRing({ size, strokeWidth, progress, color, trackColor }: {
 
 const SAFE_COLOR = '#16a085';
 
-// Strain is shown on Bevel's 0-10 scale (internal values are 0-100).
-const to10 = (v: number) => (v / 10).toFixed(1);
-
 function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }) {
   const inner = size - 18;
   const real  = strain ? strain.real : 0;
@@ -777,14 +774,14 @@ function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }
           <ArcRing size={inner} strokeWidth={5} progress={(strain?.safeMid ?? 0) / 100} color={SAFE_COLOR} trackColor="#eee" />
         </View>
         <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <Text style={{ fontSize: size * 0.30, fontWeight: '800', color: st.color, lineHeight: size * 0.33 }}>
-            {strain ? to10(real) : '--'}
+          <Text style={{ fontSize: size * 0.26, fontWeight: '800', color: st.color, lineHeight: size * 0.29 }}>
+            {strain ? `${real}%` : '--'}
           </Text>
           <Text style={{ fontSize: size * 0.11, color: '#aaa', letterSpacing: 0.3 }}>STRAIN</Text>
         </View>
       </View>
       <Text style={[styles.strainCaption, { color: SAFE_COLOR }]}>
-        {strain ? `safe ${to10(strain.safeLow)}–${to10(strain.safeHigh)}` : ''}
+        {strain ? `safe ${strain.safeLow}–${strain.safeHigh}%` : ''}
       </Text>
     </View>
   );

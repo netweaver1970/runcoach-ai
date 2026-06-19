@@ -2370,8 +2370,8 @@ export async function fetchStrainHistory(
   for (const [day, samples] of byDay) {
     const cardio = computeCardioTrimp(samples, restHR, maxHR);
     const trimp  = cardio + (muscularByDay.get(day) ?? 0);
-    const strain10 = Math.round(strainFromTrimp(trimp) / 10 * 10) / 10; // 0-10, one decimal
-    if (strain10 > 0) out.push({ date: day, value: strain10 });
+    const strainPct = strainFromTrimp(trimp); // 0-100 (Bevel %)
+    if (strainPct > 0) out.push({ date: day, value: strainPct });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
