@@ -43,7 +43,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeCardioTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeCardioTrimp, strainFromTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import {
@@ -2310,6 +2310,104 @@ export async function fetchTrainingLoadHistory(
   const loadByDay = new Map<string, number>();
   for (const [day, kcal] of kcalByDay) loadByDay.set(day, kcal * STRAIN_KCAL_TO_LOAD);
   return computeTrainingLoadSeries(loadByDay, fromDate, end);
+}
+
+/**
+ * Daily Strain history (Bevel 0-10 scale) — per-day TRIMP from 24/7 heart rate +
+ * muscular load from strength workouts, log-scaled. On-demand (can be slow for 1Y
+ * since it integrates raw HR across the whole period).
+ */
+export async function fetchStrainHistory(
+  months: number,
+  toDate?: Date,
+): Promise<{ date: string; value: number }[]> {
+  const end   = toDate ?? new Date();
+  const since = new Date(end.getTime() - months * 30 * 86_400_000);
+
+  const [hrRaw, restingRaw, workouts] = await Promise.all([
+    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.heartRate,
+      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 200_000 },
+    ), [] as any[]),
+    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.restingHeartRate,
+      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 400 },
+    ), [] as any[]),
+    safeQuery(() => (HealthKit.queryWorkoutSamples as any)({
+      filter: { startDate: since, endDate: end }, limit: 1500, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
+    }), [] as any[]),
+  ]);
+
+  const hr = (hrRaw as any[]).map((s: any) => ({
+    t:  new Date(toISOStr(s.startDate)).getTime(),
+    hr: s.quantity as number,
+    day: toDateStr(toISOStr(s.startDate)),
+  }));
+  if (hr.length === 0) return [];
+
+  // restHR = median resting HR; maxHR = observed peak (clamped to a sane band)
+  const restVals = (restingRaw as any[]).map((s: any) => s.quantity as number).filter(v => v > 0).sort((a, b) => a - b);
+  const restHR = restVals.length > 0 ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 50;
+  const peak = Math.max(...hr.map(s => s.hr));
+  const maxHR = Math.max(160, Math.min(210, Math.round(peak)));
+
+  // Bucket HR by day → cardio TRIMP
+  const byDay = new Map<string, { t: number; hr: number }[]>();
+  for (const s of hr) {
+    if (!byDay.has(s.day)) byDay.set(s.day, []);
+    byDay.get(s.day)!.push({ t: s.t, hr: s.hr });
+  }
+  // Muscular per day from strength workouts (HK types 20/50)
+  const STRENGTH = new Set([20, 50]);
+  const muscularByDay = new Map<string, number>();
+  for (const w of (workouts as any[])) {
+    if (!STRENGTH.has(w.workoutActivityType)) continue;
+    const day = toDateStr(toISOStr(w.startDate));
+    muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
+  }
+
+  const out: { date: string; value: number }[] = [];
+  for (const [day, samples] of byDay) {
+    const cardio = computeCardioTrimp(samples, restHR, maxHR);
+    const trimp  = cardio + (muscularByDay.get(day) ?? 0);
+    const strain10 = Math.round(strainFromTrimp(trimp) / 10 * 10) / 10; // 0-10, one decimal
+    if (strain10 > 0) out.push({ date: day, value: strain10 });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Daily Recovery-score history (0-100). Recomputes the recovery score per night
+ * from nightly (sleep-weighted) RMSSD + resting HR, using the same scoring
+ * function as the live card. Fetches an extra month for the rolling baseline.
+ */
+export async function fetchRecoveryHistory(
+  months: number,
+  toDate?: Date,
+): Promise<{ date: string; value: number }[]> {
+  const end       = toDate ?? new Date();
+  const fromKey   = toDateStr(new Date(end.getTime() - months * 30 * 86_400_000).toISOString());
+
+  const [hrv, rhr] = await Promise.all([
+    fetchHRVHistory(months + 1, end),        // nightly weighted RMSSD
+    fetchRestingHRHistory(months + 1, end),  // Apple resting HR (overnight proxy)
+  ]);
+  if (hrv.length === 0) return [];
+
+  const rhrByDate = new Map<string, number>();
+  for (const r of rhr) rhrByDate.set(r.date, r.value);
+
+  const nightly: NightlyHRV[] = hrv
+    .map(h => ({ date: h.date, weightedRMSSD: h.value, overnightHR: rhrByDate.get(h.date) ?? 0, samples: [] }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const out: { date: string; value: number }[] = [];
+  for (let i = 0; i < nightly.length; i++) {
+    if (nightly[i].date < fromKey) continue;
+    const { score } = computeRecoveryScore(nightly[i].weightedRMSSD, nightly[i].overnightHR, nightly.slice(0, i));
+    if (score > 0) out.push({ date: nightly[i].date, value: score });
+  }
+  return out;
 }
 
 export async function fetchWeeklyMileageHistory(months: number, toDate?: Date): Promise<WeeklyMileage[]> {

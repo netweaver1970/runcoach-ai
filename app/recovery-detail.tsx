@@ -64,7 +64,9 @@ export default function RecoveryDetailScreen() {
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
         <Text style={s.title}>Recovery Detail</Text>
-        <View style={{ width: 60 }} />
+        <TouchableOpacity onPress={() => router.push({ pathname: '/history' as any, params: { type: 'recovery' } })} style={{ paddingHorizontal: 4 }}>
+          <Text style={s.historyLink}>History ›</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={s.scroll}>
@@ -183,6 +185,7 @@ const s = StyleSheet.create({
   },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: '#222' },
+  historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
   center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText:{ fontSize: 15, color: '#aaa' },
   scroll:   { padding: 12, paddingBottom: 40 },

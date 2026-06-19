@@ -14,11 +14,13 @@ import {
   fetchHRVHistory,
   fetchSleepHistory,
   fetchOvernightHRHistory,
+  fetchStrainHistory,
+  fetchRecoveryHistory,
 } from '../src/services/healthkit';
 import { WeeklyMileage, TimelineEvent } from '../src/types';
 import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
 
-type HistoryType = 'km' | 'time' | 'vo2' | 'rhr' | 'hrv' | 'timeline'
+type HistoryType = 'km' | 'time' | 'vo2' | 'rhr' | 'hrv' | 'timeline' | 'strain' | 'recovery'
   | 'sleep-total' | 'sleep-deep' | 'sleep-rem' | 'sleep-score' | 'sleep-efficiency'
   | 'sleep-hrdip' | 'sleep-bank' | 'sleep-awake';
 type Period = '1M' | '3M' | '6M' | '1Y';
@@ -54,6 +56,8 @@ const CONFIGS: Record<Exclude<HistoryType, 'timeline'>, {
   vo2:              { title: 'VO₂ Max',        unit: 'ml/kg/min',  color: '#27ae60', aggregate: 'avg' },
   rhr:              { title: 'Resting HR',     unit: 'bpm',         color: '#e74c3c', aggregate: 'avg' },
   hrv:              { title: 'Nightly HRV',    unit: 'ms',          color: '#8e44ad', aggregate: 'avg' },
+  strain:           { title: 'Strain',         unit: '/ 10',        color: '#e67e22', aggregate: 'avg' },
+  recovery:         { title: 'Recovery',       unit: '/ 100',       color: '#27ae60', aggregate: 'avg' },
   'sleep-total':    { title: 'Time Asleep',    unit: 'min',         color: '#2980b9', aggregate: 'avg' },
   'sleep-deep':     { title: 'Deep Sleep',     unit: 'min',         color: '#3498db', aggregate: 'avg' },
   'sleep-rem':      { title: 'REM Sleep',      unit: 'min',         color: '#9b59b6', aggregate: 'avg' },
@@ -604,6 +608,14 @@ export default function HistoryScreen() {
         const r = await fetchRestingHRHistory(months, endDate);
         const daily = r.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      } else if (histType === 'strain') {
+        const v = await fetchStrainHistory(months, endDate);
+        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      } else if (histType === 'recovery') {
+        const v = await fetchRecoveryHistory(months, endDate);
+        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (histType !== 'timeline' && !SLEEP_TYPES.has(histType)) {
         const h = await fetchHRVHistory(months, endDate);
         const daily = h.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
@@ -702,6 +714,7 @@ export default function HistoryScreen() {
     if (isSleepMin) return fmtMin(v);
     if (histType === 'sleep-bank') return fmtSignedMin(v);
     if (histType === 'sleep-hrdip') return v.toFixed(1);
+    if (histType === 'strain') return v.toFixed(1);
     return fmtVal(v);
   };
 
@@ -906,6 +919,7 @@ export default function HistoryScreen() {
                 histType === 'vo2' && period !== '1M' ? fmtOneDecimal :
                 histType === 'sleep-bank'             ? fmtSignedMin :
                 histType === 'sleep-hrdip'            ? fmtOneDecimal :
+                histType === 'strain'                 ? fmtOneDecimal :
                 undefined
               }
               zeroBase={isSummable}

@@ -760,6 +760,9 @@ function ArcRing({ size, strokeWidth, progress, color, trackColor }: {
 
 const SAFE_COLOR = '#16a085';
 
+// Strain is shown on Bevel's 0-10 scale (internal values are 0-100).
+const to10 = (v: number) => (v / 10).toFixed(1);
+
 function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }) {
   const inner = size - 18;
   const real  = strain ? strain.real : 0;
@@ -774,14 +777,14 @@ function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }
           <ArcRing size={inner} strokeWidth={5} progress={(strain?.safeMid ?? 0) / 100} color={SAFE_COLOR} trackColor="#eee" />
         </View>
         <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <Text style={{ fontSize: size * 0.26, fontWeight: '800', color: st.color, lineHeight: size * 0.29 }}>
-            {strain ? real : '--'}
+          <Text style={{ fontSize: size * 0.30, fontWeight: '800', color: st.color, lineHeight: size * 0.33 }}>
+            {strain ? to10(real) : '--'}
           </Text>
           <Text style={{ fontSize: size * 0.11, color: '#aaa', letterSpacing: 0.3 }}>STRAIN</Text>
         </View>
       </View>
       <Text style={[styles.strainCaption, { color: SAFE_COLOR }]}>
-        {strain ? `safe ${strain.safeLow}–${strain.safeHigh}` : ''}
+        {strain ? `safe ${to10(strain.safeLow)}–${to10(strain.safeHigh)}` : ''}
       </Text>
     </View>
   );
@@ -841,10 +844,11 @@ function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRing
       </View>
 
       <View style={styles.ringsRow}>
-        {/* Strain — double ring (real effort + safe range) */}
-        <View style={{ flex: 1, alignItems: 'center' }}>
+        {/* Strain — double ring (real effort + safe range), tap → history */}
+        <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} activeOpacity={0.75}
+          onPress={() => router.push({ pathname: '/history' as any, params: { type: 'strain' } })}>
           <StrainRing size={RING} strain={strain} />
-        </View>
+        </TouchableOpacity>
 
         {/* Recovery — tappable */}
         <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToRecovery} activeOpacity={0.75} disabled={!recovery}>
