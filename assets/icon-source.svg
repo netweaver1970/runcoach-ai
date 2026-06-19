@@ -1,0 +1,38 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF9D4D"/>
+      <stop offset="0.55" stop-color="#FF6B35"/>
+      <stop offset="1" stop-color="#F4471E"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Full-bleed brand gradient (iOS masks the corners) -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#sheen)"/>
+
+  <!-- Heartbeat / ECG pulse -->
+  <path d="M 70 812 L 360 812 L 408 812 L 452 712 L 506 902 L 556 762 L 600 812 L 954 812"
+        fill="none" stroke="#ffffff" stroke-opacity="0.92"
+        stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Runner (mid-stride, leaning into the run) -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <!-- torso -->
+    <path d="M 566 392 L 462 566" stroke-width="64"/>
+    <!-- forward (right) arm — driving up toward chin -->
+    <path d="M 556 408 L 664 448 L 632 360" stroke-width="46"/>
+    <!-- back (left) arm — swung back to the hip -->
+    <path d="M 556 408 L 470 438 L 512 524" stroke-width="46"/>
+    <!-- forward (right) leg — high knee driving forward -->
+    <path d="M 474 562 L 596 572 L 582 700" stroke-width="54"/>
+    <!-- back (left) leg — extended push-off -->
+    <path d="M 474 562 L 398 660 L 292 700" stroke-width="54"/>
+  </g>
+  <!-- head -->
+  <circle cx="602" cy="304" r="62" fill="#ffffff"/>
+</svg>

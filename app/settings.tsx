@@ -14,14 +14,20 @@ import {
   Keyboard,
 } from 'react-native';
 import {
-  getApiKey, validateAndSaveApiKey, deleteApiKey, MODEL, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
+  saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, savePowerZones, DEFAULT_POWER_ZONES,
   getLongRunMinutes, setLongRunMinutes, DEFAULT_LONG_RUN_MINUTES,
   getAiWeeks, setAiWeeks, DEFAULT_AI_WEEKS,
-  ApiKeyValidationResult,
 } from '../src/services/claude';
+import {
+  loadLLMConfig, saveLLMConfig, deleteLLMApiKey, validateLLMKey,
+  loadModelHistory, PROVIDER_LABELS, PROVIDER_KEY_PLACEHOLDER, SUGGESTED_MODELS,
+  LLMProvider,
+} from '../src/services/llm';
 import { PowerZones } from '../src/types';
-import { resolveBodyMassKg } from '../src/services/healthkit';
+import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { useRouter } from 'expo-router';
 import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
@@ -37,12 +43,18 @@ import {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const [apiKey, setApiKey] = useState('');
-  const [saved, setSaved] = useState(false);
-  const [hasKey, setHasKey] = useState(false);
-  const [validating, setValidating] = useState(false);
+
+  // ── LLM config ──────────────────────────────────────────────────────────────
+  const [provider,      setProvider]      = useState<LLMProvider>('anthropic');
+  const [model,         setModel]         = useState('');
+  const [apiKey,        setApiKey]        = useState('');
+  const [baseUrl,       setBaseUrl]       = useState('');
+  const [modelHistory,  setModelHistory]  = useState<string[]>([]);
+  const [hasKey,        setHasKey]        = useState(false);
+  const [saved,         setSaved]         = useState(false);
+  const [validating,    setValidating]    = useState(false);
   const validatingRef = useRef(false);
-  const [lastDebug, setLastDebug] = useState<ApiKeyValidationResult['debug'] | null>(null);
+
   const [weeklyActive, setWeeklyActive] = useState(false);
   const [dailyActive, setDailyActive] = useState(false);
   const [bodyMass, setBodyMass] = useState(String(DEFAULT_BODY_MASS_KG));
@@ -55,11 +67,17 @@ export default function SettingsScreen() {
   const [aiWeeksSaved, setAiWeeksSaved] = useState(false);
   const [coachMemory, setCoachMemory] = useState('');
   const [memorySaved, setMemorySaved] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
-    getApiKey().then((k) => {
-      if (k) { setHasKey(true); setApiKey(k); }
-    });
+    loadLLMConfig().then(cfg => {
+      setProvider(cfg.provider);
+      setModel(cfg.model ?? '');
+      setApiKey(cfg.apiKey ?? '');
+      setBaseUrl(cfg.baseUrl ?? '');
+      setHasKey(!!(cfg.apiKey));
+      return loadModelHistory(cfg.provider);
+    }).then(setModelHistory);
     isWeeklyReminderActive().then(setWeeklyActive);
     isDailyRecoveryActive().then(setDailyActive);
     resolveBodyMassKg().then(kg => setBodyMass(String(kg)));
@@ -118,12 +136,16 @@ export default function SettingsScreen() {
     validatingRef.current = true;
     setValidating(true);
     try {
-      const result = await validateAndSaveApiKey(apiKey);
-      setLastDebug(result.debug ?? null);
+      const result = await validateLLMKey(provider, apiKey, baseUrl || undefined);
       if (!result.valid) {
         Alert.alert('Invalid API Key', result.error ?? 'Could not validate key.');
         return;
       }
+      await saveLLMConfig(provider, {
+        model:   model.trim() || undefined,
+        apiKey:  apiKey.trim(),
+        baseUrl: provider === 'custom' ? baseUrl.trim() : undefined,
+      });
       setHasKey(true);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -136,20 +158,41 @@ export default function SettingsScreen() {
       validatingRef.current = false;
       setValidating(false);
     }
-  }, [apiKey]);
+  }, [provider, apiKey, model, baseUrl]);
 
   const handleDelete = async () => {
     Alert.alert('Remove API Key', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Remove', style: 'destructive', onPress: async () => {
-          await deleteApiKey();
+          await deleteLLMApiKey(provider);
           setApiKey('');
           setHasKey(false);
         },
       },
     ]);
   };
+
+  // When user taps a provider tab — persist selection and load that provider's stored config
+  const handleSwitchProvider = useCallback(async (p: LLMProvider) => {
+    setProvider(p);
+    await saveLLMConfig(p, {}); // persist provider selection
+    // Now loadLLMConfig will return config for p
+    const [cfg, hist] = await Promise.all([loadLLMConfig(), loadModelHistory(p)]);
+    setModel(cfg.model ?? '');
+    setApiKey(cfg.apiKey ?? '');
+    setBaseUrl(cfg.baseUrl ?? '');
+    setHasKey(!!(cfg.apiKey));
+    setModelHistory(hist);
+    setSaved(false);
+  }, []);
+
+  const handleSaveModel = useCallback(async () => {
+    if (!model.trim()) return;
+    await saveLLMConfig(provider, { model: model.trim() });
+    const hist = await loadModelHistory(provider);
+    setModelHistory(hist);
+  }, [provider, model]);
 
   const toggleWeekly = async (value: boolean) => {
     if (value) {
@@ -170,22 +213,100 @@ export default function SettingsScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
 
-        {/* API Key */}
-        <Section title="Anthropic API Key">
+        {/* AI Provider & Model */}
+        <Section title="AI Provider & Model">
           <Text style={styles.hint}>
-            Your key is stored securely in the iOS Keychain — never leaves your device.
-            {'\n'}Get one at console.anthropic.com
+            Keys stored securely in the iOS Keychain — never leave your device.
           </Text>
+
+          {/* Provider tabs */}
+          <View style={styles.providerTabs}>
+            {(['anthropic', 'openai', 'custom'] as LLMProvider[]).map(p => (
+              <TouchableOpacity
+                key={p}
+                style={[styles.providerTab, provider === p && styles.providerTabActive]}
+                onPress={() => handleSwitchProvider(p)}
+              >
+                <Text style={[styles.providerTabText, provider === p && styles.providerTabTextActive]}>
+                  {PROVIDER_LABELS[p]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Model input */}
+          <Text style={styles.fieldLabel}>Model</Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={model}
+              onChangeText={setModel}
+              onEndEditing={handleSaveModel}
+              placeholder={SUGGESTED_MODELS[provider][0] ?? 'model name'}
+              placeholderTextColor="#bbb"
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              returnKeyType="done"
+            />
+          </View>
+
+          {/* Model chips: history + suggestions */}
+          {(() => {
+            const suggestions = SUGGESTED_MODELS[provider];
+            const chips = [...new Set([...modelHistory, ...suggestions])].slice(0, 8);
+            return chips.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
+                {chips.map(m => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.chip, model === m && styles.chipActive]}
+                    onPress={async () => { setModel(m); await saveLLMConfig(provider, { model: m }); }}
+                  >
+                    <Text style={[styles.chipText, model === m && styles.chipTextActive]} numberOfLines={1}>
+                      {m}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : null;
+          })()}
+
+          {/* Base URL for custom providers */}
+          {provider === 'custom' && (
+            <>
+              <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Base URL</Text>
+              <TextInput
+                style={styles.input}
+                value={baseUrl}
+                onChangeText={setBaseUrl}
+                placeholder="https://api.groq.com/openai/v1"
+                placeholderTextColor="#bbb"
+                autoCapitalize="none"
+                autoCorrect={false}
+                spellCheck={false}
+                keyboardType="url"
+                returnKeyType="done"
+              />
+              <Text style={styles.hint}>
+                Any OpenAI-compatible endpoint (Groq, Mistral, Ollama, LM Studio, …)
+              </Text>
+            </>
+          )}
+
+          {/* API Key */}
+          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>API Key</Text>
           <TextInput
             style={[styles.input, styles.apiKeyInput]}
             value={apiKey}
             onChangeText={setApiKey}
-            placeholder="sk-ant-api03-…"
+            placeholder={PROVIDER_KEY_PLACEHOLDER[provider]}
             placeholderTextColor="#bbb"
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="off"
             spellCheck={false}
+            secureTextEntry={false}
           />
           <View style={styles.row}>
             <TouchableOpacity
@@ -195,46 +316,15 @@ export default function SettingsScreen() {
             >
               {validating
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={styles.btnText}>{saved ? '✓ Verified & Saved' : 'Verify & Save Key'}</Text>
+                : <Text style={styles.btnText}>{saved ? '✓ Verified & Saved' : 'Verify & Save'}</Text>
               }
             </TouchableOpacity>
             {hasKey && !validating && (
               <TouchableOpacity style={styles.btnDanger} onPress={handleDelete}>
-                <Text style={styles.btnText}>Remove</Text>
+                <Text style={styles.btnText}>Remove Key</Text>
               </TouchableOpacity>
             )}
           </View>
-          {lastDebug && (
-            <TouchableOpacity
-              style={styles.debugBtn}
-              onPress={() => Alert.alert(
-                'API Key Debug',
-                [
-                  `── Key ──`,
-                  `Prefix  : ${lastDebug.keyPrefix}…`,
-                  `Suffix  : …${lastDebug.keySuffix}`,
-                  `Length  : ${lastDebug.keyLength}`,
-                  `Non-ASCII: ${lastDebug.nonAscii}`,
-                  ``,
-                  `── Request ──`,
-                  `URL     : ${lastDebug.requestUrl}`,
-                  `Status  : ${lastDebug.status || '(not sent)'}`,
-                  ``,
-                  `── Error ──`,
-                  `Type    : ${lastDebug.errorType || '—'}`,
-                  `Message : ${lastDebug.errorMessage || '—'}`,
-                  ``,
-                  `── Response headers ──`,
-                  lastDebug.responseHeaders || '(none)',
-                  ``,
-                  `── Body (first 500 chars) ──`,
-                  lastDebug.bodySnippet || '(empty)',
-                ].join('\n'),
-              )}
-            >
-              <Text style={styles.debugBtnText}>Show debug info</Text>
-            </TouchableOpacity>
-          )}
         </Section>
 
         {/* Daily recovery */}
@@ -462,6 +552,12 @@ export default function SettingsScreen() {
           >
             <Text style={styles.btnText}>Open Calibration Tool</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btn, { marginTop: 8, backgroundColor: '#1a1a2e' }]}
+            onPress={() => router.push('/debug' as any)}
+          >
+            <Text style={[styles.btnText, { color: '#8888aa' }]}>HR Debug Screen</Text>
+          </TouchableOpacity>
         </Section>
 
         {/* Model info */}
@@ -518,11 +614,39 @@ export default function SettingsScreen() {
           </View>
         </Section>
 
-        <Section title="AI Model">
+
+        {/* Export */}
+        <Section title="Data Export">
           <Text style={styles.hint}>
-            Using <Text style={{ fontWeight: '700' }}>{MODEL}</Text>.{'\n'}
-            Fast and cost-efficient (~$0.01–0.03 per analysis).
+            Export your complete health snapshot as JSON for analysis or backup.
+            Load the main screen first to ensure data is fresh.
           </Text>
+          <TouchableOpacity
+            style={[styles.btn, exporting && { opacity: 0.6 }]}
+            disabled={exporting}
+            onPress={async () => {
+              setExporting(true);
+              try {
+                const snap = await loadSnapshotCache();
+                if (!snap) {
+                  Alert.alert('No data', 'Open the main screen first so a snapshot is cached.');
+                  return;
+                }
+                const filename = `runcoach-snapshot-${new Date().toISOString().split('T')[0]}.json`;
+                const path = `${FileSystem.cacheDirectory}${filename}`;
+                await FileSystem.writeAsStringAsync(path, JSON.stringify(snap, null, 2));
+                await Sharing.shareAsync(path, { mimeType: 'application/json', UTI: 'public.json' });
+              } catch (err: any) {
+                Alert.alert('Export failed', err.message);
+              } finally {
+                setExporting(false);
+              }
+            }}
+          >
+            {exporting
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={styles.btnText}>↑  Export snapshot</Text>}
+          </TouchableOpacity>
         </Section>
 
         {/* Data info */}
@@ -613,11 +737,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     letterSpacing: 0.3,
   },
-  debugBtn: {
-    marginTop: 6, alignSelf: 'flex-start',
-    paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 6, borderWidth: 1, borderColor: '#ccc',
-    backgroundColor: '#f9f9f9',
+  // Provider tabs
+  providerTabs: {
+    flexDirection: 'row', gap: 6, marginBottom: 14,
   },
-  debugBtnText: { fontSize: 11, color: '#888', fontWeight: '500' },
+  providerTab: {
+    flex: 1, paddingVertical: 7, borderRadius: 8,
+    backgroundColor: '#f0f0f0', alignItems: 'center',
+  },
+  providerTabActive: {
+    backgroundColor: '#FF6B35',
+  },
+  providerTabText: { fontSize: 12, fontWeight: '600', color: '#777' },
+  providerTabTextActive: { color: '#fff' },
+  // Field label
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 5, textTransform: 'uppercase', letterSpacing: 0.3 },
+  // Model chips
+  chipsScroll: { marginTop: 6, marginBottom: 4 },
+  chip: {
+    borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: '#f0f0f0', marginRight: 6,
+    borderWidth: 1, borderColor: '#e0e0e0',
+  },
+  chipActive: { backgroundColor: '#FF6B3522', borderColor: '#FF6B35' },
+  chipText: { fontSize: 11, color: '#555', fontWeight: '600' },
+  chipTextActive: { color: '#FF6B35' },
 });

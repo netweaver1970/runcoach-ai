@@ -1,46 +1,225 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView,
+  StyleSheet, SafeAreaView, ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { DailyRecovery } from '../src/types';
+import { DailyRecovery, SleepSession } from '../src/types';
+import { fetchSleepHistory, fetchOvernightHRHistory } from '../src/services/healthkit';
+import {
+  normaliseKPIs, applyWeights,
+  DEFAULT_SLEEP_WEIGHTS, SleepWeights,
+  loadCustomSleepWeights, computePersonalSleepGoal, loadPersonalSleepGoal,
+} from '../src/services/bevelCalibration';
 
-const SLEEP_COLOR  = '#8e44ad';
-const SLEEP_GOAL   = 480; // minutes (8h)
+const SLEEP_COLOR = '#8e44ad';
+const FALLBACK_SLEEP_GOAL = 375; // 6h15m — used until personal goal loads
 
-function Row({ label, value, valueColor, sub, bar }: {
-  label: string; value: string; valueColor?: string; sub?: string; bar?: number;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+/** Stats over an array of numbers */
+function stats(arr: number[]): { mean: number; sd: number } {
+  if (arr.length === 0) return { mean: 0, sd: 0 };
+  const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
+  const sd   = Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length);
+  return { mean, sd };
+}
+
+/** Compute all sub-KPI raw values from a SleepSession + optional HR dip */
+function getSubKPIs(session: SleepSession, hrDipPct: number) {
+  const totalInBed = session.totalMinutes + session.awakeMinutes;
+  const efficiency = totalInBed > 0 ? (session.totalMinutes / totalInBed) * 100 : 0;
+  return {
+    totalMinutes: session.totalMinutes,
+    deepMinutes:  session.deepMinutes,
+    remMinutes:   session.remMinutes,
+    awakeMinutes: session.awakeMinutes,
+    efficiency,
+    hrDipPct,
+  };
+}
+
+/** Compute overall sleep score using Bevel's 5-KPI model */
+function computeSleepScore(
+  kpis: ReturnType<typeof getSubKPIs>,
+  sleepGoalMin: number,
+  weights: SleepWeights,
+): number {
+  const scores = normaliseKPIs(kpis, sleepGoalMin);
+  return applyWeights(scores, weights);
+}
+
+type StatusTag = 'Below normal' | 'Normal range' | 'Above normal';
+function getStatus(value: number, mean: number, sd: number, higherIsBetter = true): StatusTag {
+  if (sd === 0) return 'Normal range';
+  const z = (value - mean) / sd;
+  if (higherIsBetter) {
+    if (z < -1.0) return 'Below normal';
+    if (z >  1.0) return 'Above normal';
+    return 'Normal range';
+  } else {
+    if (z >  1.0) return 'Below normal';
+    if (z < -1.0) return 'Above normal';
+    return 'Normal range';
+  }
+}
+
+const STATUS_COLOR: Record<StatusTag, string> = {
+  'Normal range': '#27ae60',
+  'Below normal': '#e67e22',
+  'Above normal': '#2980b9',
+};
+
+// ─── Sparkline ────────────────────────────────────────────────────────────────
+
+const SPARK_H = 36;
+const SPARK_W = 120;
+
+function Sparkline({
+  values, mean, sd, color,
+}: { values: number[]; mean: number; sd: number; color: string }) {
+  if (values.length < 2) return <View style={{ width: SPARK_W, height: SPARK_H }} />;
+  const lo = Math.min(...values, mean - sd * 1.5);
+  const hi = Math.max(...values, mean + sd * 1.5);
+  const range = hi - lo || 1;
+  const toX = (i: number) => (i / (values.length - 1)) * SPARK_W;
+  const toY = (v: number) => SPARK_H - ((v - lo) / range) * SPARK_H;
+  const bandLo = clamp((mean - sd - lo) / range * SPARK_H, 0, SPARK_H);
+  const bandHi = clamp((mean + sd - lo) / range * SPARK_H, 0, SPARK_H);
+  const bandY  = SPARK_H - bandHi;
+  const bandH  = bandHi - bandLo;
+
+  return (
+    <View style={{ width: SPARK_W, height: SPARK_H, position: 'relative' }}>
+      {/* Normal band shading */}
+      <View style={{
+        position: 'absolute', left: 0, right: 0,
+        top: bandY, height: Math.max(2, bandH),
+        backgroundColor: color + '22',
+      }} />
+      {/* Mean line */}
+      <View style={{
+        position: 'absolute', left: 0, right: 0,
+        top: toY(mean) - 0.5, height: 1,
+        backgroundColor: color + '55',
+      }} />
+      {/* Data segments */}
+      {values.map((v, i) => {
+        if (i === 0) return null;
+        const x1 = toX(i - 1), y1 = toY(values[i - 1]);
+        const x2 = toX(i),     y2 = toY(v);
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+        return (
+          <View key={i} style={{
+            position: 'absolute',
+            width: len, height: 1.5,
+            left: (x1 + x2) / 2 - len / 2,
+            top: (y1 + y2) / 2 - 0.75,
+            backgroundColor: color,
+            transform: [{ rotate: `${angle}deg` }],
+          }} />
+        );
+      })}
+      {/* Last dot */}
+      <View style={{
+        position: 'absolute',
+        width: 5, height: 5, borderRadius: 3,
+        left: toX(values.length - 1) - 2.5,
+        top: toY(values[values.length - 1]) - 2.5,
+        backgroundColor: color,
+      }} />
+    </View>
+  );
+}
+
+// ─── Sub-KPI Card ─────────────────────────────────────────────────────────────
+
+function SubKPICard({
+  label, value, unit, history, higherIsBetter = true, color, onPress,
+}: {
+  label: string;
+  value: string;
+  unit: string;
+  history: number[];
+  higherIsBetter?: boolean;
+  color: string;
+  onPress?: () => void;
 }) {
-  return (
-    <View style={[s.row, bar !== undefined && { paddingBottom: 14 }]}>
-      <View style={{ flex: 1 }}>
-        <Text style={s.rowLabel}>{label}</Text>
-        {sub ? <Text style={s.rowSub}>{sub}</Text> : null}
-        {bar !== undefined && (
-          <View style={s.barTrack}>
-            <View style={[s.barFill, { width: `${Math.min(100, Math.max(0, bar))}%` as any, backgroundColor: valueColor ?? SLEEP_COLOR }]} />
-          </View>
-        )}
+  const { mean, sd } = stats(history);
+  const current = history.length > 0 ? history[history.length - 1] : 0;
+  const status  = history.length > 5
+    ? getStatus(current, mean, sd, higherIsBetter)
+    : 'Normal range';
+  const statusColor = STATUS_COLOR[status];
+
+  const content = (
+    <View style={kpi.card}>
+      {/* Left: label + status */}
+      <View style={kpi.left}>
+        <Text style={kpi.label}>{label}</Text>
+        <View style={[kpi.badge, { backgroundColor: statusColor + '22' }]}>
+          <Text style={[kpi.badgeText, { color: statusColor }]}>{status}</Text>
+        </View>
       </View>
-      <Text style={[s.rowValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
+
+      {/* Middle: sparkline */}
+      {history.length > 1 ? (
+        <Sparkline values={history} mean={mean} sd={sd} color={color} />
+      ) : (
+        <View style={{ width: SPARK_W }} />
+      )}
+
+      {/* Right: value */}
+      <View style={kpi.right}>
+        <Text style={[kpi.value, { color }]}>{value}</Text>
+        <Text style={kpi.unit}>{unit}</Text>
+        {onPress && <Text style={kpi.arrow}>›</Text>}
+      </View>
     </View>
   );
+
+  if (onPress) {
+    return (
+      <TouchableOpacity onPress={onPress} activeOpacity={0.75}>
+        {content}
+      </TouchableOpacity>
+    );
+  }
+  return content;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <View style={s.section}>
-      <Text style={s.sectionTitle}>{title}</Text>
-      <View style={s.card}>{children}</View>
-    </View>
-  );
-}
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function SleepDetailScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
   const router   = useRouter();
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
+
+  const [history, setHistory]       = useState<SleepSession[]>([]);
+  const [hrDipHistory, setHrDipH]   = useState<number[]>([]);
+  const [sleepGoalMin, setSleepGoalMin] = useState(FALLBACK_SLEEP_GOAL);
+  const [weights, setWeights]       = useState<SleepWeights>(DEFAULT_SLEEP_WEIGHTS);
+  const [loadingH, setLoadingH]     = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetchSleepHistory(3),
+      fetchOvernightHRHistory(3),
+      loadPersonalSleepGoal(),
+      loadCustomSleepWeights(),
+    ]).then(([sessions, dipData, savedGoal, customWeights]) => {
+      setHistory(sessions);
+      setHrDipH(dipData.map(d => d.value));
+      // Personal sleep goal: use stored value, else compute from 90-day median
+      const goal = savedGoal ?? computePersonalSleepGoal(sessions);
+      setSleepGoalMin(goal > 0 ? goal : FALLBACK_SLEEP_GOAL);
+      if (customWeights) setWeights(customWeights);
+    }).catch(() => {}).finally(() => setLoadingH(false));
+  }, []);
 
   if (!recovery || !recovery.sleep) {
     return (
@@ -59,20 +238,42 @@ export default function SleepDetailScreen() {
     );
   }
 
-  const { sleepScore = 0, overnightHR, sleep } = recovery;
+  const { sleepScore = 0, overnightHR, overnightHRBaseline, sleep } = recovery;
 
-  const totalMin  = sleep.totalMinutes;
-  const deepMin   = sleep.deepMinutes;
-  const remMin    = sleep.remMinutes;
-  const coreMin   = sleep.coreMinutes;
-  const awakeMin  = sleep.awakeMinutes;
+  // HR dip %
+  const hrDipPct =
+    overnightHR > 0 && overnightHRBaseline > 0
+      ? ((overnightHRBaseline - overnightHR) / overnightHRBaseline) * 100
+      : 0;
 
-  const totalInBed    = totalMin + awakeMin;
-  const efficiency    = totalInBed > 0 ? totalMin / totalInBed : 1;
-  const deepRemFrac   = totalMin > 0 ? (deepMin + remMin) / totalMin : 0;
-  const goalRatio     = Math.min(1.2, totalMin / SLEEP_GOAL);
+  const todayKPIs = getSubKPIs(sleep, hrDipPct);
+
+  // Build per-KPI history arrays from fetched sessions (oldest → newest)
+  const totalHistory    = history.map(s => s.totalMinutes);
+  const awakeHistory    = history.map(s => s.awakeMinutes);
+  const deepHistory     = history.map(s => s.deepMinutes);
+  const remHistory      = history.map(s => s.remMinutes);
+  const coreHistory     = history.map(s => s.coreMinutes);
+  const effHistory      = history.map(s => {
+    const inBed = s.totalMinutes + s.awakeMinutes;
+    return inBed > 0 ? (s.totalMinutes / inBed) * 100 : 0;
+  });
+  const scoreHistory    = history.map(s => computeSleepScore(getSubKPIs(s, 0), sleepGoalMin, weights));
+
+  // Sleep Bank: rolling 7-day cumulative shortfall vs personal sleep goal (negative = debt)
+  const bankHistory: number[] = [];
+  for (let i = 0; i < history.length; i++) {
+    const window = history.slice(Math.max(0, i - 6), i + 1);
+    const total  = window.reduce((sum, s) => sum + s.totalMinutes, 0);
+    const goal   = window.length * sleepGoalMin;
+    bankHistory.push(total - goal);
+  }
+  const sleepBankMin = bankHistory.length > 0 ? bankHistory[bankHistory.length - 1] : 0;
 
   const scoreColor = sleepScore >= 75 ? '#27ae60' : sleepScore >= 55 ? '#2ecc71' : sleepScore >= 35 ? '#f39c12' : '#e74c3c';
+
+  const navTo = (type: string) =>
+    router.push({ pathname: '/history' as any, params: { type } });
 
   return (
     <SafeAreaView style={s.container}>
@@ -100,126 +301,225 @@ export default function SleepDetailScreen() {
                sleepScore >= 35 ? 'Moderate sleep — some fatigue expected.' :
                                    'Poor sleep — prioritise rest today.'}
             </Text>
+            <Text style={s.scoreTime}>
+              {new Date(sleep.bedtime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+              {' → '}
+              {new Date(sleep.wakeTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+            </Text>
           </View>
         </View>
 
-        {/* Timing */}
-        <Section title="Sleep Timing">
-          <Row
-            label="Bedtime"
-            value={new Date(sleep.bedtime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-          />
-          <Row
-            label="Wake time"
-            value={new Date(sleep.wakeTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-          />
-          <Row
-            label="Total sleep"
-            value={`${(totalMin / 60).toFixed(1)} h`}
-            valueColor={goalRatio >= 0.9 ? '#27ae60' : goalRatio >= 0.7 ? '#f39c12' : '#e74c3c'}
-            sub={`Goal: 8 h  (${Math.round(goalRatio * 100)} % of target)`}
-            bar={goalRatio * 100}
-          />
-          <Row
-            label="Time in bed"
-            value={`${(totalInBed / 60).toFixed(1)} h`}
-          />
-        </Section>
+        {loadingH && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 4 }}>
+            <ActivityIndicator size="small" color={SLEEP_COLOR} />
+            <Text style={{ fontSize: 12, color: '#aaa' }}>Loading 90-day history…</Text>
+          </View>
+        )}
 
-        {/* Sleep stages */}
-        <Section title="Sleep Stages">
-          <Row
-            label="Deep sleep"
-            value={`${deepMin} min`}
-            valueColor="#3498db"
-            sub={totalMin > 0 ? `${Math.round(deepMin / totalMin * 100)} % of total sleep  (ideal ≥ 13 %)` : undefined}
-            bar={totalMin > 0 ? deepMin / totalMin * 100 : 0}
-          />
-          <Row
-            label="REM sleep"
-            value={`${remMin} min`}
-            valueColor="#9b59b6"
-            sub={totalMin > 0 ? `${Math.round(remMin / totalMin * 100)} % of total sleep  (ideal ≥ 20 %)` : undefined}
-            bar={totalMin > 0 ? remMin / totalMin * 100 : 0}
-          />
-          <Row
-            label="Core (light) sleep"
-            value={`${coreMin} min`}
-            valueColor="#555"
-            sub={totalMin > 0 ? `${Math.round(coreMin / totalMin * 100)} % of total sleep` : undefined}
-          />
-          <Row
-            label="Deep + REM combined"
-            value={`${Math.round(deepRemFrac * 100)} %`}
-            valueColor={deepRemFrac >= 0.35 ? '#27ae60' : deepRemFrac >= 0.25 ? '#f39c12' : '#e74c3c'}
-            sub="Ideal: > 35 % of total sleep time"
-          />
-        </Section>
+        {/* Sub-KPI section */}
+        <Text style={s.sectionTitle}>SLEEP METRICS</Text>
+        <View style={s.kpiList}>
 
-        {/* Efficiency & continuity */}
-        <Section title="Sleep Quality">
-          <Row
-            label="Sleep efficiency"
-            value={`${Math.round(efficiency * 100)} %`}
-            valueColor={efficiency >= 0.90 ? '#27ae60' : efficiency >= 0.80 ? '#f39c12' : '#e74c3c'}
-            sub="Time asleep ÷ time in bed  (ideal ≥ 90 %)"
-            bar={efficiency * 100}
+          {/* Sleep Score history */}
+          <SubKPICard
+            label="Sleep Score"
+            value={String(sleepScore)}
+            unit="/ 100"
+            history={[...scoreHistory, sleepScore]}
+            higherIsBetter
+            color={SLEEP_COLOR}
+            onPress={() => navTo('sleep-score')}
           />
-          <Row
-            label="Awake time"
-            value={`${awakeMin} min`}
-            valueColor={awakeMin <= 15 ? '#27ae60' : awakeMin <= 30 ? '#f39c12' : '#e74c3c'}
-            sub="Total minutes awake during the night"
+
+          {/* Time Asleep */}
+          <SubKPICard
+            label="Time Asleep"
+            value={(todayKPIs.totalMinutes / 60).toFixed(1)}
+            unit="h"
+            history={totalHistory}
+            higherIsBetter
+            color="#2980b9"
+            onPress={() => navTo('sleep-total')}
           />
-          {awakeMin > 0 && totalInBed > 0 && (
-            <Row
-              label="Interruption fraction"
-              value={`${Math.round(awakeMin / totalInBed * 100)} %`}
-              valueColor={awakeMin / totalInBed <= 0.05 ? '#27ae60' : '#f39c12'}
-              sub="Ideal < 5 %"
-            />
-          )}
-        </Section>
 
-        {/* HR dip */}
-        <Section title="Heart Rate Dip">
-          {overnightHR > 0 ? (
-            <>
-              <Row label="Overnight HR"  value={`${overnightHR} bpm`} sub="Average during sleep stages" />
-              {recovery.overnightHRBaseline > 0 && (
-                <>
-                  <Row label="Daytime baseline" value={`${recovery.overnightHRBaseline} bpm`} />
-                  <Row
-                    label="HR dip"
-                    value={`${Math.round((recovery.overnightHRBaseline - overnightHR) / recovery.overnightHRBaseline * 100)} %`}
-                    valueColor={
-                      (recovery.overnightHRBaseline - overnightHR) / recovery.overnightHRBaseline >= 0.15
-                        ? '#27ae60' : '#f39c12'
-                    }
-                    sub="Ideal: 15–25 % drop vs daytime HR"
-                  />
-                </>
-              )}
-            </>
-          ) : (
-            <Row label="Overnight HR" value="No data" sub="Overnight HR not available for this session" />
-          )}
-        </Section>
+          {/* Time Awake */}
+          <SubKPICard
+            label="Time Awake"
+            value={String(sleep.awakeMinutes)}
+            unit="min"
+            history={awakeHistory}
+            higherIsBetter={false}
+            color="#e67e22"
+            onPress={() => navTo('sleep-awake')}
+          />
 
-        {/* Score breakdown */}
-        <Section title="Score Breakdown (weights)">
-          <Row label="Time asleep"     value="40 %" />
-          <Row label="Sleep stages"    value="25 %" />
-          <Row label="Efficiency"      value="15 %" />
-          <Row label="HR dip"          value="10 %" />
-          <Row label="Continuity"      value="10 %" />
-          <Row label="Total sleep score" value={`${sleepScore} / 100`} valueColor={scoreColor} />
-        </Section>
+          {/* Deep Sleep */}
+          <SubKPICard
+            label="Deep Sleep"
+            value={String(todayKPIs.deepMinutes)}
+            unit="min"
+            history={deepHistory}
+            higherIsBetter
+            color="#3498db"
+            onPress={() => navTo('sleep-deep')}
+          />
+
+          {/* REM Sleep */}
+          <SubKPICard
+            label="REM Sleep"
+            value={String(todayKPIs.remMinutes)}
+            unit="min"
+            history={remHistory}
+            higherIsBetter
+            color="#9b59b6"
+            onPress={() => navTo('sleep-rem')}
+          />
+
+          {/* Sleep Efficiency */}
+          <SubKPICard
+            label="Efficiency"
+            value={Math.round(todayKPIs.efficiency).toString()}
+            unit="%"
+            history={effHistory}
+            higherIsBetter
+            color="#27ae60"
+            onPress={() => navTo('sleep-efficiency')}
+          />
+
+          {/* Heart Rate Dip */}
+          <SubKPICard
+            label="HR Dip"
+            value={overnightHR > 0 && overnightHRBaseline > 0 ? hrDipPct.toFixed(1) : '—'}
+            unit="% vs daytime"
+            history={hrDipHistory}
+            higherIsBetter
+            color="#e74c3c"
+            onPress={() => navTo('sleep-hrdip')}
+          />
+
+          {/* Sleep Bank */}
+          <SubKPICard
+            label="Sleep Bank"
+            value={(sleepBankMin >= 0 ? '+' : '') + Math.round(sleepBankMin)}
+            unit={`min  (7d vs ${Math.round(sleepGoalMin / 60)}h${sleepGoalMin % 60 > 0 ? `${sleepGoalMin % 60}m` : ''} goal)`}
+            history={bankHistory}
+            higherIsBetter
+            color={sleepBankMin >= 0 ? '#27ae60' : '#e74c3c'}
+            onPress={() => navTo('sleep-bank')}
+          />
+        </View>
+
+        {/* Score Breakdown */}
+        <Text style={[s.sectionTitle, { marginTop: 16 }]}>SCORE BREAKDOWN</Text>
+        <View style={s.breakdownCard}>
+          <Text style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>
+            Goal: {Math.floor(sleepGoalMin / 60)}h{sleepGoalMin % 60 > 0 ? ` ${sleepGoalMin % 60}m` : ''} (90-day personal)
+          </Text>
+          {([
+            ['Time asleep', weights.totalMinutes],
+            ['Deep sleep',  weights.deepMinutes],
+            ['REM sleep',   weights.remMinutes],
+            ['Efficiency',  weights.efficiency],
+            ['HR dip',      weights.hrDip],
+          ] as [string, number][]).map(([lbl, w]) => (
+            <View key={lbl} style={s.breakdownRow}>
+              <Text style={s.breakdownLabel}>{lbl}</Text>
+              <View style={s.breakdownBar}>
+                <View style={[s.breakdownFill, { width: `${Math.round(w * 100)}%` as any, backgroundColor: SLEEP_COLOR }]} />
+              </View>
+              <Text style={s.breakdownPct}>{Math.round(w * 100)} %</Text>
+            </View>
+          ))}
+          <View style={[s.breakdownRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 4, paddingTop: 8 }]}>
+            <Text style={[s.breakdownLabel, { fontWeight: '700' }]}>Total score</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={[s.breakdownPct, { fontWeight: '800', color: scoreColor, fontSize: 16 }]}>
+              {sleepScore} / 100
+            </Text>
+          </View>
+        </View>
+
+        {/* Raw values */}
+        <Text style={[s.sectionTitle, { marginTop: 16 }]}>TONIGHT'S DATA</Text>
+        <View style={s.breakdownCard}>
+          {[
+            ['Bedtime', new Date(sleep.bedtime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })],
+            ['Wake time', new Date(sleep.wakeTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })],
+            ['Total sleep', `${(sleep.totalMinutes / 60).toFixed(1)} h  (${sleep.totalMinutes} min)`],
+            ['Deep sleep', `${sleep.deepMinutes} min  (${sleep.totalMinutes > 0 ? Math.round(sleep.deepMinutes / sleep.totalMinutes * 100) : 0}%)`],
+            ['REM sleep', `${sleep.remMinutes} min  (${sleep.totalMinutes > 0 ? Math.round(sleep.remMinutes / sleep.totalMinutes * 100) : 0}%)`],
+            ['Core sleep', `${sleep.coreMinutes} min  (${sleep.totalMinutes > 0 ? Math.round(sleep.coreMinutes / sleep.totalMinutes * 100) : 0}%)`],
+            ['Awake time', `${sleep.awakeMinutes} min`],
+            ...(overnightHR > 0 ? [['Overnight HR', `${overnightHR} bpm`]] : []),
+            ...(overnightHRBaseline > 0 ? [['Daytime baseline', `${overnightHRBaseline} bpm`]] : []),
+            ...(hrDipPct > 0 ? [['HR dip', `${hrDipPct.toFixed(1)} %  (target ≥10 %)`]] : []),
+          ].map(([lbl, val]) => (
+            <View key={lbl} style={s.breakdownRow}>
+              <Text style={s.breakdownLabel}>{lbl}</Text>
+              <Text style={[s.breakdownPct, { color: '#333' }]}>{val}</Text>
+            </View>
+          ))}
+        </View>
 
       </ScrollView>
     </SafeAreaView>
   );
 }
+
+// ─── Sub-KPI styles ───────────────────────────────────────────────────────────
+
+const kpi = StyleSheet.create({
+  card: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f5f5f5',
+    gap: 10,
+  },
+  left: {
+    width: 110,
+    gap: 4,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#333',
+  },
+  badge: {
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    alignSelf: 'flex-start',
+  },
+  badgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.2,
+  },
+  right: {
+    alignItems: 'flex-end',
+    flex: 1,
+  },
+  value: {
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  unit: {
+    fontSize: 10,
+    color: '#aaa',
+    marginTop: 1,
+  },
+  arrow: {
+    fontSize: 16,
+    color: '#ccc',
+    marginTop: 2,
+  },
+});
+
+// ─── Screen styles ────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F5F5F5' },
@@ -236,39 +536,49 @@ const s = StyleSheet.create({
 
   hero: {
     flexDirection: 'row', alignItems: 'center', gap: 16,
-    backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 14,
+    backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 16,
     borderLeftWidth: 5,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 5, elevation: 3,
   },
   scoreCircle: {
-    width: 88, height: 88, borderRadius: 44, borderWidth: 4,
+    width: 80, height: 80, borderRadius: 40, borderWidth: 4,
     alignItems: 'center', justifyContent: 'center',
   },
-  scoreNumber: { fontSize: 36, fontWeight: '800', lineHeight: 40 },
-  scoreUnit:   { fontSize: 12, color: '#aaa' },
-  scoreLabel:  { fontSize: 16, fontWeight: '800', marginBottom: 4, color: '#8e44ad' },
-  scoreAdvice: { fontSize: 13, color: '#666', lineHeight: 19 },
+  scoreNumber: { fontSize: 30, fontWeight: '800', lineHeight: 34 },
+  scoreUnit:   { fontSize: 11, color: '#aaa' },
+  scoreLabel:  { fontSize: 14, fontWeight: '800', marginBottom: 4 },
+  scoreAdvice: { fontSize: 12, color: '#666', lineHeight: 17 },
+  scoreTime:   { fontSize: 11, color: '#aaa', marginTop: 3 },
 
-  section:      { marginBottom: 14 },
   sectionTitle: {
     fontSize: 11, fontWeight: '700', color: '#888',
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, marginLeft: 4,
+    textTransform: 'uppercase', letterSpacing: 0.5,
+    marginBottom: 6, marginLeft: 4,
   },
-  card: {
-    backgroundColor: '#fff', borderRadius: 12, overflow: 'hidden',
+
+  kpiList: {
+    backgroundColor: '#fff', borderRadius: 14, overflow: 'hidden', marginBottom: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
   },
-  row: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 14, paddingVertical: 11,
-    borderBottomWidth: 1, borderBottomColor: '#f5f5f5',
-  },
-  rowLabel: { fontSize: 13, color: '#333', fontWeight: '500' },
-  rowSub:   { fontSize: 11, color: '#aaa', marginTop: 2 },
-  rowValue: { fontSize: 13, fontWeight: '700', color: '#222' },
 
-  barTrack: {
-    height: 4, backgroundColor: '#f0f0f0', borderRadius: 2, marginTop: 6, overflow: 'hidden',
+  breakdownCard: {
+    backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
+    gap: 8,
   },
-  barFill: { height: 4, borderRadius: 2 },
+  breakdownRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+  },
+  breakdownLabel: {
+    fontSize: 13, color: '#555', width: 100,
+  },
+  breakdownBar: {
+    flex: 1, height: 5, backgroundColor: '#f0f0f0', borderRadius: 3, overflow: 'hidden',
+  },
+  breakdownFill: {
+    height: 5, borderRadius: 3,
+  },
+  breakdownPct: {
+    fontSize: 12, fontWeight: '700', color: '#555', width: 40, textAlign: 'right',
+  },
 });

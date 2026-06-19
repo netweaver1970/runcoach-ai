@@ -13,3 +13,258 @@ index cc347d6..9558e56 100644
      if anyMap.isNull(key: key) {
          return nil
      }
+diff --git a/node_modules/@kingstinct/react-native-healthkit/ios/Serializers.swift b/node_modules/@kingstinct/react-native-healthkit/ios/Serializers.swift
+index 34210bf..789ed6b 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/ios/Serializers.swift
++++ b/node_modules/@kingstinct/react-native-healthkit/ios/Serializers.swift
+@@ -156,6 +156,12 @@ func serializeUnknownQuantityTyped(quantity: HKQuantity?) -> Quantity? {
+         return serializeQuantityTyped(unit: HKUnit.meter(), quantity: quantity)
+     }
+ 
++    // Temperature (e.g. HKWeatherTemperature) — without this, weather temperature
++    // metadata is silently dropped during serialization. Serialize in °C.
++    if quantity.is(compatibleWith: HKUnit.degreeCelsius()) {
++        return serializeQuantityTyped(unit: HKUnit.degreeCelsius(), quantity: quantity)
++    }
++
+     if #available(iOS 11, *) {
+         if quantity.is(compatibleWith: HKUnit.internationalUnit()) {
+             return serializeQuantityTyped(unit: HKUnit.internationalUnit(), quantity: quantity)
+diff --git a/node_modules/@kingstinct/react-native-healthkit/ios/WorkoutProxy.swift b/node_modules/@kingstinct/react-native-healthkit/ios/WorkoutProxy.swift
+index 411f1b5..c2282b6 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/ios/WorkoutProxy.swift
++++ b/node_modules/@kingstinct/react-native-healthkit/ios/WorkoutProxy.swift
+@@ -366,10 +366,98 @@ class WorkoutProxy: HybridWorkoutProxySpec {
+       let hkActivities = workout.workoutActivities
+ 
+       return hkActivities.map { activity in
++        // Encode the activityType into the uuid field (suffix after "::") so JS
++        // can recover the real HealthKit activity type without a schema change.
++        let actTypeRaw = activity.workoutConfiguration.activityType.rawValue
++
++        // ── Phase label ──────────────────────────────────────────────────────
++        // Try three sources in priority order:
++        //   1. activity.title (iOS 17+) — "Warmup", "Work", "Recovery", "Cooldown"
++        //   2. metadata["HKMetadataKeyWorkoutStepType"] numeric value (0-3)
++        //   3. All metadata keys dumped for debugging
++        var suffix = ""
++        var metaParts: [String] = []
++
++        // Read HKWorkoutActivity metadata.
++        // Key WOIntervalStepKeyPath encodes position in workout plan (e.g. "0.0.0", "1.0.0").
++        // JS uses this + distance heuristic to assign Warmup/Work/Cooldown labels.
++        if let meta = activity.metadata {
++          for (key, value) in meta {
++            let shortKey = key.replacingOccurrences(of: "HKMetadataKey", with: "")
++            let valStr: String
++            if let n = value as? NSNumber { valStr = n.stringValue }
++            else if let s = value as? String { valStr = s }
++            else { continue }   // skip non-scalar values
++            let safe = valStr
++              .replacingOccurrences(of: "|", with: "~")
++              .replacingOccurrences(of: "::", with: "..")
++            metaParts.append("\(shortKey)=\(safe)")
++          }
++        }
++
++        if !metaParts.isEmpty {
++          suffix += "::meta::" + metaParts.joined(separator: "|")
++        }
++
++        // ── Per-segment KPIs from allStatistics ──────────────────────────────
++        // Encodes distance (m), avg HR (bpm), avg power (W) directly from HK.
++        var statParts: [String] = []
++
++        if let distType = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning),
++           let distStat = activity.allStatistics[distType],
++           let distQ    = distStat.sumQuantity() {
++          let distM = distQ.doubleValue(for: HKUnit.meter())
++          statParts.append("dist=\(Int(distM.rounded()))")
++        }
++
++        if let hrType   = HKObjectType.quantityType(forIdentifier: .heartRate),
++           let hrStat   = activity.allStatistics[hrType],
++           let hrQ      = hrStat.averageQuantity() {
++          let hr = hrQ.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
++          statParts.append("hr=\(Int(hr.rounded()))")
++        }
++
++        if let powerType  = HKObjectType.quantityType(forIdentifier: .runningPower),
++           let powerStat  = activity.allStatistics[powerType],
++           let powerQ     = powerStat.averageQuantity() {
++          let watts = powerQ.doubleValue(for: HKUnit.watt())
++          statParts.append("power=\(Int(watts.rounded()))")
++        }
++
++        // Step count (used to derive cadence as fallback)
++        if let stepType = HKObjectType.quantityType(forIdentifier: .stepCount),
++           let stepStat = activity.allStatistics[stepType],
++           let stepQ   = stepStat.sumQuantity() {
++          let steps = stepQ.doubleValue(for: HKUnit.count())
++          statParts.append("steps=\(Int(steps.rounded()))")
++        }
++
++        // Running cadence (steps/min) — direct from HK statistics engine.
++        // More accurate than deriving from steps/duration because HK averages
++        // only the actual running samples, excluding any paused periods.
++        let runningCadenceId = HKQuantityTypeIdentifier(rawValue: "HKQuantityTypeIdentifierRunningCadence")
++        if let cadType = HKObjectType.quantityType(forIdentifier: runningCadenceId),
++           let cadStat = activity.allStatistics[cadType],
++           let cadQ   = cadStat.averageQuantity() {
++          let spm = cadQ.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
++          statParts.append("cad=\(Int(spm.rounded()))")
++        }
++
++        // workoutConfiguration.activityType for the step (may differ from parent workout's 37)
++        let stepActType = activity.workoutConfiguration.activityType.rawValue
++        if stepActType != actTypeRaw {
++          statParts.append("stepAct=\(stepActType)")
++        }
++
++        if !statParts.isEmpty {
++          suffix += "::stat::" + statParts.joined(separator: ";")
++        }
++
++        let uuidWithType = activity.uuid.uuidString + "::" + String(actTypeRaw) + suffix
+         return WorkoutActivity(
+           startDate: activity.startDate,
+           endDate: activity.endDate ?? activity.startDate,
+-          uuid: activity.uuid.uuidString,
++          uuid: uuidWithType,
+           duration: activity.duration
+         )
+       }
+diff --git a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/ObjectTypeIdentifier.swift b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/ObjectTypeIdentifier.swift
+index 62ed023..0fb8842 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/ObjectTypeIdentifier.swift
++++ b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/ObjectTypeIdentifier.swift
+@@ -377,6 +377,8 @@ public extension ObjectTypeIdentifier {
+         self = .hkquantitytypeidentifierrunningstridelength
+       case "HKQuantityTypeIdentifierRunningPower":
+         self = .hkquantitytypeidentifierrunningpower
++      case "HKQuantityTypeIdentifierRunningCadence":
++        self = .hkquantitytypeidentifierrunningcadence
+       case "HKQuantityTypeIdentifierRunningVerticalOscillation":
+         self = .hkquantitytypeidentifierrunningverticaloscillation
+       case "HKQuantityTypeIdentifierRunningSpeed":
+@@ -781,6 +783,8 @@ public extension ObjectTypeIdentifier {
+         return "HKQuantityTypeIdentifierRunningStrideLength"
+       case .hkquantitytypeidentifierrunningpower:
+         return "HKQuantityTypeIdentifierRunningPower"
++      case .hkquantitytypeidentifierrunningcadence:
++        return "HKQuantityTypeIdentifierRunningCadence"
+       case .hkquantitytypeidentifierrunningverticaloscillation:
+         return "HKQuantityTypeIdentifierRunningVerticalOscillation"
+       case .hkquantitytypeidentifierrunningspeed:
+diff --git a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/QuantityTypeIdentifier.swift b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/QuantityTypeIdentifier.swift
+index 14484f8..1aa7399 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/QuantityTypeIdentifier.swift
++++ b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/ios/swift/QuantityTypeIdentifier.swift
+@@ -233,6 +233,8 @@ public extension QuantityTypeIdentifier {
+         self = .hkquantitytypeidentifierrunningstridelength
+       case "HKQuantityTypeIdentifierRunningPower":
+         self = .hkquantitytypeidentifierrunningpower
++      case "HKQuantityTypeIdentifierRunningCadence":
++        self = .hkquantitytypeidentifierrunningcadence
+       case "HKQuantityTypeIdentifierRunningVerticalOscillation":
+         self = .hkquantitytypeidentifierrunningverticaloscillation
+       case "HKQuantityTypeIdentifierRunningSpeed":
+@@ -481,6 +483,8 @@ public extension QuantityTypeIdentifier {
+         return "HKQuantityTypeIdentifierRunningStrideLength"
+       case .hkquantitytypeidentifierrunningpower:
+         return "HKQuantityTypeIdentifierRunningPower"
++      case .hkquantitytypeidentifierrunningcadence:
++        return "HKQuantityTypeIdentifierRunningCadence"
+       case .hkquantitytypeidentifierrunningverticaloscillation:
+         return "HKQuantityTypeIdentifierRunningVerticalOscillation"
+       case .hkquantitytypeidentifierrunningspeed:
+diff --git a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/ObjectTypeIdentifier.hpp b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/ObjectTypeIdentifier.hpp
+index 9a09e05..cf805db 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/ObjectTypeIdentifier.hpp
++++ b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/ObjectTypeIdentifier.hpp
+@@ -226,6 +226,7 @@ namespace margelo::nitro::healthkit {
+     HKWORKOUTROUTETYPEIDENTIFIER      SWIFT_NAME(hkworkoutroutetypeidentifier) = 194,
+     HKWORKOUTTYPEIDENTIFIER      SWIFT_NAME(hkworkouttypeidentifier) = 195,
+     ACTIVITYSUMMARYTYPEIDENTIFIER      SWIFT_NAME(activitysummarytypeidentifier) = 196,
++    HKQUANTITYTYPEIDENTIFIERRUNNINGCADENCE      SWIFT_NAME(hkquantitytypeidentifierrunningcadence) = 197,
+   } CLOSED_ENUM;
+ 
+ } // namespace margelo::nitro::healthkit
+@@ -420,6 +421,7 @@ namespace margelo::nitro {
+         case hashString("HKQuantityTypeIdentifierRunningGroundContactTime"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGGROUNDCONTACTTIME;
+         case hashString("HKQuantityTypeIdentifierRunningStrideLength"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSTRIDELENGTH;
+         case hashString("HKQuantityTypeIdentifierRunningPower"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGPOWER;
++        case hashString("HKQuantityTypeIdentifierRunningCadence"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGCADENCE;
+         case hashString("HKQuantityTypeIdentifierRunningVerticalOscillation"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGVERTICALOSCILLATION;
+         case hashString("HKQuantityTypeIdentifierRunningSpeed"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSPEED;
+         case hashString("HKQuantityTypeIdentifierCrossCountrySkiingSpeed"): return ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERCROSSCOUNTRYSKIINGSPEED;
+@@ -623,6 +625,7 @@ namespace margelo::nitro {
+         case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGGROUNDCONTACTTIME: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningGroundContactTime");
+         case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSTRIDELENGTH: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningStrideLength");
+         case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGPOWER: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningPower");
++        case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGCADENCE: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningCadence");
+         case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGVERTICALOSCILLATION: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningVerticalOscillation");
+         case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSPEED: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningSpeed");
+         case ObjectTypeIdentifier::HKQUANTITYTYPEIDENTIFIERCROSSCOUNTRYSKIINGSPEED: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierCrossCountrySkiingSpeed");
+@@ -831,6 +834,7 @@ namespace margelo::nitro {
+         case hashString("HKQuantityTypeIdentifierRunningGroundContactTime"):
+         case hashString("HKQuantityTypeIdentifierRunningStrideLength"):
+         case hashString("HKQuantityTypeIdentifierRunningPower"):
++        case hashString("HKQuantityTypeIdentifierRunningCadence"):
+         case hashString("HKQuantityTypeIdentifierRunningVerticalOscillation"):
+         case hashString("HKQuantityTypeIdentifierRunningSpeed"):
+         case hashString("HKQuantityTypeIdentifierCrossCountrySkiingSpeed"):
+diff --git a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/QuantityTypeIdentifier.hpp b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/QuantityTypeIdentifier.hpp
+index d747d18..fe4d190 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/QuantityTypeIdentifier.hpp
++++ b/node_modules/@kingstinct/react-native-healthkit/nitrogen/generated/shared/c++/QuantityTypeIdentifier.hpp
+@@ -148,6 +148,7 @@ namespace margelo::nitro::healthkit {
+     HKQUANTITYTYPEIDENTIFIERPADDLESPORTSSPEED      SWIFT_NAME(hkquantitytypeidentifierpaddlesportsspeed) = 116,
+     HKQUANTITYTYPEIDENTIFIERROWINGSPEED      SWIFT_NAME(hkquantitytypeidentifierrowingspeed) = 117,
+     HKQUANTITYTYPEIDENTIFIERWORKOUTEFFORTSCORE      SWIFT_NAME(hkquantitytypeidentifierworkouteffortscore) = 118,
++    HKQUANTITYTYPEIDENTIFIERRUNNINGCADENCE      SWIFT_NAME(hkquantitytypeidentifierrunningcadence) = 119,
+   } CLOSED_ENUM;
+ 
+ } // namespace margelo::nitro::healthkit
+@@ -270,6 +271,7 @@ namespace margelo::nitro {
+         case hashString("HKQuantityTypeIdentifierRunningGroundContactTime"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGGROUNDCONTACTTIME;
+         case hashString("HKQuantityTypeIdentifierRunningStrideLength"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSTRIDELENGTH;
+         case hashString("HKQuantityTypeIdentifierRunningPower"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGPOWER;
++        case hashString("HKQuantityTypeIdentifierRunningCadence"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGCADENCE;
+         case hashString("HKQuantityTypeIdentifierRunningVerticalOscillation"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGVERTICALOSCILLATION;
+         case hashString("HKQuantityTypeIdentifierRunningSpeed"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSPEED;
+         case hashString("HKQuantityTypeIdentifierCrossCountrySkiingSpeed"): return QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERCROSSCOUNTRYSKIINGSPEED;
+@@ -395,6 +397,7 @@ namespace margelo::nitro {
+         case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGGROUNDCONTACTTIME: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningGroundContactTime");
+         case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSTRIDELENGTH: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningStrideLength");
+         case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGPOWER: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningPower");
++        case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGCADENCE: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningCadence");
+         case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGVERTICALOSCILLATION: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningVerticalOscillation");
+         case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERRUNNINGSPEED: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierRunningSpeed");
+         case QuantityTypeIdentifier::HKQUANTITYTYPEIDENTIFIERCROSSCOUNTRYSKIINGSPEED: return JSIConverter<std::string>::toJSI(runtime, "HKQuantityTypeIdentifierCrossCountrySkiingSpeed");
+@@ -525,6 +528,7 @@ namespace margelo::nitro {
+         case hashString("HKQuantityTypeIdentifierRunningGroundContactTime"):
+         case hashString("HKQuantityTypeIdentifierRunningStrideLength"):
+         case hashString("HKQuantityTypeIdentifierRunningPower"):
++        case hashString("HKQuantityTypeIdentifierRunningCadence"):
+         case hashString("HKQuantityTypeIdentifierRunningVerticalOscillation"):
+         case hashString("HKQuantityTypeIdentifierRunningSpeed"):
+         case hashString("HKQuantityTypeIdentifierCrossCountrySkiingSpeed"):
+diff --git a/node_modules/@kingstinct/react-native-healthkit/src/types/QuantityTypeIdentifier.ts b/node_modules/@kingstinct/react-native-healthkit/src/types/QuantityTypeIdentifier.ts
+index 0bae12c..eb345a2 100644
+--- a/node_modules/@kingstinct/react-native-healthkit/src/types/QuantityTypeIdentifier.ts
++++ b/node_modules/@kingstinct/react-native-healthkit/src/types/QuantityTypeIdentifier.ts
+@@ -669,6 +669,13 @@ export type QuantityTypeIdentifierWriteable =
+    */
+   | 'HKQuantityTypeIdentifierRunningStrideLength'
+ 
++  /**
++   * Running Cadence (steps per minute)
++   * @see {@link https://developer.apple.com/documentation/healthkit/HKQuantityTypeIdentifierRunningCadence Apple Docs HKQuantityTypeIdentifierRunningCadence}
++   * @since iOS 16
++   */
++  | 'HKQuantityTypeIdentifierRunningCadence'
++
+   /**
+    * Running Power
+    * @see {@link https://developer.apple.com/documentation/healthkit/hkquantitytypeidentifierrunningpower Apple Docs HKQuantityTypeIdentifierRunningPower}

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import Markdown from 'react-native-markdown-display';
 import {
   View,
   Text,
@@ -16,6 +17,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { loadSnapshotCache } from '../src/services/healthkit';
+import { loadRunMeta } from '../src/services/runMeta';
 import {
   getChatResponse,
   updateMemoryNote,
@@ -40,11 +42,11 @@ function getLocalContext(): string {
   const tz   = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const city = tz.split('/').pop()?.replace(/_/g, ' ') ?? '';
   const time = new Date().toLocaleString('en-GB', {
-    weekday: 'short', day: 'numeric', month: 'short',
+    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
     timeZone: tz,
   });
-  return city ? `${city} · ${time}` : time;
+  return city ? `Location: ${city} · ${time}` : time;
 }
 
 // ─── Quick-action chips ───────────────────────────────────────────────────────
@@ -76,7 +78,7 @@ interface Message {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
-  const { data, focusRunUUID } = useLocalSearchParams<{ data?: string; focusRunUUID?: string }>();
+  const { data, focusRunUUID, runDetailJson } = useLocalSearchParams<{ data?: string; focusRunUUID?: string; runDetailJson?: string }>();
   const [snapshot, setSnapshot]       = useState<HealthSnapshot | null>(data ? JSON.parse(data) : null);
 
   const [messages,       setMessages]       = useState<Message[]>([]);
@@ -122,7 +124,23 @@ export default function ChatScreen() {
       let snap = snapshot;
       if (!snap && focusRunUUID) {
         snap = await loadSnapshotCache();
-        if (snap) setSnapshot(snap);
+        if (snap) {
+          // Cache may predate a note/temp just edited on the detail screen — merge
+          // the latest per-run metadata so the focal run + comparisons are current.
+          try {
+            const runMeta = await loadRunMeta();
+            snap = {
+              ...snap,
+              runs: snap.runs.map(r => {
+                const m = runMeta[r.uuid];
+                if (!m) return r;
+                const tempC = m.tempSource === 'manual' && m.tempC != null ? m.tempC : r.tempC;
+                return { ...r, note: m.note ?? r.note, tempC };
+              }),
+            };
+          } catch {}
+          setSnapshot(snap);
+        }
       }
 
       if (!snap) {
@@ -161,10 +179,13 @@ export default function ChatScreen() {
           if (focusRun) {
             const sameType = snap.runs
               .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
-              .slice(0, 5);
-            const userText = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits);
+              .slice(0, 10);
+            const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
+            // Full data → system prompt (invisible); short question → visible user message
+            const systemContext = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail);
+            const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             setIsLoaded(true);
-            setTimeout(() => autoSend(userText), 400);
+            setTimeout(() => autoSend(shortMsg, snap, systemContext), 400);
             return;
           }
         }
@@ -184,7 +205,7 @@ export default function ChatScreen() {
           lastSeenRunRef.current = latestRun.uuid;
           setIsLoaded(true);
           // Auto-send after a short delay so the restored history renders first
-          setTimeout(() => autoSend(userText), 400);
+          setTimeout(() => autoSend(userText, snap), 400);
           return;
         }
       } else {
@@ -194,11 +215,13 @@ export default function ChatScreen() {
           if (focusRun) {
             const sameType = snap.runs
               .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
-              .slice(0, 5);
-            const userText = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits);
+              .slice(0, 10);
+            const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
+            const systemContext = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail);
+            const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             if (latestRun) lastSeenRunRef.current = latestRun.uuid;
             setIsLoaded(true);
-            setTimeout(() => autoSend(userText), 400);
+            setTimeout(() => autoSend(shortMsg, snap, systemContext), 400);
             return;
           }
         }
@@ -226,8 +249,14 @@ export default function ChatScreen() {
 
   // ── autoSend — silently injects a user message + gets Claude response ───────
   // Used for the new-run analysis trigger. Adds a visible "thinking" state.
-  const autoSend = useCallback(async (text: string) => {
-    if (!snapshot) return;
+  // snapOverride lets callers pass the freshly-loaded snapshot directly,
+  // bypassing the React-closure stale-state problem (autoSend is created before
+  // setSnapshot re-renders, so the closure captures the old null value).
+  // systemContext is injected invisibly into the system prompt (doesn't appear in chat UI).
+  const autoSend = useCallback(async (text: string, snapOverride?: HealthSnapshot | null, systemContext?: string) => {
+    const activeSnap = snapOverride ?? snapshot;
+    if (!activeSnap) return;
+    localContextRef.current = getLocalContext(); // refresh time on every send
 
     const loadingId = 'auto-loading';
     const userMsg: Message    = { id: 'auto-user', role: 'user', content: text };
@@ -241,18 +270,18 @@ export default function ChatScreen() {
     const apiHistory: ChatMessage[] = toApiMessages([...historyRef.current, persisted]);
 
     try {
-      const reply    = await getChatResponse(snapshot, apiHistory, memoryNote, localContextRef.current);
+      const reply    = await getChatResponse(activeSnap, apiHistory, memoryNote, localContextRef.current, undefined, systemContext);
       const replyMsg = makeMsg('assistant', reply);
       const full: PersistedMessage[] = [...historyRef.current, persisted, replyMsg];
       historyRef.current = full;
-      lastSeenRunRef.current = snapshot.runs[0]?.uuid;
+      lastSeenRunRef.current = activeSnap.runs[0]?.uuid;
 
       setMessages(prev => [
         ...prev.filter(m => m.id !== loadingId),
         { id: 'auto-reply', role: 'assistant', content: reply },
       ]);
 
-      updateMemoryNote(toApiMessages(full), memoryNote, snapshot, localContextRef.current)
+      updateMemoryNote(toApiMessages(full), memoryNote, activeSnap, localContextRef.current)
         .then(updatedMemory => {
           setMemoryNote(updatedMemory);
           saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
@@ -302,6 +331,7 @@ export default function ChatScreen() {
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || sending || !snapshot) return;
+    localContextRef.current = getLocalContext(); // refresh time on every send
 
     setShowChips(false);
     setInput('');
@@ -374,7 +404,9 @@ export default function ChatScreen() {
     return (
       <View style={[styles.bubbleRow, isUser && styles.bubbleRowUser]}>
         <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-          <FormattedText text={item.content} isUser={isUser} />
+          <Markdown style={isUser ? mdStylesUser : mdStylesAssistant}>
+            {item.content}
+          </Markdown>
         </View>
       </View>
     );
@@ -462,36 +494,54 @@ export default function ChatScreen() {
   );
 }
 
-// ─── Simple markdown renderer ─────────────────────────────────────────────────
+// ─── Markdown style sheets ────────────────────────────────────────────────────
 
-function FormattedText({ text, isUser }: { text: string; isUser: boolean }) {
-  const baseColor = isUser ? '#fff' : '#222';
-  const boldColor = isUser ? '#fff' : '#111';
+const mdBase = {
+  body:        { fontSize: 14, lineHeight: 20 },
+  paragraph:   { marginTop: 0, marginBottom: 6 },
+  strong:      { fontWeight: '700' as const },
+  em:          { fontStyle: 'italic' as const },
+  heading1:    { fontSize: 16, fontWeight: '700' as const, marginBottom: 6, marginTop: 4 },
+  heading2:    { fontSize: 15, fontWeight: '700' as const, marginBottom: 4, marginTop: 4 },
+  heading3:    { fontSize: 14, fontWeight: '700' as const, marginBottom: 2, marginTop: 2 },
+  bullet_list: { marginBottom: 4 },
+  ordered_list:{ marginBottom: 4 },
+  list_item:   { marginBottom: 2 },
+  code_inline: { fontFamily: 'Courier', fontSize: 12, backgroundColor: 'rgba(0,0,0,0.08)', borderRadius: 3, paddingHorizontal: 4 },
+  fence:       { fontFamily: 'Courier', fontSize: 12, backgroundColor: 'rgba(0,0,0,0.06)', padding: 8, borderRadius: 6, marginBottom: 6 },
+  table:       { borderWidth: 1, borderColor: '#ddd', borderRadius: 4, marginBottom: 8, overflow: 'hidden' as const },
+  thead:       { backgroundColor: '#f0f0f0' },
+  th:          { fontWeight: '700' as const, padding: 6, fontSize: 12, borderRightWidth: 1, borderColor: '#ddd' },
+  td:          { padding: 6, fontSize: 12, borderRightWidth: 1, borderColor: '#ddd' },
+  tr:          { borderBottomWidth: 1, borderColor: '#eee' },
+  hr:          { borderBottomWidth: 1, borderColor: '#ddd', marginVertical: 8 },
+  blockquote:  { borderLeftWidth: 3, borderColor: '#ccc', paddingLeft: 10, marginLeft: 0, opacity: 0.8 },
+};
 
-  const lines = text.split('\n');
-  return (
-    <Text>
-      {lines.map((line, li) => {
-        const parts = line.split(/(\*\*[^*]+\*\*)/g);
-        return (
-          <Text key={li}>
-            {parts.map((part, pi) => {
-              if (part.startsWith('**') && part.endsWith('**')) {
-                return (
-                  <Text key={pi} style={{ fontWeight: '700', color: boldColor }}>
-                    {part.slice(2, -2)}
-                  </Text>
-                );
-              }
-              return <Text key={pi} style={{ color: baseColor }}>{part}</Text>;
-            })}
-            {li < lines.length - 1 ? '\n' : ''}
-          </Text>
-        );
-      })}
-    </Text>
-  );
-}
+const mdStylesAssistant = StyleSheet.create({
+  ...mdBase,
+  body:      { ...mdBase.body, color: '#222' },
+  strong:    { ...mdBase.strong, color: '#111' },
+  heading1:  { ...mdBase.heading1, color: '#111' },
+  heading2:  { ...mdBase.heading2, color: '#111' },
+  heading3:  { ...mdBase.heading3, color: '#333' },
+});
+
+const mdStylesUser = StyleSheet.create({
+  ...mdBase,
+  body:        { ...mdBase.body, color: '#fff' },
+  strong:      { ...mdBase.strong, color: '#fff' },
+  heading1:    { ...mdBase.heading1, color: '#fff' },
+  heading2:    { ...mdBase.heading2, color: '#fff' },
+  heading3:    { ...mdBase.heading3, color: '#fff' },
+  code_inline: { ...mdBase.code_inline, backgroundColor: 'rgba(255,255,255,0.2)' },
+  fence:       { ...mdBase.fence, backgroundColor: 'rgba(255,255,255,0.15)' },
+  table:       { ...mdBase.table, borderColor: 'rgba(255,255,255,0.4)' },
+  thead:       { backgroundColor: 'rgba(255,255,255,0.2)' },
+  th:          { ...mdBase.th, borderColor: 'rgba(255,255,255,0.3)', color: '#fff' },
+  td:          { ...mdBase.td, borderColor: 'rgba(255,255,255,0.2)', color: '#fff' },
+  tr:          { borderColor: 'rgba(255,255,255,0.2)' },
+});
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -515,7 +565,6 @@ const styles = StyleSheet.create({
   bubbleRow:     { marginBottom: 10, flexDirection: 'row' },
   bubbleRowUser: { justifyContent: 'flex-end' },
   bubble: {
-    maxWidth: '82%',
     borderRadius: 18,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -523,6 +572,7 @@ const styles = StyleSheet.create({
   bubbleUser: {
     backgroundColor: '#FF6B35',
     borderBottomRightRadius: 4,
+    maxWidth: '82%',
   },
   bubbleAssistant: {
     backgroundColor: '#fff',

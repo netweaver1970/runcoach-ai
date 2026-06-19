@@ -1,20 +1,26 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent, Alert,
+  StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent, Alert, PanResponder,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   fetchWeeklyMileageHistory,
   fetchDailyMileageHistory,
+  fetchWeeklyDurationHistory,
+  fetchDailyDurationHistory,
   fetchVO2MaxHistory,
   fetchRestingHRHistory,
   fetchHRVHistory,
+  fetchSleepHistory,
+  fetchOvernightHRHistory,
 } from '../src/services/healthkit';
 import { WeeklyMileage, TimelineEvent } from '../src/types';
 import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
 
-type HistoryType = 'km' | 'vo2' | 'rhr' | 'hrv' | 'timeline';
+type HistoryType = 'km' | 'time' | 'vo2' | 'rhr' | 'hrv' | 'timeline'
+  | 'sleep-total' | 'sleep-deep' | 'sleep-rem' | 'sleep-score' | 'sleep-efficiency'
+  | 'sleep-hrdip' | 'sleep-bank' | 'sleep-awake';
 type Period = '1M' | '3M' | '6M' | '1Y';
 
 const PERIOD_MONTHS: Record<Period, number> = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12 };
@@ -24,32 +30,98 @@ const CARD_PADDING = 12;
 
 /**
  * Max bars shown per period.
- * 1M: show ALL daily readings (no aggregation) — set high so nothing gets merged.
- * 3M / 6M: weekly bars (~13).
- * 1Y: monthly bars (12).
+ * 1M: show ALL daily readings — no aggregation.
+ * 3M: weekly bars (~13).
+ * 6M: show all weekly bars — no aggregation (up to ~26).
+ * 1Y: use groupByMonth() instead of aggregateBuckets().
  */
 const PERIOD_BUCKETS: Record<Period, number> = {
-  '1M': 999,  // never aggregate for 1-month view
+  '1M': 999,   // never aggregate for 1-month view (daily)
   '3M': 13,
-  '6M': 13,
-  '1Y': 12,
+  '6M': 999,   // never aggregate — show every week
+  '1Y': 999,   // not used directly; groupByMonth() handles 1Y
 };
 
 interface DataPoint { label: string; value: number; fullDate: string; }
 
+const SLEEP_TYPES = new Set(['sleep-total', 'sleep-deep', 'sleep-rem', 'sleep-score', 'sleep-efficiency', 'sleep-hrdip', 'sleep-bank', 'sleep-awake']);
+
 const CONFIGS: Record<Exclude<HistoryType, 'timeline'>, {
   title: string; unit: string; color: string; aggregate: 'sum' | 'avg';
 }> = {
-  km:  { title: 'Weekly km',    unit: 'km',        color: '#FF6B35', aggregate: 'sum' },
-  vo2: { title: 'VO₂ Max',     unit: 'ml/kg/min', color: '#27ae60', aggregate: 'avg' },
-  rhr: { title: 'Resting HR',  unit: 'bpm',        color: '#e74c3c', aggregate: 'avg' },
-  hrv: { title: 'Nightly HRV', unit: 'ms',         color: '#8e44ad', aggregate: 'avg' },
+  km:               { title: 'Weekly km',       unit: 'km',         color: '#FF6B35', aggregate: 'sum' },
+  time:             { title: 'Time on Feet',    unit: 'min',        color: '#2980b9', aggregate: 'sum' },
+  vo2:              { title: 'VO₂ Max',        unit: 'ml/kg/min',  color: '#27ae60', aggregate: 'avg' },
+  rhr:              { title: 'Resting HR',     unit: 'bpm',         color: '#e74c3c', aggregate: 'avg' },
+  hrv:              { title: 'Nightly HRV',    unit: 'ms',          color: '#8e44ad', aggregate: 'avg' },
+  'sleep-total':    { title: 'Time Asleep',    unit: 'min',         color: '#2980b9', aggregate: 'avg' },
+  'sleep-deep':     { title: 'Deep Sleep',     unit: 'min',         color: '#3498db', aggregate: 'avg' },
+  'sleep-rem':      { title: 'REM Sleep',      unit: 'min',         color: '#9b59b6', aggregate: 'avg' },
+  'sleep-score':    { title: 'Sleep Score',    unit: '/ 100',       color: '#8e44ad', aggregate: 'avg' },
+  'sleep-efficiency':{ title: 'Sleep Efficiency', unit: '%',        color: '#27ae60', aggregate: 'avg' },
+  'sleep-hrdip':    { title: 'HR Dip',           unit: '%',         color: '#e74c3c', aggregate: 'avg' },
+  'sleep-bank':     { title: 'Sleep Bank',        unit: 'min',       color: '#27ae60', aggregate: 'avg' },
+  'sleep-awake':    { title: 'Time Awake',        unit: 'min',       color: '#e67e22', aggregate: 'avg' },
 };
 
 function fmtInt(v: number): string { return String(Math.round(v)); }
 
 function fmtVal(v: number): string {
   return v % 1 === 0 || v > 10 ? String(Math.round(v)) : v.toFixed(1);
+}
+
+function fmtOneDecimal(v: number): string { return v.toFixed(1); }
+
+/** Format signed minutes as ±HH:MM or ±MM (for Sleep Bank) */
+function fmtSignedMin(v: number): string {
+  const sign = v >= 0 ? '+' : '-';
+  const abs  = Math.abs(Math.round(v));
+  if (abs >= 60) {
+    const h  = Math.floor(abs / 60);
+    const mm = abs % 60;
+    return `${sign}${h}:${String(mm).padStart(2, '0')}`;
+  }
+  return `${sign}${abs}`;
+}
+
+/**
+ * Aggregate daily data points to one reading per calendar week (Monday = week start).
+ * mode 'last'  → latest reading of the week (good for slowly-changing measures like VO2max/RHR)
+ * mode 'avg'   → average of all readings in the week (good for HRV)
+ * mode 'sum'   → sum (not used here, kept for symmetry)
+ */
+function groupByWeek(data: DataPoint[], mode: 'sum' | 'avg' | 'last'): DataPoint[] {
+  const map = new Map<string, DataPoint[]>();
+  for (const d of data) {
+    const mon = getMondayOf(d.fullDate);
+    const key = mon.toISOString().slice(0, 10);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(d);
+  }
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, pts]) => {
+      const sorted = [...pts].sort((a, b) => a.fullDate.localeCompare(b.fullDate));
+      let value: number;
+      if (mode === 'last') value = sorted[sorted.length - 1].value;
+      else if (mode === 'sum') value = pts.reduce((s, p) => s + p.value, 0);
+      else value = pts.reduce((s, p) => s + p.value, 0) / pts.length;
+      return { label: key, value, fullDate: key };
+    });
+}
+
+/**
+ * Format minutes as HH:MM when ≥ 60 min, otherwise just MM.
+ * e.g. 83 → "1:23",  45 → "45"
+ */
+function fmtMin(min: number): string {
+  const m = Math.round(min);
+  if (m >= 60) {
+    const h  = Math.floor(m / 60);
+    const mm = m % 60;
+    return `${h}:${String(mm).padStart(2, '0')}`;
+  }
+  return String(m);
 }
 
 /** Get the Monday of the week containing the given ISO date */
@@ -114,46 +186,159 @@ function aggregateBuckets(
   return result;
 }
 
+/**
+ * Aggregate data points by calendar month.
+ * Used for the 1Y km view so each bar = one calendar month.
+ */
+function groupByMonth(data: DataPoint[], mode: 'sum' | 'avg'): DataPoint[] {
+  const map = new Map<string, number[]>(); // 'YYYY-MM' → values
+  for (const d of data) {
+    const dt  = new Date(d.fullDate);
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(d.value);
+  }
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, vals]) => {
+      const value = mode === 'sum'
+        ? vals.reduce((s, v) => s + v, 0)
+        : vals.reduce((s, v) => s + v, 0) / vals.length;
+      return { label: key, value, fullDate: key + '-01' };
+    });
+}
+
+/** Running total of data points — used for cumulative mode. */
+function toCumulative(data: DataPoint[]): DataPoint[] {
+  let acc = 0;
+  return data.map(d => { acc += d.value; return { ...d, value: acc }; });
+}
+
 // ─── Chart ────────────────────────────────────────────────────────────────────
 
 const CHART_H = 200;
 const Y_AXIS_W = 34;
 
+// xMode controls how x-axis labels are formatted.
+// 'daily'   → D/M for each bar (1M view)
+// 'weekly'  → D/M every few bars (3M / 6M view)
+// 'monthly' → "Jan '25" for each bar (1Y view)
+type XMode = 'daily' | 'weekly' | 'monthly';
+
 function Chart({
-  data, color, innerW,
+  data, color, innerW, xMode = 'weekly', showAllValues = false, prevData,
+  cumulative = false, isTime = false, valueLabelStep = 1, fmtFn, zeroBase = true,
 }: {
-  data: DataPoint[]; color: string; innerW: number;
+  data:            DataPoint[];
+  color:           string;
+  innerW:          number;
+  xMode?:          XMode;
+  showAllValues?:  boolean;
+  prevData?:       DataPoint[]; // previous period (cumulative), shown as grey line overlay
+  cumulative?:     boolean;     // when true: render as line chart instead of bars
+  isTime?:         boolean;     // when true: format values as HH:MM / MM
+  valueLabelStep?: number;      // show every Nth value label (default 1 = every label)
+  fmtFn?:          (v: number) => string; // override value formatter (e.g. 1-decimal for VO2max)
+  zeroBase?:       boolean;     // when false: y-axis zooms in around data range (default true)
 }) {
+  // Scrubber cursor (hooks must precede any early return)
+  const [cursorX, setCursorX] = useState<number | null>(null);
+  const plotRef  = useRef<View>(null);
+  const plotLeft = useRef(0);
+  const measurePlot = () => plotRef.current?.measureInWindow((x) => { plotLeft.current = x; });
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+      // Absolute screen X minus the plot's measured left (locationX is relative to
+      // the touched child, so it's unusable for positioning).
+      onPanResponderGrant: (_e, g) => setCursorX(g.x0 - plotLeft.current),
+      onPanResponderMove:  (_e, g) => setCursorX(g.moveX - plotLeft.current),
+      onPanResponderTerminationRequest: () => false,
+    })
+  ).current;
+
   if (data.length === 0 || innerW <= 0) return null;
 
-  const values = data.map(d => d.value);
-  const rawMin = Math.min(...values);
-  const rawMax = Math.max(...values);
-  const padTop = (rawMax - rawMin) * 0.12 || 2;
-  const scale  = niceScale(Math.max(0, rawMin * 0.9 - 1), rawMax + padTop);
+  // Value formatter: custom override, then minutes → HH:MM / MM, or plain integer
+  const fmt = fmtFn ?? (isTime ? fmtMin : fmtInt);
+
+  // Use the longer dataset to compute slot width so all points fit
+  const allSets   = [data, ...(prevData ? [prevData] : [])];
+  const maxLen    = Math.max(...allSets.map(s => s.length)) || 1;
+  // y-scale spans both datasets
+  const allValues = allSets.flatMap(s => s.map(d => d.value));
+  const rawMin = Math.min(...allValues);
+  const rawMax = Math.max(...allValues);
+  const padTop = (rawMax - rawMin) * 0.15 || 2;
+  // zeroBase=true: axis starts at 0 (good for km/time); zeroBase=false: zoom in around data
+  const lowerBound = zeroBase ? Math.max(0, rawMin * 0.9 - 1) : rawMin - padTop * 1.5;
+  const scale  = niceScale(lowerBound, rawMax + padTop);
   const yRange = scale.niceMax - scale.niceMin || 1;
 
-  // innerW is the full usable width inside the card (chartWrap content width)
   const plotW  = innerW - Y_AXIS_W;
-  const barGap = Math.max(1, Math.min(3, plotW / data.length / 6));
-  const barW   = Math.max(5, (plotW - barGap * data.length) / data.length);
+  const barGap = Math.max(1, Math.min(3, plotW / maxLen / 6));
+  const barW   = Math.max(5, (plotW - barGap * maxLen) / maxLen);
+  // Center x for a given slot index (used for line chart points)
+  const cxOf   = (i: number) => i * (barW + barGap) + barW / 2;
 
   const toY = (v: number) =>
     CHART_H * (1 - Math.max(0, Math.min(1, (v - scale.niceMin) / yRange)));
 
-  // Up to 5 evenly spaced x-axis labels
-  const labelIdxs = new Set<number>();
-  const maxL = Math.min(5, data.length);
-  if (maxL === 1) {
-    labelIdxs.add(0);
+  // Decide which indices get x-axis labels.
+  const xLabelIdxs = new Set<number>();
+  const maxXLabels = xMode === 'monthly' ? data.length
+    : xMode === 'daily'   ? Math.min(8, data.length)
+    : Math.min(8, data.length);
+  if (maxXLabels === 1) {
+    xLabelIdxs.add(0);
   } else {
-    for (let i = 0; i < maxL; i++) {
-      labelIdxs.add(Math.round((i / (maxL - 1)) * (data.length - 1)));
+    for (let i = 0; i < maxXLabels; i++) {
+      xLabelIdxs.add(Math.round((i / (maxXLabels - 1)) * (data.length - 1)));
     }
   }
 
-  // Always two-line x-label (D/M on top, 'YY below)
+  // Decide which indices get value labels.
+  const valueLabelIdxs = new Set<number>();
+  if (showAllValues || xMode === 'monthly') {
+    for (let i = 0; i < data.length; i++) {
+      if (i % valueLabelStep === 0) valueLabelIdxs.add(i);
+    }
+    // Always label the last point so users can see the period total
+    if (data.length > 0) valueLabelIdxs.add(data.length - 1);
+  } else {
+    xLabelIdxs.forEach(i => valueLabelIdxs.add(i));
+  }
+
+  // X-axis label formatter
+  const fmtXLabel = (d: DataPoint): { line1: string; line2: string } => {
+    if (xMode === 'monthly') {
+      const dt = new Date(d.fullDate);
+      return {
+        line1: dt.toLocaleString('en-GB', { month: 'short' }),
+        line2: `'${String(dt.getFullYear()).slice(2)}`,
+      };
+    }
+    const mon = xMode === 'daily' ? new Date(d.fullDate) : getMondayOf(d.fullDate);
+    return { line1: formatDM(mon), line2: formatYY(mon) };
+  };
+
   const xAxisH = 34;
+  // Font size: reduce by 1pt vs previous (was 8/11); dense daily view uses smaller
+  const valueFontSize = showAllValues && data.length > 20 ? 7 : 10;
+  const valueOffset   = showAllValues && data.length > 20 ? 11 : 15;
+  // Line chart geometry
+  const lineW     = 2.5;
+  const prevLineW = 2;
+  const dotR      = data.length > 20 ? 2 : 3;
+
+  // Cursor → nearest data index + tooltip geometry
+  const cursorIdx = cursorX == null ? -1
+    : Math.max(0, Math.min(data.length - 1, Math.round((cursorX - barW / 2) / (barW + barGap))));
+  const cur  = cursorIdx >= 0 ? data[cursorIdx] : null;
+  const curCx = cursorIdx >= 0 ? cxOf(cursorIdx) : 0;
+  const tipW  = 90;
+  const tipLeft = Math.max(0, Math.min(plotW - tipW, curCx - tipW / 2));
 
   return (
     <View style={{ flexDirection: 'row' }}>
@@ -161,13 +346,13 @@ function Chart({
       <View style={{ width: Y_AXIS_W, height: CHART_H }}>
         {scale.ticks.map((tick, i) => (
           <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(tick) - 8, right: 4 }]}>
-            {fmtInt(tick)}
+            {fmt(tick)}
           </Text>
         ))}
       </View>
 
-      {/* Plot area — explicitly sized to plotW so it never overflows */}
-      <View style={{ width: plotW, height: CHART_H + xAxisH, position: 'relative' }}>
+      {/* Plot area */}
+      <View ref={plotRef} onLayout={measurePlot} style={{ width: plotW, height: CHART_H + xAxisH, position: 'relative' }} {...pan.panHandlers}>
         {/* Gridlines */}
         {scale.ticks.map((tick, i) => (
           <View key={i} style={{
@@ -177,48 +362,175 @@ function Chart({
           }} />
         ))}
 
-        {/* Bars + labels */}
-        {data.map((d, i) => {
-          const x    = i * (barW + barGap);
-          const barH = Math.max(2, CHART_H - toY(d.value));
-          const show = labelIdxs.has(i);
-          const mon  = getMondayOf(d.fullDate);
-
-          return (
-            <View key={i}>
-              {/* Bar */}
-              <View style={{
-                position: 'absolute', left: x, top: CHART_H - barH,
-                width: barW, height: barH,
-                backgroundColor: color, borderRadius: 3, opacity: 0.88,
-              }} />
-
-              {/* Value label above bar — always black, bigger */}
-              {show && (
-                <Text style={{
+        {cumulative ? (
+          // ── LINE CHART (cumulative mode) ────────────────────────────────────
+          <>
+            {/* Previous period: grey line segments */}
+            {prevData && prevData.length > 1 && prevData.map((d, i) => {
+              if (i === 0) return null;
+              const x1 = cxOf(i - 1), y1 = toY(prevData[i - 1].value);
+              const x2 = cxOf(i),     y2 = toY(d.value);
+              const dx = x2 - x1,     dy = y2 - y1;
+              const length = Math.sqrt(dx * dx + dy * dy);
+              const angle  = Math.atan2(dy, dx) * 180 / Math.PI;
+              return (
+                <View key={`prev-seg-${i}`} style={{
                   position: 'absolute',
-                  top: CHART_H - barH - 15,
-                  left: x - 10, width: barW + 20,
-                  fontSize: 11, color: '#111', textAlign: 'center', fontWeight: '700',
-                }} numberOfLines={1}>
-                  {fmtInt(d.value)}
-                </Text>
-              )}
+                  width: length, height: prevLineW,
+                  left: (x1 + x2) / 2 - length / 2,
+                  top:  (y1 + y2) / 2 - prevLineW / 2,
+                  backgroundColor: '#999',
+                  transform: [{ rotate: `${angle}deg` }],
+                }} />
+              );
+            })}
+            {/* Previous period: grey dots */}
+            {prevData && prevData.map((d, i) => (
+              <View key={`prev-dot-${i}`} style={{
+                position: 'absolute',
+                width: 4, height: 4, borderRadius: 2,
+                left: cxOf(i) - 2, top: toY(d.value) - 2,
+                backgroundColor: '#999',
+              }} />
+            ))}
 
-              {/* X-axis label: D/M line + 'YY line */}
-              {show && (
-                <View style={{
+            {/* Current period: colored line segments */}
+            {data.length > 1 && data.map((d, i) => {
+              if (i === 0) return null;
+              const x1 = cxOf(i - 1), y1 = toY(data[i - 1].value);
+              const x2 = cxOf(i),     y2 = toY(d.value);
+              const dx = x2 - x1,     dy = y2 - y1;
+              const length = Math.sqrt(dx * dx + dy * dy);
+              const angle  = Math.atan2(dy, dx) * 180 / Math.PI;
+              return (
+                <View key={`seg-${i}`} style={{
+                  position: 'absolute',
+                  width: length, height: lineW,
+                  left: (x1 + x2) / 2 - length / 2,
+                  top:  (y1 + y2) / 2 - lineW / 2,
+                  backgroundColor: color,
+                  transform: [{ rotate: `${angle}deg` }],
+                }} />
+              );
+            })}
+            {/* Current period: colored dots */}
+            {data.map((d, i) => (
+              <View key={`dot-${i}`} style={{
+                position: 'absolute',
+                width: dotR * 2, height: dotR * 2, borderRadius: dotR,
+                left: cxOf(i) - dotR, top: toY(d.value) - dotR,
+                backgroundColor: color,
+              }} />
+            ))}
+
+            {/* Value labels above each labeled point */}
+            {data.map((d, i) => {
+              if (!valueLabelIdxs.has(i)) return null;
+              const cx = cxOf(i), cy = toY(d.value);
+              return (
+                <Text key={`vl-${i}`} style={{
+                  position: 'absolute',
+                  top: cy - valueOffset - dotR,
+                  left: cx - 20, width: 40,
+                  fontSize: valueFontSize, color: '#111', textAlign: 'center', fontWeight: '700',
+                }} numberOfLines={1}>
+                  {fmt(d.value)}
+                </Text>
+              );
+            })}
+
+            {/* X-axis labels below chart */}
+            {data.map((d, i) => {
+              if (!xLabelIdxs.has(i)) return null;
+              const xl = fmtXLabel(d);
+              return (
+                <View key={`xl-${i}`} style={{
                   position: 'absolute', top: CHART_H + 3,
-                  left: x - 12, width: barW + 24,
+                  left: cxOf(i) - 16, width: 32,
                   alignItems: 'center',
                 }}>
-                  <Text style={ch.xLabel} numberOfLines={1}>{formatDM(mon)}</Text>
-                  <Text style={ch.xLabelYear} numberOfLines={1}>{formatYY(mon)}</Text>
+                  <Text style={ch.xLabel} numberOfLines={1}>{xl.line1}</Text>
+                  <Text style={ch.xLabelYear} numberOfLines={1}>{xl.line2}</Text>
                 </View>
-              )}
+              );
+            })}
+          </>
+        ) : (
+          // ── BAR CHART (absolute mode) ───────────────────────────────────────
+          <>
+            {/* Previous-period grey bars (behind current bars) */}
+            {prevData && prevData.map((d, i) => {
+              const x    = i * (barW + barGap);
+              const barH = Math.max(2, CHART_H - toY(d.value));
+              return (
+                <View key={`prev-${i}`} style={{
+                  position: 'absolute', left: x, top: CHART_H - barH,
+                  width: barW, height: barH,
+                  backgroundColor: '#bbb', borderRadius: 3, opacity: 0.45,
+                }} />
+              );
+            })}
+
+            {/* Current-period bars + labels */}
+            {data.map((d, i) => {
+              const x    = i * (barW + barGap);
+              const barH = Math.max(2, CHART_H - toY(d.value));
+              const showV = valueLabelIdxs.has(i);
+              const showX = xLabelIdxs.has(i);
+              const xl    = showX ? fmtXLabel(d) : null;
+
+              return (
+                <View key={i}>
+                  {/* Bar */}
+                  <View style={{
+                    position: 'absolute', left: x, top: CHART_H - barH,
+                    width: barW, height: barH,
+                    backgroundColor: color, borderRadius: 3, opacity: 0.88,
+                  }} />
+
+                  {/* Value label above bar */}
+                  {showV && (
+                    <Text style={{
+                      position: 'absolute',
+                      top: CHART_H - barH - valueOffset,
+                      left: x - 10, width: barW + 20,
+                      fontSize: valueFontSize, color: '#111', textAlign: 'center', fontWeight: '700',
+                    }} numberOfLines={1}>
+                      {fmt(d.value)}
+                    </Text>
+                  )}
+
+                  {/* X-axis label */}
+                  {xl && (
+                    <View style={{
+                      position: 'absolute', top: CHART_H + 3,
+                      left: x - 12, width: barW + 24,
+                      alignItems: 'center',
+                    }}>
+                      <Text style={ch.xLabel} numberOfLines={1}>{xl.line1}</Text>
+                      <Text style={ch.xLabelYear} numberOfLines={1}>{xl.line2}</Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </>
+        )}
+
+        {/* Scrubber cursor */}
+        {cur && (
+          <>
+            <View style={{ position: 'absolute', left: curCx, top: 0, width: 1, height: CHART_H, backgroundColor: '#999' }} />
+            <View style={{
+              position: 'absolute', left: curCx - 4, top: toY(cur.value) - 4,
+              width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1, borderColor: '#fff',
+            }} />
+            <View style={[ch.tip, { left: tipLeft, width: tipW }]}>
+              <Text style={ch.tipDate}>{cur.fullDate.slice(0, 10)}</Text>
+              <Text style={ch.tipVal}>{fmt(cur.value)}</Text>
             </View>
-          );
-        })}
+          </>
+        )}
       </View>
     </View>
   );
@@ -230,15 +542,21 @@ export default function HistoryScreen() {
   const { type } = useLocalSearchParams<{ type: string }>();
   const router   = useRouter();
 
-  const [period, setPeriod]         = useState<Period>('3M');
-  const [pageOffset, setPageOffset] = useState(0);
-  const [rawData, setRawData]       = useState<DataPoint[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState<string | null>(null);
-  const [innerW, setInnerW]         = useState(0); // width INSIDE chartWrap (padding subtracted)
+  const [period, setPeriod]             = useState<Period>('3M');
+  const [pageOffset, setPageOffset]     = useState(0);
+  const [rawData, setRawData]           = useState<DataPoint[]>([]);
+  const [prevRawData, setPrevRawData]   = useState<DataPoint[]>([]);
+  const [cumulativeMode, setCumulative] = useState(false);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState<string | null>(null);
+  const [innerW, setInnerW]             = useState(0);
 
   const histType = (type ?? 'km') as HistoryType;
-  const cfg      = histType !== 'timeline' ? (CONFIGS[histType] ?? CONFIGS.km) : CONFIGS.km;
+  const cfg      = (histType !== 'timeline' && histType in CONFIGS)
+    ? (CONFIGS[histType as Exclude<HistoryType,'timeline'>] ?? CONFIGS.km)
+    : CONFIGS.km;
+  const supportsOverlay = histType === 'km' || histType === 'time';
+  const isSleepType = SLEEP_TYPES.has(histType);
 
   const periodMs = PERIOD_MONTHS[period] * 30 * 86_400_000;
   const toDate   = new Date(Date.now() - pageOffset * periodMs);
@@ -248,34 +566,94 @@ export default function HistoryScreen() {
     setLoading(true);
     setError(null);
     try {
-      const months  = PERIOD_MONTHS[period];
-      const endDate = new Date(Date.now() - pageOffset * periodMs);
+      const months    = PERIOD_MONTHS[period];
+      const endDate   = new Date(Date.now() - pageOffset * periodMs);
+      const prevEnd   = new Date(endDate.getTime() - months * 30 * 86_400_000); // start of current = end of previous
+
+      const fetchKm = async (toDate: Date): Promise<DataPoint[]> => {
+        if (period === '1M') {
+          const dm = await fetchDailyMileageHistory(toDate);
+          return dm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
+        }
+        const wm = await fetchWeeklyMileageHistory(months, toDate);
+        return wm.map(w => ({ label: w.week, fullDate: w.week, value: w.km }));
+      };
+
+      const fetchTime = async (toDate: Date): Promise<DataPoint[]> => {
+        if (period === '1M') {
+          const dm = await fetchDailyDurationHistory(toDate);
+          return dm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
+        }
+        const wm = await fetchWeeklyDurationHistory(months, toDate);
+        return wm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
+      };
+
       let raw: DataPoint[] = [];
+      let prevRaw: DataPoint[] = [];
 
       if (histType === 'km') {
-        if (period === '1M') {
-          // 1M: daily values — one bar per run day
-          const dm = await fetchDailyMileageHistory(endDate);
-          raw = dm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
-        } else {
-          const wm: WeeklyMileage[] = await fetchWeeklyMileageHistory(months, endDate);
-          raw = wm.map(w => ({ label: w.week, fullDate: w.week, value: w.km }));
-        }
+        [raw, prevRaw] = await Promise.all([fetchKm(endDate), fetchKm(prevEnd)]);
+      } else if (histType === 'time') {
+        [raw, prevRaw] = await Promise.all([fetchTime(endDate), fetchTime(prevEnd)]);
       } else if (histType === 'vo2') {
         const v = await fetchVO2MaxHistory(months, endDate);
-        raw = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        // 1M: show daily readings; 3M/6M/1Y: aggregate to one data point per week (latest)
+        raw = period === '1M' ? daily : groupByWeek(daily, 'last');
       } else if (histType === 'rhr') {
         const r = await fetchRestingHRHistory(months, endDate);
-        raw = r.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
-      } else {
+        const daily = r.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      } else if (histType !== 'timeline' && !SLEEP_TYPES.has(histType)) {
         const h = await fetchHRVHistory(months, endDate);
-        raw = h.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        const daily = h.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      } else if (histType === 'sleep-hrdip') {
+        const v = await fetchOvernightHRHistory(months, endDate);
+        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      } else if (SLEEP_TYPES.has(histType)) {
+        const sessions = await fetchSleepHistory(months, endDate);
+        const daily = sessions.map((s, i, arr) => {
+          let value = 0;
+          if (histType === 'sleep-total') value = s.totalMinutes;
+          else if (histType === 'sleep-awake') value = s.awakeMinutes;
+          else if (histType === 'sleep-deep') value = s.deepMinutes;
+          else if (histType === 'sleep-rem') value = s.remMinutes;
+          else if (histType === 'sleep-efficiency') {
+            const inBed = s.totalMinutes + s.awakeMinutes;
+            value = inBed > 0 ? Math.round(s.totalMinutes / inBed * 100) : 0;
+          } else if (histType === 'sleep-score') {
+            const inBed = s.totalMinutes + s.awakeMinutes;
+            const eff   = inBed > 0 ? (s.totalMinutes / inBed) * 100 : 0;
+            const scores = {
+              total: Math.min(100, s.totalMinutes / 480 * 100),
+              deep:  Math.min(100, s.deepMinutes / 60 * 100),
+              rem:   Math.min(100, s.remMinutes / 90 * 100),
+              eff:   Math.min(100, eff / 90 * 100),
+              cont:  inBed > 0 ? Math.min(100, (1 - s.awakeMinutes / inBed) / 0.95 * 100) : 100,
+            };
+            value = Math.round(
+              scores.total * 0.40 + scores.deep * 0.13 + scores.rem * 0.12 +
+              scores.eff * 0.15 + 50 * 0.10 + scores.cont * 0.10
+            );
+          } else if (histType === 'sleep-bank') {
+            // Rolling 7-night cumulative balance vs 8h (480 min) goal
+            const window = arr.slice(Math.max(0, i - 6), i + 1);
+            value = window.reduce((sum, w) => sum + w.totalMinutes, 0) - window.length * 480;
+          }
+          return { label: s.date, fullDate: s.date, value };
+        });
+        // sleep-bank: keep daily for 1M, weekly avg otherwise
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       }
 
       setRawData(raw);
+      setPrevRawData(prevRaw);
     } catch (e: any) {
       setError(e?.message ?? String(e));
       setRawData([]);
+      setPrevRawData([]);
     } finally {
       setLoading(false);
     }
@@ -288,12 +666,83 @@ export default function HistoryScreen() {
     setPeriod(p);
   };
 
-  const data = aggregateBuckets(rawData, PERIOD_BUCKETS[period], cfg.aggregate);
+  // ── Period-aware data & labels ────────────────────────────────────────────
+  const isKm   = histType === 'km';
+  const isTime = histType === 'time';
+  const isSummable = isKm || isTime;
+  // Sleep time fields displayed as HH:MM (minutes values)
+  const isSleepMin  = histType === 'sleep-total' || histType === 'sleep-deep' || histType === 'sleep-rem' || histType === 'sleep-awake';
+  // Sleep Bank chart also uses isTime-style formatting (signed minutes)
+  const isSleepBank = histType === 'sleep-bank';
 
-  const values = rawData.map(d => d.value);
-  const avg    = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-  const trend  = values.length >= 2 ? values[values.length - 1] - values[0] : 0;
-  const latest = values.length > 0 ? values[values.length - 1] : 0;
+  // Aggregate current + previous period
+  const aggData = (isSummable && period === '1Y')
+    ? groupByMonth(rawData, 'sum')
+    : aggregateBuckets(rawData, PERIOD_BUCKETS[period], cfg.aggregate);
+
+  const prevAggData = (isSummable && period === '1Y')
+    ? groupByMonth(prevRawData, 'sum')
+    : aggregateBuckets(prevRawData, PERIOD_BUCKETS[period], cfg.aggregate);
+
+  // Apply cumulative transform when mode is active (only for km / time)
+  const chartData     = (cumulativeMode && isSummable) ? toCumulative(aggData) : aggData;
+  // Show previous period in BOTH abs (grey bars) and cumulative (grey line) modes
+  const chartPrevData = supportsOverlay
+    ? (cumulativeMode ? toCumulative(prevAggData) : prevAggData)
+    : undefined;
+
+  // Previous period date range (start of previous = start of current - periodMs)
+  const prevToDate   = fromDate;
+  const prevFromDate = new Date(fromDate.getTime() - periodMs);
+
+  // Stat formatter
+  const fmtStat = (v: number) => {
+    if (isTime) return fmtMin(v);
+    if (histType === 'vo2') return period !== '1M' ? v.toFixed(1) : fmtVal(v);
+    if (isSleepMin) return fmtMin(v);
+    if (histType === 'sleep-bank') return fmtSignedMin(v);
+    if (histType === 'sleep-hrdip') return v.toFixed(1);
+    return fmtVal(v);
+  };
+
+  // Dynamic display title
+  const displayTitle = isKm
+    ? (period === '1M' ? 'Daily km' : period === '1Y' ? 'Monthly km' : 'Weekly km')
+    : isTime
+      ? (period === '1M' ? 'Daily time' : period === '1Y' ? 'Monthly time' : 'Weekly time')
+      : cfg.title;
+
+  // Dynamic avg / count labels (absolute mode)
+  const avgLabel = isSummable
+    ? (period === '1M' ? `avg/day` : period === '1Y' ? `avg/mo` : `avg/wk`)
+    : isSleepType
+      ? (period === '1M' ? `avg/night` : `avg/wk`)
+      : 'avg';
+  const countLabel = isSummable
+    ? (period === '1M' ? 'days' : period === '1Y' ? 'months' : 'weeks')
+    : isSleepType
+      ? (period === '1M' ? 'nights' : 'weeks')
+      : (histType === 'hrv' ? 'nights' : 'readings');
+
+  // Chart x-axis mode
+  const xMode: XMode = period === '1M' ? 'daily' : (period === '1Y' && isSummable) ? 'monthly' : 'weekly';
+
+  // Show value on every bar for 1M and 1Y
+  const showAllValues = period === '1M' || (period === '1Y' && isSummable);
+
+  // In cumulative 1M view, label every 5th point instead of every point (30 daily labels is too dense)
+  const valueLabelStep = (cumulativeMode && period === '1M') ? 5 : 1;
+
+  // Summary stats — in cumulative mode show period totals; otherwise normal stats
+  const periodTotal = chartData.length > 0 ? chartData[chartData.length - 1].value : 0;
+  // prevTotal always from the cumulative-transformed previous data (for comparison box)
+  const cumPrevData = cumulativeMode ? chartPrevData : (supportsOverlay ? toCumulative(prevAggData) : undefined);
+  const prevTotal   = cumPrevData && cumPrevData.length > 0 ? cumPrevData[cumPrevData.length - 1].value : 0;
+  const absVals        = aggData.map(d => d.value);
+  const avg    = absVals.length > 0 ? absVals.reduce((a, b) => a + b, 0) / absVals.length : 0;
+  const trend  = absVals.length >= 2 ? absVals[absVals.length - 1] - absVals[0] : 0;
+  const latest = absVals.length > 0 ? absVals[absVals.length - 1] : 0;
+  const countValue = aggData.length;
 
   // onLayout fires on chartWrap (which has padding: 12).
   // Subtract padding*2 to get the usable inner width for the chart.
@@ -308,8 +757,23 @@ export default function HistoryScreen() {
         <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={s.title}>{cfg.title}</Text>
-        <View style={{ width: 70 }} />
+        <Text style={s.title}>{displayTitle}</Text>
+        {supportsOverlay ? (
+          <View style={s.modeSwitch}>
+            <TouchableOpacity
+              style={[s.modePill, !cumulativeMode && { backgroundColor: cfg.color, borderColor: cfg.color }]}
+              onPress={() => setCumulative(false)}
+            >
+              <Text style={[s.modePillText, !cumulativeMode && { color: '#fff' }]}>Abs</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.modePill, cumulativeMode && { backgroundColor: cfg.color, borderColor: cfg.color }]}
+              onPress={() => setCumulative(true)}
+            >
+              <Text style={[s.modePillText, cumulativeMode && { color: '#fff' }]}>Cum</Text>
+            </TouchableOpacity>
+          </View>
+        ) : <View style={{ width: 70 }} />}
       </View>
 
       {/* Period tabs */}
@@ -338,7 +802,7 @@ export default function HistoryScreen() {
             <Text style={s.periodText}>Retry</Text>
           </TouchableOpacity>
         </View>
-      ) : data.length === 0 ? (
+      ) : aggData.length === 0 ? (
         <View style={s.center}>
           <Text style={s.emptyText}>No data for this period.</Text>
           <Text style={s.emptyHint}>Make sure Apple Health has data for the selected range.</Text>
@@ -348,30 +812,57 @@ export default function HistoryScreen() {
 
           {/* Summary boxes */}
           <View style={s.summaryRow}>
-            <View style={s.summaryBox}>
-              <Text style={[s.summaryVal, { color: cfg.color }]}>{fmtVal(avg)}</Text>
-              <Text style={s.summaryLbl}>{histType === 'km' ? 'avg/wk' : 'avg'}</Text>
-            </View>
-            <View style={s.summaryBox}>
-              <Text style={[s.summaryVal, { color: cfg.color }]}>{fmtVal(latest)}</Text>
-              <Text style={s.summaryLbl}>latest</Text>
-            </View>
-            <View style={s.summaryBox}>
-              <Text style={[s.summaryVal, {
-                color: histType === 'rhr'
-                  ? (trend < 0 ? '#27ae60' : trend > 0 ? '#c0392b' : '#888')
-                  : (trend > 0 ? '#27ae60' : trend < 0 ? '#c0392b' : '#888'),
-              }]}>
-                {trend >= 0 ? '+' : ''}{fmtVal(trend)}
-              </Text>
-              <Text style={s.summaryLbl}>period Δ</Text>
-            </View>
-            <View style={s.summaryBox}>
-              <Text style={[s.summaryVal, { color: cfg.color }]}>{rawData.length}</Text>
-              <Text style={s.summaryLbl}>
-                {histType === 'km' ? 'weeks' : histType === 'hrv' ? 'nights' : 'readings'}
-              </Text>
-            </View>
+            {cumulativeMode && isSummable ? (
+              // Cumulative mode: show period totals + comparison
+              <>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, { color: cfg.color }]}>{fmtStat(periodTotal)}</Text>
+                  <Text style={s.summaryLbl}>this period</Text>
+                </View>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, { color: '#888' }]}>{fmtStat(prevTotal)}</Text>
+                  <Text style={s.summaryLbl}>prev period</Text>
+                </View>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, {
+                    color: periodTotal >= prevTotal ? '#27ae60' : '#c0392b',
+                  }]}>
+                    {periodTotal >= prevTotal ? '+' : ''}{fmtStat(Math.round(periodTotal - prevTotal))}
+                  </Text>
+                  <Text style={s.summaryLbl}>vs prev</Text>
+                </View>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, { color: cfg.color }]}>{countValue}</Text>
+                  <Text style={s.summaryLbl}>{countLabel}</Text>
+                </View>
+              </>
+            ) : (
+              // Absolute mode: normal avg / latest / trend
+              <>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, { color: cfg.color }]}>{fmtStat(avg)}</Text>
+                  <Text style={s.summaryLbl}>{avgLabel}</Text>
+                </View>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, { color: cfg.color }]}>{fmtStat(latest)}</Text>
+                  <Text style={s.summaryLbl}>latest</Text>
+                </View>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, {
+                    color: histType === 'rhr'
+                      ? (trend < 0 ? '#27ae60' : trend > 0 ? '#c0392b' : '#888')
+                      : (trend > 0 ? '#27ae60' : trend < 0 ? '#c0392b' : '#888'),
+                  }]}>
+                    {trend >= 0 ? '+' : ''}{fmtStat(trend)}
+                  </Text>
+                  <Text style={s.summaryLbl}>period Δ</Text>
+                </View>
+                <View style={s.summaryBox}>
+                  <Text style={[s.summaryVal, { color: cfg.color }]}>{countValue}</Text>
+                  <Text style={s.summaryLbl}>{countLabel}</Text>
+                </View>
+              </>
+            )}
           </View>
 
           {/* Chart card */}
@@ -381,7 +872,16 @@ export default function HistoryScreen() {
               <TouchableOpacity onPress={() => setPageOffset(o => o + 1)} style={s.navBtn} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
                 <Text style={s.navArrow}>‹</Text>
               </TouchableOpacity>
-              <Text style={s.navLabel} numberOfLines={1}>{formatDateRange(fromDate, toDate)}</Text>
+              <View style={{ flex: 1, alignItems: 'center' }}>
+                <Text style={s.navLabel} numberOfLines={1}>
+                  <Text style={{ color: cfg.color }}>● </Text>{formatDateRange(fromDate, toDate)}
+                </Text>
+                {supportsOverlay && (
+                  <Text style={s.navLabelPrev} numberOfLines={1}>
+                    <Text style={{ color: '#999' }}>● </Text>{formatDateRange(prevFromDate, prevToDate)}
+                  </Text>
+                )}
+              </View>
               <TouchableOpacity
                 onPress={() => setPageOffset(o => Math.max(0, o - 1))}
                 style={[s.navBtn, pageOffset === 0 && s.navBtnDisabled]}
@@ -392,26 +892,54 @@ export default function HistoryScreen() {
               </TouchableOpacity>
             </View>
 
-            <Chart data={data} color={cfg.color} innerW={innerW} />
+            <Chart
+              data={chartData}
+              color={cfg.color}
+              innerW={innerW}
+              xMode={xMode}
+              showAllValues={showAllValues}
+              prevData={chartPrevData}
+              cumulative={cumulativeMode && isSummable}
+              isTime={isTime || isSleepMin}
+              valueLabelStep={valueLabelStep}
+              fmtFn={
+                histType === 'vo2' && period !== '1M' ? fmtOneDecimal :
+                histType === 'sleep-bank'             ? fmtSignedMin :
+                histType === 'sleep-hrdip'            ? fmtOneDecimal :
+                undefined
+              }
+              zeroBase={isSummable}
+            />
 
             <Text style={s.chartUnit}>
               {cfg.unit}
-              {data.length < rawData.length
-                ? ` · aggregated ${data.length} of ${rawData.length}`
-                : ''}
+              {cumulativeMode ? ' · cumulative' :
+                (isSummable && period === '1Y')
+                  ? ` · ${aggData.length} months`
+                  : aggData.length < rawData.length
+                    ? ` · ${aggData.length} of ${rawData.length} ${countLabel}`
+                    : ''}
             </Text>
           </View>
 
-          {/* Raw list */}
-          <Text style={s.listHeader}>All readings</Text>
-          {[...rawData].reverse().map((d, i) => (
+          {/* Readings list — hide in cumulative mode; for 1Y summable use monthly totals */}
+          {!cumulativeMode && (
+          <>
+          <Text style={s.listHeader}>
+            {isSummable
+              ? (period === '1Y' ? 'Monthly totals' : period === '1M' ? 'Daily readings' : 'Weekly totals')
+              : (period === '1M' ? 'Daily readings' : 'Weekly readings')}
+          </Text>
+          {[...(isSummable && period === '1Y' ? aggData : rawData)].reverse().map((d, i) => (
             <View key={i} style={s.listRow}>
               <Text style={s.listDate}>{d.fullDate.slice(0, 10)}</Text>
               <Text style={[s.listVal, { color: cfg.color }]}>
-                {fmtVal(d.value)} {cfg.unit}
+                {fmtStat(d.value)} {cfg.unit}
               </Text>
             </View>
           ))}
+          </>
+          )}
         </ScrollView>
       )}
     </SafeAreaView>
@@ -424,6 +952,12 @@ const ch = StyleSheet.create({
   yLabel:     { fontSize: 10, color: '#555', textAlign: 'right', fontWeight: '500' },
   xLabel:     { fontSize: 10, color: '#666', fontWeight: '600' },
   xLabelYear: { fontSize: 9,  color: '#666', fontWeight: '600' },
+  tip: {
+    position: 'absolute', top: 0, backgroundColor: 'rgba(20,20,24,0.92)',
+    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, alignItems: 'center',
+  },
+  tipDate: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  tipVal:  { color: '#fff', fontSize: 13, fontWeight: '800', marginTop: 1 },
 });
 
 // ─── Screen styles ────────────────────────────────────────────────────────────
@@ -475,9 +1009,15 @@ const s = StyleSheet.create({
   navBtnDisabled:   { opacity: 0.25 },
   navArrow:         { fontSize: 28, color: '#333', fontWeight: '600', lineHeight: 32 },
   navArrowDisabled: { color: '#ccc' },
-  navLabel:         { fontSize: 12, color: '#555', fontWeight: '600', flex: 1, textAlign: 'center' },
+  navLabel:         { fontSize: 12, color: '#555', fontWeight: '600', textAlign: 'center' },
+  navLabelPrev:     { fontSize: 10, color: '#999', fontWeight: '500', textAlign: 'center', marginTop: 1 },
 
   chartUnit: { fontSize: 11, color: '#aaa', textAlign: 'right', marginTop: 6, fontWeight: '500' },
+
+  modeSwitch:    { flexDirection: 'row', gap: 4 },
+  modePill:      { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
+                   borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fff' },
+  modePillText:  { fontSize: 11, fontWeight: '700', color: '#555' },
 
   listHeader: {
     fontSize: 12, fontWeight: '700', color: '#666',

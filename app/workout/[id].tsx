@@ -5,11 +5,11 @@
  * to fix chest-strap HR gaps, and a type-override button.
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator,
-  useWindowDimensions, ActionSheetIOS, Platform, Alert,
+  useWindowDimensions, ActionSheetIOS, Platform, Alert, PanResponder, TextInput,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import {
@@ -21,11 +21,11 @@ import {
   WorkoutActivity,
 } from '../../src/services/healthkit';
 import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
-import { WorkoutLabel } from '../../src/types';
+import { getRunMeta, saveRunNote, saveRunTemp, TempSource } from '../../src/services/runMeta';
+import { getLocalWeather } from '../../src/services/weather';
+import { WorkoutLabel, KmSplit } from '../../src/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type Tab = 'hr' | 'power' | 'pace';
 
 interface SurgeRegion {
   startMs: number;
@@ -53,12 +53,26 @@ const SESSION_COLORS: Record<SessionType, { bg: string; border: string }> = {
   walk:     { bg: '#9b59b640', border: '#9b59b6cc' },  // purple
 };
 
+/** Build pause session regions from the pause intervals returned by fetchWorkoutDetail */
+function buildPauseRegions(pauseIntervals: { s: number; e: number }[]): SessionRegion[] {
+  return pauseIntervals.map(({ s, e }) => ({
+    type:   'recovery' as SessionType,  // re-use style slot; colour overridden below
+    startMs: s,
+    endMs:   e,
+    label:   'Pause',
+    color:   '#88888828',   // very light grey
+    border:  '#88888888',   // grey border
+  }));
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmtTime(ms: number): string {
   const s   = Math.floor(Math.abs(ms) / 1000);
-  const min = Math.floor(s / 60);
+  const h   = Math.floor(s / 3600);
+  const min = Math.floor((s % 3600) / 60);
   const sec = s % 60;
+  if (h > 0) return `${h}:${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
@@ -211,9 +225,42 @@ function buildActivitiesSessionRegions(activities: WorkoutActivity[]): SessionRe
   });
 }
 
+/**
+ * Sort session regions by start time and clip overlapping non-pause ones.
+ * Pause regions are kept separate and appended last so they paint on top of
+ * activity backgrounds via React Native's z-order (later Views = higher layer).
+ * This means a Work band spanning the whole run stays intact; pauses are simply
+ * overlaid as grey bands on top wherever they occur.
+ */
+function deduplicateRegions(regions: SessionRegion[]): SessionRegion[] {
+  const pauses    = regions.filter(r => r.label === 'Pause');
+  const nonPauses = regions.filter(r => r.label !== 'Pause');
+
+  if (nonPauses.length > 1) {
+    const sorted = [...nonPauses].sort((a, b) => a.startMs - b.startMs);
+    const result: SessionRegion[] = [];
+    for (const curr of sorted) {
+      if (result.length === 0) { result.push({ ...curr }); continue; }
+      const prev = result[result.length - 1];
+      if (curr.startMs < prev.endMs) {
+        // Clip earlier region so it ends where the later one starts
+        result[result.length - 1] = { ...prev, endMs: curr.startMs };
+        if (curr.endMs > curr.startMs) result.push({ ...curr });
+      } else {
+        result.push({ ...curr });
+      }
+    }
+    // Pauses appended last → rendered on top of activity bands
+    return [...result.filter(r => r.endMs > r.startMs), ...pauses];
+  }
+
+  // Pauses appended last → rendered on top of activity bands
+  return [...nonPauses.filter(r => r.endMs > r.startMs), ...pauses];
+}
+
 // ─── Area chart ───────────────────────────────────────────────────────────────
 
-const CHART_H  = 165;   // 75% of original 220
+const CHART_H  = 95;
 const Y_AXIS_W = 56;    // wide enough for M:SS pace labels
 
 interface CorrectionLine {
@@ -223,7 +270,7 @@ interface CorrectionLine {
 }
 
 function AreaChart({
-  data, totalMs, color, unit, sessions = [], correctionLines = [],
+  data, totalMs, color, unit, sessions = [], correctionLines = [], pauseIntervals = [],
 }: {
   data:             { t: number; v: number }[];
   totalMs:          number;
@@ -231,10 +278,60 @@ function AreaChart({
   unit:             string;
   sessions?:        SessionRegion[];
   correctionLines?: CorrectionLine[];
+  pauseIntervals?:  { s: number; e: number }[];
 }) {
   const { width: screenW } = useWindowDimensions();
 
-  if (data.length === 0) {
+  // Scrubber cursor (hooks before any early return)
+  const [cursorX, setCursorX] = useState<number | null>(null);
+  const plotRef  = useRef<View>(null);
+  const plotLeft = useRef(0);
+  const measurePlot = () => plotRef.current?.measureInWindow((x) => { plotLeft.current = x; });
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+      // Absolute screen X minus the plot's measured left (locationX is relative to
+      // the touched child, so it's unusable for positioning).
+      onPanResponderGrant: (_e, g) => setCursorX(g.x0 - plotLeft.current),
+      onPanResponderMove:  (_e, g) => setCursorX(g.moveX - plotLeft.current),
+      onPanResponderTerminationRequest: () => false,
+    })
+  ).current;
+
+  const isPace  = unit === 'min/km';
+  const isPower = unit === 'W';
+
+  // Wall-clock total = net active time + all pause durations.
+  // totalMs from HealthKit is the NET (active) duration; data timestamps are
+  // wall-clock offsets from workout start.  Data recorded AFTER a pause has
+  // a wall-clock t > totalMs, which previously caused toX() to clip it to
+  // chartW — making those bars render INSIDE the grey pause band.
+  // Using wall-clock total fixes the mapping for all three regions.
+  const pauseTotalMs = pauseIntervals.reduce((sum, p) => sum + Math.max(0, p.e - p.s), 0);
+  const wallTotalMs  = totalMs + pauseTotalMs || 1;
+
+  // Remove zero / negative values, data inside pause intervals, and extreme
+  // outlier spikes that produce full-height rectangular artefacts.
+  // When all values are zero/invalid (e.g. no GPS during pauses), return []
+  // so the chart renders "No data" instead of a flat rectangle.
+  const cleanData = (() => {
+    if (!isPace && !isPower) return data;
+    const valid = data.filter(p => {
+      if (p.v <= 0) return false;
+      // Drop samples that fall inside any pause interval (Watch shouldn't
+      // record pace/power during pauses, but belt-and-suspenders here).
+      if (pauseIntervals.some(pi => p.t >= pi.s && p.t <= pi.e)) return false;
+      return true;
+    });
+    if (valid.length === 0) return [];
+    const sorted = [...valid.map(p => p.v)].sort((a, b) => a - b);
+    const p95    = sorted[Math.floor(sorted.length * 0.95)];
+    const cap    = p95 * 1.5;
+    return valid.filter(p => p.v <= cap);
+  })();
+
+  if (data.length === 0 || cleanData.length === 0) {
     return (
       <View style={{ height: CHART_H, alignItems: 'center', justifyContent: 'center' }}>
         <Text style={{ color: '#aaa', fontSize: 14 }}>No data available</Text>
@@ -242,25 +339,17 @@ function AreaChart({
     );
   }
 
-  const isPace  = unit === 'min/km';
-  const isPower = unit === 'W';
-
-  // Remove zero / negative values and extreme outlier spikes that produce
-  // full-height rectangular artefacts in the area-chart rendering.
-  // Strategy: drop invalid values (≤ 0) then cap at 1.5× the p95 of the
-  // remaining data — relative to the actual distribution so it works across
-  // all pace ranges, power levels, etc.
-  const cleanData = (() => {
-    if (!isPace && !isPower) return data;
-    const valid = data.filter(p => p.v > 0);
-    if (valid.length === 0) return data;
-    const sorted = [...valid.map(p => p.v)].sort((a, b) => a - b);
-    const p95    = sorted[Math.floor(sorted.length * 0.95)];
-    const cap    = p95 * 1.5;
-    return valid.filter(p => p.v <= cap);
-  })();
-
-  const pts    = downsample(cleanData, 600);
+  // Sort by wall-clock time before downsampling.
+  // HealthKit can return overlapping GPS distance samples (e.g. a large cumulative
+  // segment alongside individual 5-second GPS points covering the same period).
+  // Without sorting, the cumulative sample's midpoint lands out of order in the array
+  // and its bar extends to the next array entry — which may be far away — producing
+  // a wide rectangular artefact. After sorting, it falls between its chronological
+  // neighbours and gets a normal narrow bar.
+  const chronological = (isPace || isPower)
+    ? [...cleanData].sort((a, b) => a.t - b.t)
+    : cleanData;
+  const pts    = downsample(chronological, 600);
   const values = pts.map(p => p.v);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
@@ -284,10 +373,23 @@ function AreaChart({
     return Math.round(tick) === tick ? String(Math.round(tick)) : tick.toFixed(1);
   };
 
-  const toX = (ms: number) => Math.max(0, Math.min(chartW, (ms / totalMs) * chartW));
+  const toX = (ms: number) => Math.max(0, Math.min(chartW, (ms / wallTotalMs) * chartW));
   const toY = (v: number)  => CHART_H * (1 - Math.max(0, Math.min(1, (v - scale.niceMin) / yRange)));
 
   const xLabels = [0, 0.25, 0.5, 0.75, 1];
+
+  // Cursor → nearest point (by wall-clock time)
+  const cursorMs = cursorX == null ? -1 : (cursorX / chartW) * wallTotalMs;
+  let curPt: { t: number; v: number } | null = null;
+  if (cursorMs >= 0 && pts.length > 0) {
+    let best = pts[0], bestD = Math.abs(pts[0].t - cursorMs);
+    for (const p of pts) { const d = Math.abs(p.t - cursorMs); if (d < bestD) { bestD = d; best = p; } }
+    curPt = best;
+  }
+  const curValStr = curPt ? (isPace ? `${fmtTick(curPt.v)} /km` : isPower ? `${Math.round(curPt.v)} W` : `${Math.round(curPt.v)} ${unit}`) : '';
+  const curCx = curPt ? toX(curPt.t) : 0;
+  const TIP_W = 96;
+  const curTipLeft = Math.max(0, Math.min(chartW - TIP_W, curCx - TIP_W / 2));
 
   // Label height above chart for session type tags
   const LABEL_H = sessions.length > 0 ? 18 : 0;
@@ -313,41 +415,63 @@ function AreaChart({
         </View>
 
         {/* Plot area */}
-        <View style={{ width: chartW, height: CHART_H + LABEL_H, position: 'relative' }}>
+        <View ref={plotRef} onLayout={measurePlot} style={{ width: chartW, height: CHART_H + LABEL_H, position: 'relative' }} {...pan.panHandlers}>
 
           {/* Session region overlays (behind data) */}
-          {sessions.map((sr, i) => {
-            const x0 = toX(sr.startMs);
-            const x1 = toX(sr.endMs);
-            const w  = Math.max(2, x1 - x0);
-            return (
-              <View key={i}>
-                {/* Coloured background band */}
-                <View style={{
-                  position: 'absolute',
-                  left: x0, top: LABEL_H,
-                  width: w, height: CHART_H,
-                  backgroundColor: sr.color,
-                  borderLeftWidth: 1.5, borderRightWidth: 1.5,
-                  borderColor: sr.border,
-                }} />
-                {/* Session label above chart */}
-                <View style={{
-                  position: 'absolute',
-                  left: x0, top: 0,
-                  width: w, height: LABEL_H,
-                  alignItems: 'center', justifyContent: 'center',
-                  overflow: 'hidden',
-                }}>
-                  {w > 28 && (
-                    <Text style={[ac.sessionLabel, { color: sr.border.replace('aa', 'ff') }]} numberOfLines={1}>
-                      {sr.label}
-                    </Text>
+          {(() => {
+            // Extend the first non-pause region back to 0 so there's no uncovered
+            // gap at the chart start (HealthKit activities sometimes start slightly
+            // after the workout began, leaving a visually jarring un-tinted strip).
+            const extSessions = sessions.map((sr, i) => {
+              if (i === 0 && sr.label !== 'Pause' && sr.startMs > 0 && sr.startMs < 180_000) {
+                return { ...sr, startMs: 0 };
+              }
+              return sr;
+            });
+            return extSessions.map((sr, i) => {
+              const x0 = toX(sr.startMs);
+              const x1 = toX(sr.endMs);
+              const w  = Math.max(2, x1 - x0);
+              // Only draw a divider line between adjacent non-pause regions, not
+              // as full-height left/right borders (which create a visible rectangle
+              // outline when a region doesn't start at x=0).
+              const showDivider = i > 0 && sr.label !== 'Pause' && extSessions[i - 1]?.label !== 'Pause';
+              return (
+                <View key={i}>
+                  {/* Coloured background band */}
+                  <View style={{
+                    position: 'absolute',
+                    left: x0, top: LABEL_H,
+                    width: w, height: CHART_H,
+                    backgroundColor: sr.color,
+                  }} />
+                  {/* Thin divider line between adjacent non-pause phases */}
+                  {showDivider && (
+                    <View style={{
+                      position: 'absolute',
+                      left: x0, top: LABEL_H,
+                      width: 1.5, height: CHART_H,
+                      backgroundColor: sr.border,
+                    }} />
                   )}
+                  {/* Session label above chart */}
+                  <View style={{
+                    position: 'absolute',
+                    left: x0, top: 0,
+                    width: w, height: LABEL_H,
+                    alignItems: 'center', justifyContent: 'center',
+                    overflow: 'hidden',
+                  }}>
+                    {w > 28 && (
+                      <Text style={[ac.sessionLabel, { color: sr.border.replace('aa', 'ff') }]} numberOfLines={1}>
+                        {sr.label}
+                      </Text>
+                    )}
+                  </View>
                 </View>
-              </View>
-            );
-          })}
+              );
+            });
+          })()}
 
           {/* Gridlines */}
           {scale.ticks.map((tick, i) => (
@@ -384,8 +508,20 @@ function AreaChart({
           {/* Area fill */}
           {pts.map((pt, i) => {
             const nextPt = pts[i + 1];
-            const x     = toX(pt.t);
-            const nextX = nextPt ? toX(nextPt.t) : chartW;
+            const x = toX(pt.t);
+            let rawNextX = nextPt ? toX(nextPt.t) : chartW;
+            // Cap at nearest pause boundary (prevents bar stretching over pause).
+            for (const pi of pauseIntervals) {
+              const pauseStartX = toX(pi.s);
+              if (pauseStartX > x && pauseStartX < rawNextX) rawNextX = pauseStartX;
+            }
+            // Pace/power: cap bar width so a stationary gap (e.g. you stop moving but
+            // leave the watch running) renders as an empty gap, not a flat block.
+            if (isPace || isPower) {
+              const maxBarW = (18_000 / wallTotalMs) * chartW; // ~18 s of data
+              if (rawNextX - x > maxBarW) rawNextX = x + maxBarW;
+            }
+            const nextX = rawNextX;
             const w     = Math.max(1, nextX - x);
             const barH  = Math.max(2, CHART_H - toY(pt.v));
             return (
@@ -397,13 +533,28 @@ function AreaChart({
               }} />
             );
           })}
+
+          {/* Scrubber cursor */}
+          {curPt && (
+            <>
+              <View style={{ position: 'absolute', left: curCx, top: LABEL_H, width: 1, height: CHART_H, backgroundColor: '#555' }} />
+              <View style={{
+                position: 'absolute', left: curCx - 4, top: LABEL_H + toY(curPt.v) - 4,
+                width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1, borderColor: '#fff',
+              }} />
+              <View style={[ac.tip, { left: curTipLeft, width: TIP_W }]}>
+                <Text style={ac.tipTime}>{fmtTime(curPt.t)}</Text>
+                <Text style={ac.tipVal}>{curValStr}</Text>
+              </View>
+            </>
+          )}
         </View>
       </View>
 
-      {/* X-axis */}
+      {/* X-axis — labels in wall-clock time (includes pause durations) */}
       <View style={{ marginLeft: Y_AXIS_W, flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
         {xLabels.map(frac => (
-          <Text key={frac} style={ac.xLabel}>{fmtTime(frac * totalMs)}</Text>
+          <Text key={frac} style={ac.xLabel}>{fmtTime(frac * wallTotalMs)}</Text>
         ))}
       </View>
     </View>
@@ -429,6 +580,9 @@ const LABEL_DISPLAY: Record<WorkoutLabel, string> = {
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
+/** Compact sibling run, passed from the main screen so we can page prev/next. */
+type Sib = { i: string; s: string; du: number; di: number; c: number; l: string };
+
 export default function WorkoutDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -438,15 +592,19 @@ export default function WorkoutDetailScreen() {
     label:     string;
     date:      string;
     distance:  string;
+    calories:  string;
+    siblings?: string;
   }>();
 
-  const [tab,       setTab]       = useState<Tab>('hr');
   const [detail,    setDetail]    = useState<WorkoutDetailData | null>(null);
   const [surges,    setSurges]    = useState<SurgeRegion[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string | null>(null);
   const [currentLabel, setCurrentLabel] = useState(params.label ?? '');
   const [hrUnreliable, setHrUnreliable] = useState(false);
+  const [note,       setNote]       = useState('');
+  const [tempC,      setTempC]      = useState<number | null>(null);
+  const [tempSource, setTempSource] = useState<TempSource | null>(null);
 
   const duration = parseInt(params.duration ?? '0', 10);
   const distance = parseFloat(params.distance ?? '0');
@@ -477,6 +635,102 @@ export default function WorkoutDetailScreen() {
   }, [params.startDate, duration, params.id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // ── Prev/next navigation within the main-screen filter ────────────────────
+  const siblings: Sib[] = useMemo(() => {
+    try { return params.siblings ? (JSON.parse(params.siblings) as Sib[]) : []; }
+    catch { return []; }
+  }, [params.siblings]);
+  const curIdx = siblings.findIndex(s => s.i === params.id);
+
+  const goTo = useCallback((idx: number) => {
+    if (idx < 0 || idx >= siblings.length) return;
+    const s = siblings[idx];
+    router.setParams({
+      id: s.i, startDate: s.s, duration: String(s.du), label: s.l,
+      date: s.s, distance: String(s.di), calories: String(s.c),
+      siblings: params.siblings ?? '',
+    });
+  }, [siblings, router, params.siblings]);
+  const goPrev = useCallback(() => goTo(curIdx - 1), [goTo, curIdx]); // newer (up the list)
+  const goNext = useCallback(() => goTo(curIdx + 1), [goTo, curIdx]); // older (down the list)
+
+  // Latest nav fns for the once-created swipe responder
+  const goPrevRef = useRef(goPrev); goPrevRef.current = goPrev;
+  const goNextRef = useRef(goNext); goNextRef.current = goNext;
+  const swipe = useRef(
+    PanResponder.create({
+      // Claim only clear horizontal swipes; charts (deeper) keep their scrub, and
+      // vertical scrolling passes through to the ScrollView.
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 28 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8,
+      onPanResponderRelease: (_e, g) => {
+        if (g.dx <= -55)     goNextRef.current(); // swipe left  → next (older)
+        else if (g.dx >= 55) goPrevRef.current(); // swipe right → prev (newer)
+      },
+    })
+  ).current;
+
+  // Sync the editable label badge when paging to a sibling (setParams won't
+  // re-run the useState initialiser).
+  useEffect(() => { setCurrentLabel(params.label ?? ''); }, [params.id, params.label]);
+
+  // ── Load note + resolve temperature (manual > HK weather > live capture) ──────
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const meta = await getRunMeta(params.id);
+      if (cancelled) return;
+      setNote(meta.note ?? '');
+
+      const hk = detail?.weatherTempC;
+      let t: number | null = null;
+      let src: TempSource | null = null;
+      if (meta.tempSource === 'manual' && meta.tempC != null) { t = meta.tempC; src = 'manual'; }
+      else if (hk != null)                                     { t = hk;        src = 'hk'; }
+      else if (meta.tempC != null)                             { t = meta.tempC; src = meta.tempSource ?? 'live'; }
+      setTempC(t);
+      setTempSource(src);
+
+      // No temperature anywhere → for a recent run, record the current temp once.
+      if (t == null && !loading) {
+        const ageH = (Date.now() - new Date(params.startDate).getTime()) / 3.6e6;
+        if (ageH <= 36) {
+          const w = await getLocalWeather();
+          if (!cancelled && w) {
+            setTempC(w.tempC); setTempSource('live');
+            saveRunTemp(params.id, w.tempC, 'live');
+          }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [params.id, params.startDate, detail?.weatherTempC, loading]);
+
+  const handleEditTemp = useCallback(() => {
+    Alert.prompt?.(
+      'Temperature',
+      'Enter the temperature in °C for this run',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Save',
+          onPress: (val?: string) => {
+            const n = parseFloat((val ?? '').replace(',', '.'));
+            if (isNaN(n)) return;
+            setTempC(Math.round(n)); setTempSource('manual');
+            saveRunTemp(params.id, n, 'manual');
+          },
+        },
+      ],
+      'plain-text',
+      tempC != null ? String(tempC) : '',
+      'numbers-and-punctuation',
+    );
+  }, [params.id, tempC]);
+
+  const handleNoteBlur = useCallback(() => {
+    saveRunNote(params.id, note);
+  }, [params.id, note]);
 
   // ── Override handler ─────────────────────────────────────────────────────
 
@@ -524,11 +778,44 @@ export default function WorkoutDetailScreen() {
     }
   }, [params.id]);
 
+  // ── Analyze handler ──────────────────────────────────────────────────────
+
+  const handleAnalyze = useCallback(() => {
+    const compact = {
+      cal: Math.round(parseFloat(params.calories ?? '0')),
+      hrUnreliable: hrUnreliable || undefined,
+      segs: (detail?.activities ?? []).map(a => ({
+        l:   a.label,
+        d:   Math.round(a.distanceM),
+        t:   Math.round(a.netDurationSec > 0 ? a.netDurationSec : (a.endMs - a.startMs) / 1000),
+        hr:  a.avgHR     || 0,
+        cad: a.cadenceSPM || 0,
+        pwr: a.avgPower   || 0,
+      })).filter(s => s.d > 0),
+      kms: (detail?.kmSplits ?? []).map(k => ({
+        km:  k.km,
+        t:   Math.round(k.durationSec),
+        p:   Math.round(k.paceSecs),
+        hr:  k.avgHR       || 0,
+        cad: k.avgCadence  || 0,
+        pwr: k.avgPower    || 0,
+      })),
+    };
+    router.push({
+      pathname: '/chat',
+      params: {
+        focusRunUUID:  params.id,
+        runDetailJson: JSON.stringify(compact),
+      },
+    } as any);
+  }, [detail, params.id, params.calories]);
+
   // ── Stats ─────────────────────────────────────────────────────────────────
 
   const avgHR    = detail?.hr.length    ? Math.round(detail.hr.reduce((s, p) => s + p.v, 0)    / detail.hr.length)    : null;
   const avgPower = detail?.power.length ? Math.round(detail.power.reduce((s, p) => s + p.v, 0) / detail.power.length) : null;
   const avgPace  = detail?.pace.length  ? Math.round(detail.pace.reduce((s, p) => s + p.v, 0)  / detail.pace.length)  : null;
+  const calories = Math.round(parseFloat(params.calories ?? '0'));
 
   const dateObj   = new Date(params.date ?? params.startDate ?? '');
   const dateLabel = dateObj.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -536,14 +823,10 @@ export default function WorkoutDetailScreen() {
 
   const ls = LABEL_STYLE[currentLabel] ?? LABEL_STYLE.Unknown;
 
-  const tabColor   = tab === 'hr' ? '#e74c3c' : tab === 'power' ? '#8e44ad' : '#2980b9';
-  const tabData    = !detail ? [] : tab === 'hr' ? detail.hr : tab === 'power' ? detail.power : detail.pace;
-  const tabUnit    = tab === 'hr' ? 'bpm' : tab === 'power' ? 'W' : 'min/km';
-
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <SafeAreaView style={st.container}>
+    <SafeAreaView style={st.container} {...swipe.panHandlers}>
       <Stack.Screen options={{ title: 'Workout Details' }} />
       {/* Header */}
       <View style={st.header}>
@@ -553,6 +836,17 @@ export default function WorkoutDetailScreen() {
         <View style={{ alignItems: 'center', flex: 1 }}>
           <Text style={st.headerDate}>{dateLabel}</Text>
           <Text style={st.headerTime}>{timeLabel}</Text>
+          {siblings.length > 1 && curIdx >= 0 && (
+            <View style={st.navRow}>
+              <TouchableOpacity onPress={goPrev} disabled={curIdx === 0} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={[st.navArrow, curIdx === 0 && st.navArrowOff]}>‹</Text>
+              </TouchableOpacity>
+              <Text style={st.navCount}>{curIdx + 1} / {siblings.length}</Text>
+              <TouchableOpacity onPress={goNext} disabled={curIdx === siblings.length - 1} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={[st.navArrow, curIdx === siblings.length - 1 && st.navArrowOff]}>›</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
         <View style={{ gap: 4, alignItems: 'flex-end' }}>
           <TouchableOpacity
@@ -592,7 +886,7 @@ export default function WorkoutDetailScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={st.scroll}>
+        <ScrollView key={params.id} contentContainerStyle={st.scroll}>
 
           {/* Summary row */}
           <View style={st.summaryRow}>
@@ -601,42 +895,68 @@ export default function WorkoutDetailScreen() {
             {avgPace  != null && <SummaryBox label="Avg pace"  value={formatPace(avgPace)}  />}
             {avgHR    != null && <SummaryBox label="Avg HR"    value={`${avgHR} bpm`}   color="#e74c3c" />}
             {avgPower != null && <SummaryBox label="Avg power" value={`${avgPower} W`}  color="#8e44ad" />}
+            {calories > 0 && <SummaryBox label="Calories" value={`${calories} kcal`} />}
+            {/* Analyze button — compact tile next to calories */}
+            <TouchableOpacity style={[st.summaryBox, st.analyzeBox]} onPress={handleAnalyze}>
+              <Text style={st.analyzeText}>Analyze</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Tab bar */}
-          <View style={st.tabBar}>
-            {([
-              { key: 'hr'    as Tab, label: '♥ HR'    },
-              { key: 'power' as Tab, label: '⚡ Power' },
-              { key: 'pace'  as Tab, label: '⏱ Pace'  },
-            ]).map(t => (
-              <TouchableOpacity
-                key={t.key}
-                style={[st.tabBtn, tab === t.key && { backgroundColor: tabColor, borderColor: tabColor }]}
-                onPress={() => setTab(t.key)}
-              >
-                <Text style={[st.tabText, tab === t.key && st.tabTextActive]}>{t.label}</Text>
+          {/* Conditions & Notes */}
+          <View style={st.notesCard}>
+            <View style={st.notesHeaderRow}>
+              <Text style={st.notesTitle}>Conditions &amp; Notes</Text>
+              <TouchableOpacity onPress={handleEditTemp} style={st.tempChip} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={st.tempChipText}>
+                  🌡 {tempC != null ? `${tempC}°C` : 'add temp'}
+                  {tempSource === 'hk' ? '  ·  Watch' : tempSource === 'live' ? '  ·  now' : tempSource === 'manual' ? '  ·  ✎' : ''}
+                </Text>
               </TouchableOpacity>
-            ))}
+            </View>
+            <TextInput
+              style={st.noteInput}
+              value={note}
+              onChangeText={setNote}
+              onBlur={handleNoteBlur}
+              placeholder="Add a note for this run (how it felt, terrain, injuries…)"
+              placeholderTextColor="#aaa"
+              multiline
+              maxLength={500}
+            />
+            <Text style={st.noteHint}>Tap away to save · used by the AI coach when analysing this run</Text>
           </View>
 
-          {/* Chart — HealthKit activities only; never modified by user actions */}
-          <View style={st.chartCard}>
-            <AreaChart
-              data={tabData}
-              totalMs={detail!.totalMs}
-              color={tabColor}
-              unit={tabUnit}
-              sessions={
-                detail!.activities.length > 0
-                  ? buildActivitiesSessionRegions(detail!.activities)
-                  : (currentLabel === 'Intervals' && surges.length > 0
-                      ? buildSessionRegions(surges, detail!.totalMs, [], [])
-                      : [])
-              }
-              correctionLines={[]}
-            />
-          </View>
+          {/* Charts — HR, Power, Pace stacked */}
+          {(() => {
+            const pauses = detail!.pauseIntervals ?? [];
+            const rawSessions: SessionRegion[] = [
+              ...(detail!.activities.length > 0
+                ? buildActivitiesSessionRegions(detail!.activities)
+                : (currentLabel === 'Intervals' && surges.length > 0
+                    ? buildSessionRegions(surges, detail!.totalMs, [], [])
+                    : [])),
+              ...buildPauseRegions(pauses),
+            ];
+            // Deduplicate overlapping regions (HealthKit can report activities with
+            // overlapping wall-clock spans; double-painting causes visible rectangles).
+            const sessions = deduplicateRegions(rawSessions);
+            return (
+              <>
+                <View style={st.chartCard}>
+                  <Text style={st.chartLabel}>♥ Heart Rate</Text>
+                  <AreaChart data={detail!.hr}    totalMs={detail!.totalMs} color="#e74c3c" unit="bpm"     sessions={sessions} correctionLines={[]} pauseIntervals={pauses} />
+                </View>
+                <View style={st.chartCard}>
+                  <Text style={st.chartLabel}>⚡ Power</Text>
+                  <AreaChart data={detail!.power} totalMs={detail!.totalMs} color="#8e44ad" unit="W"       sessions={sessions} correctionLines={[]} pauseIntervals={pauses} />
+                </View>
+                <View style={st.chartCard}>
+                  <Text style={st.chartLabel}>⏱ Pace</Text>
+                  <AreaChart data={detail!.pace}  totalMs={detail!.totalMs} color="#2980b9" unit="min/km"  sessions={sessions} correctionLines={[]} pauseIntervals={pauses} />
+                </View>
+              </>
+            );
+          })()}
 
           {/* Sample count */}
           {detail && (
@@ -650,13 +970,10 @@ export default function WorkoutDetailScreen() {
             <SegmentTable activities={detail.activities} />
           )}
 
-          {/* Analyze with Coach button */}
-          <TouchableOpacity
-            style={st.coachBtn}
-            onPress={() => router.push({ pathname: '/chat', params: { focusRunUUID: params.id } } as any)}
-          >
-            <Text style={st.coachBtnText}>💬 Analyze with Coach</Text>
-          </TouchableOpacity>
+          {/* Per-km splits — always shown when available */}
+          {detail && detail.kmSplits.length > 0 && (
+            <KmSplitTable splits={detail.kmSplits} />
+          )}
 
         </ScrollView>
       )}
@@ -685,7 +1002,7 @@ function SegmentTable({ activities }: { activities: WorkoutActivity[] }) {
       <View style={seg.headerRow}>
         <Text style={[seg.labelCol, seg.hdr]}>Segment</Text>
         <Text style={[seg.col,      seg.hdr]}>Dist</Text>
-        <Text style={[seg.col,      seg.hdr]}>Time</Text>
+        <Text style={[seg.timeCol,  seg.hdr]}>Time</Text>
         <Text style={[seg.col,      seg.hdr]}>Pace</Text>
         {hasHR      && <Text style={[seg.col, seg.hdr]}>HR</Text>}
         {hasCadence && <Text style={[seg.col, seg.hdr]}>Cad</Text>}
@@ -693,13 +1010,14 @@ function SegmentTable({ activities }: { activities: WorkoutActivity[] }) {
       </View>
 
       {activities.map((a, i) => {
-        const durationSec = (a.endMs - a.startMs) / 1000;
+        // Use HK net duration (excludes pauses); fall back to wall-clock span
+        const netSec      = a.netDurationSec > 0 ? a.netDurationSec : (a.endMs - a.startMs) / 1000;
         const distKm      = a.distanceM / 1000;
         const distStr     = a.distanceM >= 950
           ? `${distKm.toFixed(2)}k`
           : `${Math.round(a.distanceM)}m`;
-        const timeStr     = fmtTime(a.endMs - a.startMs);
-        const paceSecPkm  = distKm > 0 ? durationSec / distKm : 0;
+        const timeStr     = fmtTime(netSec * 1000);
+        const paceSecPkm  = distKm > 0 ? netSec / distKm : 0;
         const paceStr     = fmtPaceSec(paceSecPkm).replace(' /km', '');
         const color       = SEG_COLORS[a.label] ?? '#888';
 
@@ -708,8 +1026,8 @@ function SegmentTable({ activities }: { activities: WorkoutActivity[] }) {
             <View style={[seg.labelCol, seg.badge, { borderLeftColor: color }]}>
               <Text style={[seg.labelTxt, { color }]}>{a.label}</Text>
             </View>
-            <Text style={[seg.col, seg.num]}>{distStr}</Text>
-            <Text style={[seg.col, seg.num]}>{timeStr}</Text>
+            <Text style={[seg.col,     seg.num]}>{distStr}</Text>
+            <Text style={[seg.timeCol, seg.num]}>{timeStr}</Text>
             <Text style={[seg.col, seg.num]}>{paceStr}</Text>
             {hasHR      && <Text style={[seg.col, seg.num]}>{a.avgHR > 0 ? `${a.avgHR}` : '—'}</Text>}
             {hasCadence && <Text style={[seg.col, seg.num]}>{a.cadenceSPM > 0 ? `${a.cadenceSPM}` : '—'}</Text>}
@@ -732,9 +1050,85 @@ const seg = StyleSheet.create({
   hdr:       { color: '#999', fontWeight: '600', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' },
   labelCol:  { flex: 2.2, paddingLeft: 0 },
   col:       { flex: 1, paddingHorizontal: 3 },
+  timeCol:   { flex: 1.4, paddingHorizontal: 3 },
   num:       { textAlign: 'right', fontSize: 12, color: '#333' },
   badge:     { borderLeftWidth: 3, paddingLeft: 8 },
   labelTxt:  { fontWeight: '600', fontSize: 12 },
+});
+
+// ─── Km splits table ──────────────────────────────────────────────────────────
+
+function KmSplitTable({ splits }: { splits: KmSplit[] }) {
+  if (splits.length === 0) return null;
+  const hasHR      = splits.some(s => s.avgHR > 0);
+  const hasCadence = splits.some(s => s.avgCadence > 0);
+  const hasPower   = splits.some(s => s.avgPower > 0);
+
+  // Fastest and slowest pace for colour coding
+  const paces    = splits.map(s => s.paceSecs).filter(p => p > 0);
+  const minPace  = paces.length > 0 ? Math.min(...paces) : 0;
+  const maxPace  = paces.length > 0 ? Math.max(...paces) : 0;
+  const paceRange = maxPace - minPace || 1;
+
+  // Lerp: fastest=green, slowest=orange
+  const paceColor = (p: number) => {
+    const t = (p - minPace) / paceRange;
+    const r = Math.round(46  + (243 - 46)  * t);
+    const g = Math.round(204 + (156 - 204) * t);
+    const b = Math.round(113 + (18  - 113) * t);
+    return `rgb(${r},${g},${b})`;
+  };
+
+  // Format wall-clock duration for a km (M:SS)
+  const fmtDur = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <View style={km.card}>
+      <Text style={km.title}>Per-km splits</Text>
+      {/* Header */}
+      <View style={km.headerRow}>
+        <Text style={[km.kmCol,   km.hdr]}>Km</Text>
+        <Text style={[km.timeCol, km.hdr]}>Time</Text>
+        <Text style={[km.col,   km.hdr]}>Pace</Text>
+        {hasHR      && <Text style={[km.col, km.hdr]}>HR</Text>}
+        {hasCadence && <Text style={[km.col, km.hdr]}>Cad</Text>}
+        {hasPower   && <Text style={[km.col, km.hdr]}>Pwr</Text>}
+      </View>
+      {splits.map((s, i) => (
+        <View key={i} style={[km.row, i % 2 === 1 && km.rowAlt]}>
+          <Text style={[km.kmCol,   km.num]}>{s.km}</Text>
+          <Text style={[km.timeCol, km.num]}>{s.durationSec > 0 ? fmtDur(s.durationSec) : '—'}</Text>
+          <Text style={[km.col, km.num, { color: paceColor(s.paceSecs), fontWeight: '700' }]}>
+            {fmtPaceSec(s.paceSecs).replace(' /km', '')}
+          </Text>
+          {hasHR      && <Text style={[km.col, km.num]}>{s.avgHR      > 0 ? `${s.avgHR}`      : '—'}</Text>}
+          {hasCadence && <Text style={[km.col, km.num]}>{s.avgCadence > 0 ? `${s.avgCadence}` : '—'}</Text>}
+          {hasPower   && <Text style={[km.col, km.num]}>{s.avgPower   > 0 ? `${s.avgPower}`   : '—'}</Text>}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const km = StyleSheet.create({
+  card:      { backgroundColor: '#fff', borderRadius: 14, marginHorizontal: 12, marginBottom: 12,
+               shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06,
+               shadowRadius: 4, elevation: 2, overflow: 'hidden' },
+  title:     { fontSize: 13, fontWeight: '700', color: '#444', paddingHorizontal: 12,
+               paddingTop: 10, paddingBottom: 6 },
+  headerRow: { flexDirection: 'row', backgroundColor: '#f8f8f8', paddingVertical: 6,
+               borderBottomWidth: 1, borderBottomColor: '#eee' },
+  row:       { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
+  rowAlt:    { backgroundColor: '#fafafa' },
+  hdr:       { color: '#999', fontWeight: '600', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' },
+  kmCol:     { flex: 0.55, paddingLeft: 12 },
+  col:       { flex: 1, paddingHorizontal: 3 },
+  timeCol:   { flex: 1.4, paddingHorizontal: 3 },
+  num:       { textAlign: 'right', fontSize: 12, color: '#333' },
 });
 
 // ─── Helper component ─────────────────────────────────────────────────────────
@@ -755,6 +1149,9 @@ const ac = StyleSheet.create({
   xLabel:       { fontSize: 11, color: '#666', fontWeight: '500' },
   unitLabel:    { fontSize: 10, color: '#888', textAlign: 'center', fontWeight: '500' },
   sessionLabel: { fontSize: 9, fontWeight: '700', textAlign: 'center' },
+  tip:          { position: 'absolute', top: 0, backgroundColor: 'rgba(20,20,24,0.92)', borderRadius: 7, paddingHorizontal: 7, paddingVertical: 3, alignItems: 'center' },
+  tipTime:      { color: '#ddd', fontSize: 10, fontWeight: '700' },
+  tipVal:       { color: '#fff', fontSize: 12, fontWeight: '800', marginTop: 1 },
 });
 
 // ─── Screen styles ────────────────────────────────────────────────────────────
@@ -775,6 +1172,20 @@ const st = StyleSheet.create({
   backText:       { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
   headerDate:     { fontSize: 14, fontWeight: '700', color: '#222' },
   headerTime:     { fontSize: 12, color: '#888', marginTop: 1 },
+  navRow:         { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 },
+  navArrow:       { fontSize: 20, color: '#FF6B35', fontWeight: '800', lineHeight: 22 },
+  navArrowOff:    { color: '#ddd' },
+  navCount:       { fontSize: 11, color: '#999', fontWeight: '600', minWidth: 42, textAlign: 'center' },
+
+  notesCard:      { backgroundColor: '#fff', borderRadius: 12, padding: 12, marginBottom: 12,
+                    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3, elevation: 2 },
+  notesHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  notesTitle:     { fontSize: 13, fontWeight: '700', color: '#444' },
+  tempChip:       { backgroundColor: '#FFF3EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#FF6B3540' },
+  tempChipText:   { fontSize: 13, fontWeight: '700', color: '#FF6B35' },
+  noteInput:      { backgroundColor: '#f7f7f7', borderRadius: 8, padding: 10, fontSize: 14, color: '#222',
+                    minHeight: 44, maxHeight: 120, textAlignVertical: 'top' },
+  noteHint:       { fontSize: 10, color: '#bbb', marginTop: 5 },
   labelBadge:     { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, minWidth: 70, alignItems: 'center' },
   labelBadgeText: { fontSize: 12, fontWeight: '700' },
 
@@ -799,14 +1210,7 @@ const st = StyleSheet.create({
   summaryVal: { fontSize: 14, fontWeight: '800', color: '#333' },
   summaryLbl: { fontSize: 10, color: '#888', marginTop: 2, fontWeight: '500' },
 
-  tabBar: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  tabBtn: {
-    flex: 1, paddingVertical: 9, borderRadius: 8,
-    borderWidth: 1.5, borderColor: '#ddd',
-    alignItems: 'center', backgroundColor: '#fff',
-  },
-  tabText:       { fontSize: 13, color: '#555', fontWeight: '600' },
-  tabTextActive: { color: '#fff', fontWeight: '700' },
+  chartLabel: { fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 4, paddingHorizontal: 2 },
 
   chartCard: {
     backgroundColor: '#fff', borderRadius: 12,
@@ -823,6 +1227,6 @@ const st = StyleSheet.create({
   hrFlagBtnActive: { borderColor: '#c0392b', backgroundColor: '#fdedec' },
   hrFlagText:      { fontSize: 11, color: '#888', fontWeight: '600' },
 
-  coachBtn:     { margin: 12, backgroundColor: '#FF6B35', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  coachBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  analyzeBox:   { backgroundColor: '#FF6B35', alignItems: 'center', justifyContent: 'center', paddingVertical: 0, minHeight: 44 },
+  analyzeText:  { fontSize: 13, fontWeight: '700', color: '#fff' },
 });

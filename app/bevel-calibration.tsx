@@ -1,333 +1,423 @@
+/**
+ * Bevel Calibration Screen
+ *
+ * - Shows last 30 nights of HealthKit sleep data (pre-populated)
+ * - User enters Bevel's Recovery % for each night
+ * - "Analyse" runs local constrained regression to find optimal RECOVERY weights
+ *   (HRV, RHR, SpO₂, Sleep Score — respiratory rate excluded per Bevel design)
+ * - "Apply weights" writes them to SecureStore for use in computeRecoveryScore
+ */
+
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, SafeAreaView, Alert, ActivityIndicator,
+  View, Text, ScrollView, TouchableOpacity, TextInput,
+  StyleSheet, SafeAreaView, ActivityIndicator, Alert,
   KeyboardAvoidingView, Platform,
 } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import { useRouter } from 'expo-router';
+import {
+  loadEntries, saveEntry,
+  normaliseKPIs, applyWeights,
+  DEFAULT_SLEEP_WEIGHTS,
+  DEFAULT_RECOVERY_WEIGHTS,
+  loadCustomRecoveryWeights, saveCustomRecoveryWeights, clearCustomRecoveryWeights,
+  loadCustomSleepWeights, clearCustomSleepWeights,
+  runRecoveryRegression,
+  loadPersonalSleepGoal, savePersonalSleepGoal, computePersonalSleepGoal,
+  BevelEntry, RecoveryRegressionResult, RecoveryWeights,
+} from '../src/services/bevelCalibration';
+import { fetchSleepHistory, fetchSleepBiometrics, SleepBiometrics } from '../src/services/healthkit';
+import { SleepSession } from '../src/types';
 
-const STORE_KEY = 'bevel_calibration_entries';
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-interface CalibrationEntry {
-  date: string;           // YYYY-MM-DD
-  // Bevel scores
-  bevelRecovery: number;  // 0-100
-  bevelSleep: number;     // 0-100
-  // Biometrics
-  rmssd: number;          // ms
-  restingHR: number;      // bpm
-  sleepHours: number;     // total sleep hours
-  deepMinutes: number;    // deep sleep minutes
-  remMinutes: number;     // REM sleep minutes
-  inBedHours: number;     // total time in bed hours
-  awakeMinutes: number;   // awake during night minutes
-  daytimeHR: number;      // avg daytime HR bpm
-  // Computed by our algorithm (filled in after save)
-  ourRecovery?: number;
-  ourSleep?: number;
+function fmtH(min: number) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${h}h ${m}m`;
+}
+function pct(n: number) { return `${Math.round(n)}%`; }
+
+const ACCENT = '#8e44ad';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface NightRow {
+  session:  SleepSession;
+  bio:      SleepBiometrics | null;
+  entry:    BevelEntry | null;
 }
 
-function emptyEntry(): Partial<CalibrationEntry> {
-  return {
-    date: new Date().toISOString().slice(0, 10),
-    bevelRecovery: undefined as any,
-    bevelSleep: undefined as any,
-    rmssd: undefined as any,
-    restingHR: undefined as any,
-    sleepHours: undefined as any,
-    deepMinutes: undefined as any,
-    remMinutes: undefined as any,
-    inBedHours: undefined as any,
-    awakeMinutes: undefined as any,
-    daytimeHR: undefined as any,
-  };
-}
+// ─── Nightly row card ─────────────────────────────────────────────────────────
 
-// Mirror of computeSleepScore from healthkit.ts for local computation
-function computeOurSleep(entry: CalibrationEntry): number {
-  const totalMin   = entry.sleepHours * 60;
-  const deepMin    = entry.deepMinutes;
-  const remMin     = entry.remMinutes;
-  const awakeMin   = entry.awakeMinutes;
-  const goalMin    = 480;
-  const inBedMin   = entry.inBedHours * 60;
-  const overnightHR = entry.restingHR;
-  const daytimeHR  = entry.daytimeHR;
-
-  const goalRatio = Math.min(1.2, totalMin / goalMin);
-  const timeScore =
-    goalRatio >= 1.0 ? 100
-    : goalRatio >= 0.85 ? 70 + (goalRatio - 0.85) / 0.15 * 30
-    : goalRatio >= 0.60 ? 30 + (goalRatio - 0.60) / 0.25 * 40
-    : goalRatio * 50;
-
-  const deepRemFrac = totalMin > 0 ? (deepMin + remMin) / totalMin : 0;
-  const stagesScore =
-    deepRemFrac >= 0.40 ? 100
-    : deepRemFrac >= 0.25 ? 60 + (deepRemFrac - 0.25) / 0.15 * 40
-    : deepRemFrac >= 0.10 ? 20 + (deepRemFrac - 0.10) / 0.15 * 40
-    : deepRemFrac * 200;
-
-  const totalInBed = inBedMin > 0 ? inBedMin : totalMin + awakeMin;
-  const efficiency = totalInBed > 0 ? totalMin / totalInBed : 1;
-  const effScore = Math.min(100, efficiency * 110);
-
-  let hrDipScore = 50;
-  if (overnightHR > 0 && daytimeHR > 0) {
-    const dip = (daytimeHR - overnightHR) / daytimeHR;
-    hrDipScore =
-      dip >= 0.25 ? 100
-      : dip >= 0.15 ? 70 + (dip - 0.15) / 0.10 * 30
-      : dip >= 0.05 ? 20 + (dip - 0.05) / 0.10 * 50
-      : Math.max(0, dip * 400);
-  }
-
-  const awakeFrac = totalInBed > 0 ? awakeMin / totalInBed : 0;
-  const continuityScore =
-    awakeFrac <= 0.05 ? 100
-    : awakeFrac <= 0.15 ? 100 - (awakeFrac - 0.05) / 0.10 * 50
-    : Math.max(0, 50 - (awakeFrac - 0.15) * 300);
-
-  const raw = timeScore * 0.40 + stagesScore * 0.25 + effScore * 0.15 + hrDipScore * 0.10 + continuityScore * 0.10;
-  return Math.round(Math.min(100, Math.max(0, raw)));
-}
-
-function computeOurRecovery(entry: CalibrationEntry): number {
-  const absHRV = Math.min(98, Math.max(5, 38 + entry.rmssd * 0.95));
-  const absRHR = Math.min(95, Math.max(5, 190 - entry.restingHR * 2.1));
-  const useRHR = entry.restingHR > 0;
-  return Math.round(useRHR ? 0.65 * absHRV + 0.35 * absRHR : absHRV);
-}
-
-function scoreColor(ours: number, bevel: number): string {
-  const diff = Math.abs(ours - bevel);
-  if (diff <= 5)  return '#27ae60';
-  if (diff <= 15) return '#f39c12';
-  return '#e74c3c';
-}
-
-// ─── Field input helper ───────────────────────────────────────────────────────
-
-function Field({
-  label, value, onChange, placeholder, unit,
-}: {
-  label: string; value: string; onChange: (v: string) => void;
-  placeholder?: string; unit?: string;
+function NightCard({ row, sleepGoalMin, onSave }: {
+  row: NightRow; sleepGoalMin: number; onSave: (e: BevelEntry) => void;
 }) {
+  const bio   = row.bio;
+  const s     = row.session;
+  const inBed = s.totalMinutes + s.awakeMinutes;
+  const eff   = inBed > 0 ? (s.totalMinutes / inBed) * 100 : 0;
+
+  const sleepKpis = {
+    totalMinutes: s.totalMinutes, deepMinutes: s.deepMinutes,
+    remMinutes: s.remMinutes, awakeMinutes: s.awakeMinutes,
+    efficiency: eff, hrDipPct: bio?.hrDipPct ?? 0,
+  };
+  const sleepScores   = normaliseKPIs(sleepKpis, sleepGoalMin);
+  const ourSleepScore = applyWeights(sleepScores, DEFAULT_SLEEP_WEIGHTS);
+
+  const [bevelRecovery, setBevelRecovery] = useState(row.entry ? String(row.entry.bevelRecovery || '') : '');
+  const [expanded,      setExpanded]      = useState(false);
+  const [saved,         setSaved]         = useState(!!row.entry?.bevelRecovery);
+
+  const handleSave = () => {
+    const bRec = parseFloat(bevelRecovery);
+    if (isNaN(bRec) || bRec <= 0) {
+      Alert.alert('Enter Bevel Recovery %', 'Type the Recovery % shown in Bevel for this night.');
+      return;
+    }
+    const entry: BevelEntry = {
+      date: s.date, sleep: sleepKpis, sleepGoalMin,
+      bevelSleep:    row.entry?.bevelSleep ?? 0,
+      bevelRecovery: bRec,
+      ourSleep:      ourSleepScore,
+    };
+    onSave(entry);
+    setSaved(true);
+  };
+
   return (
-    <View style={fs.row}>
-      <Text style={fs.label}>{label}</Text>
-      <TextInput
-        style={fs.input}
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder ?? '—'}
-        placeholderTextColor="#bbb"
-        keyboardType="decimal-pad"
-        returnKeyType="done"
-      />
-      {unit ? <Text style={fs.unit}>{unit}</Text> : <View style={{ width: 30 }} />}
+    <View style={c.nightCard}>
+      {/* ── collapsed header ── */}
+      <TouchableOpacity style={c.nightHeader} onPress={() => setExpanded(e => !e)} activeOpacity={0.75}>
+        <View style={{ flex: 1 }}>
+          <Text style={c.nightDate}>{s.date}</Text>
+          <Text style={c.nightSummary}>
+            {fmtH(s.totalMinutes)} · {s.deepMinutes}m deep · {s.remMinutes}m REM
+            {bio?.hrv ? `  HRV ${bio.hrv}ms` : ''}
+            {bio?.spO2 ? `  SpO₂ ${bio.spO2}%` : ''}
+          </Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          {saved && bevelRecovery ? (
+            <Text style={[c.bevelScore, { color: '#27ae60' }]}>
+              Rec: {bevelRecovery}%
+            </Text>
+          ) : (
+            <Text style={c.bevelMissing}>tap to enter Recovery %</Text>
+          )}
+        </View>
+        <Text style={c.chevron}>{expanded ? '▾' : '›'}</Text>
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={c.nightExpanded}>
+
+          {/* ── Recovery biometrics — inputs fed into regression ── */}
+          <Text style={c.sectionLabel}>Recovery inputs (sleep window)</Text>
+          <View style={c.bioRow}>
+            {([
+              ['HRV',   bio?.hrv              ? `${bio.hrv} ms`                    : '—'],
+              ['RHR',   bio?.overnightHR      ? `${bio.overnightHR} bpm`           : '—'],
+              ['SpO₂', bio?.spO2             ? `${bio.spO2}%`                     : '—'],
+              ['RR',    bio?.respiratoryRate  ? `${bio.respiratoryRate} rpm`       : '—'],
+              ['Sleep', `${ourSleepScore}/100`],
+            ] as [string, string][]).map(([lbl, val]) => (
+              <View key={lbl} style={c.bioCell}>
+                <Text style={c.bioCellLabel}>{lbl}</Text>
+                <Text style={c.bioCellVal}>{val}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ── Sleep detail ── */}
+          <Text style={[c.sectionLabel, { marginTop: 10 }]}>Sleep detail</Text>
+          <View style={c.bioRow}>
+            {([
+              ['Total',  fmtH(s.totalMinutes)],
+              ['Deep',   `${s.deepMinutes}m`],
+              ['REM',    `${s.remMinutes}m`],
+              ['Core',   `${s.totalMinutes - s.deepMinutes - s.remMinutes}m`],
+              ['Effic',  pct(eff)],
+              ['HR dip', bio?.hrDipPct ? `${bio.hrDipPct.toFixed(1)}%` : '—'],
+            ] as [string, string][]).map(([lbl, val]) => (
+              <View key={lbl} style={[c.bioCell, { backgroundColor: '#0d0d14' }]}>
+                <Text style={c.bioCellLabel}>{lbl}</Text>
+                <Text style={[c.bioCellVal, { color: '#888' }]}>{val}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ── Bevel Recovery input ── */}
+          <View style={c.inputRow}>
+            <View style={c.inputGroup}>
+              <Text style={c.inputLabel}>Bevel Recovery %</Text>
+              <TextInput
+                style={c.input}
+                value={bevelRecovery}
+                onChangeText={v => { setBevelRecovery(v); setSaved(false); }}
+                keyboardType="numeric"
+                placeholder="0–100"
+                placeholderTextColor="#555"
+                returnKeyType="done"
+                maxLength={5}
+              />
+            </View>
+            <TouchableOpacity
+              style={[c.saveBtn, !bevelRecovery && c.saveBtnDisabled]}
+              onPress={handleSave}
+              disabled={!bevelRecovery}
+            >
+              <Text style={c.saveBtnText}>{saved ? '✓' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+
+        </View>
+      )}
     </View>
   );
 }
 
-const fs = StyleSheet.create({
-  row:   { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  label: { flex: 1, fontSize: 13, color: '#555', fontWeight: '500' },
-  input: {
-    width: 80, borderWidth: 1, borderColor: '#ddd', borderRadius: 8,
-    paddingHorizontal: 10, paddingVertical: 7,
-    fontSize: 14, color: '#222', backgroundColor: '#fafafa',
-    textAlign: 'right',
-  },
-  unit: { width: 36, fontSize: 12, color: '#888', marginLeft: 6 },
-});
+// ─── Results panel ────────────────────────────────────────────────────────────
+
+function ResultsPanel({ result, onApply, applied }: {
+  result: RecoveryRegressionResult;
+  onApply: (w: RecoveryWeights) => void;
+  applied: boolean;
+}) {
+  const { weights: w, mae, r2, dataPoints, perDayErrors } = result;
+  return (
+    <View style={c.resultsCard}>
+      <Text style={c.resultsTitle}>Recovery Regression Results</Text>
+      <Text style={c.resultsSub}>{dataPoints} nights · MAE {mae} pts · R² {r2.toFixed(3)}</Text>
+      <Text style={[c.resultsSub, { marginTop: 2 }]}>
+        Personal baseline: {Math.round(w.intercept * 100)}% offset
+        {dataPoints < 10 ? `  ⚠ weights regularised toward defaults (${dataPoints}/10+ nights)` : ''}
+      </Text>
+
+      <View style={c.weightsTable}>
+        <View style={c.weightsHeader}>
+          <Text style={[c.wCol, { flex: 2, textAlign: 'left' }]}>KPI</Text>
+          <Text style={c.wCol}>Default</Text>
+          <Text style={c.wCol}>Optimal</Text>
+          <Text style={c.wCol}>Δ</Text>
+        </View>
+        {([
+          ['HRV',         DEFAULT_RECOVERY_WEIGHTS.hrv,             w.hrv],
+          ['RHR',         DEFAULT_RECOVERY_WEIGHTS.rhr,             w.rhr],
+          ['SpO₂',       DEFAULT_RECOVERY_WEIGHTS.spO2,            w.spO2],
+          ['Resp Rate',   DEFAULT_RECOVERY_WEIGHTS.respiratoryRate, w.respiratoryRate],
+          ['Sleep Score', DEFAULT_RECOVERY_WEIGHTS.sleepScore,      w.sleepScore],
+        ] as [string, number, number][]).map(([lbl, def, opt]) => {
+          const delta = Math.round((opt - def) * 100);
+          return (
+            <View key={lbl} style={c.weightsRow}>
+              <Text style={[c.wCol, { flex: 2, textAlign: 'left', color: '#ccc' }]}>{lbl}</Text>
+              <Text style={c.wCol}>{Math.round(def * 100)}%</Text>
+              <Text style={[c.wCol, { color: ACCENT, fontWeight: '700' }]}>{Math.round(opt * 100)}%</Text>
+              <Text style={[c.wCol, { color: delta > 0 ? '#27ae60' : delta < 0 ? '#e74c3c' : '#888' }]}>
+                {delta >= 0 ? '+' : ''}{delta}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      <Text style={[c.resultsSub, { marginTop: 12, marginBottom: 4 }]}>Per-night (our → Bevel Recovery)</Text>
+      {[...perDayErrors].reverse().slice(0, 10).map(d => (
+        <View key={d.date} style={c.errRow}>
+          <Text style={c.errDate}>{d.date}</Text>
+          <Text style={c.errVal}>{d.ours}% → {d.bevel}%</Text>
+          <Text style={[c.errDelta, {
+            color: Math.abs(d.error) <= 3 ? '#27ae60' : Math.abs(d.error) <= 8 ? '#f39c12' : '#e74c3c',
+          }]}>{d.error >= 0 ? '+' : ''}{d.error}</Text>
+        </View>
+      ))}
+
+      <TouchableOpacity
+        style={[c.applyBtn, applied && { backgroundColor: '#27ae60' }]}
+        onPress={() => onApply(result.weights)}
+      >
+        <Text style={c.applyBtnText}>
+          {applied ? '✓ Recovery weights applied' : 'Apply optimal weights to Recovery Score'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function BevelCalibrationScreen() {
   const router = useRouter();
-  const [entries, setEntries] = useState<CalibrationEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState(false);
-  const [form, setForm]       = useState<Record<string, string>>({
-    date: new Date().toISOString().slice(0, 10),
-  });
+  const [rows,         setRows]         = useState<NightRow[]>([]);
+  const [entries,      setEntries]      = useState<BevelEntry[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [result,       setResult]       = useState<RecoveryRegressionResult | null>(null);
+  const [applied,      setApplied]      = useState(false);
+  const [hasCustom,    setHasCustom]    = useState(false);
+  const [sleepGoalMin, setSleepGoalMin] = useState(375); // 6h15m fallback
 
-  useEffect(() => {
-    SecureStore.getItemAsync(STORE_KEY).then((raw) => {
-      if (raw) {
-        try { setEntries(JSON.parse(raw)); } catch {}
-      }
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sessions, bioData, saved, customW, savedGoal, legacySleepW] = await Promise.all([
+        fetchSleepHistory(3),
+        fetchSleepBiometrics(3),
+        loadEntries(),
+        loadCustomRecoveryWeights(),
+        loadPersonalSleepGoal(),
+        loadCustomSleepWeights(),   // check for corrupt weights from old regression
+      ]);
+      // The old regression was miscalibrated (it used sleep sub-KPIs as features
+      // for a Bevel Recovery % target, then saved the result as sleep weights).
+      // Clear any stored sleep weights automatically — they're invalid.
+      if (legacySleepW) await clearCustomSleepWeights();
+      setHasCustom(!!customW);
+      const goal = savedGoal ?? computePersonalSleepGoal(sessions);
+      if (goal > 0) setSleepGoalMin(goal);
+      const bioByDate: Record<string, SleepBiometrics> = {};
+      bioData.forEach(d => { bioByDate[d.date] = d; });
+      const recent = sessions.slice(-30).reverse();
+      setRows(recent.map(session => ({
+        session,
+        bio:   bioByDate[session.date] ?? null,
+        entry: saved.find(e => e.date === session.date) ?? null,
+      })));
+      setEntries(saved);
+    } catch (e: any) {
+      Alert.alert('Error loading data', e.message);
+    } finally {
       setLoading(false);
-    });
+    }
   }, []);
 
-  const setField = (key: string, val: string) => setForm(f => ({ ...f, [key]: val }));
+  useEffect(() => { load(); }, [load]);
 
-  const handleAdd = useCallback(async () => {
-    const get = (k: string) => parseFloat(form[k] ?? '');
-    const entry: CalibrationEntry = {
-      date:          form.date ?? new Date().toISOString().slice(0, 10),
-      bevelRecovery: get('bevelRecovery'),
-      bevelSleep:    get('bevelSleep'),
-      rmssd:         get('rmssd'),
-      restingHR:     get('restingHR'),
-      sleepHours:    get('sleepHours'),
-      deepMinutes:   get('deepMinutes'),
-      remMinutes:    get('remMinutes'),
-      inBedHours:    get('inBedHours'),
-      awakeMinutes:  get('awakeMinutes'),
-      daytimeHR:     get('daytimeHR'),
-    };
-    if (isNaN(entry.rmssd) || isNaN(entry.bevelRecovery)) {
-      Alert.alert('Missing data', 'At minimum, RMSSD and Bevel Recovery score are required.');
+  const handleSaveEntry = useCallback(async (entry: BevelEntry) => {
+    const updated = await saveEntry(entry);
+    setEntries(updated);
+    setRows(prev => prev.map(r => r.session.date === entry.date ? { ...r, entry } : r));
+  }, []);
+
+  const handleAnalyse = () => {
+    // Build lookup maps from loaded rows
+    const bioByDate: Record<string, { hrv: number; rhr: number; spO2: number; respiratoryRate: number }> = {};
+    const sleepScoreByDate: Record<string, number> = {};
+
+    for (const row of rows) {
+      if (!row.bio) continue;
+      const date = row.session.date;
+      bioByDate[date] = {
+        hrv:             row.bio.hrv,
+        rhr:             row.bio.overnightHR,
+        spO2:            row.bio.spO2,
+        respiratoryRate: row.bio.respiratoryRate ?? 0,
+      };
+      // Recompute sleep score for this night
+      const inBed = row.session.totalMinutes + row.session.awakeMinutes;
+      const eff   = inBed > 0 ? (row.session.totalMinutes / inBed) * 100 : 0;
+      const kpis  = {
+        totalMinutes: row.session.totalMinutes, deepMinutes: row.session.deepMinutes,
+        remMinutes:   row.session.remMinutes,   awakeMinutes: row.session.awakeMinutes,
+        efficiency:   eff, hrDipPct: row.bio.hrDipPct ?? 0,
+      };
+      sleepScoreByDate[date] = applyWeights(normaliseKPIs(kpis, sleepGoalMin), DEFAULT_SLEEP_WEIGHTS);
+    }
+
+    const res = runRecoveryRegression(entries, bioByDate, sleepScoreByDate);
+    if (!res) {
+      Alert.alert('Not enough data', 'Enter Bevel Recovery % for at least 3 nights to run the analysis.');
       return;
     }
-    entry.ourRecovery = computeOurRecovery(entry);
-    entry.ourSleep    = !isNaN(entry.sleepHours) ? computeOurSleep(entry) : undefined;
+    setResult(res);
+    setApplied(false);
+  };
 
-    setSaving(true);
-    const updated = [entry, ...entries.filter(e => e.date !== entry.date)].sort(
-      (a, b) => b.date.localeCompare(a.date)
-    );
-    await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(updated));
-    setEntries(updated);
-    setForm({ date: new Date().toISOString().slice(0, 10) });
-    setSaving(false);
-  }, [form, entries]);
+  const handleApply = async (w: RecoveryWeights) => {
+    await saveCustomRecoveryWeights(w);
+    setApplied(true);
+    setHasCustom(true);
+    Alert.alert('Weights saved', `Applied! MAE vs Bevel: ${result?.mae} pts.\nOpen the app to see your updated Recovery Score.`);
+  };
 
-  const handleDelete = (date: string) => {
-    Alert.alert('Delete entry', `Remove data for ${date}?`, [
+  const handleReset = () => {
+    Alert.alert('Reset recovery weights?', 'This restores the default coefficients.', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive', onPress: async () => {
-          const updated = entries.filter(e => e.date !== date);
-          await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(updated));
-          setEntries(updated);
-        },
-      },
+      { text: 'Reset', style: 'destructive', onPress: async () => {
+        await Promise.all([clearCustomRecoveryWeights(), clearCustomSleepWeights()]);
+        setHasCustom(false); setApplied(false);
+      }},
     ]);
   };
 
-  // Simple correlation summary
-  const recCorr = entries
-    .filter(e => e.ourRecovery !== undefined)
-    .map(e => `Δ${((e.ourRecovery ?? 0) - e.bevelRecovery) > 0 ? '+' : ''}${Math.round((e.ourRecovery ?? 0) - e.bevelRecovery)}`);
-  const sleepCorr = entries
-    .filter(e => e.ourSleep !== undefined && !isNaN(e.bevelSleep))
-    .map(e => `Δ${((e.ourSleep ?? 0) - e.bevelSleep) > 0 ? '+' : ''}${Math.round((e.ourSleep ?? 0) - e.bevelSleep)}`);
+  const enteredCount = entries.filter(e => e.bevelRecovery > 0).length;
 
   return (
-    <SafeAreaView style={s.container}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        {/* Header */}
-        <View style={s.header}>
+    <SafeAreaView style={c.container}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={c.header}>
           <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
-            <Text style={s.backText}>‹ Back</Text>
+            <Text style={c.backText}>‹ Back</Text>
           </TouchableOpacity>
-          <Text style={s.title}>Bevel Calibration</Text>
-          <View style={{ width: 60 }} />
+          <Text style={c.title}>Calibration</Text>
+          {hasCustom
+            ? <TouchableOpacity onPress={handleReset}><Text style={c.resetText}>Reset</Text></TouchableOpacity>
+            : <View style={{ width: 50 }} />}
         </View>
 
-        <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
-          <Text style={s.subtitle}>
-            Enter daily Bevel scores and biometrics to compare with RunCoach AI's algorithm and fine-tune the weights.
-          </Text>
+        <ScrollView contentContainerStyle={c.scroll} keyboardShouldPersistTaps="handled">
 
-          {/* ── Entry form ─────────────────────────────────────────── */}
-          <View style={s.card}>
-            <Text style={s.cardTitle}>Add / Update Entry</Text>
+          <View style={c.explainer}>
+            <Text style={c.explainerTitle}>How this works</Text>
+            <Text style={c.explainerBody}>
+              Each night shows sleep-window biometrics used to compute your Recovery Score:
+              HRV, overnight HR (RHR), SpO₂, Respiratory Rate, and Sleep Score.{'\n\n'}
+              Enter Bevel's Recovery % for each night, then tap "Analyse" to find the optimal
+              weights. More nights = better calibration.
+            </Text>
+            <View style={[c.customBadge, { backgroundColor: '#1f2a1f', marginTop: 8 }]}>
+              <Text style={[c.customBadgeText, { color: '#4caf80' }]}>
+                🎯 Sleep goal: {Math.floor(sleepGoalMin / 60)}h{sleepGoalMin % 60 > 0 ? ` ${sleepGoalMin % 60}m` : ''} (90-day median)
+              </Text>
+            </View>
+            {hasCustom && (
+              <View style={c.customBadge}>
+                <Text style={c.customBadgeText}>✓ Custom recovery weights active</Text>
+              </View>
+            )}
+          </View>
 
-            <Field label="Date (YYYY-MM-DD)" value={form.date ?? ''} onChange={v => setField('date', v)} placeholder="2025-04-13" />
-
-            <Text style={s.sectionDivider}>BEVEL SCORES</Text>
-            <Field label="Bevel Recovery" value={form.bevelRecovery ?? ''} onChange={v => setField('bevelRecovery', v)} placeholder="75" unit="%" />
-            <Field label="Bevel Sleep"    value={form.bevelSleep ?? ''}    onChange={v => setField('bevelSleep', v)}    placeholder="80" unit="%" />
-
-            <Text style={s.sectionDivider}>BIOMETRICS</Text>
-            <Field label="RMSSD"           value={form.rmssd ?? ''}        onChange={v => setField('rmssd', v)}        placeholder="43"  unit="ms"  />
-            <Field label="Resting HR"      value={form.restingHR ?? ''}    onChange={v => setField('restingHR', v)}    placeholder="58"  unit="bpm" />
-            <Field label="Daytime HR avg"  value={form.daytimeHR ?? ''}    onChange={v => setField('daytimeHR', v)}    placeholder="72"  unit="bpm" />
-
-            <Text style={s.sectionDivider}>SLEEP DATA</Text>
-            <Field label="Total sleep"  value={form.sleepHours ?? ''}   onChange={v => setField('sleepHours', v)}   placeholder="7.5" unit="h"   />
-            <Field label="Time in bed"  value={form.inBedHours ?? ''}   onChange={v => setField('inBedHours', v)}   placeholder="8.0" unit="h"   />
-            <Field label="Deep sleep"   value={form.deepMinutes ?? ''}  onChange={v => setField('deepMinutes', v)}  placeholder="60"  unit="min" />
-            <Field label="REM sleep"    value={form.remMinutes ?? ''}   onChange={v => setField('remMinutes', v)}   placeholder="90"  unit="min" />
-            <Field label="Awake time"   value={form.awakeMinutes ?? ''} onChange={v => setField('awakeMinutes', v)} placeholder="20"  unit="min" />
-
+          <View style={c.analyseRow}>
+            <Text style={c.analyseCount}>{enteredCount} nights entered</Text>
             <TouchableOpacity
-              style={[s.btn, saving && { opacity: 0.6 }]}
-              onPress={handleAdd}
-              disabled={saving}
+              style={[c.analyseBtn, enteredCount < 3 && c.analyseBtnDisabled]}
+              onPress={handleAnalyse}
+              disabled={enteredCount < 3}
             >
-              {saving
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.btnText}>Save Entry</Text>}
+              <Text style={c.analyseBtnText}>Analyse weights ›</Text>
             </TouchableOpacity>
           </View>
 
-          {/* ── Analysis summary ────────────────────────────────────── */}
-          {entries.length >= 2 && (
-            <View style={s.card}>
-              <Text style={s.cardTitle}>Parameter Analysis ({entries.length} days)</Text>
-              <Text style={s.hint}>
-                Recovery deltas (our − Bevel): {recCorr.slice(0, 10).join('  ')}
-              </Text>
-              {sleepCorr.length > 0 && (
-                <Text style={s.hint}>
-                  Sleep deltas (our − Bevel): {sleepCorr.slice(0, 10).join('  ')}
-                </Text>
-              )}
-              <Text style={s.hint}>
-                {'\n'}Green = within 5 pts  ·  Amber = within 15 pts  ·  Red = off by 15+
-              </Text>
-            </View>
+          {result && (
+            <ResultsPanel result={result} onApply={handleApply} applied={applied} />
           )}
 
-          {/* ── Entries table ────────────────────────────────────────── */}
+          <Text style={c.sectionHeader}>Recent nights — tap to expand &amp; enter Bevel Recovery %</Text>
+
           {loading ? (
-            <ActivityIndicator color="#FF6B35" style={{ marginTop: 20 }} />
-          ) : entries.length === 0 ? (
-            <Text style={s.emptyText}>No entries yet — add one above.</Text>
-          ) : (
-            <View style={s.card}>
-              <Text style={s.cardTitle}>Logged Days</Text>
-              {/* Table header */}
-              <View style={[s.tableRow, s.tableHeader]}>
-                <Text style={[s.col0, s.th]}>Date</Text>
-                <Text style={[s.col1, s.th]}>Rec{'\n'}Bevel</Text>
-                <Text style={[s.col1, s.th]}>Rec{'\n'}Ours</Text>
-                <Text style={[s.col1, s.th]}>Slp{'\n'}Bevel</Text>
-                <Text style={[s.col1, s.th]}>Slp{'\n'}Ours</Text>
-                <Text style={[s.col2, s.th]}>RMSSD</Text>
-              </View>
-              {entries.map((e) => {
-                const recDiff  = (e.ourRecovery ?? 0) - e.bevelRecovery;
-                const slpDiff  = (e.ourSleep ?? 0) - e.bevelSleep;
-                return (
-                  <TouchableOpacity
-                    key={e.date}
-                    style={s.tableRow}
-                    onLongPress={() => handleDelete(e.date)}
-                  >
-                    <Text style={s.col0}>{e.date.slice(5)}</Text>
-                    <Text style={s.col1}>{e.bevelRecovery}</Text>
-                    <Text style={[s.col1, { color: scoreColor(e.ourRecovery ?? 0, e.bevelRecovery), fontWeight: '600' }]}>
-                      {e.ourRecovery ?? '--'}
-                    </Text>
-                    <Text style={s.col1}>{isNaN(e.bevelSleep) ? '--' : e.bevelSleep}</Text>
-                    <Text style={[s.col1, { color: e.ourSleep ? scoreColor(e.ourSleep, e.bevelSleep) : '#aaa', fontWeight: '600' }]}>
-                      {e.ourSleep ?? '--'}
-                    </Text>
-                    <Text style={s.col2}>{e.rmssd} ms</Text>
-                  </TouchableOpacity>
-                );
-              })}
-              <Text style={s.hint}>Long-press a row to delete it.</Text>
+            <View style={c.center}>
+              <ActivityIndicator size="large" color={ACCENT} />
+              <Text style={c.loadingText}>Loading sleep history…</Text>
             </View>
+          ) : rows.length === 0 ? (
+            <Text style={{ color: '#888', textAlign: 'center', marginTop: 20 }}>
+              No sleep data found in the last 3 months.
+            </Text>
+          ) : (
+            rows.map(row => (
+              <NightCard key={row.session.date} row={row} sleepGoalMin={sleepGoalMin} onSave={handleSaveEntry} />
+            ))
           )}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -335,43 +425,100 @@ export default function BevelCalibrationScreen() {
   );
 }
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F5' },
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const c = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0f0f11' },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee',
+    backgroundColor: '#1a1a1f', borderBottomWidth: 1, borderBottomColor: '#2a2a30',
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
-  title: { fontSize: 17, fontWeight: '700', color: '#222' },
-  scroll: { padding: 12, paddingBottom: 60 },
-  subtitle: { fontSize: 13, color: '#888', lineHeight: 20, marginBottom: 12 },
-  card: {
-    backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 14,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06, shadowRadius: 3, elevation: 2,
-  },
-  cardTitle: {
-    fontSize: 13, fontWeight: '700', color: '#888',
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12,
-  },
-  sectionDivider: {
-    fontSize: 10, fontWeight: '700', color: '#bbb',
-    textTransform: 'uppercase', letterSpacing: 0.5,
-    marginTop: 10, marginBottom: 8,
-  },
-  btn: {
-    backgroundColor: '#FF6B35', borderRadius: 8, paddingVertical: 12,
-    alignItems: 'center', marginTop: 10,
-  },
-  btnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  hint: { fontSize: 12, color: '#999', lineHeight: 18, marginTop: 4 },
-  emptyText: { fontSize: 14, color: '#aaa', textAlign: 'center', marginTop: 24 },
+  backText:  { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  title:     { fontSize: 17, fontWeight: '700', color: '#fff' },
+  resetText: { fontSize: 13, color: '#e74c3c', fontWeight: '600' },
+  scroll:    { padding: 12, paddingBottom: 60 },
+  center:    { alignItems: 'center', paddingVertical: 24 },
+  loadingText: { color: '#888', marginTop: 8, fontSize: 13 },
 
-  tableRow: { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f0f0f0', alignItems: 'center' },
-  tableHeader: { borderBottomWidth: 2, borderBottomColor: '#eee' },
-  th:   { fontSize: 10, color: '#aaa', fontWeight: '700', textAlign: 'center' },
-  col0: { width: 54, fontSize: 12, color: '#555' },
-  col1: { flex: 1, fontSize: 12, color: '#333', textAlign: 'center' },
-  col2: { width: 60, fontSize: 11, color: '#888', textAlign: 'right' },
+  explainer: {
+    backgroundColor: '#1a1a1f', borderRadius: 12, padding: 14, marginBottom: 14,
+    borderLeftWidth: 3, borderLeftColor: ACCENT,
+  },
+  explainerTitle: { fontSize: 14, fontWeight: '700', color: '#fff', marginBottom: 6 },
+  explainerBody:  { fontSize: 12, color: '#aaa', lineHeight: 18 },
+  customBadge: {
+    marginTop: 8, backgroundColor: ACCENT + '33', borderRadius: 6,
+    paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start',
+  },
+  customBadgeText: { fontSize: 11, fontWeight: '700', color: ACCENT },
+
+  analyseRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14,
+  },
+  analyseCount:       { fontSize: 13, color: '#888' },
+  analyseBtn:         { backgroundColor: ACCENT, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 9 },
+  analyseBtnDisabled: { backgroundColor: '#333' },
+  analyseBtnText:     { color: '#fff', fontWeight: '700', fontSize: 13 },
+
+  sectionHeader: {
+    fontSize: 11, fontWeight: '700', color: '#555', textTransform: 'uppercase',
+    letterSpacing: 0.5, marginBottom: 8, marginTop: 4,
+  },
+
+  nightCard:    { backgroundColor: '#1a1a1f', borderRadius: 12, marginBottom: 8, overflow: 'hidden' },
+  nightHeader:  { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 8 },
+  nightDate:    { fontSize: 13, fontWeight: '700', color: '#fff' },
+  nightSummary: { fontSize: 11, color: '#888', marginTop: 2 },
+  bevelScore:   { fontSize: 12, fontWeight: '600', marginTop: 2 },
+  bevelMissing: { fontSize: 11, color: '#555', fontStyle: 'italic', marginTop: 2 },
+  chevron:      { fontSize: 16, color: '#555', marginLeft: 4 },
+
+  nightExpanded: { borderTopWidth: 1, borderTopColor: '#2a2a30', padding: 12, gap: 8 },
+  sectionLabel:  { fontSize: 9, fontWeight: '700', color: '#555', textTransform: 'uppercase', letterSpacing: 0.5 },
+
+  inputRow:   { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
+  inputGroup: { flex: 1 },
+  inputLabel: { fontSize: 10, color: '#888', marginBottom: 4, fontWeight: '600', textTransform: 'uppercase' },
+  input: {
+    backgroundColor: '#0f0f14', borderRadius: 8, borderWidth: 1, borderColor: '#2a2a30',
+    color: '#fff', fontSize: 16, fontWeight: '700',
+    paddingHorizontal: 10, paddingVertical: 9, textAlign: 'center',
+  },
+  saveBtn:         { backgroundColor: ACCENT, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10 },
+  saveBtnDisabled: { backgroundColor: '#333' },
+  saveBtnText:     { color: '#fff', fontWeight: '700', fontSize: 14 },
+
+  resultsCard: {
+    backgroundColor: '#1a1a1f', borderRadius: 12, padding: 14, marginBottom: 14,
+    borderWidth: 1, borderColor: ACCENT + '55',
+  },
+  resultsTitle: { fontSize: 15, fontWeight: '800', color: '#fff', marginBottom: 2 },
+  resultsSub:   { fontSize: 12, color: '#888' },
+
+  weightsTable:  { marginTop: 10, borderRadius: 8, overflow: 'hidden' },
+  weightsHeader: {
+    flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, backgroundColor: '#0f0f14',
+  },
+  weightsRow: {
+    flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 7,
+    borderBottomWidth: 1, borderBottomColor: '#0f0f14',
+  },
+  wCol: { flex: 1, fontSize: 12, color: '#888', fontWeight: '600', textAlign: 'center' },
+
+  errRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 5,
+    borderBottomWidth: 1, borderBottomColor: '#1f1f27',
+  },
+  errDate:  { flex: 2, fontSize: 12, color: '#888' },
+  errVal:   { flex: 2, fontSize: 12, color: '#ccc', textAlign: 'center' },
+  errDelta: { flex: 1, fontSize: 13, fontWeight: '700', textAlign: 'right' },
+
+  applyBtn:     { marginTop: 16, backgroundColor: ACCENT, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  applyBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
+
+  bioRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  bioCell:      { backgroundColor: '#13131a', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, alignItems: 'center', minWidth: 60 },
+  bioCellLabel: { fontSize: 9, color: '#666', fontWeight: '700', textTransform: 'uppercase' },
+  bioCellVal:   { fontSize: 13, fontWeight: '700', color: '#ccc', marginTop: 2 },
 });

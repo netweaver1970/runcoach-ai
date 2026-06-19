@@ -30,10 +30,12 @@ export interface IntervalRep {
 }
 
 export interface KmSplit {
-  km:       number;  // 1-based km number
-  paceSecs: number;  // secs/km for this km
-  avgHR:    number;  // 0 if unavailable
-  avgPower: number;  // watts; 0 if unavailable
+  km:          number;  // 1-based km number
+  durationSec: number;  // wall-clock duration of this km (including pauses)
+  paceSecs:    number;  // secs/km net of pauses (excludes paused time)
+  avgHR:       number;  // avg HR including pauses; 0 if unavailable
+  avgCadence:  number;  // avg cadence spm, pauses excluded; 0 if unavailable
+  avgPower:    number;  // avg power watts, pauses excluded; 0 if unavailable
 }
 
 export type TimelineEventType = 'status' | 'supplement';
@@ -104,16 +106,51 @@ export interface RunWorkout {
   workHR?: number;            // avg HR during work segments only
   workPace?: number;          // avg pace during work segments only (secs/km)
   workPower?: number;         // avg power during work segments (watts)
+  workDuration?: number;      // total duration of work segments only (seconds)
   isEstimatedPower?: boolean; // true when power is derived from pace, not measured by sensor
   intervals?: IntervalRep[];  // per-rep data (Intervals sessions only)
   segments?: WorkoutSegment[]; // HK structured workout phases (empty for standard runs)
   kmSplits?:     KmSplit[];
   hrUnreliable?: boolean;
+  tempC?:        number;       // temperature at run time (°C) — HK weather metadata, live capture, or manual
+  note?:         string;       // user note for this run
 }
 
 export interface WeeklyMileage {
   week: string;
   km: number;
+}
+
+// ─── Activities & training load ───────────────────────────────────────────────
+
+/** One HealthKit workout of ANY type (run, ride, strength, walk…) — used for load */
+export interface ActivitySummary {
+  uuid:        string;
+  date:        string;  // ISO start
+  activityType: number; // HKWorkoutActivityType numeric
+  name:        string;  // human label e.g. "Run", "Cycling", "Strength"
+  durationMin: number;
+  kcal:        number;
+  distanceKm:  number;  // 0 if not a distance activity
+  avgHR:       number;  // 0 if unavailable
+}
+
+/** One day of the training-load (CTL/ATL/TSB) model */
+export interface DailyLoad {
+  date: string;   // YYYY-MM-DD
+  load: number;   // raw training load for the day (all active-energy strain)
+  atl:  number;   // acute training load — 7-day EWMA (fatigue)
+  ctl:  number;   // chronic training load — 42-day EWMA (fitness)
+  tsb:  number;   // training-stress balance — yesterday's (ctl − atl) (form)
+}
+
+/** Today's strain: real effort done vs the recommended safe range */
+export interface DayStrain {
+  real:       number;  // 0-100 actual effort accumulated today (all activity)
+  safeLow:    number;  // 0-100 recommended-range floor (from recovery + form)
+  safeHigh:   number;  // 0-100 recommended-range ceiling
+  safeMid:    number;  // 0-100 recommended target
+  activeKcal: number;  // raw active energy burned today (kcal)
 }
 
 // ─── Sleep ───────────────────────────────────────────────────────────────────
@@ -197,6 +234,10 @@ export interface HealthSnapshot {
   estimatedMaxHR: number;
   fetchedAt: string;
   timelineEvents: TimelineEvent[];
+  // All-activity training load
+  activities: ActivitySummary[];   // ALL HealthKit workouts in window (not just runs)
+  trainingLoad: DailyLoad[];       // daily CTL/ATL/TSB series (recent ~90 days)
+  strain: DayStrain | null;        // today's strain (real effort vs safe range)
 }
 
 export interface CoachingReport {

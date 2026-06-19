@@ -1,6 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
 import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, KmSplit } from '../types';
+import { callLLM, getActiveApiKey } from './llm';
+import { tsbStatus, ctlRamp } from './trainingLoad';
 
+// Legacy constant — kept so existing imports don't break; actual model comes from llm.ts config.
 const API_KEY_KEY = 'anthropic_api_key';
 export const MODEL      = 'claude-haiku-4-5-20251001';
 export const CHAT_MODEL = 'claude-sonnet-4-6';
@@ -10,8 +13,9 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Returns the active API key for the currently-selected provider. */
 export async function getApiKey(): Promise<string | null> {
-  return SecureStore.getItemAsync(API_KEY_KEY);
+  return getActiveApiKey();
 }
 export async function saveApiKey(key: string): Promise<void> {
   return SecureStore.setItemAsync(API_KEY_KEY, key.trim());
@@ -166,7 +170,7 @@ const BODY_MASS_KEY  = 'body_mass_kg';
 const SYNC_MONTHS_KEY = 'sync_months';
 export const DEFAULT_BODY_MASS_KG = 70;
 
-const VALID_MONTHS = [1, 3, 6, 12] as const;
+const VALID_MONTHS = [1, 3, 6, 12, 24] as const;
 export type SyncMonths = (typeof VALID_MONTHS)[number];
 
 export async function getSyncMonths(): Promise<SyncMonths> {
@@ -283,7 +287,7 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 
 function fd(iso: string): string {
   const d = new Date(iso);
-  return `${d.getDate()}${MONTHS[d.getMonth()]}`;
+  return `${d.getDate()}${MONTHS[d.getMonth()]}${d.getFullYear()}`;
 }
 
 function ft(iso: string): string {
@@ -311,6 +315,19 @@ function buildDataBlock(snap: HealthSnapshot, maxRuns = 10): string {
   const { runs, vo2max, restingHR, weeklyMileage, todayRecovery,
           recentNightlyHRV, recentSleep, workoutTypeStats } = snap;
 
+  // ── Training load (CTL/ATL/TSB) + recent cross-training ─────────────────────
+  const load = snap.trainingLoad ?? [];
+  const lastLoad = load.length > 0 ? load[load.length - 1] : null;
+  const loadLine = lastLoad
+    ? `Fitness(CTL) ${lastLoad.ctl} · Fatigue(ATL) ${lastLoad.atl} · Form(TSB) ${lastLoad.tsb >= 0 ? '+' : ''}${lastLoad.tsb}`
+    : '—';
+  const acts = snap.activities ?? [];
+  const sevenAgo = new Date(Date.now() - 7 * 86_400_000);
+  const crossActs = acts.filter(a => a.activityType !== 37 && new Date(a.date) >= sevenAgo);
+  const crossLine = crossActs.length > 0
+    ? crossActs.slice(0, 8).map(a => `${fd(a.date)} ${a.name} ${a.durationMin}m`).join(', ')
+    : 'none';
+
   // ── Runs ──────────────────────────────────────────────────────────────────
   const runLines = runs.slice(0, maxRuns).map(r => {
     const lbl   = LSHORT[r.label ?? 'Unknown'] ?? '?';
@@ -319,6 +336,10 @@ function buildDataBlock(snap: HealthSnapshot, maxRuns = 10): string {
     const hr    = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${r.avgHeartRate}` : '');
     const power = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
     const hrFlag = r.hrUnreliable === true ? ' ⚠HR' : '';
+    // Show work-only duration when it differs meaningfully from total
+    const durStr = (r.workDuration && r.workDuration > 0 && Math.abs(r.workDuration - r.duration) > 30)
+      ? `${fdur(r.workDuration)}w/${fdur(r.duration)}`
+      : fdur(r.duration);
     let extra   = '';
     if (r.segments && r.segments.length > 0) {
       // Structured workout (Custom Workout): show per-phase breakdown
@@ -341,7 +362,9 @@ function buildDataBlock(snap: HealthSnapshot, maxRuns = 10): string {
         : '';
       extra = ` reps:${r.intervals.length} HR${hrs}${paces ? ` @${paces}` : ''}${powers}`;
     }
-    return `[${lbl}] ${fd(r.date)} ${dist}km ${fdur(r.duration)} ${pace} ${hr}${power}${hrFlag}${extra}`;
+    const temp = r.tempC != null ? ` ${r.tempC}°C` : '';
+    const note = r.note ? ` note:"${r.note.replace(/\s+/g, ' ').trim().slice(0, 140)}"` : '';
+    return `[${lbl}] ${fd(r.date)} ${dist}km ${durStr} ${pace} ${hr}${power}${temp}${hrFlag}${note}${extra}`;
   }).join('\n') || 'none';
 
   // ── Type stats ────────────────────────────────────────────────────────────
@@ -409,7 +432,7 @@ function buildDataBlock(snap: HealthSnapshot, maxRuns = 10): string {
     timelineBlock = `\n\nTIMELINE (events):\n${evLines}`;
   }
 
-  return `RUNS (4w, [type] date dist dur pace wHR):
+  return `RUNS (4w, [type] date dist dur pace wHR temp note):
 ${runLines}
 
 TYPE STATS (wHR=work-only HR):
@@ -420,6 +443,9 @@ VO2MAX (ml/kg/min, trend): ${vo2Line}
 RHR (7d bpm): ${rhrLine}
 
 RECOVERY: ${recBlock}
+
+TRAINING LOAD (all activity): ${loadLine}
+CROSS-TRAINING (7d, non-run): ${crossLine}
 
 HRV+SLEEP (10 nights, MM-DD:rmssd|sleep):
 ${hrvLines}${timelineBlock}`;
@@ -452,8 +478,9 @@ Rules: cite real numbers, 2–4 sentences per section, skip sections with no dat
 function buildChatSystemPrompt(
   snap:          HealthSnapshot,
   memoryNote?:   string,
-  localContext?: string,   // e.g. "Brussels · Thu 17 Apr 17:30"
+  localContext?: string,   // e.g. "Location: Brussels · Thu 17 Apr 2026 13:04"
   aiWeeks = 10,
+  runContext?:   string,   // invisible run-analysis data injected from the detail screen
 ): string {
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
@@ -464,12 +491,16 @@ function buildChatSystemPrompt(
   const maxRuns = Math.round(aiWeeks * 1.5);
 
   let prompt = `You are a personal running coach in a runner's iPhone app. ${timeHeader}.
-Concise answers, phone-friendly. Cite numbers. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
+Concise answers, phone-friendly. Cite numbers. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
 ${buildDataBlock(snap, maxRuns)}`;
 
   if (memoryNote && memoryNote.trim()) {
     prompt += `\n\n## Coaching memory (from previous conversations)\n${memoryNote.trim()}`;
+  }
+
+  if (runContext && runContext.trim()) {
+    prompt += `\n\n## Run analysis context (user opened detail screen — use this data to answer)\n${runContext.trim()}`;
   }
 
   return prompt;
@@ -494,8 +525,15 @@ Write in second person ("The runner..."). Be concise — this note is injected i
 
 export function buildNewRunUserMessage(
   newRun:    RunWorkout,
-  prevRuns:  RunWorkout[], // up to 5 previous of the same type
+  prevRuns:  RunWorkout[],
   kmSplits?: KmSplit[],
+  isExplicit?: boolean,
+  runDetail?: {
+    cal:  number;
+    hrUnreliable?: boolean;
+    segs: { l: string; d: number; t: number; hr: number; cad: number; pwr: number }[];
+    kms:  { km: number; t: number; p: number; hr: number; cad: number; pwr: number }[];
+  },
 ): string {
   const lbl  = newRun.label ?? 'Unknown';
   const dist = (newRun.distance / 1000).toFixed(2);
@@ -504,10 +542,27 @@ export function buildNewRunUserMessage(
     ? `wHR ${newRun.workHR}bpm`
     : newRun.avgHeartRate ? `HR ${Math.round(newRun.avgHeartRate)}bpm` : '';
   const pwr  = (newRun.workPower ?? 0) > 0 ? ` ${newRun.workPower}W` : '';
+  const cal  = (runDetail?.cal ?? 0) > 0 ? ` · ${runDetail!.cal}kcal` : (newRun.calories > 0 ? ` · ${Math.round(newRun.calories)}kcal` : '');
 
-  let newBlock = `${lbl} · ${fd(newRun.date)} · ${dist}km · ${fdur(newRun.duration)} · @${pace} · ${hr}${pwr}`;
+  const hrFlag = runDetail?.hrUnreliable ? ' ⚠️HR-unreliable' : (newRun.hrUnreliable ? ' ⚠️HR-unreliable' : '');
+  const temp = newRun.tempC != null ? ` · ${newRun.tempC}°C` : '';
+  const note = newRun.note ? `\nNote: ${newRun.note.replace(/\s+/g, ' ').trim()}` : '';
+  let newBlock = `${lbl} · ${fd(newRun.date)} · ${dist}km · ${fdur(newRun.duration)} · @${pace} · ${hr}${pwr}${cal}${temp}${hrFlag}${note}`;
 
-  if (newRun.segments && newRun.segments.length > 0) {
+  const effectiveSegs = runDetail?.segs.length ? runDetail.segs : null;
+  if (effectiveSegs) {
+    const segStrs = effectiveSegs.map(s => {
+      const sdist = s.d >= 1000 ? `${(s.d / 1000).toFixed(2)}km` : `${s.d}m`;
+      const stime = `${Math.floor(s.t / 60)}:${(s.t % 60).toString().padStart(2, '0')}`;
+      const spkm  = s.d > 0 ? s.t / (s.d / 1000) : 0;
+      const sp    = spkm > 0 ? `@${fp(spkm)}` : '';
+      const sh    = s.hr  > 0 ? `HR${s.hr}`   : '';
+      const sw    = s.pwr > 0 ? `${s.pwr}W`   : '';
+      const sc    = s.cad > 0 ? `${s.cad}spm` : '';
+      return `  ${s.l}: ${sdist} ${stime} ${[sp,sh,sw,sc].filter(Boolean).join(' ')}`.trimEnd();
+    });
+    newBlock += '\n' + segStrs.join('\n');
+  } else if (newRun.segments && newRun.segments.length > 0) {
     const segStrs = newRun.segments.map(s => {
       const sdist = s.distanceM >= 1000 ? `${(s.distanceM / 1000).toFixed(2)}km` : `${s.distanceM}m`;
       const stime = `${Math.floor(s.durationSec / 60)}:${(s.durationSec % 60).toString().padStart(2, '0')}`;
@@ -528,26 +583,48 @@ export function buildNewRunUserMessage(
     newBlock += `\n  reps:${newRun.intervals.length} HR${hrs}${paces ? ` @${paces}` : ''}${pwrs}`;
   }
 
-  if (kmSplits && kmSplits.length > 0) {
-    const allHRZero    = kmSplits.every(k => k.avgHR === 0);
+  const effectiveKms = runDetail?.kms.length ? runDetail.kms : null;
+  if (effectiveKms) {
+    const allHRZero    = effectiveKms.every(k => k.hr  === 0);
+    const allPowerZero = effectiveKms.every(k => k.pwr === 0);
+    const allCadZero   = effectiveKms.every(k => k.cad === 0);
+    const kmLines = effectiveKms.map(k => {
+      const hrPart  = (!allHRZero    && k.hr  > 0) ? ` HR${k.hr}`   : '';
+      const cadPart = (!allCadZero   && k.cad > 0) ? ` ${k.cad}spm` : '';
+      const pwrPart = (!allPowerZero && k.pwr > 0) ? ` ${k.pwr}W`   : '';
+      return `  km${k.km}: @${fp(k.p)}${hrPart}${cadPart}${pwrPart}`;
+    }).join('\n');
+    newBlock += `\nKm splits:\n${kmLines}`;
+  } else if (kmSplits && kmSplits.length > 0) {
+    const allHRZero    = kmSplits.every(k => k.avgHR    === 0);
     const allPowerZero = kmSplits.every(k => k.avgPower === 0);
+    const allCadZero   = kmSplits.every(k => k.avgCadence === 0);
     const kmLines = kmSplits.map(k => {
-      const hrPart    = (!allHRZero    && k.avgHR    > 0) ? ` HR${k.avgHR}`    : '';
-      const powerPart = (!allPowerZero && k.avgPower > 0) ? ` ${k.avgPower}W`  : '';
-      return `  km${k.km}: @${fp(k.paceSecs)}${hrPart}${powerPart}`;
+      const hrPart  = (!allHRZero    && k.avgHR      > 0) ? ` HR${k.avgHR}`      : '';
+      const cadPart = (!allCadZero   && k.avgCadence > 0) ? ` ${k.avgCadence}spm` : '';
+      const pwrPart = (!allPowerZero && k.avgPower   > 0) ? ` ${k.avgPower}W`    : '';
+      return `  km${k.km}: @${fp(k.paceSecs)}${hrPart}${cadPart}${pwrPart}`;
     }).join('\n');
     newBlock += `\nKm splits:\n${kmLines}`;
   }
 
-  const prevLines = prevRuns.slice(0, 5).map(r => {
+  const prevLines = prevRuns.slice(0, 10).map(r => {
     const d  = (r.distance / 1000).toFixed(2);
     const p  = fp(r.workPace ?? r.pace);
     const rh = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${Math.round(r.avgHeartRate)}` : '');
     const rp = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
-    return `  ${fd(r.date)}: ${d}km ${fdur(r.duration)} @${p} ${rh}${rp}`.trimEnd();
+    const rc = r.calories > 0 ? ` ${Math.round(r.calories)}kcal` : '';
+    const rt = r.tempC != null ? ` ${r.tempC}°C` : '';
+    const rn = r.note ? ` note:"${r.note.replace(/\s+/g, ' ').trim().slice(0, 120)}"` : '';
+    return `  ${fd(r.date)}: ${d}km ${fdur(r.duration)} @${p} ${rh}${rp}${rc}${rt}${rn}`.trimEnd();
   }).join('\n') || '  (none yet)';
 
-  return `I just finished a new ${lbl} run. Analyze it and compare with my previous ${lbl} runs:\n\nNew run:\n${newBlock}\n\nPrevious ${lbl} runs:\n${prevLines}`;
+  const prevCount = prevRuns.slice(0, 10).filter(r => r.distance > 0).length;
+  const prevLabel = prevCount > 0 ? `the ${prevCount} previous ${lbl} runs listed below` : 'my training history';
+  const intro = isExplicit
+    ? `Please analyze this ${lbl} run in detail and compare it against ${prevLabel}. Highlight what improved, what declined, and give actionable coaching advice:`
+    : `I just completed a ${lbl} run. Please analyze it and compare against ${prevLabel}. Highlight improvements, declines, and coaching advice:`;
+  return `${intro}\n\nThis run:\n${newBlock}\n\nPrevious ${lbl} runs (most recent first):\n${prevLines}`;
 }
 
 // ─── Memory note updater ──────────────────────────────────────────────────────
@@ -571,25 +648,12 @@ export async function updateMemoryNote(
       ...history,
       { role: 'user', content: MEMORY_UPDATE_PROMPT },
     ];
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: CHAT_MODEL,
-        max_tokens: 300,
-        system: buildChatSystemPrompt(snap, currentMemory, localContext, aiWeeks),
-        messages: contextMessages,
-      }),
+    const updated = await callLLM({
+      system:    buildChatSystemPrompt(snap, currentMemory, localContext, aiWeeks),
+      messages:  contextMessages,
+      maxTokens: 300,
     });
-    if (!response.ok) return currentMemory;
-    const data = await response.json();
-    const updated = (data.content[0].text as string).trim();
-    // If Claude says nothing significant, keep the old memory
-    return updated.length > 10 ? updated : currentMemory;
+    return updated.trim().length > 10 ? updated.trim() : currentMemory;
   } catch {
     return currentMemory;
   }
@@ -599,34 +663,17 @@ export async function updateMemoryNote(
 
 export async function generateCoachingReport(snap: HealthSnapshot): Promise<CoachingReport> {
   const apiKey = await getApiKey();
-  if (!apiKey) throw new Error('No API key found. Add your Anthropic API key in Settings first.');
+  if (!apiKey) throw new Error('No API key found. Add one in Settings first.');
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1200,
-      messages: [{ role: 'user', content: buildPrompt(snap) }],
-    }),
+  const content = await callLLM({
+    messages:  [{ role: 'user', content: buildPrompt(snap) }],
+    maxTokens: 1200,
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    if (response.status === 401) throw new Error('Invalid API key. Check Settings.');
-    if (response.status === 429) throw new Error('Rate limit hit. Try again in a moment.');
-    throw new Error(`API error ${response.status}: ${body}`);
-  }
-
-  const data = await response.json();
   return {
-    content: data.content[0].text as string,
+    content,
     generatedAt: new Date().toISOString(),
-    model: MODEL,
+    model: MODEL, // kept for type compat; actual model is in llm config
   };
 }
 
@@ -638,37 +685,143 @@ export async function getChatResponse(
   memoryNote?:   string,
   localContext?: string,
   aiWeeks?:      number,
+  runContext?:   string,
 ): Promise<string> {
   const apiKey = await getApiKey();
-  if (!apiKey) throw new Error('No API key. Add it in Settings first.');
+  if (!apiKey) throw new Error('No API key. Add one in Settings first.');
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: CHAT_MODEL,
-      max_tokens: 1024,
-      system: buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks),
-      messages: history,
-    }),
+  return callLLM({
+    system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext),
+    messages:  history,
+    maxTokens: 1024,
   });
+}
 
-  if (!response.ok) {
-    if (response.status === 401) throw new Error('Invalid API key. Check Settings.');
-    if (response.status === 429) throw new Error('Rate limited — wait a moment and try again.');
-    let body: any = {};
-    try { body = await response.json(); } catch {}
-    const msg: string = body?.error?.message ?? '';
-    if (msg.includes('credit') || msg.includes('quota') || msg.includes('balance')) {
-      throw new Error('Anthropic credits exhausted. Top up at console.anthropic.com to continue chatting.');
-    }
-    throw new Error(`API error ${response.status}: ${msg || JSON.stringify(body)}`);
+// ── Training Recommendation ───────────────────────────────────────────────────
+
+const REC_CACHE_KEY = 'training_rec_v1';
+
+export interface TrainingRecommendation {
+  type: 'Rest' | 'Easy' | 'Z2' | 'Tempo' | 'LongRun' | 'Intervals';
+  duration: string;
+  zone: string;
+  reason: string;
+}
+
+/**
+ * Generate today's training recommendation.
+ *
+ * Acts like a run coach by weighing EVERY signal: recovery (HRV/RHR/sleep),
+ * the CTL/ATL/TSB training-load model built from ALL activity (not just runs),
+ * cross-training done this week, today's activity so far, time of day, and the
+ * current weather at the runner's location.
+ *
+ * @param weatherStr optional one-line weather summary (temp/conditions/wind)
+ */
+export async function getTrainingRecommendation(
+  snap: HealthSnapshot,
+  localContext: string,
+  weatherStr?: string,
+): Promise<TrainingRecommendation> {
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error('No API key');
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const latestRunDate = snap.runs[0]?.date?.slice(0, 10) ?? 'none';
+
+  const load   = snap.trainingLoad ?? [];
+  const latest = load.length > 0 ? load[load.length - 1] : null;
+  const acts   = snap.activities ?? [];
+
+  // ── Cache key: busts when anything that changes the answer changes ──────────
+  // Includes a run-label signature so RE-CLASSIFYING a run (Intervals→Z2) yields
+  // a fresh recommendation, plus today's activity count, TSB bucket, and weather.
+  const labelSig = snap.runs.slice(0, 15).map(r => (r.label ?? '?').charAt(0)).join('');
+  const tsbBucket = latest ? Math.round(latest.tsb / 5) : 0;
+  const todayActs = acts.filter(a => a.date.slice(0, 10) === todayKey);
+  const weatherBucket = weatherStr ? weatherStr.slice(0, 6) : '';
+  const cacheKey = `${todayKey}:${latestRunDate}:${labelSig}:${tsbBucket}:${todayActs.length}:${weatherBucket}`;
+
+  const cached = await SecureStore.getItemAsync(REC_CACHE_KEY);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      if (parsed.key === cacheKey) return parsed.rec as TrainingRecommendation;
+    } catch {}
   }
 
-  const data = await response.json();
-  return data.content[0].text as string;
+  const rec = snap.todayRecovery;
+
+  const weekStart = (() => {
+    const d = new Date(); const diff = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - diff); d.setHours(0, 0, 0, 0); return d;
+  })();
+  const thisWeekRuns = snap.runs.filter(r => new Date(r.date) >= weekStart);
+  const weekKm  = thisWeekRuns.reduce((s, r) => s + r.distance / 1000, 0).toFixed(1);
+  const weekMin = Math.round(thisWeekRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60);
+
+  const recStr = rec
+    ? `Recovery ${rec.recoveryScore}/100 · RMSSD ${rec.weightedRMSSD}ms (base ${rec.baseline7Day}ms) · RHR ${rec.overnightHR}bpm · Sleep ${rec.sleep ? (rec.sleep.totalMinutes / 60).toFixed(1) + 'h' : '—'}`
+    : 'Recovery: no data';
+
+  // ── Training load (CTL/ATL/TSB) ─────────────────────────────────────────────
+  const loadStr = latest
+    ? `Training load — Fitness(CTL) ${latest.ctl} · Fatigue(ATL) ${latest.atl} · Form(TSB) ${latest.tsb >= 0 ? '+' : ''}${latest.tsb} [${tsbStatus(latest.tsb).label}] · weekly CTL ramp ${ctlRamp(load) >= 0 ? '+' : ''}${ctlRamp(load)}`
+    : 'Training load: no data';
+
+  // ── Today's activity + this week's cross-training (non-run) ─────────────────
+  const sevenAgo = new Date(Date.now() - 7 * 86_400_000);
+  const todayActStr = todayActs.length > 0
+    ? todayActs.map(a => `${a.name} ${a.durationMin}min${a.kcal > 0 ? ` ${a.kcal}kcal` : ''}`).join(', ')
+    : 'nothing logged yet';
+  const crossActs = acts.filter(a => a.activityType !== 37 && new Date(a.date) >= sevenAgo);
+  const crossStr = crossActs.length > 0
+    ? crossActs.slice(0, 8).map(a => `${fd(a.date)} ${a.name} ${a.durationMin}min`).join(', ')
+    : 'none';
+
+  const runLines = snap.runs.slice(0, 20).map(r => {
+    const lbl = LSHORT[r.label ?? 'Unknown'] ?? '?';
+    const d   = (r.distance / 1000).toFixed(1);
+    const dur = fdur(r.workDuration ?? r.duration);
+    const p   = fp(r.workPace ?? r.pace);
+    const hr  = r.workHR  ? `HR${r.workHR}`   : '';
+    const pwr = (r.workPower ?? 0) > 0 ? `${r.workPower}W` : '';
+    return `${lbl} ${fd(r.date)} ${d}km ${dur} @${p} ${hr} ${pwr}`.trim();
+  }).join('\n');
+
+  const userMsg = [
+    localContext,
+    weatherStr ? `Weather now: ${weatherStr}` : 'Weather: unavailable',
+    recStr,
+    loadStr,
+    `Today so far: ${todayActStr}`,
+    `This week (Mon–now): ${weekKm}km · ${weekMin}min · ${thisWeekRuns.length} run(s)`,
+    `Cross-training (7d, non-run): ${crossStr}`,
+    `Last 20 runs:\n${runLines}`,
+  ].join('\n');
+
+  const systemPrompt = `You are an expert running coach planning the athlete's session for TODAY. Output ONLY valid JSON — no markdown, no prose:
+{"type":"Rest|Easy|Z2|Tempo|LongRun|Intervals","duration":"e.g. 45 min","zone":"e.g. Z1-2 or —","reason":"2-3 sentences citing the specific data that drove the call"}
+
+Coaching method — weigh ALL of these like a real coach:
+• RECOVERY: low recovery / HRV well below baseline / poor sleep → easier or rest.
+• FORM (TSB): very negative (overreaching) → back off; strongly positive (fresh/tapered) → green-light quality or a key session.
+• FITNESS (CTL) & ramp: rising fast → caution (injury risk); flat/declining → room to build.
+• ALL ACTIVITY: account for today's logged activity and recent cross-training (a leg day or long hike IS load — don't stack hard running on top).
+• PATTERN: avoid two hard days back-to-back; respect days-since-last-run and weekly volume.
+• TIME OF DAY: if it's already late evening, prefer a shorter/easier session or suggest tomorrow.
+• WEATHER: factor temperature/conditions — hot & humid → reduce intensity/duration & note hydration; cold/icy → caution on intervals; nice → fine for quality. Mention weather in the reason ONLY when it changes the plan.
+
+Session menu: LongRun >75min Z1-2; Z2 easy 30-75min; Tempo threshold 20-40min Z3-4; Intervals 20-40min Z4-5; Easy recovery 20-30min Z1; Rest = no run. Weeks start Monday.`;
+
+  const rawText = await callLLM({
+    system:    systemPrompt,
+    messages:  [{ role: 'user', content: userMsg }],
+    maxTokens: 260,
+  });
+  const text = rawText.replace(/```json\n?|```/g, '').trim();
+  const result: TrainingRecommendation = JSON.parse(text);
+
+  await SecureStore.setItemAsync(REC_CACHE_KEY, JSON.stringify({ key: cacheKey, rec: result }));
+  return result;
 }
