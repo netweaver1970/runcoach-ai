@@ -144,13 +144,15 @@ export interface DailyLoad {
   tsb:  number;   // training-stress balance — yesterday's (ctl − atl) (form)
 }
 
-/** Today's strain: real effort done vs the recommended safe range */
+/** Today's strain: real effort done vs the recommended safe range (Bevel-style TRIMP) */
 export interface DayStrain {
-  real:       number;  // 0-100 actual effort accumulated today (all activity)
-  safeLow:    number;  // 0-100 recommended-range floor (from recovery + form)
-  safeHigh:   number;  // 0-100 recommended-range ceiling
-  safeMid:    number;  // 0-100 recommended target
-  activeKcal: number;  // raw active energy burned today (kcal)
+  real:     number;  // 0-100+ Bevel-style strain (log-scaled daily TRIMP; uncapped)
+  safeLow:  number;  // 0-100 recommended-range floor (from recovery + form)
+  safeHigh: number;  // 0-100 recommended-range ceiling
+  safeMid:  number;  // 0-100 recommended target
+  trimp:    number;  // raw daily TRIMP (cardio 24/7 + muscular)
+  cardio:   number;  // cardio TRIMP component
+  muscular: number;  // muscular-load component
 }
 
 // ─── Sleep ───────────────────────────────────────────────────────────────────

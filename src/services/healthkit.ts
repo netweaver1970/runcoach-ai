@@ -43,7 +43,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeCardioTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import {
@@ -1382,14 +1382,37 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   for (const [day, kcal] of kcalByDay) loadByDay.set(day, kcal * STRAIN_KCAL_TO_LOAD);
   const trainingLoad: DailyLoad[] = computeTrainingLoadSeries(loadByDay, daysAgo(90), now);
 
-  // Today's strain: real effort vs the safe range from recovery + form.
-  const activeKcalToday = kcalByDay.get(todayStr) ?? 0;
-  const recentKcal = [...kcalByDay.entries()]
-    .filter(([d]) => d >= toDateStr(daysAgo(28).toISOString()) && d !== todayStr)
-    .map(([, k]) => k);
+  // ── Today's strain — Bevel-style 24/7 TRIMP + muscular load ────────────────
+  // Cardio: integrate Banister TRIMP over ALL of today's heart rate (captures both
+  // workout effort and passive background movement). Muscular: a load proxy from
+  // today's strength/resistance workouts (HR under-represents lifting).
+  const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+  const todayHr = await safeQuery(
+    () => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.heartRate,
+      { filter: { startDate: todayStart, endDate: now }, unit: 'count/min', ascending: true, limit: 20000 },
+    ),
+    [] as any[],
+  );
+  const restHRForTrimp = (restingHRSamples as any[]).length > 0
+    ? Math.round((restingHRSamples as any[]).at(-1).quantity as number)
+    : 50;
+  const cardioTrimp = computeCardioTrimp(
+    (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number })),
+    restHRForTrimp,
+    maxHR,
+  );
+  // Muscular load from today's strength/resistance workouts (HK types 20/50).
+  const STRENGTH_TYPES = new Set([20, 50]);
+  let muscularLoad = 0;
+  for (const w of (loadWorkoutsRaw as any[])) {
+    if (!STRENGTH_TYPES.has(w.workoutActivityType)) continue;
+    if (toDateStr(toISOStr(w.startDate)) !== todayStr) continue;
+    muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
+  }
   const latestTsb = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1].tsb : 0;
-  const strain: DayStrain | null = (activeKcalToday > 0 || recentKcal.length > 0)
-    ? computeDayStrain(activeKcalToday, recentKcal, todayRecovery?.recoveryScore ?? 0, latestTsb)
+  const strain: DayStrain | null = (cardioTrimp > 0 || muscularLoad > 0)
+    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.

@@ -189,52 +189,85 @@ export function ctlRamp(series: DailyLoad[]): number {
   return Math.round((last - weekAgo) * 10) / 10;
 }
 
-// ─── Daily strain ─────────────────────────────────────────────────────────────
+// ─── Daily strain (Bevel-style TRIMP) ─────────────────────────────────────────
 
 const clamp01to100 = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
 
-function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-  return sorted[idx];
+/**
+ * Banister TRIMP integrated over a day's heart-rate samples (24/7).
+ *
+ * TRIMP = Σ Δt(min) · HRr · 0.64 · e^(1.92·HRr)   (men's coefficients)
+ * with HRr = (HR − rest) / (max − rest), the heart-rate reserve fraction.
+ *
+ * The exponential weight means Zone 4+ efforts contribute disproportionately,
+ * while low-HR background movement (walking, housework) adds the passive strain
+ * Bevel describes. Gaps between samples are capped so a sparse reading can't
+ * represent hours of effort.
+ */
+export function computeCardioTrimp(
+  samples: { t: number; hr: number }[],
+  restHR: number,
+  maxHR: number,
+): number {
+  if (samples.length < 2 || maxHR <= restHR) return 0;
+  const sorted = [...samples].sort((a, b) => a.t - b.t);
+  const MAX_GAP_MS = 8 * 60_000; // cap a single interval at 8 min
+  let trimp = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const dt = Math.min(MAX_GAP_MS, sorted[i].t - sorted[i - 1].t);
+    if (dt <= 0) continue;
+    const hr  = sorted[i].hr;
+    const hrr = Math.max(0, Math.min(1, (hr - restHR) / (maxHR - restHR)));
+    if (hrr <= 0) continue;
+    trimp += (dt / 60_000) * hrr * 0.64 * Math.exp(1.92 * hrr);
+  }
+  return Math.round(trimp);
+}
+
+// Log scale: strain% = A·ln(1 + B·TRIMP). Calibrated so a moderate day (~120
+// TRIMP: a tempo-ish run + passive movement) reads ~62%, matching Bevel's example.
+// Logarithmic → diminishing returns (9→10 is far harder than 1→2). Uncapped.
+const STRAIN_LOG_A = 44.7;
+const STRAIN_LOG_B = 0.025;
+
+export function strainFromTrimp(trimp: number): number {
+  if (trimp <= 0) return 0;
+  return Math.max(0, Math.round(STRAIN_LOG_A * Math.log(1 + STRAIN_LOG_B * trimp)));
 }
 
 /**
- * Compute today's strain.
+ * Compute today's strain, Bevel-style.
  *
- * REAL strain (0-100): today's total active energy mapped through a personalised
- * saturating curve. The reference "hard day" is the 90th percentile of the
- * runner's recent daily active energy, so a hard day reads ~85.
+ * REAL strain: log-scaled total daily TRIMP (cardio 24/7 + muscular load).
+ *   Uncapped — extreme efforts can exceed 100.
+ * SAFE range: the strain it's advisable to take today, from recovery + form (TSB).
+ *   High recovery / fresh → higher ceiling; low recovery / deep fatigue → lower.
  *
- * SAFE range (0-100): the strain it's advisable to take today, from recovery and
- * form (TSB). High recovery / fresh form → a higher ceiling; low recovery /
- * deep fatigue → a lower one. The runner aims to land inside [safeLow, safeHigh].
- *
- * @param activeKcalToday  active energy burned so far today (kcal)
- * @param recentDailyKcal  recent (e.g. 28-day) daily active-energy totals
- * @param recovery         today's recovery score 0-100 (0 = unknown)
- * @param tsb              today's training-stress balance (form)
+ * @param cardioTrimp  Banister TRIMP from the day's heart rate
+ * @param muscularLoad TRIMP-equivalent from strength/resistance work
+ * @param recovery     recovery score 0-100 (0 = unknown)
+ * @param tsb          training-stress balance (form)
  */
 export function computeDayStrain(
-  activeKcalToday: number,
-  recentDailyKcal: number[],
+  cardioTrimp: number,
+  muscularLoad: number,
   recovery: number,
   tsb: number,
 ): DayStrain {
-  // Personalised reference: a hard recent day. Clamp to a sane band.
-  const ref = Math.max(350, Math.min(1500, percentile(recentDailyKcal, 90) || 600));
-  const real = clamp01to100(100 * (1 - Math.exp(-1.9 * Math.max(0, activeKcalToday) / ref)));
+  const trimp = Math.max(0, cardioTrimp) + Math.max(0, muscularLoad);
+  const real  = strainFromTrimp(trimp);
 
-  // Recommended strain from recovery + form. No recovery data → neutral midpoint.
-  const tsbAdj = Math.max(-25, Math.min(25, tsb)) * 0.25;
-  const safeMid = recovery > 0
-    ? clamp01to100(35 + recovery * 0.5 + tsbAdj)
-    : 55;
+  const tsbAdj  = Math.max(-25, Math.min(25, tsb)) * 0.25;
+  const safeMid = recovery > 0 ? clamp01to100(35 + recovery * 0.5 + tsbAdj) : 55;
   const safeLow  = clamp01to100(safeMid - 12);
   const safeHigh = clamp01to100(safeMid + 12);
 
-  return { real, safeLow, safeHigh, safeMid, activeKcal: Math.round(activeKcalToday) };
+  return {
+    real, safeLow, safeHigh, safeMid,
+    trimp: Math.round(trimp),
+    cardio: Math.round(cardioTrimp),
+    muscular: Math.round(muscularLoad),
+  };
 }
 
 export interface StrainStatus { label: string; color: string }
