@@ -254,6 +254,18 @@ export function strainFromTrimp(trimp: number): number {
   return Math.max(0, Math.round(STRAIN_LOG_A * Math.log(1 + STRAIN_LOG_B * trimp)));
 }
 
+// Daily-activity floor (NEAT + unlogged exercise). Our HR-window TRIMP only counts
+// LOGGED workouts at full weight, so days of walking / unlogged activity (Apple
+// "exercise minutes" + steps with no HKWorkout) wrongly read 0 — while Bevel scores
+// them via Step Count + Exercise Duration. This estimates a TRIMP-equivalent from
+// daily steps + exercise minutes; applied as a FLOOR (max), so it lifts rest/unlogged
+// days but never inflates a logged-workout day whose cardio TRIMP already dominates.
+const STEP_TRIMP_K = 0.0009; // per step
+const EXMIN_TRIMP  = 0.45;   // per Apple exercise minute
+export function activityFloorTrimp(steps: number, exerciseMin: number): number {
+  return Math.max(0, steps) * STEP_TRIMP_K + Math.max(0, exerciseMin) * EXMIN_TRIMP;
+}
+
 /**
  * Compute today's strain, Bevel-style.
  *
@@ -272,8 +284,13 @@ export function computeDayStrain(
   muscularLoad: number,
   recovery: number,
   tsb: number,
+  activityFloor = 0,
 ): DayStrain {
-  const trimp = Math.max(0, cardioTrimp) + Math.max(0, muscularLoad);
+  // Cardio (logged-workout HR) vs daily-activity floor — take the larger, then add
+  // any muscular load. The floor lifts rest/unlogged-activity days without inflating
+  // days whose logged-workout cardio already dominates.
+  const base  = Math.max(Math.max(0, cardioTrimp), Math.max(0, activityFloor));
+  const trimp = base + Math.max(0, muscularLoad);
   const real  = strainFromTrimp(trimp);
 
   const tsbAdj  = Math.max(-25, Math.min(25, tsb)) * 0.25;

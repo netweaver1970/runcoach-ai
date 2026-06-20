@@ -46,7 +46,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import {
@@ -1436,10 +1436,17 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
   }
   const latestTsb = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1].tsb : 0;
+  // Daily-activity floor from today's steps + Apple exercise minutes (partial, intra-day),
+  // so a day of walking/unlogged activity isn't scored 0 like Bevel never does.
+  const [todayStepsMap, todayExMap] = await Promise.all([
+    dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', todayStart, now),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', todayStart, now),
+  ]);
+  const todayActivityFloor = activityFloorTrimp(todayStepsMap.get(todayStr) ?? 0, todayExMap.get(todayStr) ?? 0);
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb)
+    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
@@ -2402,13 +2409,20 @@ export async function fetchStrainHistory(
     }
   }
 
-  // One entry per day that has HR data — including rest days at 0 — so the chart
-  // shows a continuous daily series (and the clear run-day vs rest-day pattern)
-  // rather than only the active days spread across the month.
+  // Daily-activity floor inputs (steps + Apple exercise minutes) so days of walking /
+  // unlogged activity aren't scored 0 — Bevel counts them via Step Count + Exercise Duration.
+  const [stepsByDay, exMinByDay] = await Promise.all([
+    dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', since, end),
+  ]);
+
+  // One entry per day that has HR data — including rest days — so the chart shows a
+  // continuous daily series (and the clear run-day vs rest-day pattern).
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
     const cardio = computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const trimp  = cardio + (muscularByDay.get(day) ?? 0);
+    const floor  = activityFloorTrimp(stepsByDay.get(day) ?? 0, exMinByDay.get(day) ?? 0);
+    const trimp  = Math.max(cardio, floor) + (muscularByDay.get(day) ?? 0);
     out.push({ date: day, value: strainFromTrimp(trimp) }); // 0-100 (Bevel %)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
