@@ -7,7 +7,8 @@ import { useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import {
-  allBevelDays, seedBevelDataIfEmpty, buildExportPayload, formatCanonical, BevelDay,
+  allBevelDays, loadBevelAverages, seedBevelDataIfEmpty, buildExportPayload,
+  formatCanonical, BevelDay, BevelComponentAvg,
 } from '../src/services/bevelData';
 import { buildBevelComparison, KpiComparison, ComponentComparison } from '../src/services/bevelCompare';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
@@ -23,15 +24,16 @@ export default function BevelAnalysisScreen() {
   const [loading, setLoading] = useState(true);
   const [days, setDays]   = useState<BevelDay[]>([]);
   const [ours, setOurs]   = useState<Record<string, Record<string, number>>>({});
+  const [averages, setAverages] = useState<Record<string, BevelComponentAvg>>({});
   const [kpis, setKpis]   = useState<KpiComparison[]>([]);
 
   const load = async () => {
     setLoading(true);
     try {
       await seedBevelDataIfEmpty();
-      const [d, o] = await Promise.all([allBevelDays(), fetchOurDailyComponents(3)]);
-      setDays(d); setOurs(o);
-      setKpis(buildBevelComparison(d, o));
+      const [d, o, a] = await Promise.all([allBevelDays(), fetchOurDailyComponents(1), loadBevelAverages()]);
+      setDays(d); setOurs(o); setAverages(a);
+      setKpis(buildBevelComparison(a, d, o));
     } catch (e: any) {
       Alert.alert('Could not load comparison', e?.message ?? String(e));
     } finally {
@@ -42,7 +44,7 @@ export default function BevelAnalysisScreen() {
 
   const exportData = async () => {
     try {
-      const json = buildExportPayload(days, ours);
+      const json = buildExportPayload(days, ours, averages);
       const uri = `${FileSystem.documentDirectory}runcoach-bevel-export.json`;
       await FileSystem.writeAsStringAsync(uri, json);
       await Share.share({ url: uri, title: 'RunCoach AI · Bevel export' });
@@ -78,14 +80,15 @@ export default function BevelAnalysisScreen() {
         ) : (
           <>
             <Text style={s.summary}>
-              {days.length} Bevel day{days.length === 1 ? '' : 's'} imported · {totalOff} component{totalOff === 1 ? '' : 's'} off vs ours
+              Our 30-day avg vs Bevel's exact 30-day avg · {totalOff} component{totalOff === 1 ? '' : 's'} off
             </Text>
 
             {kpis.map(k => <KpiBlock key={k.kpi} k={k} s={s} c={c} />)}
 
             <Text style={s.foot}>
-              Strain "today" is intra-day and excluded only where partial. Correlation (r) needs ≥3 days; import
-              more (scroll Bevel back, screenshot) to strengthen it. Use Export for full offline analysis.
+              Each row compares our 30-day average against Bevel's exact printed 30-day average (the reliable
+              number). "r" appears once ≥3 days are imported for day-by-day agreement. Import detail screenshots
+              to refresh Bevel's averages; use Export for full offline analysis.
             </Text>
           </>
         )}
@@ -110,24 +113,29 @@ function KpiBlock({ k, s, c }: { k: KpiComparison; s: any; c: Palette }) {
 }
 
 function Row({ comp, s, c, isScore }: { comp: ComponentComparison; s: any; c: Palette; isScore?: boolean }) {
-  const has = comp.n > 0 && comp.bevelMean !== null && comp.oursMean !== null;
+  const has = comp.bevelAvg !== null && comp.ourAvg !== null;
   const flagColor = comp.flag === 'off' ? OFF : comp.flag === 'ok' ? OK : c.textFaint;
   const biasStr = !has ? '—'
-    : comp.biasPct !== null
-      ? `${comp.bias! > 0 ? '+' : ''}${comp.biasPct}%`
-      : `${comp.bias! > 0 ? '+' : ''}${comp.bias}m`;
+    : comp.avgBiasPct !== null
+      ? `${comp.avgBias! > 0 ? '+' : ''}${comp.avgBiasPct}%`
+      : `${comp.avgBias! > 0 ? '+' : ''}${comp.avgBias}m`;
+  const meta = comp.r !== null ? `r ${comp.r}`
+    : comp.ourDays > 0 ? `${comp.ourDays}d ours`
+    : 'no data';
   return (
     <View style={[s.row, isScore && s.rowScore]}>
       <View style={s.rowTop}>
         <View style={[s.rowDot, { backgroundColor: flagColor }]} />
         <Text style={[s.rowLabel, isScore && { fontWeight: '700', color: c.text }]}>{comp.label}</Text>
         <Text style={s.rowVals}>
-          {has ? `${formatCanonical(comp.unit, comp.oursMean!)}  vs  ${formatCanonical(comp.unit, comp.bevelMean!)}` : 'no paired days'}
+          {comp.ourAvg !== null ? formatCanonical(comp.unit, comp.ourAvg) : '—'}
+          {'  vs  '}
+          {comp.bevelAvg !== null ? formatCanonical(comp.unit, comp.bevelAvg) : '—'}
         </Text>
       </View>
       <View style={s.rowBot}>
         <Text style={[s.rowBias, { color: flagColor }]}>{biasStr}</Text>
-        <Text style={s.rowMeta}>{comp.r !== null ? `r ${comp.r}` : `n=${comp.n}`}</Text>
+        <Text style={s.rowMeta}>{meta}</Text>
       </View>
       {comp.recommendation && <Text style={s.rec}>⚠️ {comp.recommendation}</Text>}
     </View>

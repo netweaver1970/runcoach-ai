@@ -7,7 +7,7 @@ import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { callLLMWithImage } from '../src/services/llm';
 import {
-  buildBevelExtractionPrompt, parseBevelExtraction, saveBevelKpi,
+  buildBevelExtractionPrompt, parseBevelExtraction, saveBevelKpi, saveBevelAverages,
   allBevelDays, deleteBevelDay, formatCanonical, BevelDay, BevelKpiKey, BevelKpiRecord,
 } from '../src/services/bevelData';
 import { kpiScale } from '../src/services/bevelScales';
@@ -20,11 +20,12 @@ const KPI_COLOR: Record<BevelKpiKey, string> = {
 };
 
 interface ReviewItem {
-  id:     string;
-  kpi:    BevelKpiKey;
-  date:   string;                 // editable YYYY-MM-DD
-  record: BevelKpiRecord;
-  saved:  boolean;
+  id:      string;
+  kpi:     BevelKpiKey;
+  date:    string;                 // editable YYYY-MM-DD
+  record:  BevelKpiRecord;
+  avgKeys: string[];               // components whose 30-day avg was captured + saved
+  saved:   boolean;
 }
 interface FailItem { id: string; error: string; }
 
@@ -72,7 +73,9 @@ export default function BevelImportScreen() {
         if (!asset.base64) throw new Error('Could not read image data.');
         const reply = await callLLMWithImage({ prompt, imageBase64: asset.base64, mediaType: 'image/png', maxTokens: 1024 });
         const ext = parseBevelExtraction(reply);
-        good.push({ id, kpi: ext.kpi as BevelKpiKey, date: ext.date ?? today, record: ext.record, saved: false });
+        const avgKeys = Object.keys(ext.averages);
+        if (avgKeys.length) await saveBevelAverages(ext.averages); // exact 30-day avgs — save immediately
+        good.push({ id, kpi: ext.kpi as BevelKpiKey, date: ext.date ?? today, record: ext.record, avgKeys, saved: false });
       } catch (e: any) {
         bad.push({ id, error: e?.message ?? String(e) });
       }
@@ -168,6 +171,9 @@ export default function BevelImportScreen() {
                   <Text style={s.valNum}>{formatCanonical(comp.unit, it.record.components[comp.key])}</Text>
                 </View>
               ))}
+              {it.avgKeys.length > 0 && (
+                <Text style={s.avgNote}>✓ 30-day avg saved for {it.avgKeys.length} component{it.avgKeys.length === 1 ? '' : 's'}</Text>
+              )}
             </View>
           );
         })}
@@ -234,6 +240,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   valRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5, borderTopWidth: 1, borderTopColor: c.border },
   valLabel: { color: c.textSub, fontSize: 14 },
   valNum: { color: c.text, fontSize: 14, fontWeight: '600' },
+  avgNote: { color: '#27ae60', fontSize: 12, marginTop: 8 },
 
   saveAllBtn: { marginTop: 14, borderWidth: 1, borderColor: c.accent, borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
   saveAllText: { color: c.accent, fontSize: 14, fontWeight: '700' },

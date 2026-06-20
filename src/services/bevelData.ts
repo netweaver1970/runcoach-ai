@@ -19,6 +19,16 @@ export interface BevelKpiRecord {
   score?:     number;                  // headline value (0–100 %)
   components: Record<string, number>;  // canonical value per component key
   partial?:   boolean;                 // intra-day capture (Strain "today") — exclude from correlation
+  estimated?: boolean;                 // values read off a chart, not printed exactly
+}
+
+/** Exact 30-day average + normal band per component (printed on every detail screen). */
+export interface BevelComponentAvg {
+  avg:    number;
+  bandLo?: number;
+  bandHi?: number;
+  asOf:   string;   // ISO of capture
+  windowDays?: number;
 }
 
 export interface BevelDay {
@@ -29,7 +39,8 @@ export interface BevelDay {
   sleep?:     BevelKpiRecord;
 }
 
-const FILE = `${FileSystem.documentDirectory}runcoach-bevel-data.json`;
+const FILE     = `${FileSystem.documentDirectory}runcoach-bevel-data.json`;
+const AVG_FILE = `${FileSystem.documentDirectory}runcoach-bevel-averages.json`;
 
 // ─── Storage ────────────────────────────────────────────────────────────────────
 
@@ -75,18 +86,63 @@ export async function allBevelDays(): Promise<BevelDay[]> {
   return Object.values(all).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// ─── Component averages (exact 30-day numbers printed on detail screens) ──────────
+
+export async function loadBevelAverages(): Promise<Record<string, BevelComponentAvg>> {
+  try {
+    const info = await FileSystem.getInfoAsync(AVG_FILE);
+    if (!info.exists) return {};
+    return JSON.parse(await FileSystem.readAsStringAsync(AVG_FILE)) as Record<string, BevelComponentAvg>;
+  } catch {
+    return {};
+  }
+}
+
+export async function saveBevelAverages(next: Record<string, BevelComponentAvg>): Promise<void> {
+  const all = await loadBevelAverages();
+  Object.assign(all, next);
+  try { await FileSystem.writeAsStringAsync(AVG_FILE, JSON.stringify(all)); } catch {}
+}
+
+// Exact 30-day averages + bands read off the 2026-06-20 detail screens (canonical units).
+const SEED_AVERAGES: Record<string, BevelComponentAvg> = {
+  // Strain
+  strainScore:      { avg: 26,   bandLo: 3,    bandHi: 45,   asOf: '2026-06-20', windowDays: 30 },
+  exerciseDuration: { avg: 43,   bandLo: 0,    bandHi: 92,   asOf: '2026-06-20', windowDays: 30 },
+  daytimeHR:        { avg: 67,   bandLo: 64,   bandHi: 71,   asOf: '2026-06-20', windowDays: 30 },
+  totalEnergy:      { avg: 2532, bandLo: 2036, bandHi: 2972, asOf: '2026-06-20', windowDays: 30 },
+  stepCount:        { avg: 8590, bandLo: 2440, bandHi: 13812,asOf: '2026-06-20', windowDays: 30 },
+  // Recovery
+  recoveryScore:    { avg: 55,   bandLo: 35,   bandHi: 77,   asOf: '2026-06-20', windowDays: 30 },
+  restingHrv:       { avg: 34.6, bandLo: 27.4, bandHi: 42.6, asOf: '2026-06-20', windowDays: 30 },
+  restingHr:        { avg: 60.2, bandLo: 56.5, bandHi: 63.4, asOf: '2026-06-20', windowDays: 30 },
+  respiratoryRate:  { avg: 14.2, bandLo: 13.5, bandHi: 14.8, asOf: '2026-06-20', windowDays: 30 },
+  oxygenSaturation: { avg: 95.0, bandLo: 94.4, bandHi: 95.7, asOf: '2026-06-20', windowDays: 30 },
+  // Sleep
+  sleepScore:       { avg: 71,   bandLo: 52,   bandHi: 91,   asOf: '2026-06-20', windowDays: 30 },
+  timeAsleep:       { avg: 377,  bandLo: 279,  bandHi: 466,  asOf: '2026-06-20', windowDays: 30 }, // 6h17m
+  remSleep:         { avg: 98,   bandLo: 66,   bandHi: 127,  asOf: '2026-06-20', windowDays: 30 }, // 1h38m
+  deepSleep:        { avg: 38,   bandLo: 26,   bandHi: 51,   asOf: '2026-06-20', windowDays: 30 },
+  heartRateDip:     { avg: 10,   bandLo: 6,    bandHi: 14,   asOf: '2026-06-20', windowDays: 30 },
+  sleepTime:        { avg: 1416, bandLo: 1309, bandHi: 95,   asOf: '2026-06-20', windowDays: 30 }, // 23:36 (band wraps midnight)
+  wakeTime:         { avg: 381,  bandLo: 272,  bandHi: 494,  asOf: '2026-06-20', windowDays: 30 }, // 06:21
+};
+
 /**
- * Seed the dataset with the 2026-06-20 values read from the calibration
- * screenshots, so the analysis has something to show before the user imports.
- * No-op if any Bevel data already exists.
+ * Seed the dataset with the 2026-06-20 values read from the calibration screenshots:
+ * exact "today" values (one day) + exact 30-day averages/bands (whole month), so the
+ * analysis has real component-level content before the user imports anything.
+ * No-op if data already exists.
  */
 export async function seedBevelDataIfEmpty(): Promise<boolean> {
   const existing = await loadBevelData();
-  if (Object.keys(existing).length > 0) return false;
+  const existingAvg = await loadBevelAverages();
+  if (Object.keys(existing).length > 0 || Object.keys(existingAvg).length > 0) return false;
   const date = '2026-06-20';
   await saveBevelKpi(date, 'strain',   { score: 42, components: { strainScore: 42, exerciseDuration: 70, daytimeHR: 68, totalEnergy: 1436, stepCount: 11592 } });
   await saveBevelKpi(date, 'recovery', { score: 64, components: { recoveryScore: 64, restingHrv: 38.2, restingHr: 59.4, respiratoryRate: 13.7, oxygenSaturation: 94.7 } });
   await saveBevelKpi(date, 'sleep',    { score: 59, components: { sleepScore: 59, timeAsleep: 302, remSleep: 69, deepSleep: 25, heartRateDip: 11, sleepBank: -46, sleepTime: 40, wakeTime: 351 } });
+  await saveBevelAverages(SEED_AVERAGES);
   return true;
 }
 
@@ -94,13 +150,15 @@ export async function seedBevelDataIfEmpty(): Promise<boolean> {
 export function buildExportPayload(
   days: BevelDay[],
   ours: Record<string, Record<string, number>>,
+  bevelAverages: Record<string, BevelComponentAvg>,
 ): string {
   return JSON.stringify({
     generatedAt: new Date().toISOString(),
     app: 'RunCoachAI',
     note: 'Canonical units: durations & clock times in minutes; energy kcal; % as number.',
-    bevel: days,
-    ours,
+    bevelAverages,   // exact Bevel 30-day averages + bands per component
+    bevelDays: days, // exact daily Bevel values (today + any imported days)
+    ours,            // our per-day component values
   }, null, 2);
 }
 
@@ -199,13 +257,18 @@ export function buildBevelExtractionPrompt(): string {
     '',
     kpiBlocks,
     '',
+    'A single-component DETAIL screen also prints an exact 30-day AVERAGE (the "Avg." pill on the',
+    'chart) and a NORMAL RANGE band (top-right). Capture those too when visible — they are the',
+    'reliable 30-day numbers. Do NOT try to read individual chart dots.',
+    '',
     'Return ONLY a JSON object, no prose, no code fences:',
     '{',
     '  "date": "YYYY-MM-DD",            // the calendar date shown beside the headline value; if a range is shown use the END date; null if none',
     '  "kpi": "strain|recovery|sleep",  // which KPI this screen belongs to; "unknown" if unclear',
-    '  "components": { "<key>": "<raw on-screen string>", ... }  // include every component value you can read',
+    '  "components": { "<key>": "<raw on-screen string>", ... },  // today/headline value per component you can read',
+    '  "averages":   { "<key>": { "avg": "<raw>", "low": "<raw>", "high": "<raw>" }, ... }  // 30-day avg + normal band, when printed',
     '}',
-    'Use the exact keys listed above. Omit components you cannot read. Do not invent values.',
+    'Use the exact keys listed above. Omit anything you cannot read. Do not invent values.',
   ].join('\n');
 }
 
@@ -213,6 +276,8 @@ export interface BevelExtraction {
   date:   string | null;
   kpi:    BevelKpiKey | 'unknown';
   record: BevelKpiRecord;
+  /** Exact 30-day averages + bands the model read off detail screens. */
+  averages: Record<string, BevelComponentAvg>;
   /** Per-component raw strings the model returned, for the review UI. */
   raw:    Record<string, string>;
 }
@@ -248,12 +313,26 @@ export function parseBevelExtraction(text: string): BevelExtraction {
     if (comp.isScore) score = canon;
   }
 
-  if (Object.keys(components).length === 0) {
-    throw new Error('No readable component values in the screenshot.');
+  // Optional exact 30-day averages + bands (detail screens)
+  const averages: Record<string, BevelComponentAvg> = {};
+  const rawAvgs = (obj.averages && typeof obj.averages === 'object') ? obj.averages : {};
+  for (const [key, val] of Object.entries(rawAvgs)) {
+    const comp = byKey.get(key);
+    if (!comp || val == null || typeof val !== 'object') continue;
+    const v = val as any;
+    const avg = toCanonical(comp.unit, String(v.avg ?? ''));
+    if (avg == null) continue;
+    const lo = v.low  != null ? toCanonical(comp.unit, String(v.low))  : undefined;
+    const hi = v.high != null ? toCanonical(comp.unit, String(v.high)) : undefined;
+    averages[key] = { avg, bandLo: lo ?? undefined, bandHi: hi ?? undefined, asOf: new Date().toISOString(), windowDays: 30 };
+  }
+
+  if (Object.keys(components).length === 0 && Object.keys(averages).length === 0) {
+    throw new Error('No readable values in the screenshot.');
   }
 
   const date = typeof obj.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.date) ? obj.date : null;
-  return { date, kpi, record: { score, components }, raw };
+  return { date, kpi, record: { score, components }, averages, raw };
 }
 
 /** Pull the first balanced {…} block out of a possibly-fenced model response. */
