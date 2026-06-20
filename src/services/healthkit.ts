@@ -2385,12 +2385,14 @@ export async function fetchStrainHistory(
     }
   }
 
+  // One entry per day that has HR data — including rest days at 0 — so the chart
+  // shows a continuous daily series (and the clear run-day vs rest-day pattern)
+  // rather than only the active days spread across the month.
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
     const cardio = computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
     const trimp  = cardio + (muscularByDay.get(day) ?? 0);
-    const strainPct = strainFromTrimp(trimp); // 0-100 (Bevel %)
-    if (strainPct > 0) out.push({ date: day, value: strainPct });
+    out.push({ date: day, value: strainFromTrimp(trimp) }); // 0-100 (Bevel %)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }

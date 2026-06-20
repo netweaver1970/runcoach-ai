@@ -233,6 +233,7 @@ type XMode = 'daily' | 'weekly' | 'monthly';
 function Chart({
   data, color, innerW, xMode = 'weekly', showAllValues = false, prevData,
   cumulative = false, isTime = false, valueLabelStep = 1, fmtFn, zeroBase = true,
+  hideValueLabels = false,
 }: {
   data:            DataPoint[];
   color:           string;
@@ -245,6 +246,7 @@ function Chart({
   valueLabelStep?: number;      // show every Nth value label (default 1 = every label)
   fmtFn?:          (v: number) => string; // override value formatter (e.g. 1-decimal for VO2max)
   zeroBase?:       boolean;     // when false: y-axis zooms in around data range (default true)
+  hideValueLabels?: boolean;    // suppress all per-bar value labels
 }) {
   const ch = useThemedStyles(makeCh);
   const { c: theme } = useTheme();
@@ -307,7 +309,9 @@ function Chart({
 
   // Decide which indices get value labels.
   const valueLabelIdxs = new Set<number>();
-  if (showAllValues || xMode === 'monthly') {
+  if (hideValueLabels) {
+    // none — cleaner chart (e.g. strain)
+  } else if (showAllValues || xMode === 'monthly') {
     for (let i = 0; i < data.length; i++) {
       if (i % valueLabelStep === 0) valueLabelIdxs.add(i);
     }
@@ -550,7 +554,7 @@ export default function HistoryScreen() {
   const router   = useRouter();
   const s = useThemedStyles(makeS);
 
-  const [period, setPeriod]             = useState<Period>('3M');
+  const [period, setPeriod]             = useState<Period>(type === 'strain' ? '1M' : '3M');
   const [pageOffset, setPageOffset]     = useState(0);
   const [rawData, setRawData]           = useState<DataPoint[]>([]);
   const [prevRawData, setPrevRawData]   = useState<DataPoint[]>([]);
@@ -925,6 +929,7 @@ export default function HistoryScreen() {
                 undefined
               }
               zeroBase={isSummable}
+              hideValueLabels={histType === 'strain'}
             />
 
             <Text style={s.chartUnit}>
