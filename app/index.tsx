@@ -28,7 +28,7 @@ import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, g
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus } from '../src/services/trainingLoad';
 import { loadRunMeta } from '../src/services/runMeta';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain } from '../src/types';
 // WorkoutLabel is used by the RunFilter type and RUN_FILTERS array
 
@@ -766,27 +766,42 @@ const SAFE_COLOR = '#16a085';
 
 function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }) {
   const styles = useThemedStyles(makeStyles);
-  const inner = size - 18;
-  const real  = strain ? strain.real : 0;
-  const st    = strain ? strainStatus(strain) : { label: '', color: '#888' };
+  const real = strain ? strain.real : 0;
+  const st   = strain ? strainStatus(strain) : { label: '', color: '#888' };
+
+  // Marker on the ring circumference at a given % (clockwise from 12 o'clock)
+  const half = size / 2;
+  const rad  = half - 4; // centreline of the 8px stroke
+  const marker = (pct: number, key: string) => {
+    const th = (Math.min(100, Math.max(0, pct)) / 100) * 2 * Math.PI;
+    const x = half + rad * Math.sin(th);
+    const y = half - rad * Math.cos(th);
+    return (
+      <View key={key} style={{
+        position: 'absolute', left: x - 3.5, top: y - 3.5,
+        width: 7, height: 7, borderRadius: 3.5, backgroundColor: SAFE_COLOR,
+        borderWidth: 1, borderColor: '#fff',
+      }} />
+    );
+  };
+
   return (
     <View style={{ alignItems: 'center', gap: 5 }}>
       <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
-        {/* Outer: real effort */}
+        {/* Real effort — single ring, same size as recovery/sleep */}
         <ArcRing size={size} strokeWidth={8} progress={real / 100} color={st.color} />
-        {/* Inner: safe target (recommended) */}
-        <View style={{ position: 'absolute' }}>
-          <ArcRing size={inner} strokeWidth={5} progress={(strain?.safeMid ?? 0) / 100} color={SAFE_COLOR} trackColor="#eee" />
-        </View>
+        {/* Suggested-range markers (floor + ceiling) */}
+        {strain && marker(strain.safeLow, 'lo')}
+        {strain && marker(strain.safeHigh, 'hi')}
         <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <Text style={{ fontSize: size * 0.26, fontWeight: '800', color: st.color, lineHeight: size * 0.29 }}>
+          <Text style={{ fontSize: size * 0.24, fontWeight: '800', color: st.color, lineHeight: size * 0.28 }}>
             {strain ? `${real}%` : '--'}
           </Text>
           <Text style={{ fontSize: size * 0.11, color: '#aaa', letterSpacing: 0.3 }}>STRAIN</Text>
         </View>
       </View>
       <Text style={[styles.strainCaption, { color: SAFE_COLOR }]}>
-        {strain ? `safe ${strain.safeLow}–${strain.safeHigh}%` : ''}
+        {strain ? `range ${strain.safeLow}–${strain.safeHigh}%` : ''}
       </Text>
     </View>
   );
@@ -882,6 +897,7 @@ const LABEL_STYLE: Record<string, { color: string; bg: string; emoji: string }> 
 function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] }) {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const date = new Date(run.date).toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: '2-digit',
   });
@@ -932,8 +948,8 @@ function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] })
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.runDistance}>{formatDistance(run.distance)}</Text>
           {labelStyle && (
-            <View style={[styles.workoutBadge, { backgroundColor: labelStyle.bg }]}>
-              <Text style={[styles.workoutBadgeText, { color: labelStyle.color }]}>
+            <View style={[styles.workoutBadge, { backgroundColor: c.mode === 'dark' ? labelStyle.color + '2e' : labelStyle.bg }]}>
+              <Text style={[styles.workoutBadgeText, { color: c.mode === 'dark' ? labelStyle.color : labelStyle.color }]}>
                 {labelStyle.emoji} {run.label}
                 {run.confidence === 'low' ? ' ?' : ''}
               </Text>

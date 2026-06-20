@@ -1411,7 +1411,9 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
   }
   const latestTsb = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1].tsb : 0;
-  const strain: DayStrain | null = (cardioTrimp > 0 || muscularLoad > 0)
+  // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
+  // safe range rather than "--". Only null when there's no HR data at all today.
+  const strain: DayStrain | null = (todayHr as any[]).length > 0
     ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb)
     : null;
 

@@ -589,6 +589,7 @@ type Sib = { i: string; s: string; du: number; di: number; c: number; l: string 
 export default function WorkoutDetailScreen() {
   const router = useRouter();
   const st = useThemedStyles(makeSt);
+  const { c: pal } = useTheme();
   const params = useLocalSearchParams<{
     id:        string;
     startDate: string;
@@ -854,7 +855,7 @@ export default function WorkoutDetailScreen() {
         </View>
         <View style={{ gap: 4, alignItems: 'flex-end' }}>
           <TouchableOpacity
-            style={[st.labelBadge, { backgroundColor: currentLabel ? ls.bg : '#f5f5f5' }]}
+            style={[st.labelBadge, { backgroundColor: currentLabel ? (pal.mode === 'dark' ? ls.color + '2e' : ls.bg) : pal.surfaceAlt }]}
             onPress={handleOverride}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >

@@ -231,11 +231,11 @@ export function computeCardioTrimp(
   return Math.round(trimp);
 }
 
-// Log scale: strain% = A·ln(1 + B·TRIMP). With the sedentary floor above, a light
-// "active" day reads low single digits (matching Bevel's ~5%) and a hard run day
-// reads ~60%. Logarithmic → diminishing returns; uncapped. These two constants
-// are the calibration knobs if it drifts from Bevel.
-const STRAIN_LOG_A = 65;
+// Log scale: strain% = A·ln(1 + B·TRIMP). Calibrated against Bevel's own history
+// (≈25% 30-day average, Low<34 / Normal 34-67 / High>67): a typical training day
+// lands in the 20-35% band, a hard session 50-70%, a no-workout day low single
+// digits. Logarithmic → diminishing returns; uncapped. A/B are the tuning knobs.
+const STRAIN_LOG_A = 35;
 const STRAIN_LOG_B = 0.02;
 
 export function strainFromTrimp(trimp: number): number {
