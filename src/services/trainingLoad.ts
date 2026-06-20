@@ -204,11 +204,12 @@ const clamp01to100 = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
  * Bevel describes. Gaps between samples are capped so a sparse reading can't
  * represent hours of effort.
  */
-// Only heart rate meaningfully above rest counts toward strain. Below this the
-// effort is sedentary/very-light (sitting, gentle pottering) and Bevel treats it
-// as negligible — without this floor, a whole day of just being awake accumulates
-// a large bogus "passive" baseline.
-const MIN_HRR = 0.15;
+// Only heart rate clearly in the "effort" range counts toward strain. Below this
+// (HR ≈ < 50% of reserve) is daily living — walking around, chores — which, summed
+// over 16 waking hours with exponential weighting, otherwise dwarfs the actual
+// workout. Bevel scores a no-workout day at ~5%, so daily activity must contribute
+// little; this floor delivers that while a real session still dominates.
+const MIN_HRR = 0.45;
 
 export function computeCardioTrimp(
   samples: { t: number; hr: number }[],

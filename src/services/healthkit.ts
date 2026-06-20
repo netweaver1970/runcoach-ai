@@ -2345,11 +2345,15 @@ export async function fetchStrainHistory(
   }));
   if (hr.length === 0) return [];
 
-  // restHR = median resting HR; maxHR = observed peak (clamped to a sane band)
+  // restHR = median resting HR; maxHR = observed peak (looped, NOT Math.max(...spread)
+  // which throws "Maximum call stack size" on the 50k–200k samples of a multi-month
+  // window — that was the error on every view except 1M). Floor of 185 prevents a
+  // low-activity window from clamping maxHR down and inflating the HR-reserve.
   const restVals = (restingRaw as any[]).map((s: any) => s.quantity as number).filter(v => v > 0).sort((a, b) => a - b);
   const restHR = restVals.length > 0 ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 50;
-  const peak = Math.max(...hr.map(s => s.hr));
-  const maxHR = Math.max(160, Math.min(210, Math.round(peak)));
+  let peak = 0;
+  for (const sm of hr) if (sm.hr > peak) peak = sm.hr;
+  const maxHR = Math.max(185, Math.min(205, Math.round(peak)));
 
   // Bucket HR by day → cardio TRIMP
   const byDay = new Map<string, { t: number; hr: number }[]>();

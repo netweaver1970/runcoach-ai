@@ -31,32 +31,32 @@ export interface Palette {
 
 const LIGHT: Palette = {
   mode: 'light',
-  bg:         '#F2F2F7',
+  bg:         '#E7E8EE',  // a touch darker so white cards stand out
   surface:    '#FFFFFF',
-  surfaceAlt: '#F1F1F4',
-  text:       '#1C1C1E',
-  textSub:    '#6B7280',
-  textFaint:  '#A0A4AB',
-  border:     '#E4E4E9',
-  gridline:   '#ECECEC',
+  surfaceAlt: '#EDEDF2',
+  text:       '#16161A',
+  textSub:    '#5B616B',
+  textFaint:  '#9A9EA6',
+  border:     '#D5D6DD',
+  gridline:   '#E2E2E8',
   accent:     '#FF6B35',
   onAccent:   '#FFFFFF',
-  shadowOpacity: 0.08,
+  shadowOpacity: 0.12,
 };
 
 const DARK: Palette = {
   mode: 'dark',
-  bg:         '#0F0F11',
-  surface:    '#1A1A1F',
-  surfaceAlt: '#131318',
+  bg:         '#08080A',  // deeper background
+  surface:    '#1E1F26',  // lighter cards → more separation
+  surfaceAlt: '#15161B',
   text:       '#F5F5F7',
-  textSub:    '#9CA3AF',
+  textSub:    '#A1A6B0',
   textFaint:  '#6B7280',
-  border:     '#2A2A30',
-  gridline:   '#2A2A30',
+  border:     '#34353F',  // stronger hairlines
+  gridline:   '#2E2F38',
   accent:     '#FF6B35',
   onAccent:   '#FFFFFF',
-  shadowOpacity: 0.4,
+  shadowOpacity: 0.5,
 };
 
 const STORE_KEY = 'theme_mode_v1';
