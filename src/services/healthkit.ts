@@ -564,6 +564,10 @@ function absoluteRHRScore(hr: number): number {
   return Math.min(95, Math.max(5, 190 - hr * 2.1));
 }
 
+// Calibration vs Bevel: our raw recovery scores averaged ~68 over a 30-day window
+// while Bevel read 55 for the same days, so shift the distribution down to match.
+const RECOVERY_CAL_OFFSET = -13;
+
 function computeRecoveryScore(
   todayRMSSD: number,
   todayOvernightHR: number,
@@ -611,7 +615,7 @@ function computeRecoveryScore(
   // ── Final score ────────────────────────────────────────────────────────────
   const useRHR = todayOvernightHR > 0;
   const rawScore = useRHR ? 0.65 * blendedHRV + 0.35 * blendedRHR : blendedHRV;
-  const score    = Math.round(rawScore);
+  const score    = Math.round(Math.min(100, Math.max(0, rawScore + RECOVERY_CAL_OFFSET)));
 
   // ── Trend (vs 7-day rolling average) ──────────────────────────────────────
   const last7 = recent.slice(-7);
@@ -625,17 +629,18 @@ function computeRecoveryScore(
   return { score, baseline: Math.round(mean * 10) / 10, trend, overnightHRBaseline };
 }
 
+// Bevel-aligned bands: Optimal >67 / Normal 34-67 / Poor <34.
 function scoreToLabel(score: number): DailyRecovery['label'] {
-  if (score >= 75) return 'optimal';
-  if (score >= 55) return 'good';
-  if (score >= 35) return 'moderate';
+  if (score >= 67) return 'optimal';
+  if (score >= 50) return 'good';
+  if (score >= 34) return 'moderate';
   return 'poor';
 }
 
 function scoreToColor(score: number): string {
-  if (score >= 75) return '#27ae60';   // green
-  if (score >= 55) return '#2ecc71';   // lighter green
-  if (score >= 35) return '#f39c12';   // amber
+  if (score >= 67) return '#27ae60';   // green
+  if (score >= 50) return '#2ecc71';   // lighter green
+  if (score >= 34) return '#f39c12';   // amber
   return '#e74c3c';                    // red
 }
 
