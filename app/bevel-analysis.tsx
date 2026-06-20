@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import {
   allBevelDays, loadBevelAverages, seedBevelDataIfEmpty, buildExportPayload,
@@ -53,6 +54,15 @@ export default function BevelAnalysisScreen() {
     }
   };
 
+  const copyData = async () => {
+    try {
+      await Clipboard.setStringAsync(buildExportPayload(days, ours, averages));
+      Alert.alert('Copied', 'Export JSON is on the clipboard — paste it into the chat.');
+    } catch (e: any) {
+      Alert.alert('Copy failed', e?.message ?? String(e));
+    }
+  };
+
   const totalOff = kpis.reduce((a, k) => a + k.offCount, 0);
 
   return (
@@ -71,7 +81,10 @@ export default function BevelAnalysisScreen() {
             <Text style={s.actionText}>＋ Import screenshots</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[s.action, s.actionAlt]} onPress={exportData}>
-            <Text style={[s.actionText, { color: c.accent }]}>↑ Export data</Text>
+            <Text style={[s.actionText, { color: c.accent }]}>↑ Export</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.action, s.actionAlt]} onPress={copyData}>
+            <Text style={[s.actionText, { color: c.accent }]}>⧉ Copy</Text>
           </TouchableOpacity>
         </View>
 
