@@ -3179,8 +3179,7 @@ export async function fetchSleepBiometrics(
         }))
         .map(s => s.bpm);
 
-      const daytimeHR   = daytimeVals.length > 0
-        ? daytimeVals.reduce((a, b) => a + b, 0) / daytimeVals.length : 0;
+      const daytimeHR   = restfulDaytimeHR(daytimeVals); // restful daytime level (≈ Bevel)
       const overnightHR = nightVals.length > 0
         ? nightVals.reduce((a, b) => a + b, 0) / nightVals.length : 0;
       const hrDipPct    = daytimeHR > 0 && overnightHR > 0
