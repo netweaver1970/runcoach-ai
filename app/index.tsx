@@ -323,14 +323,14 @@ export default function HomeScreen() {
           />
         )}
 
-        {/* Sleep calibration shortcut */}
+        {/* Bevel calibration shortcut */}
         <TouchableOpacity
           style={styles.calibrateBtn}
-          onPress={() => router.push('/bevel-calibration' as any)}
+          onPress={() => router.push('/bevel-analysis' as any)}
           activeOpacity={0.75}
         >
-          <Text style={styles.calibrateBtnText}>⚖️  Sleep Score Calibration</Text>
-          <Text style={styles.calibrateBtnSub}>Match Bevel's weights via regression</Text>
+          <Text style={styles.calibrateBtnText}>⚖️  Overall Bevel Calibration</Text>
+          <Text style={styles.calibrateBtnSub}>Compare every KPI &amp; component vs Bevel</Text>
         </TouchableOpacity>
 
         {/* Coach buttons */}

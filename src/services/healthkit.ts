@@ -15,6 +15,9 @@ const HKQuantityTypeIdentifier = {
   bodyMass:                    'HKQuantityTypeIdentifierBodyMass',
   runningPower:                'HKQuantityTypeIdentifierRunningPower',
   activeEnergyBurned:          'HKQuantityTypeIdentifierActiveEnergyBurned',
+  basalEnergyBurned:           'HKQuantityTypeIdentifierBasalEnergyBurned',
+  stepCount:                   'HKQuantityTypeIdentifierStepCount',
+  appleExerciseTime:           'HKQuantityTypeIdentifierAppleExerciseTime',
 } as const;
 
 const HKCategoryTypeIdentifier = {
@@ -186,6 +189,8 @@ export async function requestPermissions(): Promise<boolean> {
       'HKQuantityTypeIdentifierRunningCadence',
       'HKQuantityTypeIdentifierStepCount',
       'HKQuantityTypeIdentifierActiveEnergyBurned',
+      'HKQuantityTypeIdentifierBasalEnergyBurned',
+      'HKQuantityTypeIdentifierAppleExerciseTime',
       // Category types
       'HKCategoryTypeIdentifierSleepAnalysis',
       // Heartbeat series — raw R-R intervals for HRV quality filtering
@@ -2935,6 +2940,98 @@ export async function fetchSleepHistory(months: number, toDate?: Date): Promise<
   );
 
   return sessions.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// ─── Our daily components (for Bevel comparison) ──────────────────────────────
+
+/** Generic daily cumulative-sum statistics → Map<YYYY-MM-DD, value>. */
+async function dailyCumulativeSum(
+  identifier: string, unit: string, fromDate: Date, toDate: Date,
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  const anchor = new Date(fromDate); anchor.setHours(0, 0, 0, 0);
+  const anchorStr = anchor.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const buckets = await safeQuery(
+    () => (HealthKit as any).queryStatisticsCollectionForQuantity(
+      identifier, ['cumulativeSum'], anchorStr, { day: 1 },
+      { filter: { startDate: fromDate, endDate: toDate }, unit },
+    ),
+    [] as any[],
+  );
+  (buckets as any[]).forEach((b, i) => {
+    const v = b?.sumQuantity?.quantity ?? 0;
+    if (v > 0) {
+      const d = new Date(anchor); d.setDate(d.getDate() + i);
+      map.set(toDateStr(d.toISOString()), v);
+    }
+  });
+  return map;
+}
+
+const clockMinutes = (iso: string): number => {
+  const d = new Date(iso);
+  return d.getHours() * 60 + d.getMinutes();
+};
+
+/**
+ * Our own metric per day, keyed to the same component keys as the Bevel catalogue
+ * (bevelScales). Values are in the SAME canonical units the Bevel store uses
+ * (durations & clock times in minutes, energy kcal, etc.) so they line up 1:1.
+ * Components we don't compute (e.g. sleepBank) are simply absent.
+ */
+export async function fetchOurDailyComponents(
+  months: number,
+  toDate?: Date,
+): Promise<Record<string, Record<string, number>>> {
+  const end  = toDate ?? new Date();
+  const from = new Date(end.getTime() - months * 30 * 86_400_000);
+
+  const [bio, sessions, strain, recovery, steps, active, basal, exercise] = await Promise.all([
+    fetchSleepBiometrics(months, end),
+    fetchSleepHistory(months, end),
+    fetchStrainHistory(months, end),
+    fetchRecoveryHistory(months, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', from, end),
+    fetchDailyActiveEnergy(from, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.basalEnergyBurned, 'kcal', from, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', from, end),
+  ]);
+
+  const out: Record<string, Record<string, number>> = {};
+  const day = (d: string) => (out[d] ??= {});
+
+  const bioByDate = new Map(bio.map(b => [b.date, b]));
+  for (const b of bio) {
+    const r = day(b.date);
+    if (b.hrv > 0)             r.restingHrv = Math.round(b.hrv * 10) / 10;
+    if (b.overnightHR > 0)     r.restingHr = Math.round(b.overnightHR * 10) / 10;
+    if (b.respiratoryRate > 0) r.respiratoryRate = Math.round(b.respiratoryRate * 10) / 10;
+    if (b.spO2 > 0)            r.oxygenSaturation = Math.round((b.spO2 <= 1 ? b.spO2 * 100 : b.spO2) * 10) / 10;
+    if (b.daytimeHR > 0)       r.daytimeHR = Math.round(b.daytimeHR);
+    if (b.hrDipPct !== 0)      r.heartRateDip = Math.round(b.hrDipPct * 10) / 10;
+  }
+  for (const s of sessions) {
+    const r = day(s.date);
+    const asleep = s.deepMinutes + s.remMinutes + s.coreMinutes;
+    if (asleep > 0)         r.timeAsleep = Math.round(asleep);
+    if (s.remMinutes > 0)   r.remSleep = Math.round(s.remMinutes);
+    if (s.deepMinutes > 0)  r.deepSleep = Math.round(s.deepMinutes);
+    if (s.bedtime)          r.sleepTime = clockMinutes(s.bedtime);
+    if (s.wakeTime)         r.wakeTime = clockMinutes(s.wakeTime);
+    const b = bioByDate.get(s.date);
+    const score = computeSleepScore(s, b?.overnightHR ?? 0, b?.daytimeHR ?? 0);
+    if (score > 0)          r.sleepScore = score;
+  }
+  for (const s of strain)   day(s.date).strainScore = s.value;
+  for (const r of recovery) day(r.date).recoveryScore = r.value;
+  for (const [d, v] of steps)    day(d).stepCount = Math.round(v);
+  for (const [d, v] of exercise) day(d).exerciseDuration = Math.round(v);
+  for (const [d, a] of active) {
+    const total = a + (basal.get(d) ?? 0);
+    if (total > 0) day(d).totalEnergy = Math.round(total);
+  }
+
+  return out;
 }
 
 // ─── Sleep biometrics (for recovery calibration) ──────────────────────────────

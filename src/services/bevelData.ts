@@ -75,6 +75,35 @@ export async function allBevelDays(): Promise<BevelDay[]> {
   return Object.values(all).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/**
+ * Seed the dataset with the 2026-06-20 values read from the calibration
+ * screenshots, so the analysis has something to show before the user imports.
+ * No-op if any Bevel data already exists.
+ */
+export async function seedBevelDataIfEmpty(): Promise<boolean> {
+  const existing = await loadBevelData();
+  if (Object.keys(existing).length > 0) return false;
+  const date = '2026-06-20';
+  await saveBevelKpi(date, 'strain',   { score: 42, components: { strainScore: 42, exerciseDuration: 70, daytimeHR: 68, totalEnergy: 1436, stepCount: 11592 } });
+  await saveBevelKpi(date, 'recovery', { score: 64, components: { recoveryScore: 64, restingHrv: 38.2, restingHr: 59.4, respiratoryRate: 13.7, oxygenSaturation: 94.7 } });
+  await saveBevelKpi(date, 'sleep',    { score: 59, components: { sleepScore: 59, timeAsleep: 302, remSleep: 69, deepSleep: 25, heartRateDip: 11, sleepBank: -46, sleepTime: 40, wakeTime: 351 } });
+  return true;
+}
+
+/** A single JSON blob of both datasets, for export/offline analysis. */
+export function buildExportPayload(
+  days: BevelDay[],
+  ours: Record<string, Record<string, number>>,
+): string {
+  return JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    app: 'RunCoachAI',
+    note: 'Canonical units: durations & clock times in minutes; energy kcal; % as number.',
+    bevel: days,
+    ours,
+  }, null, 2);
+}
+
 // ─── Value parsing (raw on-screen string → canonical number) ──────────────────────
 
 /** European number format: '.' = thousands separator, ',' = decimal. */

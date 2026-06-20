@@ -570,15 +570,21 @@ export default function SettingsScreen() {
           </Text>
           <TouchableOpacity
             style={styles.btn}
+            onPress={() => router.push('/bevel-analysis' as any)}
+          >
+            <Text style={styles.btnText}>Calibration &amp; Analysis</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btn, { marginTop: 8 }]}
             onPress={() => router.push('/bevel-import' as any)}
           >
             <Text style={styles.btnText}>Import Bevel Screenshots</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.btn, { marginTop: 8 }]}
+            style={[styles.btn, { marginTop: 8, backgroundColor: c.surfaceAlt }]}
             onPress={() => router.push('/bevel-calibration' as any)}
           >
-            <Text style={styles.btnText}>Open Calibration Tool</Text>
+            <Text style={[styles.btnText, { color: c.textSub }]}>Recovery Regression (legacy)</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.btn, { marginTop: 8, backgroundColor: '#1a1a2e' }]}
