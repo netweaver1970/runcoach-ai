@@ -523,11 +523,24 @@ const mdBase = {
 
 const makeMdAssistant = (c: Palette) => StyleSheet.create({
   ...mdBase,
-  body:      { ...mdBase.body, color: c.text },
-  strong:    { ...mdBase.strong, color: c.text },
-  heading1:  { ...mdBase.heading1, color: c.text },
-  heading2:  { ...mdBase.heading2, color: c.text },
-  heading3:  { ...mdBase.heading3, color: c.text },
+  body:        { ...mdBase.body, color: c.text },
+  strong:      { ...mdBase.strong, color: c.text },
+  em:          { ...mdBase.em, color: c.text },
+  heading1:    { ...mdBase.heading1, color: c.text },
+  heading2:    { ...mdBase.heading2, color: c.text },
+  heading3:    { ...mdBase.heading3, color: c.text },
+  bullet_list: { ...mdBase.bullet_list, color: c.text },
+  ordered_list:{ ...mdBase.ordered_list, color: c.text },
+  list_item:   { ...mdBase.list_item, color: c.text },
+  code_inline: { ...mdBase.code_inline, color: c.text, backgroundColor: c.surfaceAlt },
+  fence:       { ...mdBase.fence, color: c.text, backgroundColor: c.surfaceAlt },
+  table:       { ...mdBase.table, borderColor: c.border },
+  thead:       { backgroundColor: c.surfaceAlt },
+  th:          { ...mdBase.th, color: c.text, borderColor: c.border },
+  td:          { ...mdBase.td, color: c.text, borderColor: c.border },
+  tr:          { ...mdBase.tr, borderColor: c.border },
+  hr:          { ...mdBase.hr, borderColor: c.border },
+  blockquote:  { ...mdBase.blockquote, borderColor: c.border },
 });
 
 const mdStylesUser = StyleSheet.create({

@@ -928,7 +928,7 @@ export default function HistoryScreen() {
                 histType === 'sleep-hrdip'            ? fmtOneDecimal :
                 undefined
               }
-              zeroBase={isSummable}
+              zeroBase={isSummable || histType === 'strain'}
               hideValueLabels={histType === 'strain'}
             />
 
