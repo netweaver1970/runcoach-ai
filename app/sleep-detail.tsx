@@ -5,7 +5,8 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery, SleepSession } from '../src/types';
-import { fetchSleepHistory, fetchOvernightHRHistory } from '../src/services/healthkit';
+import { fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory } from '../src/services/healthkit';
+import { computeSleepBankSeries, computeSleepNeeded } from '../src/services/trainingLoad';
 import { useThemedStyles, Palette } from '../src/theme';
 import {
   normaliseKPIs, applyWeights,
@@ -19,6 +20,13 @@ const FALLBACK_SLEEP_GOAL = 375; // 6h15m — used until personal goal loads
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+/** minutes → "Xh Ym" (handles negatives) */
+function fmtHm(min: number): string {
+  const a = Math.abs(Math.round(min));
+  const h = Math.floor(a / 60), m = a % 60;
+  return (min < 0 ? '-' : '') + (h > 0 ? `${h}h ${m}m` : `${m}m`);
+}
 
 /** Stats over an array of numbers */
 function stats(arr: number[]): { mean: number; sd: number } {
@@ -204,6 +212,7 @@ export default function SleepDetailScreen() {
 
   const [history, setHistory]       = useState<SleepSession[]>([]);
   const [hrDipHistory, setHrDipH]   = useState<number[]>([]);
+  const [strainByDate, setStrainByDate] = useState<Map<string, number>>(new Map());
   const [sleepGoalMin, setSleepGoalMin] = useState(FALLBACK_SLEEP_GOAL);
   const [weights, setWeights]       = useState<SleepWeights>(DEFAULT_SLEEP_WEIGHTS);
   const [loadingH, setLoadingH]     = useState(true);
@@ -214,9 +223,11 @@ export default function SleepDetailScreen() {
       fetchOvernightHRHistory(3),
       loadPersonalSleepGoal(),
       loadCustomSleepWeights(),
-    ]).then(([sessions, dipData, savedGoal, customWeights]) => {
+      fetchStrainHistory(3),
+    ]).then(([sessions, dipData, savedGoal, customWeights, strainHist]) => {
       setHistory(sessions);
       setHrDipH(dipData.map(d => d.value));
+      setStrainByDate(new Map(strainHist.map(x => [x.date, x.value])));
       // Personal sleep goal: use stored value, else compute from 90-day median
       const goal = savedGoal ?? computePersonalSleepGoal(sessions);
       setSleepGoalMin(goal > 0 ? goal : FALLBACK_SLEEP_GOAL);
@@ -263,15 +274,26 @@ export default function SleepDetailScreen() {
   });
   const scoreHistory    = history.map(s => computeSleepScore(getSubKPIs(s, 0), sleepGoalMin, weights));
 
-  // Sleep Bank: rolling 7-day cumulative shortfall vs personal sleep goal (negative = debt)
-  const bankHistory: number[] = [];
-  for (let i = 0; i < history.length; i++) {
-    const window = history.slice(Math.max(0, i - 6), i + 1);
-    const total  = window.reduce((sum, s) => sum + s.totalMinutes, 0);
-    const goal   = window.length * sleepGoalMin;
-    bankHistory.push(total - goal);
-  }
+  // Sleep Bank (Bevel-style): rolling 7-night recency-weighted balance of
+  // (Time Asleep − dynamic Sleep Needed). Sleep Needed = goal + strain tax + debt + efficiency.
+  const bankNights = history.map(sn => {
+    const inBed = sn.totalMinutes + sn.awakeMinutes;
+    return {
+      date:       sn.date,
+      asleepMin:  sn.totalMinutes,
+      dayStrain:  strainByDate.get(sn.date) ?? 0,
+      efficiency: inBed > 0 ? sn.totalMinutes / inBed : 1,
+    };
+  });
+  const bankSeries   = computeSleepBankSeries(bankNights, sleepGoalMin);
+  const bankHistory  = bankSeries.map(b => b.bank);
   const sleepBankMin = bankHistory.length > 0 ? bankHistory[bankHistory.length - 1] : 0;
+
+  // Tonight's projected Sleep Needed: today's strain + current debt drive it up.
+  const todayStrain = strainByDate.get(sleep.date)
+    ?? (bankNights.length > 0 ? bankNights[bankNights.length - 1].dayStrain : 0);
+  const recentEff   = bankNights.length > 0 ? bankNights[bankNights.length - 1].efficiency : 1;
+  const sleepNeeded = computeSleepNeeded(sleepGoalMin, todayStrain, sleepBankMin, recentEff);
 
   const scoreColor = sleepScore >= 75 ? '#27ae60' : sleepScore >= 55 ? '#2ecc71' : sleepScore >= 35 ? '#f39c12' : '#e74c3c';
 
@@ -309,6 +331,25 @@ export default function SleepDetailScreen() {
               {' → '}
               {new Date(sleep.wakeTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
             </Text>
+          </View>
+        </View>
+
+        {/* Sleep Needed tonight + Sleep Bank (dynamic, Bevel-style) */}
+        <View style={s.needCard}>
+          <View style={s.needCol}>
+            <Text style={s.needLabel}>SLEEP NEEDED TONIGHT</Text>
+            <Text style={s.needVal}>{fmtHm(sleepNeeded)}</Text>
+            <Text style={s.needSub}>
+              goal {fmtHm(sleepGoalMin)}{sleepNeeded > sleepGoalMin ? ` + ${sleepNeeded - sleepGoalMin}m` : ''}
+            </Text>
+          </View>
+          <View style={s.needDivider} />
+          <View style={s.needCol}>
+            <Text style={s.needLabel}>SLEEP BANK</Text>
+            <Text style={[s.needVal, { color: sleepBankMin < 0 ? '#e67e22' : '#27ae60' }]}>
+              {sleepBankMin >= 0 ? '+' : ''}{fmtHm(sleepBankMin)}
+            </Text>
+            <Text style={s.needSub}>{sleepBankMin < 0 ? 'debt' : 'surplus'} · 7-night</Text>
           </View>
         </View>
 
@@ -543,6 +584,16 @@ const makeS = (c: Palette) => StyleSheet.create({
     borderLeftWidth: 5,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: c.shadowOpacity, shadowRadius: 5, elevation: 3,
   },
+  needCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.surface, borderRadius: 14, padding: 14, marginBottom: 16,
+    borderWidth: 1, borderColor: c.border,
+  },
+  needCol: { flex: 1, alignItems: 'center' },
+  needDivider: { width: 1, alignSelf: 'stretch', backgroundColor: c.border, marginHorizontal: 6 },
+  needLabel: { fontSize: 10, fontWeight: '700', color: c.textFaint, letterSpacing: 0.5 },
+  needVal: { fontSize: 22, fontWeight: '800', color: c.text, marginTop: 3 },
+  needSub: { fontSize: 11, color: c.textSub, marginTop: 2 },
   scoreCircle: {
     width: 80, height: 80, borderRadius: 40, borderWidth: 4,
     alignItems: 'center', justifyContent: 'center',

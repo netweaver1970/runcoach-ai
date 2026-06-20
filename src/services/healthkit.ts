@@ -46,7 +46,11 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+
+// Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
+// sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
+const SLEEP_BANK_BASE_GOAL = 375;
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import {
@@ -3061,6 +3065,24 @@ export async function fetchOurDailyComponents(
   for (const [d, a] of active) {
     const total = a + (basal.get(d) ?? 0);
     if (total > 0) day(d).totalEnergy = Math.round(total);
+  }
+
+  // Sleep Bank: rolling 7-night recency-weighted balance of (asleep − dynamic need).
+  const strainByDate = new Map(strain.map(s => [s.date, s.value]));
+  const nights = [...sessions]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(s => {
+      const asleep = s.deepMinutes + s.remMinutes + s.coreMinutes;
+      const inBed  = asleep + s.awakeMinutes;
+      return {
+        date:       s.date,
+        asleepMin:  asleep,
+        dayStrain:  strainByDate.get(s.date) ?? 0,
+        efficiency: inBed > 0 ? asleep / inBed : 1,
+      };
+    });
+  for (const b of computeSleepBankSeries(nights, SLEEP_BANK_BASE_GOAL)) {
+    day(b.date).sleepBank = b.bank;
   }
 
   return out;

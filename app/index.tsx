@@ -26,7 +26,7 @@ import {
 import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, getTrainingRecommendation, TrainingRecommendation } from '../src/services/claude';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
-import { tsbStatus, strainStatus } from '../src/services/trainingLoad';
+import { tsbStatus, strainStatus, cardioLoadStatus } from '../src/services/trainingLoad';
 import { loadRunMeta } from '../src/services/runMeta';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain } from '../src/types';
@@ -522,6 +522,7 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
   const latest = series[series.length - 1];
   if (!latest) return null;
   const status = tsbStatus(latest.tsb);
+  const cl = cardioLoadStatus(latest.atl, latest.ctl, latest.tsb); // Bevel-style zone
 
   // Mini 30-day CTL sparkline
   const spark = series.slice(-30);
@@ -537,9 +538,9 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
   return (
     <TouchableOpacity style={tl.card} onPress={onPress} activeOpacity={0.8}>
       <View style={tl.header}>
-        <Text style={tl.title}>📈 Training Load</Text>
-        <Text style={[tl.statusPill, { color: status.color, borderColor: status.color }]}>
-          {status.label}
+        <Text style={tl.title}>📈 Cardio Load</Text>
+        <Text style={[tl.statusPill, { color: cl.color, borderColor: cl.color }]}>
+          {cl.label}
         </Text>
       </View>
       <View style={tl.metricsRow}>
@@ -578,7 +579,11 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
           })}
         </View>
       </View>
-      <Text style={tl.hint}>{status.hint}  ›</Text>
+      <Text style={tl.band}>
+        Cardio Load <Text style={{ color: cl.color, fontWeight: '800' }}>{Math.round(cl.load)}</Text>
+        {cl.ctl > 0 ? ` · optimal ${Math.round(cl.bandLo)}–${Math.round(cl.bandHi)}` : ''}
+      </Text>
+      <Text style={tl.hint}>{cl.hint}  ›</Text>
     </TouchableOpacity>
   );
 }
@@ -600,6 +605,7 @@ const makeTlStyles = (c: Palette) => StyleSheet.create({
   metricVal: { fontSize: 22, fontWeight: '800' },
   metricLbl: { fontSize: 11, color: c.textSub, marginTop: 1, fontWeight: '600' },
   metricSub: { fontSize: 9, color: c.textFaint, fontWeight: '600' },
+  band: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   hint: { fontSize: 12, color: c.textSub, lineHeight: 16 },
 });
 

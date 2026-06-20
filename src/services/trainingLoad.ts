@@ -181,12 +181,106 @@ export function tsbStatus(tsb: number): TsbStatus {
   return                 { label: 'Overreaching', color: '#e74c3c', hint: 'High fatigue — prioritise easy/rest to absorb the work.' };
 }
 
+// ─── Cardio Load (Bevel-style ATL + training-status zones) ────────────────────
+
+export interface CardioLoad {
+  load:   number;   // today's ATL (acute load) — the "Cardio Load" value, intra-day
+  ctl:    number;   // chronic load (fitness baseline)
+  ratio:  number;   // ATL / CTL
+  bandLo: number;   // optimal-load floor  ≈ 0.8·CTL
+  bandHi: number;   // optimal-load ceiling ≈ 1.3·CTL
+  label:  string;   // Detraining | Maintaining | Productive | Peaking | Overreaching
+  color:  string;
+  hint:   string;
+}
+
+/**
+ * Bevel-style training status from the ATL/CTL ratio (optimal band ≈ 0.8–1.3):
+ *   <0.8 → Detraining (losing stimulus) — unless freshly tapered with a built base (TSB↑) → Peaking
+ *   0.8–1.0 → Maintaining   ·   1.0–1.3 → Productive (sweet spot)   ·   >1.3 → Overreaching
+ */
+export function cardioLoadStatus(atl: number, ctl: number, tsb = 0): CardioLoad {
+  const ratio  = ctl > 0 ? atl / ctl : 0;
+  const bandLo = Math.round(0.8 * ctl * 10) / 10;
+  const bandHi = Math.round(1.3 * ctl * 10) / 10;
+  let label: string, color: string, hint: string;
+  if (ctl <= 0) {
+    label = 'Building'; color = '#7f8c8d'; hint = 'Not enough history yet — keep logging activity to set your baseline.';
+  } else if (ratio > 1.3) {
+    label = 'Overreaching'; color = '#e74c3c'; hint = 'Acute load well above your fitness baseline — back off / recover to absorb it.';
+  } else if (ratio >= 1.0) {
+    label = 'Productive';   color = '#27ae60'; hint = 'Load slightly above baseline — the sweet spot for building fitness.';
+  } else if (ratio >= 0.8) {
+    label = 'Maintaining';  color = '#2ecc71'; hint = 'Load roughly matches your baseline — holding fitness steady.';
+  } else if (tsb >= 8) {
+    label = 'Peaking';      color = '#3498db'; hint = 'Fresh on a built base — primed for a race or key session.';
+  } else {
+    label = 'Detraining';   color = '#f39c12'; hint = 'Load below your baseline — fitness will fade without more stimulus.';
+  }
+  return {
+    load: Math.round(atl * 10) / 10,
+    ctl:  Math.round(ctl * 10) / 10,
+    ratio: Math.round(ratio * 100) / 100,
+    bandLo, bandHi, label, color, hint,
+  };
+}
+
 /** Short ramp-rate read: weekly CTL change (fitness trend). */
 export function ctlRamp(series: DailyLoad[]): number {
   if (series.length < 8) return 0;
   const last = series[series.length - 1].ctl;
   const weekAgo = series[series.length - 8].ctl;
   return Math.round((last - weekAgo) * 10) / 10;
+}
+
+// ─── Sleep Bank & dynamic Sleep Needed (Bevel-style) ──────────────────────────
+
+// Sleep Needed = base goal + strain tax + debt repayment + efficiency padding.
+const STRAIN_SLEEP_MIN  = 0.7;  // minutes of extra sleep need per strain point…
+const STRAIN_SLEEP_CAP  = 45;   // …capped
+const DEBT_RECOVERY_DAYS = 4;   // pay down accumulated debt over ~4 nights
+const EFF_PAD_CAP        = 15;   // max minutes added for low sleep efficiency
+
+/** Tonight's dynamic sleep requirement (minutes asleep). priorBank<0 ⇒ debt to repay. */
+export function computeSleepNeeded(
+  baseGoalMin: number, dayStrain: number, priorBank: number, efficiency: number,
+): number {
+  const strainAdj = Math.min(STRAIN_SLEEP_CAP, Math.max(0, dayStrain) * STRAIN_SLEEP_MIN);
+  const debtAdj   = Math.max(0, -priorBank) / DEBT_RECOVERY_DAYS;
+  const eff       = Math.max(0.7, Math.min(1, efficiency || 1));
+  const effAdj    = Math.min(EFF_PAD_CAP, baseGoalMin * (1 / eff - 1));
+  return Math.round(baseGoalMin + strainAdj + debtAdj + effAdj);
+}
+
+export interface SleepBankNight { date: string; asleepMin: number; dayStrain: number; efficiency: number }
+export interface SleepBankResult { date: string; needed: number; balance: number; bank: number }
+
+/**
+ * Rolling 7-night Sleep Bank (Bevel-style): a recency-weighted balance of
+ * (Time Asleep − Sleep Needed). Negative = debt (feeds back into Sleep Needed).
+ * Processed chronologically; tonight's Needed uses the PRIOR night's bank, so
+ * there's no circular dependency.
+ */
+export function computeSleepBankSeries(
+  nights: SleepBankNight[], baseGoalMin: number,
+): SleepBankResult[] {
+  const out: SleepBankResult[] = [];
+  const balances: number[] = [];
+  let bank = 0;
+  for (const n of nights) {
+    const needed  = computeSleepNeeded(baseGoalMin, n.dayStrain, bank, n.efficiency);
+    const balance = n.asleepMin - needed;
+    balances.push(balance);
+    const last7 = balances.slice(-7);
+    let wsum = 0, wtot = 0;
+    for (let k = 0; k < last7.length; k++) {
+      const w = Math.pow(0.8, last7.length - 1 - k); // most recent weighted highest
+      wsum += w * last7[k]; wtot += w;
+    }
+    bank = Math.round(wsum / wtot);
+    out.push({ date: n.date, needed, balance: Math.round(balance), bank });
+  }
+  return out;
 }
 
 // ─── Daily strain (Bevel-style TRIMP) ─────────────────────────────────────────
