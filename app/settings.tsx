@@ -566,10 +566,16 @@ export default function SettingsScreen() {
         {/* Bevel Calibration */}
         <Section title="Bevel Calibration">
           <Text style={styles.hint}>
-            Manually enter daily Bevel scores and biometrics to reverse-engineer scoring weights and improve RunCoach AI's algorithms.
+            Import Bevel screenshots (the AI reads the values) or manually enter daily scores, to reverse-engineer scoring weights and improve RunCoach AI's algorithms.
           </Text>
           <TouchableOpacity
             style={styles.btn}
+            onPress={() => router.push('/bevel-import' as any)}
+          >
+            <Text style={styles.btnText}>Import Bevel Screenshots</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btn, { marginTop: 8 }]}
             onPress={() => router.push('/bevel-calibration' as any)}
           >
             <Text style={styles.btnText}>Open Calibration Tool</Text>

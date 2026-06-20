@@ -260,6 +260,77 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
   return handleOpenAIResponse(res);
 }
 
+// ─── Vision call (single image + prompt) ──────────────────────────────────────
+
+export interface LLMVisionOptions {
+  prompt:      string;       // instruction / extraction prompt
+  imageBase64: string;       // raw base64 (no data: prefix)
+  mediaType?:  string;       // default image/png
+  maxTokens:   number;
+}
+
+/**
+ * Send one image plus a text prompt to the configured provider's vision model.
+ * Works with Anthropic (image content blocks) and OpenAI-compatible (image_url data URI).
+ * Returns the assistant's text response.
+ */
+export async function callLLMWithImage(options: LLMVisionOptions): Promise<string> {
+  const cfg = await loadLLMConfig();
+  if (!cfg.apiKey) throw new Error('No API key configured — add one in Settings.');
+
+  const { prompt, imageBase64, maxTokens } = options;
+  const mediaType = options.mediaType ?? 'image/png';
+
+  if (cfg.provider === 'anthropic') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': cfg.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        max_tokens: maxTokens,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+            { type: 'text', text: prompt },
+          ],
+        }],
+      }),
+    });
+    return handleAnthropicResponse(res);
+  }
+
+  // OpenAI / Custom (OpenAI-compatible vision)
+  const baseUrl = cfg.provider === 'custom'
+    ? (cfg.baseUrl ?? '').replace(/\/+$/, '')
+    : 'https://api.openai.com/v1';
+  if (!baseUrl) throw new Error('Base URL is required for custom providers. Set it in Settings.');
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: cfg.model,
+      max_tokens: maxTokens,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:${mediaType};base64,${imageBase64}` } },
+        ],
+      }],
+    }),
+  });
+  return handleOpenAIResponse(res);
+}
+
 // ─── Response helpers ─────────────────────────────────────────────────────────
 
 async function handleAnthropicResponse(res: Response): Promise<string> {
