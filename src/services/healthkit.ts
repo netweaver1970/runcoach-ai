@@ -473,6 +473,18 @@ function computeOvernightHR(
   return Math.round(sleepHRValues.reduce((a, b) => a + b, 0) / sleepHRValues.length);
 }
 
+// ─── Daytime HR ──────────────────────────────────────────────────────────────
+
+// Bevel's "Daytime HR" is a *restful* daytime measure (~67, band 64-71) — close to
+// resting HR, not a mean of all waking HR (which light activity inflates to ~74).
+// We approximate it as a low percentile of waking-hour samples. Tunable.
+const DAYTIME_HR_PCTL = 0.30;
+function restfulDaytimeHR(vals: number[]): number {
+  if (vals.length === 0) return 0;
+  const s = [...vals].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(s.length * DAYTIME_HR_PCTL))];
+}
+
 // ─── Sleep score ─────────────────────────────────────────────────────────────
 
 const DEFAULT_SLEEP_GOAL_MINUTES = 480; // 8 hours
@@ -1324,7 +1336,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       .map((s: any) => s.quantity as number)
       .filter(v => v >= 40 && v <= 100); // exclude artefacts and exercise
     if (vals.length >= 5) {
-      daytimeHR = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+      daytimeHR = Math.round(restfulDaytimeHR(vals)); // restful daytime level (≈ Bevel)
     }
   }
   // Fallback: Apple's computed RestingHeartRate
@@ -2792,7 +2804,8 @@ export async function fetchOvernightHRHistory(
       if (daytimeVals.length < 3) return;
 
       // ── Daytime ──────────────────────────────────────────────────────────────
-      const daytimeHR  = daytimeVals.reduce((a, b) => a + b, 0) / daytimeVals.length;
+      // Restful daytime level (low percentile), to match Bevel's "Daytime HR".
+      const daytimeHR  = restfulDaytimeHR(daytimeVals);
       const daytimeSorted = [...daytimeVals].sort((a, b) => a - b);
       const daytimeMin = daytimeSorted[0];
       const daytimeMax = daytimeSorted[daytimeSorted.length - 1];
