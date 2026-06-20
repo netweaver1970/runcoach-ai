@@ -43,7 +43,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeCardioTrimp, strainFromTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
 import {
@@ -1397,10 +1397,18 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const restHRForTrimp = (restingHRSamples as any[]).length > 0
     ? Math.round((restingHRSamples as any[]).at(-1).quantity as number)
     : 50;
-  const cardioTrimp = computeCardioTrimp(
+  // Today's workout windows — HR inside these counts as exercise (full weight).
+  const todayWindows = (loadWorkoutsRaw as any[])
+    .filter(w => toDateStr(toISOStr(w.startDate)) === todayStr)
+    .map(w => {
+      const s = new Date(toISOStr(w.startDate)).getTime();
+      return { s, e: s + workoutDurationSec(w) * 1000 };
+    });
+  const cardioTrimp = computeStrainTrimp(
     (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number })),
     restHRForTrimp,
     maxHR,
+    todayWindows,
   );
   // Muscular load from today's strength/resistance workouts (HK types 20/50).
   const STRENGTH_TYPES = new Set([20, 50]);
@@ -2357,24 +2365,29 @@ export async function fetchStrainHistory(
   for (const sm of hr) if (sm.hr > peak) peak = sm.hr;
   const maxHR = Math.max(185, Math.min(205, Math.round(peak)));
 
-  // Bucket HR by day → cardio TRIMP
+  // Bucket HR by day; workout windows per day (HR inside = exercise, full weight)
   const byDay = new Map<string, { t: number; hr: number }[]>();
   for (const s of hr) {
     if (!byDay.has(s.day)) byDay.set(s.day, []);
     byDay.get(s.day)!.push({ t: s.t, hr: s.hr });
   }
-  // Muscular per day from strength workouts (HK types 20/50)
   const STRENGTH = new Set([20, 50]);
   const muscularByDay = new Map<string, number>();
+  const windowsByDay  = new Map<string, { s: number; e: number }[]>();
   for (const w of (workouts as any[])) {
-    if (!STRENGTH.has(w.workoutActivityType)) continue;
     const day = toDateStr(toISOStr(w.startDate));
-    muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
+    const ws  = new Date(toISOStr(w.startDate)).getTime();
+    const win = { s: ws, e: ws + workoutDurationSec(w) * 1000 };
+    if (!windowsByDay.has(day)) windowsByDay.set(day, []);
+    windowsByDay.get(day)!.push(win);
+    if (STRENGTH.has(w.workoutActivityType)) {
+      muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
+    }
   }
 
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
-    const cardio = computeCardioTrimp(samples, restHR, maxHR);
+    const cardio = computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
     const trimp  = cardio + (muscularByDay.get(day) ?? 0);
     const strainPct = strainFromTrimp(trimp); // 0-100 (Bevel %)
     if (strainPct > 0) out.push({ date: day, value: strainPct });

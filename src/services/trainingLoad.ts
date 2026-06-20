@@ -204,29 +204,40 @@ const clamp01to100 = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
  * Bevel describes. Gaps between samples are capped so a sparse reading can't
  * represent hours of effort.
  */
-// Only heart rate clearly in the "effort" range counts toward strain. Below this
-// (HR ≈ < 50% of reserve) is daily living — walking around, chores — which, summed
-// over 16 waking hours with exponential weighting, otherwise dwarfs the actual
-// workout. Bevel scores a no-workout day at ~5%, so daily activity must contribute
-// little; this floor delivers that while a real session still dominates.
-const MIN_HRR = 0.45;
+// Strain is dominated by EXERCISE, like Bevel (whose KPIs are "Exercise Duration"
+// + "Daytime HR"): heart rate DURING a workout counts in full, while background
+// (non-workout) heart rate contributes only a small fraction, and only when clearly
+// elevated. That's what gives the clear run-day vs rest-day pattern — a no-workout
+// day reads low single digits even if your daytime HR was up.
+const PASSIVE_FACTOR  = 0.10; // non-workout HR contributes a tenth…
+const PASSIVE_MIN_HRR = 0.40; // …and only above ~40% HR reserve
 
-export function computeCardioTrimp(
+/**
+ * Banister TRIMP, exercise-weighted.
+ * @param windows workout time spans {s,e} in the SAME ms units as sample `t`
+ */
+export function computeStrainTrimp(
   samples: { t: number; hr: number }[],
   restHR: number,
   maxHR: number,
+  windows: { s: number; e: number }[],
 ): number {
   if (samples.length < 2 || maxHR <= restHR) return 0;
   const sorted = [...samples].sort((a, b) => a.t - b.t);
-  const MAX_GAP_MS = 8 * 60_000; // cap a single interval at 8 min
+  const inWorkout = (t: number) => windows.some(w => t >= w.s && t <= w.e);
+  const MAX_GAP_MS = 8 * 60_000;
   let trimp = 0;
   for (let i = 1; i < sorted.length; i++) {
     const dt = Math.min(MAX_GAP_MS, sorted[i].t - sorted[i - 1].t);
     if (dt <= 0) continue;
-    const hr  = sorted[i].hr;
-    const hrr = Math.max(0, Math.min(1, (hr - restHR) / (maxHR - restHR)));
-    if (hrr < MIN_HRR) continue; // skip sedentary/very-light minutes
-    trimp += (dt / 60_000) * hrr * 0.64 * Math.exp(1.92 * hrr);
+    const hrr = Math.max(0, Math.min(1, (sorted[i].hr - restHR) / (maxHR - restHR)));
+    if (hrr <= 0) continue;
+    const base = (dt / 60_000) * hrr * 0.64 * Math.exp(1.92 * hrr);
+    if (inWorkout(sorted[i].t)) {
+      trimp += base;                                   // exercise — full weight
+    } else if (hrr >= PASSIVE_MIN_HRR) {
+      trimp += base * PASSIVE_FACTOR;                  // background — discounted
+    }
   }
   return Math.round(trimp);
 }
@@ -235,7 +246,7 @@ export function computeCardioTrimp(
 // (≈25% 30-day average, Low<34 / Normal 34-67 / High>67): a typical training day
 // lands in the 20-35% band, a hard session 50-70%, a no-workout day low single
 // digits. Logarithmic → diminishing returns; uncapped. A/B are the tuning knobs.
-const STRAIN_LOG_A = 35;
+const STRAIN_LOG_A = 45;
 const STRAIN_LOG_B = 0.02;
 
 export function strainFromTrimp(trimp: number): number {
