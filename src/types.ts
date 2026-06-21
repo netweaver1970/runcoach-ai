@@ -153,6 +153,11 @@ export interface DayStrain {
   trimp:    number;  // raw daily TRIMP (cardio 24/7 + muscular)
   cardio:   number;  // cardio TRIMP component
   muscular: number;  // muscular-load component
+  // Readiness that produced the band — so every surface (ring, hero, detail, coach)
+  // reads ONE computation instead of recomputing with divergent inputs.
+  readiness?: number;    // 0-100 composite
+  drivers?:   string[];  // human-readable factors
+  acwr?:      number;    // acute:chronic ratio
 }
 
 // ─── Sleep ───────────────────────────────────────────────────────────────────

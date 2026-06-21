@@ -404,6 +404,7 @@ export function computeDayStrain(
     trimp: Math.round(trimp),
     cardio: Math.round(cardioTrimp),
     muscular: Math.round(muscularLoad),
+    readiness: r.readiness, drivers: r.drivers, acwr: r.acwr,
   };
 }
 

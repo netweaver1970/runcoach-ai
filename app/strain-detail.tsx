@@ -8,7 +8,7 @@ import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
-import { strainStatus, advisableStrainRange } from '../src/services/trainingLoad';
+import { strainStatus } from '../src/services/trainingLoad';
 import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan, TofPlan } from '../src/services/coach';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 
@@ -48,21 +48,20 @@ export default function StrainDetailScreen() {
   const real   = strain?.real ?? 0;
   const status = strain ? strainStatus(strain) : { label: '—', color: '#888' };
 
-  // Latest day's full component record drives readiness + the coach snapshot.
+  // Latest day's full component record feeds the coach snapshot (rich inputs).
   const dates    = Object.keys(comps).sort();
   const latest   = dates.length ? comps[dates[dates.length - 1]] : {};
   const latestDate = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
-  const readiness = useMemo(() => advisableStrainRange({
-    recovery:     latest.recoveryScore,
-    sleepScore:   latest.sleepScore,
-    sleepDebtMin: latest.sleepBank,
-    tsb:          latest.tsb,
-    ctl:          latest.ctl,
-    atl:          latest.cardioLoad,
-    respRate:     latest.respiratoryRate,
-    spO2:         latest.oxygenSaturation,
-    yesterdayStrain: dates.length >= 2 ? comps[dates[dates.length - 2]]?.strainScore : undefined,
-  }), [comps]);
+  // Single source of truth for the displayed band + drivers: the readiness that
+  // produced today's strain band (computed once in the snapshot, carried on DayStrain).
+  // No divergent recompute here — the ring, hero, this card and the coach all agree.
+  const readiness = {
+    readiness: strain?.readiness ?? 0,
+    acwr:      strain?.acwr ?? 0,
+    drivers:   strain?.drivers ?? [],
+    safeLow:   strain?.safeLow ?? 0,
+    safeHigh:  strain?.safeHigh ?? 0,
+  };
 
   // Load any plan already generated today (one per calendar day).
   useEffect(() => { loadCachedPlan(latestDate).then(p => { if (p) setPlan(p); }); }, [latestDate]);
@@ -135,7 +134,7 @@ export default function StrainDetailScreen() {
             <Text style={[s.scoreLabel, { color: status.color }]}>{status.label.toUpperCase()}</Text>
             <Text style={s.scoreAdvice}>
               {strain
-                ? `Today's strain ${real}% — advisable range ${strain.safeLow}–${strain.safeHigh}% given your recovery & form.`
+                ? `Today's strain ${real}% — Target ${strain.safeLow}–${strain.safeHigh}% given your recovery & form.`
                 : 'No strain data yet today.'}
             </Text>
           </View>
