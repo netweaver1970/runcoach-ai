@@ -54,13 +54,16 @@ export interface CoachPlan {
 // can't break JSON parsing.
 const ROLE = `You are a running coach. The COACHING KNOWLEDGE below is AUTHORITATIVE — \
 follow every rule in it. You receive a JSON snapshot of today's physiology, training load, time-on-feet \
-and weather. Produce the runner's DAILY OUTLOOK as the OUTCOME of those rules applied to all the data.`;
+and weather. Today's strain TARGET is fixed and provided as advisableLow–advisableHigh — treat that as THE \
+target; do NOT invent a different band. Prescribe a session whose total strain (run + drills, adjusted for \
+heat/humidity) lands within it, never more than 10% over the ceiling. Produce the runner's DAILY OUTLOOK as \
+the OUTCOME of the rules applied to all the data.`;
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
-{"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"strainLow":number,"strainHigh":number,"rationale":string,"cautions":string}. \
-headline ≤ 12 words (the outlook); session ≤ 55 words (type, run minutes, how it respects the cap, alternation & weather); \
+{"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string}. \
+headline ≤ 12 words (the outlook); session ≤ 55 words (type, run minutes, how it respects the target band, cap, alternation & weather); \
 runMinutes = prescribed running time-on-feet (≤ tofBudgetTodayMin); strength ≤ 40 words (specific exercises/drills); \
-rationale ≤ 45 words (reference the cap, alternation and weather); cautions ≤ 25 words ("" if none).`;
+rationale ≤ 45 words (reference the target band, cap, alternation and weather); cautions ≤ 25 words ("" if none).`;
 
 function clampScore(n: any, fallback: number): number {
   const v = Number(n);
@@ -89,8 +92,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       snap.tofBudgetTodayMin ?? 999,
       Math.round(Number(o.runMinutes)) || 0,
     )),
-    strainLow:  clampScore(o.strainLow, snap.advisableLow ?? 30),
-    strainHigh: clampScore(o.strainHigh, snap.advisableHigh ?? 60),
+    // Target is the single advisable band (synced with the home ring) — not the LLM's own.
+    strainLow:  clampScore(snap.advisableLow, 30),
+    strainHigh: clampScore(snap.advisableHigh, 60),
     rationale:  String(o.rationale ?? '').slice(0, 400),
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
     generatedAt: new Date().toISOString(),

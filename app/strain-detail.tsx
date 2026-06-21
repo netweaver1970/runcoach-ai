@@ -152,7 +152,7 @@ export default function StrainDetailScreen() {
             <Text style={s.readyDrivers}>
               {readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range'}
             </Text>
-            <Text style={s.readyRange}>advisable strain {readiness.safeLow}–{readiness.safeHigh}%</Text>
+            <Text style={s.readyRange}>Target {strain?.safeLow ?? readiness.safeLow}–{strain?.safeHigh ?? readiness.safeHigh}% strain</Text>
             {tof && (
               <Text style={s.readyTof}>
                 7-day time on feet {tof.tof7d}m · +10% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
@@ -179,7 +179,7 @@ export default function StrainDetailScreen() {
                   </Text>
                 </View>
                 <Text style={s.coachTarget}>
-                  target {plan.strainLow}–{plan.strainHigh}%{plan.runMinutes > 0 ? ` · run ${plan.runMinutes}m` : ' · no run'}
+                  {plan.runMinutes > 0 ? `run ${plan.runMinutes}m` : 'no run today'} · within target
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>

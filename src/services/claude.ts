@@ -792,13 +792,14 @@ export async function getTrainingRecommendation(
   const userMsg = [
     localContext,
     weatherStr ? `Weather now: ${weatherStr}` : 'Weather: unavailable',
+    snap.strain ? `Advisable strain target today: ${snap.strain.safeLow}-${snap.strain.safeHigh}% (0-100 strain scale) — keep today's effort within this band; this is THE target shown to the athlete.` : '',
     recStr,
     loadStr,
     `Today so far: ${todayActStr}`,
     `This week (Mon–now): ${weekKm}km · ${weekMin}min · ${thisWeekRuns.length} run(s)`,
     `Cross-training (7d, non-run): ${crossStr}`,
     `Last 20 runs:\n${runLines}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const systemPrompt = `You are an expert running coach planning the athlete's session for TODAY. Output ONLY valid JSON — no markdown, no prose:
 {"type":"Rest|Easy|Z2|Tempo|LongRun|Intervals","duration":"e.g. 45 min","zone":"e.g. Z1-2 or —","reason":"2-3 sentences citing the specific data that drove the call"}
@@ -809,6 +810,7 @@ Coaching method — weigh ALL of these like a real coach:
 • FITNESS (CTL) & ramp: rising fast → caution (injury risk); flat/declining → room to build.
 • ALL ACTIVITY: account for today's logged activity and recent cross-training (a leg day or long hike IS load — don't stack hard running on top).
 • PATTERN: avoid two hard days back-to-back; respect days-since-last-run and weekly volume.
+• STRAIN TARGET: your call must keep today's effort within the provided advisable strain band (the single target shown to the athlete) — don't contradict it.
 • TIME OF DAY: if it's already late evening, prefer a shorter/easier session or suggest tomorrow.
 • WEATHER: factor temperature/conditions — hot & humid → reduce intensity/duration & note hydration; cold/icy → caution on intervals; nice → fine for quality. Mention weather in the reason ONLY when it changes the plan.
 

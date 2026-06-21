@@ -313,7 +313,7 @@ export default function HomeScreen() {
 
         {/* Training recommendation */}
         {(loadingRec || recommendation) && (
-          <TrainingRecommendationCard rec={recommendation} loading={loadingRec} />
+          <TrainingRecommendationCard rec={recommendation} loading={loadingRec} strain={snapshot?.strain ?? null} />
         )}
 
         {/* Training load (CTL/ATL/TSB) — its own block */}
@@ -484,7 +484,7 @@ const REC_COLORS: Record<string, string> = {
   Rest: '#6B7280', Easy: '#22C55E', Z2: '#22C55E', Tempo: '#F97316', LongRun: '#3B82F6', Intervals: '#EF4444',
 };
 
-function TrainingRecommendationCard({ rec, loading }: { rec: TrainingRecommendation | null; loading: boolean }) {
+function TrainingRecommendationCard({ rec, loading, strain }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null }) {
   const recStyles = useThemedStyles(makeRecStyles);
   if (loading && !rec) {
     return (
@@ -512,6 +512,12 @@ function TrainingRecommendationCard({ rec, loading }: { rec: TrainingRecommendat
         <Text style={recStyles.badge}>Today's plan</Text>
       </View>
       <Text style={recStyles.reason}>{rec.reason}</Text>
+      {strain && (
+        <Text style={recStyles.target}>
+          Target <Text style={{ color: SAFE_COLOR, fontWeight: '800' }}>{strain.safeLow}–{strain.safeHigh}%</Text> strain
+          {rec.type !== 'Rest' && rec.zone && rec.zone !== '—' ? `  ·  ${rec.zone}` : ''}
+        </Text>
+      )}
     </View>
   );
 }
@@ -582,7 +588,7 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
       </View>
       <Text style={tl.band}>
         Cardio Load <Text style={{ color: cl.color, fontWeight: '800' }}>{Math.round(cl.load)}</Text>
-        {cl.ctl > 0 ? ` · optimal ${Math.round(cl.bandLo)}–${Math.round(cl.bandHi)}` : ''}
+        {cl.ctl > 0 ? ` · sweet spot ${Math.round(cl.bandLo)}–${Math.round(cl.bandHi)}` : ''}
       </Text>
       <Text style={tl.hint}>{cl.hint}  ›</Text>
     </TouchableOpacity>
@@ -654,6 +660,12 @@ const makeRecStyles = (c: Palette) => StyleSheet.create({
     fontSize: 13,
     color: c.text,
     lineHeight: 18,
+  },
+  target: {
+    fontSize: 12,
+    color: c.textSub,
+    marginTop: 8,
+    fontWeight: '600',
   },
   loadingText: {
     fontSize: 13,
@@ -770,7 +782,7 @@ function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }
         </View>
       </View>
       <Text style={[styles.strainCaption, { color: SAFE_COLOR }]}>
-        {strain ? `range ${strain.safeLow}–${strain.safeHigh}%` : ''}
+        {strain ? `Target ${strain.safeLow}–${strain.safeHigh}%` : ''}
       </Text>
     </View>
   );
