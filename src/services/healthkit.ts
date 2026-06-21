@@ -342,6 +342,36 @@ function buildHeartbeatQualityMap(
 }
 
 /**
+ * True RMSSD (ms) from raw R-R intervals in the heartbeat series — the metric Bevel
+ * uses for "Resting HRV", which runs lower than Apple's SDNN on variable nights.
+ *
+ * For each series: R-R interval = Δ(timeSinceSeriesStart) between consecutive beats,
+ * skipping gap boundaries (precededByGap) and physiologically-impossible intervals
+ * (<300ms / >2000ms). RMSSD = sqrt(mean(ΔRR²)) over successive valid intervals, with
+ * large jumps (>200ms = ectopic / sensor artifact) excluded — Bevel's "artifact removal".
+ */
+function computeRMSSD(
+  series: readonly { heartbeats: readonly { timeSinceSeriesStart: number; precededByGap: boolean }[] }[],
+): number {
+  let sumSq = 0, n = 0;
+  for (const s of series) {
+    const beats = s.heartbeats;
+    let prevRR: number | null = null;
+    for (let i = 1; i < beats.length; i++) {
+      if (beats[i].precededByGap) { prevRR = null; continue; }          // gap breaks the chain
+      const rr = (beats[i].timeSinceSeriesStart - beats[i - 1].timeSinceSeriesStart) * 1000;
+      if (rr < 300 || rr > 2000) { prevRR = null; continue; }           // impossible interval
+      if (prevRR !== null) {
+        const d = rr - prevRR;
+        if (Math.abs(d) <= 200) { sumSq += d * d; n++; }                // exclude ectopic spikes
+      }
+      prevRR = rr;
+    }
+  }
+  return n > 0 ? Math.sqrt(sumSq / n) : 0;
+}
+
+/**
  * Is the HRV sample at `sampleStartMs` considered good quality?
  * Looks for the nearest heartbeat series within 10 s tolerance.
  * Returns true (include) if no matching series is found (can't assess).
@@ -3051,7 +3081,8 @@ export async function fetchOurDailyComponents(
   const bioByDate = new Map(bio.map(b => [b.date, b]));
   for (const b of bio) {
     const r = day(b.date);
-    const hrvForCmp = b.hrvMedian > 0 ? b.hrvMedian : b.hrv; // non-stage-weighted ≈ Bevel
+    // Prefer true RMSSD (Bevel's metric); fall back to median SDNN, then stage-weighted.
+    const hrvForCmp = b.rmssd > 0 ? b.rmssd : b.hrvMedian > 0 ? b.hrvMedian : b.hrv;
     if (hrvForCmp > 0)         r.restingHrv = Math.round(hrvForCmp * 10) / 10;
     if (b.overnightHR > 0)     r.restingHr = Math.round(b.overnightHR * 10) / 10;
     if (b.respiratoryRate > 0) r.respiratoryRate = Math.round(b.respiratoryRate * 10) / 10;
@@ -3111,7 +3142,8 @@ export async function fetchOurDailyComponents(
 export interface SleepBiometrics {
   date:            string;
   hrv:             number;   // simple mean RMSSD ms (non-awake, quality-filtered) — 0 if unavailable
-  hrvMedian:       number;   // median overnight SDNN (NOT stage-weighted) — tracks Bevel "Resting HRV"
+  hrvMedian:       number;   // median overnight SDNN (NOT stage-weighted)
+  rmssd:           number;   // TRUE RMSSD from raw R-R intervals — matches Bevel "Resting HRV"; 0 if no beat data
   overnightHR:     number;   // mean HR during non-awake sleep stages
   spO2:            number;   // mean blood oxygen % during sleep — 0 if unavailable
   respiratoryRate: number;   // mean breaths/min during sleep — 0 if unavailable
@@ -3255,6 +3287,8 @@ export async function fetchSleepBiometrics(
         ? (hrvSorted.length % 2 ? hrvSorted[(hrvSorted.length - 1) / 2]
             : (hrvSorted[hrvSorted.length / 2 - 1] + hrvSorted[hrvSorted.length / 2]) / 2)
         : 0;
+      // True RMSSD from raw R-R intervals (Bevel's metric) — runs lower than SDNN.
+      const rmssd = computeRMSSD(hbsResults[j] as any[]);
 
       // ── SpO2: mean during sleep ───────────────────────────────────────────────
       const spo2Vals = (spo2Results[j] as any[]).map((s: any) => s.quantity as number);
@@ -3279,6 +3313,7 @@ export async function fetchSleepBiometrics(
         date:            session.date,
         hrv:             Math.round(weightedRMSSD * 10) / 10,
         hrvMedian:       Math.round(hrvMedian * 10) / 10,
+        rmssd:           Math.round(rmssd * 10) / 10,
         overnightHR:     Math.round(overnightHR * 10) / 10,
         spO2,
         respiratoryRate,
