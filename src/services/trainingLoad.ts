@@ -424,6 +424,7 @@ export interface ReadinessInputs {
   respRate?:    number;   // last night mean respiratory rate
   respBaseline?: number;  // personal respiratory-rate baseline
   spO2?:        number;   // last night mean blood-oxygen %
+  yesterdayStrain?: number; // yesterday's strain — enforce quality→recovery alternation
 }
 
 export interface AdvisableRange {
@@ -467,6 +468,13 @@ export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
     } else if (acwr < 0.8 && i.ctl > 5) {
       drivers.push(`room to build (ACWR ${acwr.toFixed(2)})`);
     }
+  }
+
+  // Alternation: never two longer/quality days in a row — a hard day yesterday pulls
+  // today toward recovery regardless of how good the morning numbers look.
+  if (i.yesterdayStrain != null && i.yesterdayStrain >= 55) {
+    readiness -= Math.min(20, (i.yesterdayStrain - 50) * 0.6);
+    drivers.push('recovery after hard day');
   }
 
   // Illness / overreach guards — cap hard when the body is flagging stress.

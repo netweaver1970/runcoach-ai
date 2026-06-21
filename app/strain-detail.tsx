@@ -7,9 +7,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
-import { fetchOurDailyComponents } from '../src/services/healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus, advisableStrainRange } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan, TofPlan } from '../src/services/coach';
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -22,14 +22,15 @@ export default function StrainDetailScreen() {
   const strain = data ? JSON.parse(data) as DayStrain : null;
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
+  const [tof, setTof] = useState<TofPlan | null>(null);
   const [loadingH, setLoadingH] = useState(true);
   const [plan, setPlan] = useState<CoachPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchOurDailyComponents(1)
-      .then(setComps)
+    Promise.all([fetchOurDailyComponents(1), fetchDailyDurationHistory()])
+      .then(([c, dur]) => { setComps(c); setTof(computeTimeOnFeetPlan(dur)); })
       .catch(() => {})
       .finally(() => setLoadingH(false));
   }, []);
@@ -57,6 +58,7 @@ export default function StrainDetailScreen() {
     atl:          latest.cardioLoad,
     respRate:     latest.respiratoryRate,
     spO2:         latest.oxygenSaturation,
+    yesterdayStrain: dates.length >= 2 ? comps[dates[dates.length - 2]]?.strainScore : undefined,
   }), [comps]);
 
   // Load any plan already generated today (one per calendar day).
@@ -86,6 +88,12 @@ export default function StrainDetailScreen() {
         readiness:    readiness.readiness,
         drivers:      readiness.drivers,
         recentStrain: strainHist.slice(-10),
+        recentTimeOnFeet:  tof?.series14,
+        tof7d:             tof?.tof7d,
+        tofPrev7d:         tof?.tofPrev7d,
+        tofBudgetTodayMin: tof?.budgetTodayMin,
+        yesterdayTofMin:   tof?.yesterdayMin,
+        yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
       });
       setPlan(p);
       await saveCachedPlan(latestDate, p);
@@ -138,6 +146,11 @@ export default function StrainDetailScreen() {
               {readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range'}
             </Text>
             <Text style={s.readyRange}>advisable strain {readiness.safeLow}–{readiness.safeHigh}%</Text>
+            {tof && (
+              <Text style={s.readyTof}>
+                7-day time on feet {tof.tof7d}m · +10% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
+              </Text>
+            )}
           </View>
         )}
 
@@ -153,7 +166,9 @@ export default function StrainDetailScreen() {
                     {plan.intensity.toUpperCase()}
                   </Text>
                 </View>
-                <Text style={s.coachTarget}>target {plan.strainLow}–{plan.strainHigh}%</Text>
+                <Text style={s.coachTarget}>
+                  target {plan.strainLow}–{plan.strainHigh}%{plan.runMinutes > 0 ? ` · run ${plan.runMinutes}m` : ' · no run'}
+                </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
               {plan.strength ? (
@@ -254,6 +269,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   readyAcwr:  { fontSize: 11, color: c.textSub, marginLeft: 'auto', fontWeight: '600' },
   readyDrivers: { fontSize: 12, color: c.textSub, marginTop: 4 },
   readyRange: { fontSize: 12, color: '#16a085', fontWeight: '600', marginTop: 4 },
+  readyTof:   { fontSize: 12, color: c.textSub, marginTop: 4 },
 
   coachCard: {
     backgroundColor: c.surface, borderRadius: 12, padding: 14,

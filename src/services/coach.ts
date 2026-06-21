@@ -20,15 +20,23 @@ export interface CoachSnapshot {
   readiness?:    number;   drivers?:       string[];
   recentStrain?: number[];                 // last ~10 days, oldest→newest
   recentRuns?:   { date: string; km: number; type: string }[];
+  // Time-on-feet (running minutes) — drives the alternation + rolling-volume rules.
+  recentTimeOnFeet?: { date: string; min: number }[]; // last ~14 days (0 = no run)
+  tof7d?:            number;   // trailing 7-day running minutes (completed days only)
+  tofPrev7d?:        number;   // the 7 days before that
+  tofBudgetTodayMin?: number;  // max running minutes TODAY under the +10% rolling cap
+  yesterdayTofMin?:  number;   // yesterday's running minutes
+  yesterdayStrain?:  number;   // yesterday's strain score
 }
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
 
 export interface CoachPlan {
   headline:   string;        // one-line readiness verdict
-  session:    string;        // the recommended (run/walk) session
+  session:    string;        // the recommended session
   strength:   string;        // leg-strength / injury-prevention prescription
   intensity:  CoachIntensity;
+  runMinutes: number;        // prescribed running time-on-feet (≤ rolling cap)
   strainLow:  number;
   strainHigh: number;
   rationale:  string;
@@ -46,9 +54,15 @@ SpO₂, sleep quality + sleep debt, form (TSB) and the acute:chronic workload ra
 
 NON-NEGOTIABLE RULES:
 - Stay on the cautious side. Default to easy. Only allow hard/moderate when ALL signals are clearly green.
-- NO long continuous running. NEVER prescribe a single uninterrupted run. Break running into short intervals with \
-walk/recovery breaks (e.g. run ≤12–18 min then walk 2–3 min, or shorter run-walk reps). Cap continuous run blocks; \
-favour run-walk and splitting volume across the session. State the run/walk structure explicitly.
+- NEVER schedule sequential longer / quality sessions. Alternate strictly: Quality → Recovery → Quality. If the \
+previous 1–2 days were a quality, hard, or long run, today MUST be a genuine recovery day (short + easy) or rest — \
+never a second longer or higher-volume run back-to-back. Use yesterdayStrain / yesterdayTofMin and recentTimeOnFeet \
+to judge this.
+- Recovery days stay SHORT and easy. Do not let an easy day creep into a longer Z2 run — a recovery run is brief and \
+relaxed, clearly shorter than the surrounding quality days.
+- HARD VOLUME CAP (do not violate): 7-day rolling time-on-feet must not increase more than 10% week-over-week. \
+Today's running minutes must NOT exceed tofBudgetTodayMin (provided). If tofBudgetTodayMin is ~0, prescribe rest or \
+cross-training/strength only. Never exceed this cap to chase a session.
 - ALWAYS include leg-strength / injury-prevention work in EVERY plan (even rest days → light mobility + activation). \
 Name 2–4 specific exercises with rough sets×reps from: eccentric calf raises / heel drops, single-leg squats, \
 step-downs, glute bridges, clamshells, hip abduction, tibialis raises, hamstring curls/bridges, Copenhagen planks.
@@ -58,10 +72,12 @@ never stack hard days on suppressed parasympathetic signals. Keep ≥48h between
 - "strain" is a 0–100 daily-load score (this app's scale). Recommend a CONSERVATIVE strainLow–strainHigh target; \
 prefer the lower half of the advisable band on any doubt.
 
-Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
-{"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","strainLow":number,"strainHigh":number,"rationale":string,"cautions":string}. \
-headline ≤ 12 words; session ≤ 50 words (must include run/walk structure); strength ≤ 40 words (specific exercises); \
-rationale ≤ 45 words; cautions ≤ 25 words ("" if none).`;
+Produce the runner's DAILY OUTLOOK as the OUTCOME of these rules applied to all the data. State today's run \
+minutes and how they sit against the rolling-7-day cap. Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
+{"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"strainLow":number,"strainHigh":number,"rationale":string,"cautions":string}. \
+headline ≤ 12 words (the outlook); session ≤ 50 words (type, run minutes, how it respects the cap & alternation); \
+runMinutes = prescribed running time-on-feet (≤ tofBudgetTodayMin); strength ≤ 40 words; rationale ≤ 45 words \
+(must reference the cap and alternation); cautions ≤ 25 words ("" if none).`;
 
 function clampScore(n: any, fallback: number): number {
   const v = Number(n);
@@ -84,11 +100,60 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     session:    String(o.session ?? '').slice(0, 280),
     strength:   String(o.strength ?? '').slice(0, 240),
     intensity,
+    runMinutes: Math.max(0, Math.min(
+      snap.tofBudgetTodayMin ?? 999,
+      Math.round(Number(o.runMinutes)) || 0,
+    )),
     strainLow:  clampScore(o.strainLow, snap.advisableLow ?? 30),
     strainHigh: clampScore(o.strainHigh, snap.advisableHigh ?? 60),
     rationale:  String(o.rationale ?? '').slice(0, 400),
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
     generatedAt: new Date().toISOString(),
+  };
+}
+
+export interface TofPlan {
+  series14:       { date: string; min: number }[];
+  tof7d:          number;   // rolling 7-day total ending today (today so far)
+  tofPrev7d:      number;   // the 7 days before that
+  cap7dMin:       number;   // 1.10 × prior-7 (the rolling ceiling)
+  budgetTodayMin: number;   // running minutes still allowed today
+  yesterdayMin:   number;
+}
+
+/**
+ * Rolling time-on-feet model for the +10% rule: the 7-day total ending today must not
+ * exceed 1.10× the 7-day total ending a week ago. Returns today's remaining running
+ * budget plus a 14-day series for the alternation check. A small floor keeps a short
+ * easy run available when returning from a near-zero base.
+ */
+export function computeTimeOnFeetPlan(
+  daily: { date: string; value: number }[], today = new Date(),
+): TofPlan {
+  const map = new Map(daily.map(d => [d.date, d.value]));
+  const p = (n: number) => String(n).padStart(2, '0');
+  const dayStr = (offset: number) => {
+    const d = new Date(today); d.setDate(d.getDate() - offset);
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  };
+  const minsAt = (offset: number) => map.get(dayStr(offset)) ?? 0;
+
+  let tofLast6 = 0; for (let o = 1; o <= 6;  o++) tofLast6 += minsAt(o);
+  let tofPrev7 = 0; for (let o = 7; o <= 13; o++) tofPrev7 += minsAt(o);
+  const cap = Math.round(1.10 * tofPrev7);
+  let budget = Math.max(0, cap - tofLast6);
+  if (tofPrev7 < 30) budget = Math.max(budget, 20); // re-entry / very low base
+
+  const series14: { date: string; min: number }[] = [];
+  for (let o = 13; o >= 0; o--) series14.push({ date: dayStr(o), min: minsAt(o) });
+
+  return {
+    series14,
+    tof7d: tofLast6 + minsAt(0),
+    tofPrev7d: tofPrev7,
+    cap7dMin: cap,
+    budgetTodayMin: budget,
+    yesterdayMin: minsAt(1),
   };
 }
 
