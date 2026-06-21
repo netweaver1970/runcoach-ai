@@ -886,6 +886,12 @@ function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRing
           <Text style={styles.ringHint}>{recovery ? 'tap ›' : ''}</Text>
         </TouchableOpacity>
       </View>
+
+      {!recovery && (
+        <Text style={styles.wellnessPending}>
+          Last night's sleep &amp; recovery haven't synced from your watch yet. Open the Apple Health app, then pull to refresh.
+        </Text>
+      )}
     </View>
   );
 }
@@ -1011,6 +1017,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   ringHint: { fontSize: 9, color: c.textFaint, marginTop: 3 },
   strainCaption: { fontSize: 9, fontWeight: '700' },
   wellnessUnavailable: { fontSize: 15, color: c.textSub, marginBottom: 4, fontWeight: '500' },
+  wellnessPending: { fontSize: 11, color: c.textFaint, lineHeight: 15, marginTop: 10, textAlign: 'center' },
   recoveryUnavailableHint: { fontSize: 12, color: c.textFaint, marginBottom: 12, lineHeight: 18 },
   refreshBtn: {
     alignSelf: 'flex-start', backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE', borderRadius: 8,

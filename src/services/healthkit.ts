@@ -1313,12 +1313,24 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const todayStr     = toDateStr(now.toISOString());
   const yesterdayStr = toDateStr(new Date(now.getTime() - 86_400_000).toISOString());
 
-  const recentSession = sleepSessions.findLast(
-    (s) => s.date === todayStr || s.date === yesterdayStr
-  );
-  const recentHRV = nightlyHRV.findLast(
-    (n) => n.date === todayStr || n.date === yesterdayStr
-  );
+  // Only surface recovery/sleep when LAST NIGHT's data has actually been delivered by
+  // Apple Health — like Bevel, never fall back to a previous night or a partial set.
+  //   • Fresh:    the session's wake time is recent (this morning, ≤22h ago), so it's
+  //               genuinely last night and not a stale prior night that's still the
+  //               newest because last night hasn't synced from the watch yet.
+  //   • Complete: a real full night, not a fragment that's still syncing.
+  const FRESH_WAKE_WINDOW_MS = 22 * 3_600_000;
+  const MIN_NIGHT_MINUTES    = 120;
+  const isFreshNight = (s: SleepSession) =>
+    (s.date === todayStr || s.date === yesterdayStr) &&
+    s.totalMinutes >= MIN_NIGHT_MINUTES &&
+    (now.getTime() - new Date(s.wakeTime).getTime()) <= FRESH_WAKE_WINDOW_MS;
+
+  const recentSession = sleepSessions.findLast(isFreshNight) ?? null;
+  // HRV must belong to the SAME night (not an independently-latest night).
+  const recentHRV = recentSession
+    ? (nightlyHRV.findLast((n) => n.date === recentSession.date && n.weightedRMSSD > 0) ?? null)
+    : null;
 
   let todayRecovery: DailyRecovery | null = null;
 
