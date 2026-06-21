@@ -25,7 +25,7 @@ import {
   LLMProvider,
 } from '../src/services/llm';
 import { PowerZones } from '../src/types';
-import { useTheme, useThemedStyles, Palette, ThemeMode } from '../src/theme';
+import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -47,7 +47,7 @@ import {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { mode, setMode, c } = useTheme();
+  const { mode, setMode, c, fontStep, setFontStep } = useTheme();
   const styles = useThemedStyles(makeStyles);
 
   // ── LLM config ──────────────────────────────────────────────────────────────
@@ -239,6 +239,26 @@ export default function SettingsScreen() {
           <Text style={styles.hint}>
             {mode === 'system' ? `Following your phone (currently ${c.mode}).` : `Always ${mode}.`}
           </Text>
+
+          <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Text Size</Text>
+          <View style={styles.themeRow}>
+            {([[0, 'Default'], [1, 'Large'], [2, 'Larger']] as [FontSizeStep, string][]).map(([step, lbl]) => (
+              <TouchableOpacity
+                key={step}
+                style={[styles.themeBtn, fontStep === step && styles.themeBtnActive]}
+                onPress={() => setFontStep(step)}
+              >
+                <Text style={[
+                  styles.themeBtnText,
+                  fontStep === step && styles.themeBtnTextActive,
+                  { fontSize: step === 0 ? 13 : step === 1 ? 15 : 17 },
+                ]}>
+                  {lbl}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.hint}>Enlarges text throughout the app.</Text>
         </Section>
 
         {/* AI Provider & Model */}

@@ -14,7 +14,7 @@ const PROVIDERS = ['anthropic', 'openai', 'custom'] as const;
 
 // Meaningful settings only — caches like `training_rec_v1` are deliberately omitted.
 const STATIC_SECURE_KEYS = [
-  'theme_mode_v1',
+  'theme_mode_v1', 'font_scale_v1',
   'anthropic_api_key',            // legacy key, still read on migration
   'sync_months', 'long_run_minutes', 'ai_weeks',
   'power_zones', 'run_overrides', 'hr_unreliable_runs',
