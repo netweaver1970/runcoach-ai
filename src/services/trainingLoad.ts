@@ -386,6 +386,7 @@ export function computeDayStrain(
   recovery: number,
   tsb: number,
   activityFloor = 0,
+  range?: AdvisableRange,
 ): DayStrain {
   // Cardio (logged-workout HR) vs daily-activity floor — take the larger, then add
   // any muscular load. The floor lifts rest/unlogged-activity days without inflating
@@ -394,16 +395,105 @@ export function computeDayStrain(
   const trimp = base + Math.max(0, muscularLoad);
   const real  = strainFromTrimp(trimp);
 
-  const tsbAdj  = Math.max(-25, Math.min(25, tsb)) * 0.25;
-  const safeMid = recovery > 0 ? clamp01to100(35 + recovery * 0.5 + tsbAdj) : 55;
-  const safeLow  = clamp01to100(safeMid - 12);
-  const safeHigh = clamp01to100(safeMid + 12);
+  // Prefer the multi-factor advisable range (recovery + sleep + form + ACWR). Fall
+  // back to the recovery-only band if no readiness inputs were supplied.
+  const r = range ?? advisableStrainRange({ recovery: recovery > 0 ? recovery : undefined, tsb });
 
   return {
-    real, safeLow, safeHigh, safeMid,
+    real, safeLow: r.safeLow, safeHigh: r.safeHigh, safeMid: r.safeMid,
     trimp: Math.round(trimp),
     cardio: Math.round(cardioTrimp),
     muscular: Math.round(muscularLoad),
+  };
+}
+
+// ─── Advisable-strain readiness model ─────────────────────────────────────────
+// A real coach doesn't gate today's load on recovery alone — sleep, form (TSB) and
+// the acute:chronic workload ratio all matter, plus illness guards (elevated
+// respiratory rate, low SpO₂). This blends them into a 0-100 readiness, then maps
+// readiness → an advisable strain band. Every input is optional and degrades
+// gracefully so it works from day one.
+
+export interface ReadinessInputs {
+  recovery?:    number;   // 0-100 recovery score (already encodes HRV + RHR)
+  sleepScore?:  number;   // 0-100 last night's sleep score
+  sleepDebtMin?: number;  // signed sleep-bank minutes (negative = debt)
+  tsb?:         number;   // training-stress balance / "form"
+  ctl?:         number;   // chronic load (fitness)
+  atl?:         number;   // acute load (fatigue)
+  respRate?:    number;   // last night mean respiratory rate
+  respBaseline?: number;  // personal respiratory-rate baseline
+  spO2?:        number;   // last night mean blood-oxygen %
+}
+
+export interface AdvisableRange {
+  safeLow:   number;
+  safeMid:   number;
+  safeHigh:  number;
+  readiness: number;    // 0-100 composite
+  acwr:      number;    // acute:chronic ratio (0 if unknown)
+  drivers:   string[];  // human-readable factors that moved the band
+}
+
+export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
+  const drivers: string[] = [];
+  // Anchor on recovery (or a neutral 55 when we don't have it yet).
+  let readiness = i.recovery != null && i.recovery > 0 ? i.recovery : 55;
+
+  // Sleep: quality nudges readiness ±; a real sleep debt drags it down.
+  if (i.sleepScore != null && i.sleepScore > 0) {
+    readiness += (i.sleepScore - 72) * 0.22;
+    if (i.sleepScore < 60) drivers.push('poor sleep');
+  }
+  if (i.sleepDebtMin != null && i.sleepDebtMin < -45) {
+    readiness -= Math.min(12, -i.sleepDebtMin / 25);
+    drivers.push('sleep debt');
+  }
+
+  // Form (TSB): fresh legs → push; deep fatigue → hold back.
+  if (i.tsb != null) {
+    readiness += Math.max(-25, Math.min(25, i.tsb)) * 0.35;
+    if (i.tsb < -15)      drivers.push('fatigued (low form)');
+    else if (i.tsb > 12)  drivers.push('fresh / tapered');
+  }
+
+  // Acute:chronic workload ratio — the classic injury-risk sweet spot is 0.8–1.3.
+  let acwr = 0;
+  if (i.ctl != null && i.ctl > 0 && i.atl != null) {
+    acwr = i.atl / i.ctl;
+    if (acwr > 1.3) {
+      readiness -= Math.min(18, (acwr - 1.3) * 45);
+      drivers.push(`high acute load (ACWR ${acwr.toFixed(2)})`);
+    } else if (acwr < 0.8 && i.ctl > 5) {
+      drivers.push(`room to build (ACWR ${acwr.toFixed(2)})`);
+    }
+  }
+
+  // Illness / overreach guards — cap hard when the body is flagging stress.
+  if (i.respRate != null && i.respBaseline != null && i.respBaseline > 0 &&
+      i.respRate > i.respBaseline * 1.12) {
+    readiness = Math.min(readiness, 45);
+    drivers.push('elevated respiratory rate');
+  }
+  if (i.spO2 != null && i.spO2 > 0 && i.spO2 < 95) {
+    readiness = Math.min(readiness, 45);
+    drivers.push('low SpO₂');
+  }
+
+  readiness = clamp01to100(readiness);
+
+  // Map readiness → advisable mid-strain. readiness 100 → ~70, 55 → ~50, 0 → ~25.
+  const safeMid = clamp01to100(25 + readiness * 0.45);
+  // Tighten the band when readiness is decisive (clearly high or low), widen it in
+  // the ambiguous middle where the call is more "athlete's choice".
+  const width   = 9 + Math.round((1 - Math.abs(readiness - 50) / 50) * 6); // 9–15
+  return {
+    safeLow:  clamp01to100(safeMid - width),
+    safeHigh: clamp01to100(safeMid + width),
+    safeMid,
+    readiness: Math.round(readiness),
+    acwr: Math.round(acwr * 100) / 100,
+    drivers,
   };
 }
 

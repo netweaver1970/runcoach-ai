@@ -12,6 +12,7 @@ import {
   AppState,
   AppStateStatus,
 } from 'react-native';
+import Svg, { Circle } from 'react-native-svg';
 import { useRouter, useFocusEffect } from 'expo-router';
 
 import {
@@ -663,63 +664,43 @@ const makeRecStyles = (c: Palette) => StyleSheet.create({
 
 // ─── Ring arc component ───────────────────────────────────────────────────────
 
+// Exact circular-progress arc via SVG strokeDashoffset (replaces the old rotate+clip
+// trick, which — using a rotationally-symmetric full ring — could never render a
+// proportional fill: it always showed ~50% for any value ≤180° and full above).
+function ArcSvg({ size, strokeWidth, progress, color, trackColor }: {
+  size: number; strokeWidth: number; progress: number; color: string; trackColor: string;
+}) {
+  const p    = Math.min(1, Math.max(0, progress));
+  const half = size / 2;
+  const r    = half - strokeWidth / 2;
+  const circ = 2 * Math.PI * r;
+  return (
+    <Svg width={size} height={size}>
+      <Circle cx={half} cy={half} r={r} stroke={trackColor} strokeWidth={strokeWidth} fill="none" />
+      {p > 0 && (
+        <Circle
+          cx={half} cy={half} r={r}
+          stroke={color} strokeWidth={strokeWidth} fill="none"
+          strokeDasharray={circ}
+          strokeDashoffset={circ * (1 - p)}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${half} ${half})`}
+        />
+      )}
+    </Svg>
+  );
+}
+
 function Ring({
   size, strokeWidth, progress, color, label, value,
 }: {
   size: number; strokeWidth: number; progress: number;
   color: string; label: string; value: string;
 }) {
-  const p     = Math.min(1, Math.max(0, progress));
-  const angle = p * 360;
-  const half  = size / 2;
-
-  const rightRotate = `${angle <= 180 ? angle - 90 : 90}deg`;
-  const leftVisible = angle > 180;
-  const leftRotate  = `${(angle - 180) - 90}deg`;
-
   return (
     <View style={{ alignItems: 'center', gap: 6 }}>
       <View style={{ width: size, height: size }}>
-        {/* Track ring */}
-        <View style={{
-          position: 'absolute', width: size, height: size,
-          borderRadius: half, borderWidth: strokeWidth,
-          borderColor: color + '28',
-        }} />
-
-        {/* Right half (0 → 180°) — clip to right side of container */}
-        {angle > 0 && (
-          <View style={{
-            position: 'absolute', left: half, top: 0,
-            width: half, height: size, overflow: 'hidden',
-          }}>
-            <View style={{
-              position: 'absolute', left: -half, top: 0,
-              width: size, height: size,
-              borderRadius: half, borderWidth: strokeWidth,
-              borderColor: color,
-              transform: [{ rotate: rightRotate }],
-            }} />
-          </View>
-        )}
-
-        {/* Left half (180 → 360°) — clip to left side of container */}
-        {leftVisible && (
-          <View style={{
-            position: 'absolute', left: 0, top: 0,
-            width: half, height: size, overflow: 'hidden',
-          }}>
-            <View style={{
-              position: 'absolute', left: 0, top: 0,
-              width: size, height: size,
-              borderRadius: half, borderWidth: strokeWidth,
-              borderColor: color,
-              transform: [{ rotate: leftRotate }],
-            }} />
-          </View>
-        )}
-
-        {/* Center label */}
+        <ArcSvg size={size} strokeWidth={strokeWidth} progress={progress} color={color} trackColor={color + '28'} />
         <View style={{
           position: 'absolute', width: size, height: size,
           alignItems: 'center', justifyContent: 'center',
@@ -743,26 +724,8 @@ function Ring({
 function ArcRing({ size, strokeWidth, progress, color, trackColor }: {
   size: number; strokeWidth: number; progress: number; color: string; trackColor?: string;
 }) {
-  const p     = Math.min(1, Math.max(0, progress));
-  const angle = p * 360;
-  const half  = size / 2;
-  const rightRotate = `${angle <= 180 ? angle - 90 : 90}deg`;
-  const leftVisible = angle > 180;
-  const leftRotate  = `${(angle - 180) - 90}deg`;
   return (
-    <View style={{ width: size, height: size }}>
-      <View style={{ position: 'absolute', width: size, height: size, borderRadius: half, borderWidth: strokeWidth, borderColor: trackColor ?? color + '24' }} />
-      {angle > 0 && (
-        <View style={{ position: 'absolute', left: half, top: 0, width: half, height: size, overflow: 'hidden' }}>
-          <View style={{ position: 'absolute', left: -half, top: 0, width: size, height: size, borderRadius: half, borderWidth: strokeWidth, borderColor: color, transform: [{ rotate: rightRotate }] }} />
-        </View>
-      )}
-      {leftVisible && (
-        <View style={{ position: 'absolute', left: 0, top: 0, width: half, height: size, overflow: 'hidden' }}>
-          <View style={{ position: 'absolute', left: 0, top: 0, width: size, height: size, borderRadius: half, borderWidth: strokeWidth, borderColor: color, transform: [{ rotate: leftRotate }] }} />
-        </View>
-      )}
-    </View>
+    <ArcSvg size={size} strokeWidth={strokeWidth} progress={progress} color={color} trackColor={trackColor ?? color + '24'} />
   );
 }
 

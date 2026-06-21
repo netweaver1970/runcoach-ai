@@ -46,7 +46,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -1498,7 +1498,17 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     if (toDateStr(toISOStr(w.startDate)) !== todayStr) continue;
     muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
   }
-  const latestTsb = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1].tsb : 0;
+  const latestLoad = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1] : null;
+  const latestTsb = latestLoad?.tsb ?? 0;
+  // Advisable strain band from the full picture — recovery + sleep + form + ACWR —
+  // not recovery alone.
+  const advisable = advisableStrainRange({
+    recovery:   todayRecovery?.recoveryScore,
+    sleepScore: todayRecovery?.sleepScore,
+    tsb:        latestTsb,
+    ctl:        latestLoad?.ctl,
+    atl:        latestLoad?.atl,
+  });
   // Daily-activity floor from today's active energy + exercise minutes (partial, intra-day).
   const [todayActiveMap, todayExMap] = await Promise.all([
     fetchDailyActiveEnergy(todayStart, now),
@@ -1510,7 +1520,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor)
+    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
