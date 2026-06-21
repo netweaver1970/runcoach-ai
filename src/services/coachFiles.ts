@@ -220,7 +220,11 @@ export async function buildKnowledgePrompt(): Promise<string> {
   return parts.join('\n\n---\n\n');
 }
 
-/** Ask the LLM to improve/expand a knowledge file in place. */
+/**
+ * Ask the LLM to improve/expand a knowledge file. NON-DESTRUCTIVE: returns the
+ * proposed text only — it does NOT write to disk. The caller shows it for review and
+ * the user must explicitly Save to keep it, so a file is never overwritten by the AI.
+ */
 export async function enhanceKnowledge(id: string, instruction?: string): Promise<string> {
   const list = await listKnowledge();
   const meta = list.find(m => m.id === id);
@@ -236,7 +240,28 @@ export async function enhanceKnowledge(id: string, instruction?: string): Promis
       ? `Apply this instruction: ${instruction}`
       : `Refine, deduplicate and add clearly useful, widely-accepted specifics. Keep it focused.`);
   const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1400 })).trim();
-  const cleaned = out.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
-  if (cleaned) await writeKnowledgeContent(id, cleaned);
-  return cleaned;
+  return out.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
+}
+
+// ─── Whole-bundle export/import (used by the global settings backup) ───────────
+
+export interface KnowledgeBundle { meta: KnowledgeMeta[]; contents: Record<string, string>; }
+
+export async function exportKnowledgeBundle(): Promise<KnowledgeBundle> {
+  const meta = await listKnowledge();
+  const contents: Record<string, string> = {};
+  for (const m of meta) contents[m.id] = await readKnowledgeContent(m.id);
+  return { meta, contents };
+}
+
+export async function importKnowledgeBundle(bundle: KnowledgeBundle): Promise<number> {
+  if (!bundle?.meta) return 0;
+  await ensureDir();
+  let n = 0;
+  for (const m of bundle.meta) {
+    await FileSystem.writeAsStringAsync(pathOf(m.id), bundle.contents?.[m.id] ?? '');
+    n++;
+  }
+  await writeIndex(bundle.meta);
+  return n;
 }

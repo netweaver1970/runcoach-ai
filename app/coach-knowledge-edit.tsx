@@ -25,6 +25,7 @@ export default function CoachKnowledgeEditScreen() {
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
+  const [proposed, setProposed] = useState(false);
   const builtin = isBuiltinId(id ?? '');
 
   useEffect(() => {
@@ -41,12 +42,17 @@ export default function CoachKnowledgeEditScreen() {
   const save = async () => {
     await writeKnowledgeContent(id!, content);
     if (!builtin) await renameKnowledge(id!, title.trim() || 'Untitled', desc.trim());
-    setSaved(true); setTimeout(() => setSaved(false), 1500);
+    setSaved(true); setProposed(false); setTimeout(() => setSaved(false), 1500);
   };
 
   const doEnhance = async (instruction?: string) => {
     setEnhancing(true);
-    try { setContent(await enhanceKnowledge(id!, instruction)); }
+    try {
+      const out = await enhanceKnowledge(id!, instruction);
+      setContent(out);
+      setProposed(true);
+      Alert.alert('AI proposal ready', 'Review the suggested content, then tap Save to keep it. Nothing is saved automatically.');
+    }
     catch (e: any) { Alert.alert('Enhance failed', e?.message ?? 'Could not reach the model.'); }
     finally { setEnhancing(false); }
   };
@@ -120,6 +126,7 @@ export default function CoachKnowledgeEditScreen() {
           )}
 
           <Text style={s.label}>CONTENT (markdown)</Text>
+          {proposed && <Text style={s.proposeNote}>✨ AI proposal — unsaved. Tap Save to keep, or edit/Back to discard.</Text>}
           <TextInput
             style={[s.input, s.contentInput]}
             value={content}
@@ -177,6 +184,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     fontSize: 14, color: c.text, borderWidth: 1, borderColor: c.border,
   },
   contentInput: { minHeight: 320, lineHeight: 20, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12.5 },
+  proposeNote: { fontSize: 12, color: '#7c5cf0', marginBottom: 6, fontWeight: '600' },
   btn: { borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
   btnHalf: { flex: 1 },
   btnRow: { flexDirection: 'row', gap: 10 },

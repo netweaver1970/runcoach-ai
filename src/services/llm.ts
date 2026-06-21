@@ -226,7 +226,11 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
-        ...(system ? { system } : {}),
+        // Prompt caching: send the (large, mostly-static) system prompt as a cached
+        // block so repeated calls within the 5-min TTL — e.g. regenerating the coach
+        // plan or back-to-back coaching-file enhancements — bill cached input tokens
+        // (~10% of base) instead of re-reading the whole prompt each time.
+        ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
         messages,
       }),
     });

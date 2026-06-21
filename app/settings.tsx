@@ -32,6 +32,8 @@ import * as Sharing from 'expo-sharing';
 import { useRouter } from 'expo-router';
 import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
+import * as Clipboard from 'expo-clipboard';
+import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
@@ -591,6 +593,54 @@ export default function SettingsScreen() {
             onPress={() => router.push('/debug' as any)}
           >
             <Text style={[styles.btnText, { color: '#8888aa' }]}>HR Debug Screen</Text>
+          </TouchableOpacity>
+        </Section>
+
+        <Section title="Backup & Restore">
+          <Text style={styles.hint}>
+            Save all your settings — theme, AI provider/keys, training thresholds, coaching memory, Bevel
+            calibration and every coaching-knowledge file — to one file you can store or move to another device.
+            The backup contains your API keys; keep it private.
+          </Text>
+          <TouchableOpacity
+            style={styles.btn}
+            onPress={async () => {
+              try {
+                const json = await exportAllSettings(true);
+                const uri = `${FileSystem.cacheDirectory}runcoach-settings-backup.json`;
+                await FileSystem.writeAsStringAsync(uri, json);
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(uri, { mimeType: 'application/json', dialogTitle: 'RunCoachAI settings backup' });
+                } else {
+                  await Clipboard.setStringAsync(json);
+                  Alert.alert('Copied', 'Sharing unavailable — backup copied to clipboard.');
+                }
+              } catch (e: any) { Alert.alert('Backup failed', e?.message ?? String(e)); }
+            }}
+          >
+            <Text style={styles.btnText}>Back Up All Settings</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btn, { marginTop: 8, backgroundColor: c.surfaceAlt }]}
+            onPress={async () => {
+              const json = await Clipboard.getStringAsync();
+              if (!json) { Alert.alert('Clipboard empty', 'Copy a backup file\'s contents first, then restore.'); return; }
+              Alert.alert(
+                'Restore from clipboard',
+                'This overwrites your current settings with the backup in your clipboard. Continue?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Restore', style: 'destructive', onPress: async () => {
+                    try {
+                      const r = await restoreAllSettings(json);
+                      Alert.alert('Restored', `${r.secure} settings, ${r.files} data files, ${r.knowledge} coaching files restored. Restart the app to apply everything.`);
+                    } catch (e: any) { Alert.alert('Restore failed', e?.message ?? String(e)); }
+                  } },
+                ],
+              );
+            }}
+          >
+            <Text style={[styles.btnText, { color: c.textSub }]}>Restore from Clipboard</Text>
           </TouchableOpacity>
         </Section>
 
