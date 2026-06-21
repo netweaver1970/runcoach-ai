@@ -8,6 +8,9 @@
 import * as FileSystem from 'expo-file-system';
 import { callLLM } from './llm';
 import { buildKnowledgePrompt } from './coachFiles';
+import { fetchOurDailyComponents, fetchDailyDurationHistory } from './healthkit';
+import { getLocalWeather } from './weather';
+import { DayStrain } from '../types';
 
 export interface CoachSnapshot {
   date:          string;
@@ -143,6 +146,55 @@ export function computeTimeOnFeetPlan(
     cap7dMin: cap,
     budgetTodayMin: budget,
     yesterdayMin: minsAt(1),
+  };
+}
+
+/**
+ * Build the full coach snapshot from HealthKit + weather for a given day's strain.
+ * Single source used by both the Strain screen and the background day-view updater, so
+ * the on-demand plan and the auto-prepared plan are identical.
+ */
+export async function assembleCoachSnapshot(strain: DayStrain | null): Promise<CoachSnapshot> {
+  const [comps, dur, weather] = await Promise.all([
+    fetchOurDailyComponents(1),
+    fetchDailyDurationHistory(),
+    getLocalWeather().catch(() => null),
+  ]);
+  const dates  = Object.keys(comps).sort();
+  const latest = dates.length ? comps[dates[dates.length - 1]] : {};
+  const date   = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
+  const tof    = computeTimeOnFeetPlan(dur);
+  const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
+  return {
+    date,
+    recovery:     latest.recoveryScore,
+    hrv:          latest.restingHrv,
+    rhr:          latest.restingHr,
+    respRate:     latest.respiratoryRate,
+    spO2:         latest.oxygenSaturation,
+    sleepScore:   latest.sleepScore,
+    sleepMin:     latest.timeAsleep,
+    sleepDebtMin: latest.sleepBank,
+    ctl:          latest.ctl,
+    atl:          latest.cardioLoad,
+    tsb:          latest.tsb,
+    acwr:         strain?.acwr || undefined,
+    strainReal:   strain?.real,
+    advisableLow:  strain?.safeLow,
+    advisableHigh: strain?.safeHigh,
+    readiness:    strain?.readiness,
+    drivers:      strain?.drivers,
+    recentStrain: strainHist.slice(-10),
+    recentTimeOnFeet:  tof.series14,
+    tof7d:             tof.tof7d,
+    tofPrev7d:         tof.tofPrev7d,
+    tofBudgetTodayMin: tof.budgetTodayMin,
+    yesterdayTofMin:   tof.yesterdayMin,
+    yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
+    weather: weather ? {
+      tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
+      windKmh: weather.windKmh, description: weather.description, place: weather.place,
+    } : undefined,
   };
 }
 

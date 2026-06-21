@@ -34,6 +34,7 @@ import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
+import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
 import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
@@ -73,6 +74,8 @@ export default function SettingsScreen() {
   const [coachMemory, setCoachMemory] = useState('');
   const [memorySaved, setMemorySaved] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [dayViewAuto, setDayViewAuto] = useState(true);
+  const [preparing, setPreparing] = useState(false);
 
   useEffect(() => {
     loadLLMConfig().then(cfg => {
@@ -90,6 +93,7 @@ export default function SettingsScreen() {
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
+    isAutoDayViewEnabled().then(setDayViewAuto);
   }, []);
 
   const setPZ = (key: keyof PowerZones, raw: string) => {
@@ -380,6 +384,51 @@ export default function SettingsScreen() {
               thumbColor="#fff"
             />
           </View>
+        </Section>
+
+        {/* Auto day view */}
+        <Section title="Auto Day View">
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Prepare automatically each morning</Text>
+              <Text style={styles.switchSub}>
+                When last night's sleep is fully determined, refresh all KPIs, generate the AI day view, and
+                notify you it's ready. Also runs when the app detects new sleep data.
+              </Text>
+            </View>
+            <Switch
+              value={dayViewAuto}
+              onValueChange={async (v) => {
+                setDayViewAuto(v);
+                await setAutoDayViewEnabled(v);
+                if (v) await requestNotificationPermissions();
+              }}
+              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              thumbColor="#fff"
+            />
+          </View>
+          <TouchableOpacity
+            style={[styles.btn, { marginTop: 10 }, preparing && { opacity: 0.6 }]}
+            disabled={preparing}
+            onPress={async () => {
+              setPreparing(true);
+              try {
+                const r = await maybeRunDayView({ months: 3, force: true, notify: true });
+                Alert.alert(
+                  r.ran ? 'Day view prepared' : 'Not ready yet',
+                  r.ran
+                    ? `Recovery ${r.recovery}/100${r.headline ? `\n${r.headline}` : ''}\nKPIs refreshed and today's plan generated.`
+                    : (r.reason === 'night not yet determined'
+                        ? "Last night's sleep hasn't fully synced from Apple Health yet. Open the Health app to force a sync, then try again."
+                        : 'Already prepared for today.'),
+                );
+              } catch (e: any) {
+                Alert.alert('Prepare failed', e?.message ?? String(e));
+              } finally { setPreparing(false); }
+            }}
+          >
+            <Text style={styles.btnText}>{preparing ? 'Preparing…' : 'Prepare today’s view now'}</Text>
+          </TouchableOpacity>
         </Section>
 
         {/* Weekly coach */}

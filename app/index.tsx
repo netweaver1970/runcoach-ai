@@ -28,6 +28,7 @@ import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, getTrainingRecommendation, TrainingRecommendation } from '../src/services/claude';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus } from '../src/services/trainingLoad';
+import { maybeRunDayView, startSleepObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
 import { loadRunMeta } from '../src/services/runMeta';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain } from '../src/types';
@@ -139,6 +140,12 @@ export default function HomeScreen() {
       if (key && snap.runs.length > 0) {
         refreshRecommendation(snap);
       }
+
+      // Auto-prepare the AI day view once last night is fully determined (idempotent
+      // per night; reuses this snapshot; silent — they're already in the app).
+      isAutoDayViewEnabled().then(on => {
+        if (on) maybeRunDayView({ months, snap, notify: false }).catch(() => {});
+      });
     } catch (err: any) {
       Alert.alert('Error loading health data', err.message);
     } finally {
@@ -172,6 +179,9 @@ export default function HomeScreen() {
 
   // ── Initial load ────────────────────────────────────────────────────────
   useEffect(() => { load(); }, [load]);
+
+  // Wake the app on new sleep data (HealthKit observer) → auto-prepare the day view.
+  useEffect(() => { startSleepObserver(syncMonthsRef.current); }, []);
 
   // ── Re-apply overrides when returning from workout detail ─────────────────
   // IMPORTANT: do NOT close over `snapshot` here — useCallback(fn, []) captures
