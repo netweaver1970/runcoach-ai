@@ -16,6 +16,7 @@ import {
   fetchOvernightHRHistory,
   fetchStrainHistory,
   fetchRecoveryHistory,
+  fetchOurDailyComponents,
 } from '../src/services/healthkit';
 import { WeeklyMileage, TimelineEvent } from '../src/types';
 import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
@@ -23,7 +24,21 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 type HistoryType = 'km' | 'time' | 'vo2' | 'rhr' | 'hrv' | 'timeline' | 'strain' | 'recovery'
   | 'sleep-total' | 'sleep-deep' | 'sleep-rem' | 'sleep-score' | 'sleep-efficiency'
-  | 'sleep-hrdip' | 'sleep-bank' | 'sleep-awake';
+  | 'sleep-hrdip' | 'sleep-bank' | 'sleep-awake'
+  // component sub-metrics (sourced from fetchOurDailyComponents)
+  | 'exercise-duration' | 'daytime-hr' | 'total-energy' | 'step-count'
+  | 'resp-rate' | 'spo2' | 'cardio-load';
+
+// Sub-metric history types → the key inside fetchOurDailyComponents' per-day record.
+const COMPONENT_KEY: Partial<Record<HistoryType, string>> = {
+  'exercise-duration': 'exerciseDuration',
+  'daytime-hr':        'daytimeHR',
+  'total-energy':      'totalEnergy',
+  'step-count':        'stepCount',
+  'resp-rate':         'respiratoryRate',
+  'spo2':              'oxygenSaturation',
+  'cardio-load':       'cardioLoad',
+};
 type Period = '1M' | '3M' | '6M' | '1Y';
 
 const PERIOD_MONTHS: Record<Period, number> = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12 };
@@ -67,6 +82,13 @@ const CONFIGS: Record<Exclude<HistoryType, 'timeline'>, {
   'sleep-hrdip':    { title: 'HR Dip',           unit: '%',         color: '#e74c3c', aggregate: 'avg' },
   'sleep-bank':     { title: 'Sleep Bank',        unit: 'min',       color: '#27ae60', aggregate: 'avg' },
   'sleep-awake':    { title: 'Time Awake',        unit: 'min',       color: '#e67e22', aggregate: 'avg' },
+  'exercise-duration':{ title: 'Exercise Duration', unit: 'min',     color: '#2980b9', aggregate: 'avg' },
+  'daytime-hr':     { title: 'Daytime HR',        unit: 'bpm',       color: '#e74c3c', aggregate: 'avg' },
+  'total-energy':   { title: 'Total Energy',      unit: 'kcal',      color: '#e67e22', aggregate: 'avg' },
+  'step-count':     { title: 'Step Count',        unit: '',          color: '#16a085', aggregate: 'avg' },
+  'resp-rate':      { title: 'Respiratory Rate',  unit: 'rpm',       color: '#2980b9', aggregate: 'avg' },
+  'spo2':           { title: 'Oxygen Saturation', unit: '%',         color: '#27ae60', aggregate: 'avg' },
+  'cardio-load':    { title: 'Cardio Load',       unit: '',          color: '#F97316', aggregate: 'avg' },
 };
 
 function fmtInt(v: number): string { return String(Math.round(v)); }
@@ -554,7 +576,10 @@ export default function HistoryScreen() {
   const router   = useRouter();
   const s = useThemedStyles(makeS);
 
-  const [period, setPeriod]             = useState<Period>(type === 'strain' ? '1M' : '3M');
+  // Default to the 1-month view for strain/sleep/recovery + their sub-components;
+  // keep 3M for running mileage/time/VO₂ where a longer trend reads better.
+  const RUNNING_TYPES = new Set(['km', 'time', 'vo2']);
+  const [period, setPeriod]             = useState<Period>(RUNNING_TYPES.has(type as string) ? '3M' : '1M');
   const [pageOffset, setPageOffset]     = useState(0);
   const [rawData, setRawData]           = useState<DataPoint[]>([]);
   const [prevRawData, setPrevRawData]   = useState<DataPoint[]>([]);
@@ -623,6 +648,15 @@ export default function HistoryScreen() {
       } else if (histType === 'recovery') {
         const v = await fetchRecoveryHistory(months, endDate);
         const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      } else if (histType in COMPONENT_KEY) {
+        // Sub-metric (exercise duration, daytime HR, energy, steps, resp rate, SpO₂, cardio load)
+        const comps = await fetchOurDailyComponents(months, endDate);
+        const key = COMPONENT_KEY[histType]!;
+        const daily = Object.entries(comps)
+          .filter(([, c]) => c[key] !== undefined)
+          .map(([date, c]) => ({ label: date, fullDate: date, value: c[key] }))
+          .sort((a, b) => a.fullDate.localeCompare(b.fullDate));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (histType !== 'timeline' && !SLEEP_TYPES.has(histType)) {
         const h = await fetchHRVHistory(months, endDate);

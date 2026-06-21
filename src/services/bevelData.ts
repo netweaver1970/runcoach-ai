@@ -152,14 +152,16 @@ export function buildExportPayload(
   ours: Record<string, Record<string, number>>,
   bevelAverages: Record<string, BevelComponentAvg>,
 ): string {
+  // Compact (no indentation) — smallest payload to copy/paste. ours[date] also carries
+  // cardioLoad (ATL) / ctl / tsb for cross-model verification.
   return JSON.stringify({
     generatedAt: new Date().toISOString(),
     app: 'RunCoachAI',
-    note: 'Canonical units: durations & clock times in minutes; energy kcal; % as number.',
-    bevelAverages,   // exact Bevel 30-day averages + bands per component
-    bevelDays: days, // exact daily Bevel values (today + any imported days)
-    ours,            // our per-day component values
-  }, null, 2);
+    note: 'Canonical units: durations & clock in min; energy kcal; % as number. ours[date] also has cardioLoad(ATL)/ctl/tsb.',
+    bevelAverages,
+    bevelDays: days,
+    ours,
+  });
 }
 
 // ─── Value parsing (raw on-screen string → canonical number) ──────────────────────

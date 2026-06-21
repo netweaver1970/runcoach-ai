@@ -3146,6 +3146,18 @@ export async function fetchOurDailyComponents(
     day(b.date).sleepBank = b.bank;
   }
 
+  // Cardio Load (ATL) + CTL + TSB per day — for the history viewer + export / cross-model
+  // verification. Warm the EWMA a full year before the window so values are converged.
+  const clKcal = await fetchDailyActiveEnergy(new Date(from.getTime() - 365 * 86_400_000), end);
+  const clLoad = new Map<string, number>();
+  for (const [d, k] of clKcal) clLoad.set(d, k * STRAIN_KCAL_TO_LOAD);
+  for (const dl of computeTrainingLoadSeries(clLoad, from, end)) {
+    const r = day(dl.date);
+    r.cardioLoad = Math.round(dl.atl * 10) / 10;
+    r.ctl = Math.round(dl.ctl * 10) / 10;
+    r.tsb = Math.round(dl.tsb * 10) / 10;
+  }
+
   return out;
 }
 
