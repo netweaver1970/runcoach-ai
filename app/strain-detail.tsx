@@ -156,6 +156,12 @@ export default function StrainDetailScreen() {
                 <Text style={s.coachTarget}>target {plan.strainLow}–{plan.strainHigh}%</Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
+              {plan.strength ? (
+                <View style={s.strengthRow}>
+                  <Text style={s.strengthLabel}>🦵 LEG STRENGTH</Text>
+                  <Text style={s.strengthText}>{plan.strength}</Text>
+                </View>
+              ) : null}
               <Text style={s.coachRationale}>{plan.rationale}</Text>
               {plan.cautions ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
               <TouchableOpacity onPress={requestPlan} disabled={planLoading}>
@@ -262,6 +268,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   intensityText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
   coachTarget: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   coachSession: { fontSize: 14, color: c.text, fontWeight: '600', marginBottom: 6, lineHeight: 20 },
+  strengthRow: { backgroundColor: c.bg, borderRadius: 8, padding: 10, marginBottom: 8 },
+  strengthLabel: { fontSize: 10, fontWeight: '800', color: '#16a085', letterSpacing: 0.4, marginBottom: 3 },
+  strengthText: { fontSize: 13, color: c.text, lineHeight: 19 },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },
   coachCaution: { fontSize: 12, color: '#e67e22', marginTop: 8, lineHeight: 18 },
   coachRefresh: { fontSize: 12, color: '#FF6B35', fontWeight: '600', marginTop: 12 },

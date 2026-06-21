@@ -472,24 +472,26 @@ export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
   // Illness / overreach guards — cap hard when the body is flagging stress.
   if (i.respRate != null && i.respBaseline != null && i.respBaseline > 0 &&
       i.respRate > i.respBaseline * 1.12) {
-    readiness = Math.min(readiness, 45);
+    readiness = Math.min(readiness, 40);
     drivers.push('elevated respiratory rate');
   }
   if (i.spO2 != null && i.spO2 > 0 && i.spO2 < 95) {
-    readiness = Math.min(readiness, 45);
+    readiness = Math.min(readiness, 40);
     drivers.push('low SpO₂');
   }
 
   readiness = clamp01to100(readiness);
 
-  // Map readiness → advisable mid-strain. readiness 100 → ~70, 55 → ~50, 0 → ~25.
-  const safeMid = clamp01to100(25 + readiness * 0.45);
-  // Tighten the band when readiness is decisive (clearly high or low), widen it in
-  // the ambiguous middle where the call is more "athlete's choice".
-  const width   = 9 + Math.round((1 - Math.abs(readiness - 50) / 50) * 6); // 9–15
+  // Map readiness → advisable mid-strain — deliberately CONSERVATIVE (injury-first).
+  // readiness 100 → ~58, 55 → ~40, 0 → ~18. The ceiling is held lower than the floor
+  // is loose, so the safe option is always "go a bit easier".
+  const safeMid    = clamp01to100(18 + readiness * 0.40);
+  const spread     = 1 - Math.abs(readiness - 50) / 50;     // 0 at extremes, 1 mid
+  const widthUp    = 6 + Math.round(spread * 3);             // 6–9  (tight ceiling)
+  const widthDown  = 11 + Math.round(spread * 4);            // 11–15 (easier is fine)
   return {
-    safeLow:  clamp01to100(safeMid - width),
-    safeHigh: clamp01to100(safeMid + width),
+    safeLow:  clamp01to100(safeMid - widthDown),
+    safeHigh: clamp01to100(safeMid + widthUp),
     safeMid,
     readiness: Math.round(readiness),
     acwr: Math.round(acwr * 100) / 100,
