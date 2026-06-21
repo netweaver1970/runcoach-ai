@@ -1188,8 +1188,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       [] as any[]
     ),
     loadRunMeta(),
-    // Daily active energy (all movement) — basis for strain + CTL/ATL. Wide window for warmup.
-    fetchDailyActiveEnergy(daysAgo(Math.max(months * 30, 150)), now),
+    // Daily active energy (all movement) — basis for strain + CTL/ATL. Warm up a full
+    // year (~8.7× the 42-day CTL time-constant) so today's CTL/ATL/TSB are fully converged
+    // (seed bias <0.02%) and match the training-load detail screen exactly.
+    fetchDailyActiveEnergy(daysAgo(Math.max(months * 30, 365)), now),
   ]);
 
   // Classify runs AFTER we have longRunMinutes
@@ -2399,7 +2401,11 @@ export async function fetchTrainingLoadHistory(
 ): Promise<DailyLoad[]> {
   const end      = toDate ?? new Date();
   const fromDate = new Date(end.getTime() - months * 30 * 86_400_000);
-  const warmFrom = new Date(fromDate.getTime() - 42 * 86_400_000); // 42d CTL warmup
+  // Warm up a full year before the visible window (≈8.7× the 42-day CTL time-constant).
+  // The old 42-day warmup = one time-constant, leaving ~37% seed bias in CTL — which made
+  // the detail's Form (TSB) disagree with the home card and vary per period. A year of
+  // warm-up fully converges the EWMA so every view agrees.
+  const warmFrom = new Date(fromDate.getTime() - 365 * 86_400_000);
 
   // Daily active energy → load (× scale). Captures ALL movement, not just runs.
   const kcalByDay = await fetchDailyActiveEnergy(warmFrom, end);
