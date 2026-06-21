@@ -484,8 +484,10 @@ export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
     readiness = Math.min(readiness, 40);
     drivers.push('elevated respiratory rate');
   }
-  if (i.spO2 != null && i.spO2 > 0 && i.spO2 < 95) {
-    readiness = Math.min(readiness, 40);
+  // Brief overnight dips to ~92–95% are normal for many sleepers; only a real
+  // desaturation matters, and even then apply a soft penalty, not a hard cap.
+  if (i.spO2 != null && i.spO2 > 0 && i.spO2 < 92) {
+    readiness -= Math.min(15, (92 - i.spO2) * 4);
     drivers.push('low SpO₂');
   }
 

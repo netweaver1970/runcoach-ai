@@ -811,7 +811,7 @@ Coaching method — weigh ALL of these like a real coach:
 • FITNESS (CTL) & ramp: rising fast → caution (injury risk); flat/declining → room to build.
 • ALL ACTIVITY: account for today's logged activity and recent cross-training (a leg day or long hike IS load — don't stack hard running on top).
 • PATTERN: avoid two hard days back-to-back; respect days-since-last-run and weekly volume.
-• STRAIN: today's actual strain so far is provided — cite THAT exact number; never invent a different strain value (don't say "zero" when it is e.g. 7%). Keep your call within the advisable band, which is the single target shown to the athlete.
+• STRAIN: today's actual strain so far is provided — cite THAT exact number; never invent a different strain value (don't say "zero" when it is e.g. 7%). State explicitly whether it is BELOW / WITHIN / ABOVE the advisable band and why that's appropriate for your call (e.g. "strain 7% is below the 23–47% band — appropriate, since low recovery calls for rest"). The band is the single target shown to the athlete.
 • TIME OF DAY: if it's already late evening, prefer a shorter/easier session or suggest tomorrow.
 • WEATHER: factor temperature/conditions — hot & humid → reduce intensity/duration & note hydration; cold/icy → caution on intervals; nice → fine for quality. Mention weather in the reason ONLY when it changes the plan.
 

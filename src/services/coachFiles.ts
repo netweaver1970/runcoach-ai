@@ -81,7 +81,8 @@ ALL signals are clearly green.
 - Include leg-strength / injury-prevention work in EVERY plan (see the strength and
   drills files). Even rest days get light mobility + activation.
 - ACWR sweet spot 0.8–1.3; >1.4 is a spike → pull right back. Negative TSB = fatigue →
-  easy/recovery only. HRV below baseline, elevated resting/respiratory rate, low SpO₂,
+  easy/recovery only. HRV below baseline, elevated resting/respiratory rate, a real SpO₂
+  desaturation (below ~92% — brief overnight dips to 92–95% are normal and don't count),
   or sleep debt → reduce load and watch for illness. Keep ≥48h between hard efforts.
 
 ## Output
