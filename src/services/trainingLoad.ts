@@ -355,9 +355,16 @@ export function strainFromTrimp(trimp: number): number {
 // component and a far smoother proxy than raw steps (a low-step but high-burn day still
 // scores). Applied as a FLOOR (max with cardio TRIMP), so it lifts rest/unlogged days
 // without inflating a logged-workout day whose cardio already dominates.
-const ENERGY_TRIMP_K = 0.018; // TRIMP per active kcal — tuned to Bevel's ~26 30-day mean
-export function activityFloorTrimp(activeEnergyKcal: number): number {
-  return Math.max(0, activeEnergyKcal) * ENERGY_TRIMP_K;
+// Blend two activity signals and take whichever indicates MORE activity, so both
+// general-movement days (active energy) and exercise-heavy/low-burn days (Apple
+// exercise minutes — e.g. a long easy session) score. Tuned toward Bevel's ~26 mean.
+const ENERGY_TRIMP_K = 0.030; // TRIMP per active kcal
+const EXMIN_TRIMP    = 0.60;  // TRIMP per Apple exercise minute
+export function activityFloorTrimp(activeEnergyKcal: number, exerciseMin: number): number {
+  return Math.max(
+    Math.max(0, activeEnergyKcal) * ENERGY_TRIMP_K,
+    Math.max(0, exerciseMin) * EXMIN_TRIMP,
+  );
 }
 
 /**

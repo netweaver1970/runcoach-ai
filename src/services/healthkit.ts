@@ -1497,11 +1497,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
   }
   const latestTsb = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1].tsb : 0;
-  // Daily-activity floor from today's ACTIVE ENERGY (partial, intra-day), so a day of
-  // walking/unlogged activity isn't scored 0 like Bevel never does.
-  const todayActiveMap = await fetchDailyActiveEnergy(todayStart, now);
+  // Daily-activity floor from today's active energy + exercise minutes (partial, intra-day).
+  const [todayActiveMap, todayExMap] = await Promise.all([
+    fetchDailyActiveEnergy(todayStart, now),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', todayStart, now),
+  ]);
   const todayActive = [...todayActiveMap.values()][0] ?? 0; // window is today only → one bucket
-  const todayActivityFloor = activityFloorTrimp(todayActive);
+  const todayExMin  = [...todayExMap.values()][0] ?? 0;
+  const todayActivityFloor = activityFloorTrimp(todayActive, todayExMin);
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
@@ -2468,16 +2471,19 @@ export async function fetchStrainHistory(
     }
   }
 
-  // Daily-activity floor input: ACTIVE ENERGY (kcal), so days of walking / unlogged
-  // activity aren't scored ~0 — mirrors Bevel's energy-driven rest-day strain.
-  const activeByDay = await fetchDailyActiveEnergy(since, end);
+  // Daily-activity floor inputs: active energy (general movement) + Apple exercise
+  // minutes (catches exercise-heavy/low-burn days), so neither type of activity reads 0.
+  const [activeByDay, exMinByDay] = await Promise.all([
+    fetchDailyActiveEnergy(since, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', since, end),
+  ]);
 
   // One entry per day that has HR data — including rest days — so the chart shows a
   // continuous daily series (and the clear run-day vs rest-day pattern).
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
     const cardio = computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const floor  = activityFloorTrimp(activeByDay.get(day) ?? 0);
+    const floor  = activityFloorTrimp(activeByDay.get(day) ?? 0, exMinByDay.get(day) ?? 0);
     const trimp  = Math.max(cardio, floor) + (muscularByDay.get(day) ?? 0);
     out.push({ date: day, value: strainFromTrimp(trimp) }); // 0-100 (Bevel %)
   }
