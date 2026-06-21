@@ -2413,13 +2413,11 @@ async function fetchDailyActiveEnergy(fromDate: Date, toDate: Date): Promise<Map
 const CARDIO_WARM_DAYS = 120;
 
 /**
- * Daily CARDIO load = HR-based Banister TRIMP per day (only elevated-HR effort counts),
- * matching how Bevel computes Cardio Load — so rest/easy days read low instead of being
- * propped up by everyday-movement energy. Replaces the active-energy basis for CTL/ATL.
- * Queries newest-first so any sample-cap truncation drops the OLDEST warm-up days, never
- * the recent ones that drive the current value.
+ * Compute daily cardio TRIMP for one window by querying HR. Day keys are LOCAL dates.
+ * Used by the cached wrapper below in bounded chunks so a single query never exceeds the
+ * sample cap (which would truncate and corrupt long windows).
  */
-export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
+async function computeCardioTrimpWindow(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
   const [hrRaw, restingRaw, workouts] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRate,
@@ -2445,25 +2443,88 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date): Promi
   for (const s of (hrRaw as any[])) {
     const hr = s.quantity as number;
     if (hr > peak) peak = hr;
-    const day = toDateStr(toISOStr(s.startDate));
-    const t   = new Date(toISOStr(s.startDate)).getTime();
+    const d   = new Date(toISOStr(s.startDate));
+    const day = toLocalDateStr(d);
     if (!byDay.has(day)) byDay.set(day, []);
-    byDay.get(day)!.push({ t, hr });
+    byDay.get(day)!.push({ t: d.getTime(), hr });
   }
   const maxHR = Math.max(185, Math.min(205, Math.round(peak)));
 
   const windowsByDay = new Map<string, { s: number; e: number }[]>();
   for (const w of (workouts as any[])) {
-    const day = toDateStr(toISOStr(w.startDate));
-    const ws  = new Date(toISOStr(w.startDate)).getTime();
+    const wd  = new Date(toISOStr(w.startDate));
+    const day = toLocalDateStr(wd);
     if (!windowsByDay.has(day)) windowsByDay.set(day, []);
-    windowsByDay.get(day)!.push({ s: ws, e: ws + workoutDurationSec(w) * 1000 });
+    windowsByDay.get(day)!.push({ s: wd.getTime(), e: wd.getTime() + workoutDurationSec(w) * 1000 });
   }
 
   for (const [day, samples] of byDay) {
     samples.sort((a, b) => a.t - b.t); // TRIMP integration needs time order
     out.set(day, computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []));
   }
+  return out;
+}
+
+// ─── Cached daily cardio TRIMP ────────────────────────────────────────────────
+// Per-day TRIMP is expensive (HR query). We persist each day's value once and only
+// recompute the recent tail (today is intra-day; yesterday can still receive watch
+// data). Missing older days are filled in bounded chunks so each HR query stays under
+// the sample cap — which keeps 6M/1Y views accurate and makes the home load fast after
+// the first run. It's a derived cache, so it's intentionally excluded from backups.
+const TRIMP_CACHE_FILE      = `${FileSystem.documentDirectory}cardio-trimp-cache.json`;
+const TRIMP_CHUNK_DAYS      = 45;
+const TRIMP_RECOMPUTE_TAIL  = 2;
+
+async function loadTrimpCache(): Promise<Record<string, number>> {
+  try {
+    const info = await FileSystem.getInfoAsync(TRIMP_CACHE_FILE);
+    if (!info.exists) return {};
+    return JSON.parse(await FileSystem.readAsStringAsync(TRIMP_CACHE_FILE)) as Record<string, number>;
+  } catch { return {}; }
+}
+async function saveTrimpCache(obj: Record<string, number>): Promise<void> {
+  try { await FileSystem.writeAsStringAsync(TRIMP_CACHE_FILE, JSON.stringify(obj)); } catch { /* ignore */ }
+}
+function listDayKeys(from: Date, to: Date): string[] {
+  const out: string[] = [];
+  const cur = new Date(from); cur.setHours(0, 0, 0, 0);
+  const end = new Date(to);   end.setHours(0, 0, 0, 0);
+  while (cur.getTime() <= end.getTime()) { out.push(toLocalDateStr(cur)); cur.setDate(cur.getDate() + 1); }
+  return out;
+}
+
+/**
+ * Daily CARDIO load = HR-based Banister TRIMP per day (Bevel-style), cached. Returns the
+ * map for [fromDate, toDate]; recomputes only today + yesterday each call, fills any
+ * uncached older days in chunks, and persists the result.
+ */
+export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
+  const cache = await loadTrimpCache();
+  let changed = false;
+
+  // 1) Recent tail — always fresh (today partial, yesterday may have synced more).
+  const tailStart = daysAgo(TRIMP_RECOMPUTE_TAIL);
+  const tailFrom  = tailStart.getTime() > fromDate.getTime() ? tailStart : fromDate;
+  const tail = await computeCardioTrimpWindow(tailFrom, toDate);
+  for (const d of listDayKeys(tailFrom, toDate)) { cache[d] = tail.get(d) ?? 0; changed = true; }
+
+  // 2) Fill still-missing older days in bounded chunks (skip fully-cached chunks).
+  const fillEnd = new Date(tailStart); fillEnd.setHours(0, 0, 0, 0);
+  let cursor = new Date(fromDate); cursor.setHours(0, 0, 0, 0);
+  while (cursor.getTime() < fillEnd.getTime()) {
+    const chunkEnd  = new Date(Math.min(cursor.getTime() + TRIMP_CHUNK_DAYS * 86_400_000, fillEnd.getTime()));
+    const chunkDays = listDayKeys(cursor, new Date(chunkEnd.getTime() - 86_400_000));
+    if (chunkDays.some(d => !(d in cache))) {
+      const m = await computeCardioTrimpWindow(cursor, chunkEnd);
+      for (const d of chunkDays) cache[d] = m.get(d) ?? 0;
+      changed = true;
+    }
+    cursor = chunkEnd;
+  }
+  if (changed) await saveTrimpCache(cache);
+
+  const out = new Map<string, number>();
+  for (const d of listDayKeys(fromDate, toDate)) if (d in cache) out.set(d, cache[d]);
   return out;
 }
 
