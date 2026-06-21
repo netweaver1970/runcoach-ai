@@ -10,6 +10,7 @@ import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus, advisableStrainRange } from '../src/services/trainingLoad';
 import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan, TofPlan } from '../src/services/coach';
+import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -23,6 +24,7 @@ export default function StrainDetailScreen() {
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [tof, setTof] = useState<TofPlan | null>(null);
+  const [weather, setWeather] = useState<WeatherNow | null>(null);
   const [loadingH, setLoadingH] = useState(true);
   const [plan, setPlan] = useState<CoachPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
@@ -33,6 +35,7 @@ export default function StrainDetailScreen() {
       .then(([c, dur]) => { setComps(c); setTof(computeTimeOnFeetPlan(dur)); })
       .catch(() => {})
       .finally(() => setLoadingH(false));
+    getLocalWeather().then(setWeather).catch(() => {});
   }, []);
 
   const hist = useMemo(
@@ -94,6 +97,10 @@ export default function StrainDetailScreen() {
         tofBudgetTodayMin: tof?.budgetTodayMin,
         yesterdayTofMin:   tof?.yesterdayMin,
         yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
+        weather: weather ? {
+          tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
+          windKmh: weather.windKmh, description: weather.description, place: weather.place,
+        } : undefined,
       });
       setPlan(p);
       await saveCachedPlan(latestDate, p);
@@ -149,6 +156,11 @@ export default function StrainDetailScreen() {
             {tof && (
               <Text style={s.readyTof}>
                 7-day time on feet {tof.tof7d}m · +10% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
+              </Text>
+            )}
+            {weather && (
+              <Text style={s.readyTof}>
+                🌡 {weatherSummary(weather)}{weather.place ? ` · ${weather.place}` : ''}
               </Text>
             )}
           </View>

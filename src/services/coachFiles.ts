@@ -1,0 +1,242 @@
+/**
+ * Coaching knowledge files. The coach's rules and references live in editable
+ * markdown files (not a hardcoded prompt), so the athlete can tune them, add their
+ * own (preferred strength exercises, pre-run drills, a structured schedule…), import
+ * / export them, and have the LLM enhance them in place. Every enabled file is
+ * concatenated into the coach's system prompt.
+ *
+ * Storage: one markdown file per entry under <docDir>/coach-knowledge/, plus an
+ * index.json with metadata (title, enabled, order, builtin).
+ */
+import * as FileSystem from 'expo-file-system';
+import { callLLM } from './llm';
+
+export interface KnowledgeMeta {
+  id:          string;
+  title:       string;
+  description: string;
+  enabled:     boolean;
+  builtin:     boolean;   // a seeded default — can edit/disable/reset, but not delete
+  order:       number;
+}
+
+const DIR    = `${FileSystem.documentDirectory}coach-knowledge/`;
+const INDEX  = `${DIR}index.json`;
+const pathOf = (id: string) => `${DIR}${id}.md`;
+
+async function ensureDir(): Promise<void> {
+  const info = await FileSystem.getInfoAsync(DIR);
+  if (!info.exists) await FileSystem.makeDirectoryAsync(DIR, { intermediates: true });
+}
+
+async function readIndex(): Promise<KnowledgeMeta[]> {
+  try {
+    const info = await FileSystem.getInfoAsync(INDEX);
+    if (!info.exists) return [];
+    return JSON.parse(await FileSystem.readAsStringAsync(INDEX)) as KnowledgeMeta[];
+  } catch { return []; }
+}
+
+async function writeIndex(list: KnowledgeMeta[]): Promise<void> {
+  await ensureDir();
+  await FileSystem.writeAsStringAsync(INDEX, JSON.stringify(list, null, 2));
+}
+
+// ─── Default (builtin) knowledge ──────────────────────────────────────────────
+
+const DEFAULT_RULES = `# Coaching Rules (authoritative)
+
+You are a STRICT, injury-prevention-FIRST endurance-running coach. Prime directive:
+keep the athlete healthy and uninjured. When signals are borderline or conflict,
+ALWAYS choose the more conservative option — less intensity, less volume, lower strain.
+
+## Readiness
+Readiness is multi-factor, not recovery alone: weigh HRV vs baseline, resting HR vs
+baseline, respiratory rate, SpO₂, sleep quality + sleep debt, form (TSB) and the
+acute:chronic workload ratio (ACWR). Default to easy; allow hard/moderate only when
+ALL signals are clearly green.
+
+## Session sequencing (no sequential long runs)
+- NEVER schedule sequential longer / quality sessions. Alternate strictly:
+  Quality → Recovery → Quality.
+- If the previous 1–2 days were a quality, hard, or long run, today MUST be a genuine
+  recovery day (short + easy) or rest — never a second longer or higher-volume run
+  back-to-back. Use yesterdayStrain / yesterdayTofMin / recentTimeOnFeet to judge this.
+- Recovery days stay SHORT and easy. Never let an easy day creep into a longer Z2 run.
+
+## Rolling volume cap (+10%)
+- 7-day rolling time-on-feet must not increase more than 10% week-over-week.
+- Today's running minutes must NOT exceed tofBudgetTodayMin. If it is ~0, prescribe
+  rest or cross-training/strength only. Never exceed the cap to chase a session.
+
+## Environment (temperature & humidity)
+- Heat and humidity raise heart rate and perceived effort, so the SAME run causes more
+  strain. Use the provided weather (tempC, apparentC, humidity) to estimate the
+  environmental load.
+- The combined strain of the run PLUS the warm-up drills must stay within the
+  calculated advisable strain range, and must never exceed the range ceiling by more
+  than 10%. In hot/humid conditions, shorten or ease the run to compensate.
+
+## Strength & guards
+- Include leg-strength / injury-prevention work in EVERY plan (see the strength and
+  drills files). Even rest days get light mobility + activation.
+- ACWR sweet spot 0.8–1.3; >1.4 is a spike → pull right back. Negative TSB = fatigue →
+  easy/recovery only. HRV below baseline, elevated resting/respiratory rate, low SpO₂,
+  or sleep debt → reduce load and watch for illness. Keep ≥48h between hard efforts.
+
+## Output
+"strain" is a 0–100 daily-load score. Recommend a CONSERVATIVE strainLow–strainHigh
+target; prefer the lower half of the advisable band on any doubt. Produce the runner's
+DAILY OUTLOOK as the OUTCOME of these rules applied to all the data.`;
+
+const DEFAULT_STRENGTH = `# Preferred Strength Exercises
+
+Pick 2–4 per plan, rotate, keep it leg/hip/foot focused for running durability:
+- Eccentric calf raises / heel drops — 3×12 (straight + bent knee)
+- Single-leg squats / pistol progressions — 3×8 per leg
+- Step-downs (controlled) — 3×10 per leg
+- Glute bridges / single-leg bridges — 3×12
+- Clamshells & hip abduction — 2×15 per side
+- Tibialis raises — 3×20
+- Hamstring bridges / Nordic curls (assisted) — 3×6
+- Copenhagen planks (adductors) — 2×20s per side
+
+Notes: prioritise eccentric calf + hip work; quality over load; stop if sharp pain.`;
+
+const DEFAULT_DRILLS = `# Pre-Run Drills (dynamic warm-up)
+
+Do BEFORE every run (~8–10 min). These count toward today's strain budget:
+- Leg swings (front/back, side/side) — 10 each
+- Walking lunges with reach — 10
+- A-skips — 2×20m
+- High knees — 2×20m
+- Butt kicks — 2×20m
+- Ankle bounces / pogos — 2×15
+- Strides (build-ups) — 4×15s AFTER easy jog, only on quality days
+
+Cold conditions → extend the warm-up; hot conditions → shorten and hydrate first.`;
+
+const DEFAULT_SCHEDULE = `# Preferred Weekly Structure
+
+A flexible template — the daily readiness + rules always override this:
+- Mon: Recovery (short easy) + strength
+- Tue: Quality (intervals / tempo) — only if readiness green
+- Wed: Recovery (short easy) + strength
+- Thu: Quality (hills or tempo) — only if readiness green
+- Fri: Rest or mobility
+- Sat: Long-ish easy (still within +10% rolling cap)
+- Sun: Recovery (short easy) or rest
+
+Never two quality/long days back-to-back. Keep ≥48h between hard sessions.`;
+
+interface DefaultDef { id: string; title: string; description: string; content: string; }
+const DEFAULTS: DefaultDef[] = [
+  { id: 'coaching-rules',    title: 'Coaching Rules',        description: 'Core injury-first rules the coach must follow', content: DEFAULT_RULES },
+  { id: 'strength-exercises', title: 'Strength Exercises',   description: 'Preferred leg/hip/foot strength work',         content: DEFAULT_STRENGTH },
+  { id: 'pre-run-drills',    title: 'Pre-Run Drills',        description: 'Dynamic warm-up drills before every run',      content: DEFAULT_DRILLS },
+  { id: 'running-schedule',  title: 'Weekly Schedule',       description: 'Preferred structured running week',            content: DEFAULT_SCHEDULE },
+];
+
+const defaultContent = (id: string) => DEFAULTS.find(d => d.id === id)?.content ?? '';
+export const isBuiltinId = (id: string) => DEFAULTS.some(d => d.id === id);
+
+async function seed(): Promise<void> {
+  await ensureDir();
+  const idx = await readIndex();
+  if (idx.length > 0) return;
+  for (const d of DEFAULTS) await FileSystem.writeAsStringAsync(pathOf(d.id), d.content);
+  await writeIndex(DEFAULTS.map((d, i) => ({
+    id: d.id, title: d.title, description: d.description, enabled: true, builtin: true, order: i,
+  })));
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export async function listKnowledge(): Promise<KnowledgeMeta[]> {
+  await seed();
+  return (await readIndex()).sort((a, b) => a.order - b.order);
+}
+
+export async function readKnowledgeContent(id: string): Promise<string> {
+  try {
+    const info = await FileSystem.getInfoAsync(pathOf(id));
+    if (!info.exists) return '';
+    return await FileSystem.readAsStringAsync(pathOf(id));
+  } catch { return ''; }
+}
+
+export async function writeKnowledgeContent(id: string, content: string): Promise<void> {
+  await ensureDir();
+  await FileSystem.writeAsStringAsync(pathOf(id), content);
+}
+
+export async function setKnowledgeEnabled(id: string, enabled: boolean): Promise<void> {
+  const idx = await readIndex();
+  const m = idx.find(x => x.id === id);
+  if (m) { m.enabled = enabled; await writeIndex(idx); }
+}
+
+export async function createKnowledge(title: string, description: string, content = ''): Promise<KnowledgeMeta> {
+  const idx = await readIndex();
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'note';
+  const id = `${slug}-${Date.now().toString(36)}`;
+  const meta: KnowledgeMeta = {
+    id, title: title || 'Untitled', description, enabled: true, builtin: false,
+    order: idx.length ? Math.max(...idx.map(m => m.order)) + 1 : 0,
+  };
+  await writeKnowledgeContent(id, content);
+  await writeIndex([...idx, meta]);
+  return meta;
+}
+
+export async function renameKnowledge(id: string, title: string, description: string): Promise<void> {
+  const idx = await readIndex();
+  const m = idx.find(x => x.id === id);
+  if (m) { m.title = title; m.description = description; await writeIndex(idx); }
+}
+
+export async function deleteKnowledge(id: string): Promise<void> {
+  if (isBuiltinId(id)) return; // builtins can be disabled, not deleted
+  const idx = await readIndex();
+  await writeIndex(idx.filter(m => m.id !== id));
+  try { await FileSystem.deleteAsync(pathOf(id), { idempotent: true }); } catch { /* ignore */ }
+}
+
+/** Restore a builtin file to its shipped default content. */
+export async function resetKnowledge(id: string): Promise<string> {
+  const content = defaultContent(id);
+  if (content) await writeKnowledgeContent(id, content);
+  return content;
+}
+
+/** Concatenate every ENABLED file into the coach's knowledge block. */
+export async function buildKnowledgePrompt(): Promise<string> {
+  const list = (await listKnowledge()).filter(m => m.enabled);
+  const parts: string[] = [];
+  for (const m of list) {
+    const content = (await readKnowledgeContent(m.id)).trim();
+    if (content) parts.push(content);
+  }
+  return parts.join('\n\n---\n\n');
+}
+
+/** Ask the LLM to improve/expand a knowledge file in place. */
+export async function enhanceKnowledge(id: string, instruction?: string): Promise<string> {
+  const list = await listKnowledge();
+  const meta = list.find(m => m.id === id);
+  const current = await readKnowledgeContent(id);
+  const system =
+    `You maintain a running coach's knowledge file titled "${meta?.title ?? id}". ` +
+    `Improve and expand it: practical, concise, well-structured markdown, injury-prevention oriented. ` +
+    `Preserve the athlete's intent and any specific numbers/exercises they listed. ` +
+    `Return ONLY the improved file content — no preamble, no code fences.`;
+  const user =
+    `Current content:\n"""\n${current}\n"""\n\n` +
+    (instruction
+      ? `Apply this instruction: ${instruction}`
+      : `Refine, deduplicate and add clearly useful, widely-accepted specifics. Keep it focused.`);
+  const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1400 })).trim();
+  const cleaned = out.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
+  if (cleaned) await writeKnowledgeContent(id, cleaned);
+  return cleaned;
+}

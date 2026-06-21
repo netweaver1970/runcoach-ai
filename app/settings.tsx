@@ -594,6 +594,20 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Section>
 
+        <Section title="Coaching Knowledge">
+          <Text style={styles.hint}>
+            The coach's rules and references live in editable files that are fed into its prompt — tune the rules,
+            list your preferred strength exercises and pre-run drills, set a weekly schedule, or add your own.
+            Import/export each file or let the AI enhance it.
+          </Text>
+          <TouchableOpacity
+            style={styles.btn}
+            onPress={() => router.push('/coach-knowledge' as any)}
+          >
+            <Text style={styles.btnText}>Manage Coaching Files</Text>
+          </TouchableOpacity>
+        </Section>
+
         {/* Model info */}
         {/* Coaching Memory */}
         <Section title="Coaching Memory">

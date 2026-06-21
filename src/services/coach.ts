@@ -7,6 +7,7 @@
  */
 import * as FileSystem from 'expo-file-system';
 import { callLLM } from './llm';
+import { buildKnowledgePrompt } from './coachFiles';
 
 export interface CoachSnapshot {
   date:          string;
@@ -27,6 +28,10 @@ export interface CoachSnapshot {
   tofBudgetTodayMin?: number;  // max running minutes TODAY under the +10% rolling cap
   yesterdayTofMin?:  number;   // yesterday's running minutes
   yesterdayStrain?:  number;   // yesterday's strain score
+  weather?: {                  // current conditions — heat/humidity raise strain
+    tempC: number; apparentC: number; humidity: number; windKmh: number;
+    description: string; place?: string;
+  };
 }
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
@@ -44,40 +49,18 @@ export interface CoachPlan {
   generatedAt: string;
 }
 
-const SYSTEM = `You are a STRICT, injury-prevention-FIRST endurance-running coach for a data-literate runner. \
-Your prime directive is to keep the athlete healthy and uninjured. When signals are borderline or conflict, \
-ALWAYS choose the more conservative option — less intensity, less volume, lower strain. You receive a JSON \
-snapshot of today's physiology and training load.
+// The detailed rules now live in editable knowledge files (coachFiles.ts). The wrapper
+// keeps only the role framing and the (non-editable) output contract so a user edit
+// can't break JSON parsing.
+const ROLE = `You are a running coach. The COACHING KNOWLEDGE below is AUTHORITATIVE — \
+follow every rule in it. You receive a JSON snapshot of today's physiology, training load, time-on-feet \
+and weather. Produce the runner's DAILY OUTLOOK as the OUTCOME of those rules applied to all the data.`;
 
-Readiness is multi-factor, not recovery alone: weigh HRV vs baseline, resting HR vs baseline, respiratory rate, \
-SpO₂, sleep quality + sleep debt, form (TSB) and the acute:chronic workload ratio (ACWR).
-
-NON-NEGOTIABLE RULES:
-- Stay on the cautious side. Default to easy. Only allow hard/moderate when ALL signals are clearly green.
-- NEVER schedule sequential longer / quality sessions. Alternate strictly: Quality → Recovery → Quality. If the \
-previous 1–2 days were a quality, hard, or long run, today MUST be a genuine recovery day (short + easy) or rest — \
-never a second longer or higher-volume run back-to-back. Use yesterdayStrain / yesterdayTofMin and recentTimeOnFeet \
-to judge this.
-- Recovery days stay SHORT and easy. Do not let an easy day creep into a longer Z2 run — a recovery run is brief and \
-relaxed, clearly shorter than the surrounding quality days.
-- HARD VOLUME CAP (do not violate): 7-day rolling time-on-feet must not increase more than 10% week-over-week. \
-Today's running minutes must NOT exceed tofBudgetTodayMin (provided). If tofBudgetTodayMin is ~0, prescribe rest or \
-cross-training/strength only. Never exceed this cap to chase a session.
-- ALWAYS include leg-strength / injury-prevention work in EVERY plan (even rest days → light mobility + activation). \
-Name 2–4 specific exercises with rough sets×reps from: eccentric calf raises / heel drops, single-leg squats, \
-step-downs, glute bridges, clamshells, hip abduction, tibialis raises, hamstring curls/bridges, Copenhagen planks.
-- ACWR sweet spot 0.8–1.3; >1.4 is a spike → pull right back. Negative TSB = fatigue → easy/recovery only. \
-HRV below baseline, elevated resting/respiratory rate, low SpO₂, or sleep debt → reduce load and watch for illness; \
-never stack hard days on suppressed parasympathetic signals. Keep ≥48h between any hard efforts.
-- "strain" is a 0–100 daily-load score (this app's scale). Recommend a CONSERVATIVE strainLow–strainHigh target; \
-prefer the lower half of the advisable band on any doubt.
-
-Produce the runner's DAILY OUTLOOK as the OUTCOME of these rules applied to all the data. State today's run \
-minutes and how they sit against the rolling-7-day cap. Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
+const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
 {"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"strainLow":number,"strainHigh":number,"rationale":string,"cautions":string}. \
-headline ≤ 12 words (the outlook); session ≤ 50 words (type, run minutes, how it respects the cap & alternation); \
-runMinutes = prescribed running time-on-feet (≤ tofBudgetTodayMin); strength ≤ 40 words; rationale ≤ 45 words \
-(must reference the cap and alternation); cautions ≤ 25 words ("" if none).`;
+headline ≤ 12 words (the outlook); session ≤ 55 words (type, run minutes, how it respects the cap, alternation & weather); \
+runMinutes = prescribed running time-on-feet (≤ tofBudgetTodayMin); strength ≤ 40 words (specific exercises/drills); \
+rationale ≤ 45 words (reference the cap, alternation and weather); cautions ≤ 25 words ("" if none).`;
 
 function clampScore(n: any, fallback: number): number {
   const v = Number(n);
@@ -85,8 +68,10 @@ function clampScore(n: any, fallback: number): number {
 }
 
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
+  const knowledge = await buildKnowledgePrompt();
+  const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}`;
   const txt = await callLLM({
-    system: SYSTEM,
+    system,
     messages: [{ role: 'user', content: JSON.stringify(snap) }],
     maxTokens: 600,
   });
