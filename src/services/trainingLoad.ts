@@ -349,15 +349,15 @@ export function strainFromTrimp(trimp: number): number {
 }
 
 // Daily-activity floor (NEAT + unlogged exercise). Our HR-window TRIMP only counts
-// LOGGED workouts at full weight, so days of walking / unlogged activity (Apple
-// "exercise minutes" + steps with no HKWorkout) wrongly read 0 — while Bevel scores
-// them via Step Count + Exercise Duration. This estimates a TRIMP-equivalent from
-// daily steps + exercise minutes; applied as a FLOOR (max), so it lifts rest/unlogged
-// days but never inflates a logged-workout day whose cardio TRIMP already dominates.
-const STEP_TRIMP_K = 0.0009; // per step
-const EXMIN_TRIMP  = 0.45;   // per Apple exercise minute
-export function activityFloorTrimp(steps: number, exerciseMin: number): number {
-  return Math.max(0, steps) * STEP_TRIMP_K + Math.max(0, exerciseMin) * EXMIN_TRIMP;
+// LOGGED workouts at full weight, so days of walking / unlogged activity wrongly read
+// ~0 — while Bevel scores them via Total Energy / Daytime HR / Steps. We base the
+// floor on ACTIVE ENERGY (kcal) — the effort-reflecting part of Bevel's "Total Energy"
+// component and a far smoother proxy than raw steps (a low-step but high-burn day still
+// scores). Applied as a FLOOR (max with cardio TRIMP), so it lifts rest/unlogged days
+// without inflating a logged-workout day whose cardio already dominates.
+const ENERGY_TRIMP_K = 0.018; // TRIMP per active kcal — tuned to Bevel's ~26 30-day mean
+export function activityFloorTrimp(activeEnergyKcal: number): number {
+  return Math.max(0, activeEnergyKcal) * ENERGY_TRIMP_K;
 }
 
 /**
