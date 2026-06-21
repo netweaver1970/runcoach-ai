@@ -3051,7 +3051,8 @@ export async function fetchOurDailyComponents(
   const bioByDate = new Map(bio.map(b => [b.date, b]));
   for (const b of bio) {
     const r = day(b.date);
-    if (b.hrv > 0)             r.restingHrv = Math.round(b.hrv * 10) / 10;
+    const hrvForCmp = b.hrvMedian > 0 ? b.hrvMedian : b.hrv; // non-stage-weighted ≈ Bevel
+    if (hrvForCmp > 0)         r.restingHrv = Math.round(hrvForCmp * 10) / 10;
     if (b.overnightHR > 0)     r.restingHr = Math.round(b.overnightHR * 10) / 10;
     if (b.respiratoryRate > 0) r.respiratoryRate = Math.round(b.respiratoryRate * 10) / 10;
     if (b.spO2 > 0)            r.oxygenSaturation = Math.round((b.spO2 <= 1 ? b.spO2 * 100 : b.spO2) * 10) / 10;
@@ -3110,6 +3111,7 @@ export async function fetchOurDailyComponents(
 export interface SleepBiometrics {
   date:            string;
   hrv:             number;   // simple mean RMSSD ms (non-awake, quality-filtered) — 0 if unavailable
+  hrvMedian:       number;   // median overnight SDNN (NOT stage-weighted) — tracks Bevel "Resting HRV"
   overnightHR:     number;   // mean HR during non-awake sleep stages
   spO2:            number;   // mean blood oxygen % during sleep — 0 if unavailable
   respiratoryRate: number;   // mean breaths/min during sleep — 0 if unavailable
@@ -3246,6 +3248,13 @@ export async function fetchSleepBiometrics(
       const sessionQualityMap = buildHeartbeatQualityMap(hbsResults[j] as any[]);
       const { weightedRMSSD, excluded: hrvExcluded, total: hrvTotal } = computeWeightedRMSSD(session, hrvNorm, sessionQualityMap);
       const hrvSeriesCount = (hbsResults[j] as any[]).length;
+      // Median overnight SDNN (not stage-weighted) — robust to the deep-sleep inflation
+      // that makes the weighted RMSSD run high/noisy vs Bevel's Resting HRV.
+      const hrvSorted = hrvNorm.map(s => s.quantity).filter(v => v > 0).sort((a, b) => a - b);
+      const hrvMedian = hrvSorted.length > 0
+        ? (hrvSorted.length % 2 ? hrvSorted[(hrvSorted.length - 1) / 2]
+            : (hrvSorted[hrvSorted.length / 2 - 1] + hrvSorted[hrvSorted.length / 2]) / 2)
+        : 0;
 
       // ── SpO2: mean during sleep ───────────────────────────────────────────────
       const spo2Vals = (spo2Results[j] as any[]).map((s: any) => s.quantity as number);
@@ -3269,6 +3278,7 @@ export async function fetchSleepBiometrics(
       results.push({
         date:            session.date,
         hrv:             Math.round(weightedRMSSD * 10) / 10,
+        hrvMedian:       Math.round(hrvMedian * 10) / 10,
         overnightHR:     Math.round(overnightHR * 10) / 10,
         spO2,
         respiratoryRate,
