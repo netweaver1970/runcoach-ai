@@ -46,7 +46,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange, STRAIN_KCAL_TO_LOAD } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange } from './trainingLoad';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -1454,13 +1454,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     };
   }
 
-  // ── Step 10: Training load (CTL/ATL/TSB) + strain from ALL activity ───────
-  // Daily strain volume = total active energy burned that day (all movement),
-  // scaled to a familiar load unit. This drives both CTL/ATL and the strain ring.
-  const kcalByDay = dailyKcalMap as Map<string, number>;
-  const loadByDay = new Map<string, number>();
-  for (const [day, kcal] of kcalByDay) loadByDay.set(day, kcal * STRAIN_KCAL_TO_LOAD);
-  const trainingLoad: DailyLoad[] = computeTrainingLoadSeries(loadByDay, daysAgo(90), now);
+  // ── Step 10: Training load (CTL/ATL/TSB) ──────────────────────────────────
+  // Cardio Load = HR-based Banister TRIMP per day (Bevel-style) — only elevated-HR
+  // effort counts, so rest/easy days read low instead of being propped up by
+  // everyday-movement energy. Warm the EWMAs 120 days before the visible window.
+  // Display ~45 days (card shows the latest value + a 30-day sparkline); warm 120 days
+  // before that so today's CTL/ATL is converged without querying a whole year of HR.
+  const loadByDay = await fetchDailyCardioTrimp(daysAgo(45 + CARDIO_WARM_DAYS), now);
+  const trainingLoad: DailyLoad[] = computeTrainingLoadSeries(loadByDay, daysAgo(45), now);
 
   // ── Today's strain — Bevel-style 24/7 TRIMP + muscular load ────────────────
   // Cardio: integrate Banister TRIMP over ALL of today's heart rate (captures both
@@ -2405,22 +2406,76 @@ async function fetchDailyActiveEnergy(fromDate: Date, toDate: Date): Promise<Map
  * Fetches ALL workouts in [from − 42d warmup, to] so CTL is accurate, then
  * returns the daily series for the requested visible window only.
  */
+// Warm-up window for the CTL/ATL EWMAs when the load basis is HR-TRIMP. A full year of
+// HR samples is too heavy to query; 120 days ≈ 2.9× the 42-day CTL time-constant
+// (~95% converged), and the recent value (today's cardio load, what the card shows) is
+// always exact because we query newest-first.
+const CARDIO_WARM_DAYS = 120;
+
+/**
+ * Daily CARDIO load = HR-based Banister TRIMP per day (only elevated-HR effort counts),
+ * matching how Bevel computes Cardio Load — so rest/easy days read low instead of being
+ * propped up by everyday-movement energy. Replaces the active-energy basis for CTL/ATL.
+ * Queries newest-first so any sample-cap truncation drops the OLDEST warm-up days, never
+ * the recent ones that drive the current value.
+ */
+export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
+  const [hrRaw, restingRaw, workouts] = await Promise.all([
+    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.heartRate,
+      { filter: { startDate: fromDate, endDate: toDate }, unit: 'count/min', ascending: false, limit: 200_000 },
+    ), [] as any[]),
+    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.restingHeartRate,
+      { filter: { startDate: fromDate, endDate: toDate }, unit: 'count/min', ascending: true, limit: 400 },
+    ), [] as any[]),
+    safeQuery(() => (HealthKit.queryWorkoutSamples as any)({
+      filter: { startDate: fromDate, endDate: toDate }, limit: 1500, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
+    }), [] as any[]),
+  ]);
+
+  const out = new Map<string, number>();
+  if ((hrRaw as any[]).length === 0) return out;
+
+  const restVals = (restingRaw as any[]).map((s: any) => s.quantity as number).filter(v => v > 0).sort((a, b) => a - b);
+  const restHR = restVals.length > 0 ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 50;
+
+  let peak = 0;
+  const byDay = new Map<string, { t: number; hr: number }[]>();
+  for (const s of (hrRaw as any[])) {
+    const hr = s.quantity as number;
+    if (hr > peak) peak = hr;
+    const day = toDateStr(toISOStr(s.startDate));
+    const t   = new Date(toISOStr(s.startDate)).getTime();
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day)!.push({ t, hr });
+  }
+  const maxHR = Math.max(185, Math.min(205, Math.round(peak)));
+
+  const windowsByDay = new Map<string, { s: number; e: number }[]>();
+  for (const w of (workouts as any[])) {
+    const day = toDateStr(toISOStr(w.startDate));
+    const ws  = new Date(toISOStr(w.startDate)).getTime();
+    if (!windowsByDay.has(day)) windowsByDay.set(day, []);
+    windowsByDay.get(day)!.push({ s: ws, e: ws + workoutDurationSec(w) * 1000 });
+  }
+
+  for (const [day, samples] of byDay) {
+    samples.sort((a, b) => a.t - b.t); // TRIMP integration needs time order
+    out.set(day, computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []));
+  }
+  return out;
+}
+
 export async function fetchTrainingLoadHistory(
   months: number,
   toDate?: Date,
 ): Promise<DailyLoad[]> {
   const end      = toDate ?? new Date();
   const fromDate = new Date(end.getTime() - months * 30 * 86_400_000);
-  // Warm up a full year before the visible window (≈8.7× the 42-day CTL time-constant).
-  // The old 42-day warmup = one time-constant, leaving ~37% seed bias in CTL — which made
-  // the detail's Form (TSB) disagree with the home card and vary per period. A year of
-  // warm-up fully converges the EWMA so every view agrees.
-  const warmFrom = new Date(fromDate.getTime() - 365 * 86_400_000);
-
-  // Daily active energy → load (× scale). Captures ALL movement, not just runs.
-  const kcalByDay = await fetchDailyActiveEnergy(warmFrom, end);
-  const loadByDay = new Map<string, number>();
-  for (const [day, kcal] of kcalByDay) loadByDay.set(day, kcal * STRAIN_KCAL_TO_LOAD);
+  const warmFrom = new Date(fromDate.getTime() - CARDIO_WARM_DAYS * 86_400_000);
+  // Cardio Load = HR-TRIMP per day (Bevel-style), not total active energy.
+  const loadByDay = await fetchDailyCardioTrimp(warmFrom, end);
   return computeTrainingLoadSeries(loadByDay, fromDate, end);
 }
 
@@ -3156,11 +3211,9 @@ export async function fetchOurDailyComponents(
     day(b.date).sleepBank = b.bank;
   }
 
-  // Cardio Load (ATL) + CTL + TSB per day — for the history viewer + export / cross-model
-  // verification. Warm the EWMA a full year before the window so values are converged.
-  const clKcal = await fetchDailyActiveEnergy(new Date(from.getTime() - 365 * 86_400_000), end);
-  const clLoad = new Map<string, number>();
-  for (const [d, k] of clKcal) clLoad.set(d, k * STRAIN_KCAL_TO_LOAD);
+  // Cardio Load (ATL) + CTL + TSB per day — HR-TRIMP basis (Bevel-style), for the
+  // history viewer + export / cross-model verification. Warm 120 days before the window.
+  const clLoad = await fetchDailyCardioTrimp(new Date(from.getTime() - CARDIO_WARM_DAYS * 86_400_000), end);
   for (const dl of computeTrainingLoadSeries(clLoad, from, end)) {
     const r = day(dl.date);
     r.cardioLoad = Math.round(dl.atl * 10) / 10;

@@ -174,10 +174,11 @@ export interface TsbStatus { label: string; color: string; hint: string }
 
 /** Map TSB (form) to a coaching status. */
 export function tsbStatus(tsb: number): TsbStatus {
-  if (tsb >= 15)  return { label: 'Fresh',        color: '#3498db', hint: 'Tapered / well-rested — primed for a race or key session.' };
-  if (tsb >= 5)   return { label: 'Neutral+',     color: '#27ae60', hint: 'Slightly fresh — good day for quality.' };
-  if (tsb >= -10) return { label: 'Neutral',      color: '#27ae60', hint: 'Balanced load — steady training is fine.' };
-  if (tsb >= -30) return { label: 'Productive',   color: '#f39c12', hint: 'Building fitness under fatigue — keep recovery tight.' };
+  // Thresholds for the HR-TRIMP (Bevel-scale) load — TSB now runs ~±15, not ~±35.
+  if (tsb >= 7)   return { label: 'Fresh',        color: '#3498db', hint: 'Tapered / well-rested — primed for a race or key session.' };
+  if (tsb >= 2)   return { label: 'Neutral+',     color: '#27ae60', hint: 'Slightly fresh — good day for quality.' };
+  if (tsb >= -5)  return { label: 'Neutral',      color: '#27ae60', hint: 'Balanced load — steady training is fine.' };
+  if (tsb >= -14) return { label: 'Productive',   color: '#f39c12', hint: 'Building fitness under fatigue — keep recovery tight.' };
   return                 { label: 'Overreaching', color: '#e74c3c', hint: 'High fatigue — prioritise easy/rest to absorb the work.' };
 }
 
@@ -212,7 +213,7 @@ export function cardioLoadStatus(atl: number, ctl: number, tsb = 0): CardioLoad 
     label = 'Productive';   color = '#27ae60'; hint = 'Load slightly above baseline — the sweet spot for building fitness.';
   } else if (ratio >= 0.8) {
     label = 'Maintaining';  color = '#2ecc71'; hint = 'Load roughly matches your baseline — holding fitness steady.';
-  } else if (tsb >= 8) {
+  } else if (tsb >= 4) {
     label = 'Peaking';      color = '#3498db'; hint = 'Fresh on a built base — primed for a race or key session.';
   } else {
     label = 'Detraining';   color = '#f39c12'; hint = 'Load below your baseline — fitness will fade without more stimulus.';
@@ -452,11 +453,11 @@ export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
     drivers.push('sleep debt');
   }
 
-  // Form (TSB): fresh legs → push; deep fatigue → hold back.
+  // Form (TSB): fresh legs → push; deep fatigue → hold back. HR-TRIMP scale → TSB ~±15.
   if (i.tsb != null) {
-    readiness += Math.max(-25, Math.min(25, i.tsb)) * 0.35;
-    if (i.tsb < -15)      drivers.push('fatigued (low form)');
-    else if (i.tsb > 12)  drivers.push('fresh / tapered');
+    readiness += Math.max(-15, Math.min(15, i.tsb)) * 0.6;
+    if (i.tsb < -8)      drivers.push('fatigued (low form)');
+    else if (i.tsb > 6)  drivers.push('fresh / tapered');
   }
 
   // Acute:chronic workload ratio — the classic injury-risk sweet spot is 0.8–1.3.
