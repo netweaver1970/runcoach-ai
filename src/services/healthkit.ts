@@ -158,6 +158,16 @@ function toDateStr(iso: string | Date | any): string {
   return String(iso).split('T')[0];
 }
 
+/**
+ * LOCAL calendar date (YYYY-MM-DD) of a Date — using local Y/M/D, NOT toISOString()
+ * (which is UTC and shifts the day backwards in positive-offset timezones). Used to
+ * label daily-total buckets that are anchored at LOCAL midnight.
+ */
+function toLocalDateStr(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 // ─── Workout subscription ─────────────────────────────────────────────────────
 
 export async function subscribeToWorkoutChanges(
@@ -1493,7 +1503,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', todayStart, now),
     dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', todayStart, now),
   ]);
-  const todayActivityFloor = activityFloorTrimp(todayStepsMap.get(todayStr) ?? 0, todayExMap.get(todayStr) ?? 0);
+  // Window is today only → one bucket; read it key-agnostically (the bucket is now
+  // labeled by LOCAL date, which can differ from the UTC-based todayStr just after midnight).
+  const todaySteps = [...todayStepsMap.values()][0] ?? 0;
+  const todayExMin = [...todayExMap.values()][0] ?? 0;
+  const todayActivityFloor = activityFloorTrimp(todaySteps, todayExMin);
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
@@ -2369,7 +2383,7 @@ async function fetchDailyActiveEnergy(fromDate: Date, toDate: Date): Promise<Map
     if (kcal > 0) {
       const d = new Date(anchor);
       d.setDate(d.getDate() + i);
-      map.set(toDateStr(d.toISOString()), Math.round(kcal));
+      map.set(toLocalDateStr(d), Math.round(kcal)); // LOCAL date — buckets are local-midnight anchored
     }
   });
   return map;
@@ -3040,7 +3054,7 @@ async function dailyCumulativeSum(
     const v = b?.sumQuantity?.quantity ?? 0;
     if (v > 0) {
       const d = new Date(anchor); d.setDate(d.getDate() + i);
-      map.set(toDateStr(d.toISOString()), v);
+      map.set(toLocalDateStr(d), v); // LOCAL date — buckets are local-midnight anchored
     }
   });
   return map;
