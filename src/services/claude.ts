@@ -740,7 +740,8 @@ export async function getTrainingRecommendation(
   const tsbBucket = latest ? Math.round(latest.tsb / 5) : 0;
   const todayActs = acts.filter(a => a.date.slice(0, 10) === todayKey);
   const weatherBucket = weatherStr ? weatherStr.slice(0, 6) : '';
-  const cacheKey = `${todayKey}:${latestRunDate}:${labelSig}:${tsbBucket}:${todayActs.length}:${weatherBucket}`;
+  const strainBucket  = snap.strain ? Math.round(snap.strain.real / 5) : 0; // bust when strain moves
+  const cacheKey = `${todayKey}:${latestRunDate}:${labelSig}:${tsbBucket}:${todayActs.length}:${weatherBucket}:${strainBucket}`;
 
   const cached = await SecureStore.getItemAsync(REC_CACHE_KEY);
   if (cached) {
@@ -792,7 +793,7 @@ export async function getTrainingRecommendation(
   const userMsg = [
     localContext,
     weatherStr ? `Weather now: ${weatherStr}` : 'Weather: unavailable',
-    snap.strain ? `Advisable strain target today: ${snap.strain.safeLow}-${snap.strain.safeHigh}% (0-100 strain scale) — keep today's effort within this band; this is THE target shown to the athlete.` : '',
+    snap.strain ? `Today's strain so far: ${snap.strain.real}% (0-100 scale). Advisable target band: ${snap.strain.safeLow}-${snap.strain.safeHigh}%. Refer to today's strain using EXACTLY ${snap.strain.real}% — never state a different number (e.g. do not say "zero" if it is ${snap.strain.real}%). Keep today's total effort within the band; this band is THE target shown to the athlete.` : '',
     recStr,
     loadStr,
     `Today so far: ${todayActStr}`,
@@ -810,7 +811,7 @@ Coaching method — weigh ALL of these like a real coach:
 • FITNESS (CTL) & ramp: rising fast → caution (injury risk); flat/declining → room to build.
 • ALL ACTIVITY: account for today's logged activity and recent cross-training (a leg day or long hike IS load — don't stack hard running on top).
 • PATTERN: avoid two hard days back-to-back; respect days-since-last-run and weekly volume.
-• STRAIN TARGET: your call must keep today's effort within the provided advisable strain band (the single target shown to the athlete) — don't contradict it.
+• STRAIN: today's actual strain so far is provided — cite THAT exact number; never invent a different strain value (don't say "zero" when it is e.g. 7%). Keep your call within the advisable band, which is the single target shown to the athlete.
 • TIME OF DAY: if it's already late evening, prefer a shorter/easier session or suggest tomorrow.
 • WEATHER: factor temperature/conditions — hot & humid → reduce intensity/duration & note hydration; cold/icy → caution on intervals; nice → fine for quality. Mention weather in the reason ONLY when it changes the plan.
 
