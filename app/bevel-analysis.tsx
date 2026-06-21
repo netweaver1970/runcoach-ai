@@ -17,17 +17,6 @@ import { useThemedStyles, useTheme, Palette } from '../src/theme';
 const KPI_COLOR: Record<string, string> = { strain: '#e67e22', recovery: '#27ae60', sleep: '#7c6cf0' };
 const OK = '#27ae60', OFF = '#e67e22';
 
-// Component → history-viewer type (tap a row to see its trend). Clock-time
-// components (sleepTime/wakeTime) have no chart and are omitted.
-const COMPONENT_HISTORY: Record<string, string> = {
-  strainScore: 'strain', exerciseDuration: 'exercise-duration', daytimeHR: 'daytime-hr',
-  totalEnergy: 'total-energy', stepCount: 'step-count',
-  recoveryScore: 'recovery', restingHrv: 'hrv', restingHr: 'rhr',
-  respiratoryRate: 'resp-rate', oxygenSaturation: 'spo2',
-  sleepScore: 'sleep-score', timeAsleep: 'sleep-total', remSleep: 'sleep-rem',
-  deepSleep: 'sleep-deep', heartRateDip: 'sleep-hrdip', sleepBank: 'sleep-bank',
-};
-
 export default function BevelAnalysisScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
@@ -74,11 +63,6 @@ export default function BevelAnalysisScreen() {
     }
   };
 
-  const openHistory = (key: string) => {
-    const t = COMPONENT_HISTORY[key];
-    if (t) router.push({ pathname: '/history' as any, params: { type: t } });
-  };
-
   const totalOff = kpis.reduce((a, k) => a + k.offCount, 0);
 
   return (
@@ -112,7 +96,7 @@ export default function BevelAnalysisScreen() {
               Our 30-day avg vs Bevel's exact 30-day avg · {totalOff} component{totalOff === 1 ? '' : 's'} off
             </Text>
 
-            {kpis.map(k => <KpiBlock key={k.kpi} k={k} s={s} c={c} onOpen={openHistory} />)}
+            {kpis.map(k => <KpiBlock key={k.kpi} k={k} s={s} c={c} />)}
 
             <Text style={s.foot}>
               Each row compares our 30-day average against Bevel's exact printed 30-day average (the reliable
@@ -126,7 +110,7 @@ export default function BevelAnalysisScreen() {
   );
 }
 
-function KpiBlock({ k, s, c, onOpen }: { k: KpiComparison; s: any; c: Palette; onOpen: (key: string) => void }) {
+function KpiBlock({ k, s, c }: { k: KpiComparison; s: any; c: Palette }) {
   const color = KPI_COLOR[k.kpi];
   return (
     <View style={s.kpiCard}>
@@ -135,13 +119,13 @@ function KpiBlock({ k, s, c, onOpen }: { k: KpiComparison; s: any; c: Palette; o
         <Text style={s.kpiTitle}>{k.label}</Text>
         {k.offCount > 0 && <Text style={[s.offBadge, { color: OFF }]}>{k.offCount} off</Text>}
       </View>
-      <Row comp={k.score} s={s} c={c} isScore onOpen={onOpen} />
-      {k.components.map(comp => <Row key={comp.key} comp={comp} s={s} c={c} onOpen={onOpen} />)}
+      <Row comp={k.score} s={s} c={c} isScore />
+      {k.components.map(comp => <Row key={comp.key} comp={comp} s={s} c={c} />)}
     </View>
   );
 }
 
-function Row({ comp, s, c, isScore, onOpen }: { comp: ComponentComparison; s: any; c: Palette; isScore?: boolean; onOpen: (key: string) => void }) {
+function Row({ comp, s, c, isScore }: { comp: ComponentComparison; s: any; c: Palette; isScore?: boolean }) {
   const has = comp.bevelAvg !== null && comp.ourAvg !== null;
   const flagColor = comp.flag === 'off' ? OFF : comp.flag === 'ok' ? OK : c.textFaint;
   const biasStr = !has ? '—'
@@ -151,19 +135,11 @@ function Row({ comp, s, c, isScore, onOpen }: { comp: ComponentComparison; s: an
   const meta = comp.r !== null ? `r ${comp.r}`
     : comp.ourDays > 0 ? `${comp.ourDays}d ours`
     : 'no data';
-  const tappable = comp.key in COMPONENT_HISTORY;
   return (
-    <TouchableOpacity
-      style={[s.row, isScore && s.rowScore]}
-      activeOpacity={0.6}
-      disabled={!tappable}
-      onPress={() => onOpen(comp.key)}
-    >
+    <View style={[s.row, isScore && s.rowScore]}>
       <View style={s.rowTop}>
         <View style={[s.rowDot, { backgroundColor: flagColor }]} />
-        <Text style={[s.rowLabel, isScore && { fontWeight: '700', color: c.text }]}>
-          {comp.label}{tappable ? ' ›' : ''}
-        </Text>
+        <Text style={[s.rowLabel, isScore && { fontWeight: '700', color: c.text }]}>{comp.label}</Text>
         <Text style={s.rowVals}>
           {comp.ourAvg !== null ? formatCanonical(comp.unit, comp.ourAvg) : '—'}
           {'  vs  '}
@@ -175,7 +151,7 @@ function Row({ comp, s, c, isScore, onOpen }: { comp: ComponentComparison; s: an
         <Text style={s.rowMeta}>{meta}</Text>
       </View>
       {comp.recommendation && <Text style={s.rec}>⚠️ {comp.recommendation}</Text>}
-    </TouchableOpacity>
+    </View>
   );
 }
 

@@ -834,6 +834,9 @@ function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRing
   const navToSleep = () => {
     if (recovery) router.push({ pathname: '/sleep-detail' as any, params: { data: JSON.stringify(recovery) } });
   };
+  const navToStrain = () => {
+    if (strain) router.push({ pathname: '/strain-detail' as any, params: { data: JSON.stringify(strain) } });
+  };
 
   // Nothing at all yet
   if (!recovery && !strain) {
@@ -868,10 +871,11 @@ function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRing
       </View>
 
       <View style={styles.ringsRow}>
-        {/* Strain — double ring (real effort + safe range), tap → history */}
+        {/* Strain — double ring (real effort + safe range), tap → detail */}
         <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} activeOpacity={0.75}
-          onPress={() => router.push({ pathname: '/history' as any, params: { type: 'strain' } })}>
+          onPress={navToStrain} disabled={!strain}>
           <StrainRing size={RING} strain={strain} />
+          <Text style={styles.ringHint}>{strain ? 'tap ›' : 'syncing'}</Text>
         </TouchableOpacity>
 
         {/* Recovery — tappable */}

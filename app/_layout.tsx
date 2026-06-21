@@ -46,6 +46,11 @@ function RootStack() {
         <Stack.Screen name="settings" options={{ title: 'Settings' }} />
         <Stack.Screen name="bevel-import" options={{ headerShown: false }} />
         <Stack.Screen name="bevel-analysis" options={{ headerShown: false }} />
+        <Stack.Screen name="recovery-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="sleep-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="strain-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="history" options={{ headerShown: false }} />
+        <Stack.Screen name="training-load" options={{ headerShown: false }} />
       </Stack>
     </>
   );

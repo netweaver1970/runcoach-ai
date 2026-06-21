@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView,
+  StyleSheet, SafeAreaView, ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
+import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
+import { fetchOurDailyComponents } from '../src/services/healthkit';
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
@@ -37,6 +39,17 @@ export default function RecoveryDetailScreen() {
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
+
+  const [hist, setHist] = useState<Record<string, number[]>>({});
+  const [loadingH, setLoadingH] = useState(true);
+  useEffect(() => {
+    fetchOurDailyComponents(1)
+      .then(c => setHist(buildHistories(c, ['restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip'])))
+      .catch(() => {})
+      .finally(() => setLoadingH(false));
+  }, []);
+  const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
+  const last = (k: string) => { const a = hist[k]; return a && a.length ? a[a.length - 1] : null; };
 
   if (!recovery) {
     return (
@@ -91,6 +104,23 @@ export default function RecoveryDetailScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Sub-KPI metrics (sleep-detail pattern: sparkline + tap → history) */}
+        {loadingH && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 4 }}>
+            <ActivityIndicator size="small" color={color} />
+            <Text style={s.rowSub}>Loading 30-day history…</Text>
+          </View>
+        )}
+        <Text style={s.sectionTitle}>RECOVERY METRICS</Text>
+        <View style={s.card}>
+          <SubKPICard label="Resting HRV"   value={last('restingHrv') !== null ? `${last('restingHrv')}` : '—'} unit="ms"  history={hist.restingHrv ?? []}       higherIsBetter        color="#8e44ad" onPress={() => navTo('hrv')} />
+          <SubKPICard label="Resting HR"    value={last('restingHr') !== null ? `${last('restingHr')}` : '—'}   unit="bpm" history={hist.restingHr ?? []}        higherIsBetter={false} color="#e74c3c" onPress={() => navTo('rhr')} />
+          <SubKPICard label="Respiratory Rate" value={last('respiratoryRate') !== null ? `${last('respiratoryRate')}` : '—'} unit="rpm" history={hist.respiratoryRate ?? []} higherIsBetter={false} color="#2980b9" onPress={() => navTo('resp-rate')} />
+          <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
+          <SubKPICard label="Heart Rate Dip" value={last('heartRateDip') !== null ? `${last('heartRateDip')}` : '—'} unit="%" history={hist.heartRateDip ?? []} higherIsBetter color="#16a085" onPress={() => navTo('sleep-hrdip')} />
+        </View>
+        <View style={{ height: 14 }} />
 
         {/* HRV */}
         <Section title="Heart Rate Variability">
