@@ -23,6 +23,7 @@ interface ReviewItem {
   id:      string;
   kpi:     BevelKpiKey;
   date:    string;                 // editable YYYY-MM-DD
+  dateAuto: boolean;               // true if read from the screenshot, false if defaulted
   record:  BevelKpiRecord;
   avgKeys: string[];               // components whose 30-day avg was captured + saved
   saved:   boolean;
@@ -62,6 +63,7 @@ export default function BevelImportScreen() {
     setProgress({ done: 0, total: res.assets.length });
 
     const prompt = buildBevelExtractionPrompt();
+    const today = new Date().toISOString().slice(0, 10);
     const good: ReviewItem[] = [];
     const bad: FailItem[] = [];
 
@@ -74,9 +76,9 @@ export default function BevelImportScreen() {
         const ext = parseBevelExtraction(reply);
         const avgKeys = Object.keys(ext.averages);
         if (avgKeys.length) await saveBevelAverages(ext.averages); // exact 30-day avgs — save immediately
-        // Leave the date BLANK when the screenshot's date couldn't be read — the review
-        // UI flags it and won't save until the user enters the day (never assume today).
-        good.push({ id, kpi: ext.kpi as BevelKpiKey, date: ext.date ?? '', record: ext.record, avgKeys, saved: false });
+        // Prefill today when the screenshot's date couldn't be read; the review UI flags
+        // it and offers +/- day steppers so it's a tap or two to the right day.
+        good.push({ id, kpi: ext.kpi as BevelKpiKey, date: ext.date ?? today, dateAuto: !!ext.date, record: ext.record, avgKeys, saved: false });
       } catch (e: any) {
         bad.push({ id, error: e?.message ?? String(e) });
       }
@@ -88,7 +90,18 @@ export default function BevelImportScreen() {
   };
 
   const setDate = (id: string, date: string) =>
-    setItems(prev => prev.map(it => (it.id === id ? { ...it, date, saved: false } : it)));
+    setItems(prev => prev.map(it => (it.id === id ? { ...it, date, dateAuto: false, saved: false } : it)));
+
+  // Step the date by ±1 day (handy when the screenshot's date wasn't read).
+  const stepDate = (id: string, delta: number) =>
+    setItems(prev => prev.map(it => {
+      if (it.id !== id) return it;
+      const base = /^\d{4}-\d{2}-\d{2}$/.test(it.date) ? new Date(it.date + 'T00:00:00') : new Date();
+      base.setDate(base.getDate() + delta);
+      const p = (n: number) => String(n).padStart(2, '0');
+      const next = `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())}`;
+      return { ...it, date: next, dateAuto: false, saved: false };
+    }));
 
   const saveItem = async (it: ReviewItem) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(it.date)) {
@@ -176,6 +189,9 @@ export default function BevelImportScreen() {
 
               <View style={s.dateRow}>
                 <Text style={s.dateLabel}>Date</Text>
+                <TouchableOpacity style={s.stepBtn} onPress={() => stepDate(it.id, -1)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <Text style={s.stepBtnText}>−</Text>
+                </TouchableOpacity>
                 <TextInput
                   style={[s.dateInput, !validDate && s.dateInputBad]}
                   value={it.date}
@@ -185,9 +201,12 @@ export default function BevelImportScreen() {
                   autoCapitalize="none"
                   keyboardType="numbers-and-punctuation"
                 />
+                <TouchableOpacity style={s.stepBtn} onPress={() => stepDate(it.id, 1)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <Text style={s.stepBtnText}>＋</Text>
+                </TouchableOpacity>
               </View>
-              {!validDate && (
-                <Text style={s.dateWarn}>⚠️  Date not detected — enter the day shown on this screenshot before saving.</Text>
+              {!it.dateAuto && (
+                <Text style={s.dateWarn}>⚠️  Date not read from the screenshot — defaulted to today. Tap − / ＋ or type to set the right day.</Text>
               )}
 
               {rows.map(comp => (
@@ -263,9 +282,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   saveBtnDisabled: { opacity: 0.4 },
   dateInputBad: { borderColor: '#e74c3c', borderWidth: 1.5 },
   dateWarn: { color: '#e74c3c', fontSize: 12, fontWeight: '600', marginTop: 6 },
-  dateRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
+  dateRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   dateLabel: { color: c.textSub, fontSize: 13, width: 44 },
-  dateInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, color: c.text, fontSize: 14, borderWidth: 1, borderColor: c.border },
+  dateInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, color: c.text, fontSize: 14, borderWidth: 1, borderColor: c.border, textAlign: 'center' },
+  stepBtn: { width: 36, height: 36, borderRadius: 8, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.border },
+  stepBtnText: { color: c.accent, fontSize: 20, fontWeight: '800', lineHeight: 22 },
   valRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5, borderTopWidth: 1, borderTopColor: c.border },
   valLabel: { color: c.textSub, fontSize: 14 },
   valNum: { color: c.text, fontSize: 14, fontWeight: '600' },
