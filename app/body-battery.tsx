@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
-import Svg, { Path, Rect, Line, Circle, Text as SvgText } from 'react-native-svg';
+import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as Clipboard from 'expo-clipboard';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
@@ -19,6 +19,20 @@ function splitRuns<T extends { t: number }>(pts: T[]): T[][] {
     runs[runs.length - 1].push(pts[i]);
   }
   return runs;
+}
+
+// Catmull-Rom → cubic-Bézier: a smooth curve through the points (no overshoot artefacts),
+// so the 10-min samples read as a flowing line like Bevel instead of a jagged polyline.
+function smoothPath(cs: { x: number; y: number }[]): string {
+  if (cs.length < 2) return cs.length ? `M${cs[0].x.toFixed(1)},${cs[0].y.toFixed(1)}` : '';
+  let d = `M${cs[0].x.toFixed(1)},${cs[0].y.toFixed(1)}`;
+  for (let i = 0; i < cs.length - 1; i++) {
+    const p0 = cs[i - 1] ?? cs[i], p1 = cs[i], p2 = cs[i + 1], p3 = cs[i + 2] ?? p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }
+  return d;
 }
 
 export default function BodyBatteryScreen() {
@@ -136,7 +150,7 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
 
   // Break line + area across data gaps (watch off) instead of bridging them.
   const runs = splitRuns(pts);
-  const lineFor = (run: typeof pts) => run.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(p.battery).toFixed(1)}`).join(' ');
+  const lineFor = (run: typeof pts) => smoothPath(run.map(p => ({ x: x(p.t), y: y(p.battery) })));
   const areaFor = (run: typeof pts) => run.length < 2 ? '' : `${lineFor(run)} L${x(run[run.length - 1].t).toFixed(1)},${y(0).toFixed(1)} L${x(run[0].t).toFixed(1)},${y(0).toFixed(1)} Z`;
 
   // Sleep bands (contiguous asleep runs)
@@ -208,6 +222,7 @@ function StressGraph({ data }: { data: BodyBattery }) {
   }
 
   const cur = pts[pts.length - 1];
+  const runs = splitRuns(pts);
   const hourLabels = [0, 6, 12, 18].map(h => {
     const t = t0 + (h / 24) * (t1 - t0);
     return { t, label: new Date(t).getHours() + 'h' };
@@ -226,12 +241,18 @@ function StressGraph({ data }: { data: BodyBattery }) {
         {bands.map((b, i) => (
           <Rect key={i} x={x(b.s)} y={padT} width={Math.max(1, x(b.e) - x(b.s))} height={gh} fill="#6366F1" opacity={0.12} />
         ))}
-        {/* stress line coloured per segment by its level; gaps (watch off) left as holes */}
-        {pts.slice(1).map((p, i) => (
-          p.t - pts[i].t > GAP_MS ? null : (
-            <Line key={i} x1={x(pts[i].t)} y1={y(pts[i].stress)} x2={x(p.t)} y2={y(p.stress)}
-              stroke={stressColor((pts[i].stress + p.stress) / 2)} strokeWidth={2} />
-          )
+        {/* smooth stress line with a vertical green→amber→red gradient (gaps left as holes) */}
+        <Defs>
+          <LinearGradient id="stressGrad" x1="0" y1={padT} x2="0" y2={padT + gh} gradientUnits="userSpaceOnUse">
+            <Stop offset="0" stopColor="#EF4444" />
+            <Stop offset="0.45" stopColor="#F59E0B" />
+            <Stop offset="0.75" stopColor="#22C55E" />
+            <Stop offset="1" stopColor="#22C55E" />
+          </LinearGradient>
+        </Defs>
+        {runs.map((run, i) => (
+          <Path key={i} d={smoothPath(run.map(p => ({ x: x(p.t), y: y(p.stress) })))}
+            stroke="url(#stressGrad)" strokeWidth={2} fill="none" />
         ))}
         <Circle cx={x(cur.t)} cy={y(cur.stress)} r={3.5} fill={stressColor(cur.stress)} />
         {hourLabels.map((h, i) => (

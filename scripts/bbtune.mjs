@@ -10,14 +10,15 @@ const CFG = {
   // HRV trust (rrgap is NO LONGER a hard reject — stable, moderate HR is the arbiter):
   V_MIN: 5, V_MAX: 110, HR_HIGH: 20, CV_MAX: 18,
   W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 65,
-  REST_STRESS: 33, SLEEP_CHARGE: 0.125, SEED: 42, BIN_MIN: 10,
+  REST_STRESS: 33, SLEEP_CHARGE: 0.125, SEED: 42,
+  BIN_MIN: process.env.BIN_MIN != null ? +process.env.BIN_MIN : (d.meta?.constants?.BIN_MIN ?? 10), // from the dump
   BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.012,
   STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.055,
   // Stress smoothing (Bevel-style momentum): EWMA per 10-min bin. SMOOTH=1 → raw/instant
   // (twitchy, drops to 0); lower = smoother + stickier. RISE applies a faster attack so
   // stress climbs quickly but decays slowly, like Bevel. FLOOR keeps awake stress off 0.
   // Defaults = SHIPPED production values (bodyBattery.ts).
-  SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 0.20,
+  SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 0.11, // production (5-min bins); use 0.20 for old 10-min dumps
   RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
   FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 10,
   // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old

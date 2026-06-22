@@ -22,7 +22,8 @@ const RHR_ID   = 'HKQuantityTypeIdentifierRestingHeartRate';
 const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
 const ASLEEP = new Set([1, 3, 4, 5]); // asleepUnspecified/core/deep/REM (0=inBed, 2=awake)
 
-const BIN_MIN = 10;
+const BIN_MIN = 5;            // 5-min bins → finer curve (drain rates are per-minute, so the
+                             // battery is unchanged; STRESS_SMOOTH is set to hold the decay time)
 const WINDOW_H = 60;          // compute window (2+ nights so the seed washes out)
 const BASELINE_DAYS = 14;     // HRV baseline window
 
@@ -38,7 +39,8 @@ const STRESS_DRAIN  = 0.055;  // additional per-minute drain at full stress (re-
                               // smoothed stress below so the 22-Jun dump still ends at Bevel 8%)
 // Stress momentum (Bevel-like): raw per-bin stress was twitchy — it dropped below 5 for ~16%
 // of the day, unlike Bevel's smooth curve. Rise instantly, decay slowly (EWMA), floor awake.
-const STRESS_SMOOTH = 0.20;   // EWMA weight on the way DOWN (lower = stickier / slower decay)
+const STRESS_SMOOTH = 0.11;   // EWMA weight on the way DOWN; tuned for 5-min bins to keep the
+                              // same ~45-min decay as the calibrated 0.20-at-10-min (= 1-√0.8)
 const STRESS_FLOOR  = 10;     // awake stress never below this (Bevel never reads 0 while awake)
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
