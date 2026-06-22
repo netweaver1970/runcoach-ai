@@ -130,8 +130,17 @@ A flexible template — the daily readiness + rules always override this:
 
 Never two quality/long days back-to-back. Keep ≥48h between hard sessions.`;
 
+const DEFAULT_PROFILE = `# Athlete Profile
+
+Personal context for tailoring sessions (edit freely):
+
+- HEAT-SENSITIVE: carries extra weight centrally (tummy/chest) and sweats heavily, so heat and humidity raise cardiovascular strain noticeably more than average. In warm/humid conditions apply the heat scaling firmly (lean to the conservative end of the range), shorten exposure, and assume a higher fluid/cooling need.
+- ELEVATED RESTING AUTONOMIC LOAD: resting HR runs high and HRV-based "stress" reads high even at rest (e.g. ~83% sitting indoors with AC). So a high HR at a given effort partly reflects this baseline — not only fitness or fatigue. Don't over-restrict on a single high HR/stress reading; judge by trends.
+- GOALS: build durable aerobic fitness while gradually reducing central weight. Favour sustainable, mostly-easy aerobic volume + leg strength; keep hard days genuinely hard but infrequent; avoid sessions that needlessly spike strain.`;
+
 interface DefaultDef { id: string; title: string; description: string; content: string; }
 const DEFAULTS: DefaultDef[] = [
+  { id: 'athlete-profile',   title: 'Athlete Profile',       description: 'Personal physiology + goals the coach should tailor to', content: DEFAULT_PROFILE },
   { id: 'coaching-rules',    title: 'Coaching Rules',        description: 'Core injury-first rules the coach must follow', content: DEFAULT_RULES },
   { id: 'strength-exercises', title: 'Strength Exercises',   description: 'Preferred leg/hip/foot strength work',         content: DEFAULT_STRENGTH },
   { id: 'pre-run-drills',    title: 'Pre-Run Drills',        description: 'Dynamic warm-up drills before every run',      content: DEFAULT_DRILLS },
@@ -144,11 +153,25 @@ export const isBuiltinId = (id: string) => DEFAULTS.some(d => d.id === id);
 async function seed(): Promise<void> {
   await ensureDir();
   const idx = await readIndex();
-  if (idx.length > 0) return;
-  for (const d of DEFAULTS) await FileSystem.writeAsStringAsync(pathOf(d.id), d.content);
-  await writeIndex(DEFAULTS.map((d, i) => ({
-    id: d.id, title: d.title, description: d.description, enabled: true, builtin: true, order: i,
-  })));
+  if (idx.length === 0) {
+    for (const d of DEFAULTS) await FileSystem.writeAsStringAsync(pathOf(d.id), d.content);
+    await writeIndex(DEFAULTS.map((d, i) => ({
+      id: d.id, title: d.title, description: d.description, enabled: true, builtin: true, order: i,
+    })));
+    return;
+  }
+  // Migration: add any builtin introduced after this install was first seeded, WITHOUT
+  // touching the user's existing (possibly edited) files or their order.
+  const have = new Set(idx.map(m => m.id));
+  let nextOrder = idx.length ? Math.max(...idx.map(m => m.order)) + 1 : 0;
+  let added = false;
+  for (const d of DEFAULTS) {
+    if (have.has(d.id)) continue;
+    await FileSystem.writeAsStringAsync(pathOf(d.id), d.content);
+    idx.push({ id: d.id, title: d.title, description: d.description, enabled: true, builtin: true, order: nextOrder++ });
+    added = true;
+  }
+  if (added) await writeIndex(idx);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
