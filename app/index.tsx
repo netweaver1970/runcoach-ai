@@ -265,6 +265,31 @@ export default function HomeScreen() {
 
   // Run type override is now handled inside the workout detail screen.
 
+  // ── Historic time-travel handlers (hooks — must stay above any early return) ─
+  const ensureComps = useCallback(() => {
+    if (compsLoading || Object.keys(dayComps).length > 0) return;
+    setCompsLoading(true);
+    fetchOurDailyComponents(1).then(setDayComps).catch(() => {}).finally(() => setCompsLoading(false));
+  }, [compsLoading, dayComps]);
+
+  const shiftDay = useCallback((delta: number) => {
+    const tk = toDateKey(new Date());
+    setViewDate(prev => {
+      const d = new Date(prev); d.setDate(d.getDate() + delta); d.setHours(0, 0, 0, 0);
+      return toDateKey(d) > tk ? prev : d;                 // never the future
+    });
+    if (delta < 0) ensureComps();
+  }, [ensureComps]);
+  const goToday = useCallback(() => { const d = new Date(); d.setHours(0, 0, 0, 0); setViewDate(d); }, []);
+
+  shiftDayRef.current = shiftDay;
+  const swipe = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+    onPanResponderRelease: (_e, g) => {
+      if (g.dx > 45) shiftDayRef.current(-1);              // swipe right → previous day
+      else if (g.dx < -45) shiftDayRef.current(1);         // swipe left  → next day
+    },
+  })).current;
 
   // ── Render ──────────────────────────────────────────────────────────────
   if (loading) {
@@ -308,37 +333,12 @@ export default function HomeScreen() {
     thisWeekRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60
   );
 
-  // ── Historic time-travel: any day's wellness from the per-day components ────
-  const ensureComps = useCallback(() => {
-    if (compsLoading || Object.keys(dayComps).length > 0) return;
-    setCompsLoading(true);
-    fetchOurDailyComponents(1).then(setDayComps).catch(() => {}).finally(() => setCompsLoading(false));
-  }, [compsLoading, dayComps]);
-
+  // Non-hook derived values for the time-travel render (the hooks live above the
+  // loading guard so the hook order never changes between renders).
   const todayKey    = toDateKey(new Date());
   const isTodayView = toDateKey(viewDate) === todayKey;
   const dayView     = buildDayView(viewDate, snapshot, dayComps);
-
-  const shiftDay = useCallback((delta: number) => {
-    setViewDate(prev => {
-      const d = new Date(prev); d.setDate(d.getDate() + delta); d.setHours(0, 0, 0, 0);
-      return toDateKey(d) > todayKey ? prev : d;          // never the future
-    });
-    if (delta < 0) ensureComps();
-  }, [todayKey, ensureComps]);
-  const goToday = useCallback(() => { const d = new Date(); d.setHours(0, 0, 0, 0); setViewDate(d); }, []);
-
-  shiftDayRef.current = shiftDay;
-  const swipe = useRef(PanResponder.create({
-    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-    onPanResponderRelease: (_e, g) => {
-      if (g.dx > 45) shiftDayRef.current(-1);             // swipe right → previous day
-      else if (g.dx < -45) shiftDayRef.current(1);        // swipe left  → next day
-    },
-  })).current;
-
-  // Recent days available in the picker (most recent first).
-  const pickerDays = Object.keys(dayComps).sort().reverse();
+  const pickerDays  = Object.keys(dayComps).sort().reverse();
 
   return (
     <SafeAreaView style={styles.container}>
