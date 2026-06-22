@@ -147,7 +147,7 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
 
 // Fallback structured session when the LLM prescribes a run but omits the workout JSON.
 // Maps the intensity to an HR zone + the matching watt window from the athlete's zones.
-function synthesizeWorkout(
+export function synthesizeWorkout(
   intensity: CoachIntensity, runMinutes: number, name: string,
   pz?: CoachSnapshot['powerZones'],
 ): WatchWorkout {

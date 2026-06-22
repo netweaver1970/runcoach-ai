@@ -9,7 +9,8 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, synthesizeWorkout, CoachPlan } from '../src/services/coach';
+import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
@@ -43,11 +44,11 @@ export default function StrainDetailScreen() {
   useEffect(() => { getPowerZones().then(setPowerZones).catch(() => {}); }, []);
 
   const sendToWatch = async () => {
-    if (!plan?.workout) return;
+    if (!watchWorkout) return;
     setWatchSending(true); setWatchMsg(null);
     try {
       if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
-      const ok = await pushWorkoutToWatch(plan.workout);
+      const ok = await pushWorkoutToWatch(watchWorkout);
       setWatchMsg(ok ? '✓ Sent — open the Workout app on your watch.' : 'Could not send (needs iOS 17+ and permission).');
     } catch (e: any) {
       setWatchMsg(e?.message ?? 'Send failed.');
@@ -78,6 +79,13 @@ export default function StrainDetailScreen() {
   const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === toDateKey(new Date());
+
+  // The workout to show/push: the coach's, or a synthesized one on any run-day plan
+  // (covers stale cached plans + LLM omissions, so the watch box always appears on run days).
+  const watchWorkout = plan && plan.intensity !== 'rest'
+    ? (plan.workout ?? synthesizeWorkout(plan.intensity, plan.runMinutes, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones))
+    : null;
+
   // Rolling time-on-feet budget as of the viewed day.
   const tof = useMemo(
     () => (dur.length ? computeTimeOnFeetPlan(dur, new Date(targetDate + 'T00:00:00')) : null),
@@ -230,27 +238,27 @@ export default function StrainDetailScreen() {
               <Text style={s.coachRationale}>{plan.rationale}</Text>
               {plan.cautions ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
 
-              {plan.workout && (
+              {watchWorkout && (
                 <View style={s.workoutBox}>
-                  <Text style={s.workoutTitle}>⌚ WATCH WORKOUT · {plan.workout.name}</Text>
-                  <Text style={s.workoutStep}>1. Warm-up {plan.workout.warmupMeters} m</Text>
-                  {plan.workout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {plan.workout.drillsMinutes} min</Text>}
-                  {plan.workout.blocks.map((b, idx) => (
+                  <Text style={s.workoutTitle}>⌚ WATCH WORKOUT · {watchWorkout.name}</Text>
+                  <Text style={s.workoutStep}>1. Warm-up {watchWorkout.warmupMeters} m</Text>
+                  {watchWorkout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {watchWorkout.drillsMinutes} min</Text>}
+                  {watchWorkout.blocks.map((b, idx) => (
                     <Text key={idx} style={s.workoutStep}>
-                      {plan.workout!.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
+                      {watchWorkout.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
                       {b.hrZone ? ` @ ${b.hrZone}` : ''}
                       {b.powerLowWatts && b.powerHighWatts ? ` ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
                       {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){b.label ? ` · ${b.label}` : ''}
                     </Text>
                   ))}
-                  <Text style={s.workoutStep}>Cool-down {plan.workout.cooldownMeters} m</Text>
+                  <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters} m</Text>
                   <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
                     <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
-              {!plan.workout && plan.intensity === 'rest' && (
+              {!watchWorkout && plan.intensity === 'rest' && (
                 <Text style={s.workoutStep}>⌚ Rest day — no watch workout pushed.</Text>
               )}
 
