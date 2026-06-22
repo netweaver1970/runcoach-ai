@@ -146,6 +146,13 @@ export default function StrainDetailScreen() {
       });
       setPlan(p);
       await saveCachedPlan(targetDate, p);
+      // Automatically push today's structured workout to the watch (overwrites the slot).
+      if (targetIsToday) {
+        const wk = p.workout ?? (p.intensity !== 'rest'
+          ? synthesizeWorkout(p.intensity, p.runMinutes, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones)
+          : null);
+        if (wk) pushWorkoutToWatch(wk).then(ok => ok && setWatchMsg('✓ Auto-sent to watch')).catch(() => {});
+      }
     } catch (e: any) {
       setPlanError(e?.message ?? 'Could not reach the coach.');
     } finally {

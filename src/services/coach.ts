@@ -145,33 +145,50 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
   };
 }
 
+// Map an HR zone (Z1–Z5) to its watt window from the athlete's power zones.
+function zoneToWatts(zone: string | undefined, pz?: CoachSnapshot['powerZones']): [number?, number?] {
+  if (!pz || !zone) return [undefined, undefined];
+  switch (zone) {
+    case 'Z1': return [Math.round(pz.recoveryMax * 0.7), pz.recoveryMax];
+    case 'Z2': return [pz.recoveryMax, pz.z2Max];
+    case 'Z3': return [pz.tempoMin, pz.tempoMax];
+    case 'Z4': return [pz.tempoMax, pz.intervalsMin];
+    case 'Z5': return [pz.intervalsMin, pz.intervalsMin + 60];
+    default:   return [undefined, undefined];
+  }
+}
+
+// Guarantee every work block carries a power window so the watch can give in-band cues.
+// Fills missing watts from the block's HR zone (defaulting to Z2) using the power zones.
+function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['powerZones']): WatchWorkout | null {
+  if (!w) return w;
+  w.blocks = w.blocks.map(b => {
+    if (b.powerLowWatts && b.powerHighWatts) return b;
+    const [lo, hi] = zoneToWatts(b.hrZone ?? 'Z2', pz);
+    return { ...b, powerLowWatts: b.powerLowWatts ?? lo, powerHighWatts: b.powerHighWatts ?? hi };
+  });
+  return w;
+}
+
 // Fallback structured session when the LLM prescribes a run but omits the workout JSON.
 // Maps the intensity to an HR zone + the matching watt window from the athlete's zones.
 export function synthesizeWorkout(
   intensity: CoachIntensity, runMinutes: number, name: string,
   pz?: CoachSnapshot['powerZones'],
 ): WatchWorkout {
-  const zoneWatts: Record<string, [number?, number?]> = pz ? {
-    Z2: [pz.recoveryMax, pz.z2Max],
-    Z3: [pz.tempoMin, pz.tempoMax],
-    Z4: [pz.tempoMax, pz.intervalsMin],
-  } : {};
   // Reserve ~6 min for the 600m warm-up + 600m cool-down; the rest is work.
   const workBudget = Math.max(8, (runMinutes || 35) - 6);
   let blocks: WatchWorkoutBlock[];
   if (intensity === 'easy') {
-    const [lo, hi] = zoneWatts.Z2 ?? [];
-    blocks = [{ repeats: 1, workMinutes: Math.min(90, workBudget), restMinutes: 0, hrZone: 'Z2', powerLowWatts: lo, powerHighWatts: hi, label: 'aerobic' }];
+    blocks = [{ repeats: 1, workMinutes: Math.min(90, workBudget), restMinutes: 0, hrZone: 'Z2', label: 'aerobic' }];
   } else if (intensity === 'hard') {
-    const [lo, hi] = zoneWatts.Z4 ?? [];
     const reps = Math.max(4, Math.min(8, Math.round(workBudget / 5)));
-    blocks = [{ repeats: reps, workMinutes: 3, restMinutes: 2, hrZone: 'Z4', powerLowWatts: lo, powerHighWatts: hi, label: 'threshold' }];
+    blocks = [{ repeats: reps, workMinutes: 3, restMinutes: 2, hrZone: 'Z4', label: 'threshold' }];
   } else { // moderate
-    const [lo, hi] = zoneWatts.Z3 ?? [];
     const reps = Math.max(3, Math.min(6, Math.round(workBudget / 7)));
-    blocks = [{ repeats: reps, workMinutes: 5, restMinutes: 2, hrZone: 'Z3', powerLowWatts: lo, powerHighWatts: hi, label: 'tempo' }];
+    blocks = [{ repeats: reps, workMinutes: 5, restMinutes: 2, hrZone: 'Z3', label: 'tempo' }];
   }
-  return { name, warmupMeters: 600, drillsMinutes: 4, blocks, cooldownMeters: 600 };
+  return ensureBlockPower({ name, warmupMeters: 600, drillsMinutes: 4, blocks, cooldownMeters: 600 }, pz)!;
 }
 
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
@@ -195,8 +212,11 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   // The LLM should design the workout; if it omitted one on a run day, synthesize a
   // sensible structured session from the intensity + zones so the watch always has one.
   const wkName = weekdayName(snap.date);
-  const workout = parseWorkout(o.workout, intensity, wkName)
-    ?? (intensity !== 'rest' ? synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones) : null);
+  const workout = ensureBlockPower(
+    parseWorkout(o.workout, intensity, wkName)
+      ?? (intensity !== 'rest' ? synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones) : null),
+    snap.powerZones,
+  );
   return {
     headline:   String(o.headline ?? 'Plan ready').slice(0, 120),
     session:    String(o.session ?? '').slice(0, 280),
