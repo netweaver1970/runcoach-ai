@@ -29,11 +29,19 @@ const BASELINE_DAYS = 14;     // HRV baseline window
 // Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges only when
 // recovering (asleep, or genuinely calm at NIGHT) and drains all day — slowly when calm,
 // fast when stressed. This prevents day-long calm from pinning it at 100.
+// Calibrated against Bevel (see scripts/bbtune.mjs against a device dump): battery now,
+// drain and avg daytime stress match Bevel.
 const REST_STRESS   = 33;     // below this AND at night → recovering (Bevel sleep-stress ~25)
-const SLEEP_CHARGE  = 0.085;  // per-minute while recovering (~+30% over a ~6h night)
-const BASE_DRAIN    = 0.008;  // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.050;  // additional per-minute drain at full stress (→ ~-33%/day at stress 62)
-const SEED          = 50;     // washed out by two day/night cycles in the 60h window
+const SLEEP_CHARGE  = 0.125;  // per-minute while recovering
+const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
+const STRESS_DRAIN  = 0.085;  // additional per-minute drain at full stress
+const SEED          = 42;     // starting level at the window edge
+// HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
+// stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
+const HRV_VMAX      = 110;    // SDNN above this = artifact (Bevel-style artifact removal)
+const HRV_HR_OVER   = 20;     // reject if HR is more than this above resting (= movement)
+const HRV_CV_MAX    = 0.18;   // reject if HR is erratic around the read (= movement)
+const HRV_WIN_MIN   = 65;     // carry a trusted read this many minutes to fill gaps
 
 const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { return await fn(); } catch { return fb; } };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -99,14 +107,14 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   // ── HRV trust filter ──────────────────────────────────────────────────────────
   const qmap = buildHeartbeatQualityMap(beatsRaw as any[]);
   const trustHRV = (t: number, v: number, useHrContext: boolean): { ok: boolean; why: string } => {
-    if (!(v >= 5 && v <= 200)) return { ok: false, why: 'value' };  // implausible SDNN
-    if (!isGoodHRVSample(t, qmap)) return { ok: false, why: 'rrgap' }; // R-R gaps → motion
+    if (!(v >= 5 && v <= HRV_VMAX)) return { ok: false, why: 'value' }; // implausible / artifact SDNN
     if (useHrContext) {
-      // Reject MOVEMENT (erratic HR / clear exercise), but NOT a genuinely elevated-yet-
-      // STABLE HR — heat/stress raises HR while still, and that low-HRV read is real signal.
+      // The arbiter is the surrounding HR: heat/stress raises HR while STILL (real low-HRV
+      // signal — keep it), whereas movement raises HR a lot and/or makes it erratic (reject).
+      // The watch R-R "gap" flag over-rejects this user's stable reads, so it is NOT a reject.
       const s = hrStatsNear(t);
-      if (s && s.mean > restHR + 45) return { ok: false, why: 'hr-high' };
-      if (s && s.cv > 0.18)          return { ok: false, why: 'hr-erratic' };
+      if (s && s.mean > restHR + HRV_HR_OVER) return { ok: false, why: 'hr-high' };
+      if (s && s.cv > HRV_CV_MAX)             return { ok: false, why: 'hr-erratic' };
     }
     return { ok: true, why: 'ok' };
   };
@@ -130,10 +138,10 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const ctx = hrStatsNear(t);
     const res = trustHRV(t, v, true);
     if (res.ok) { validHrv.push({ t, v }); hrvUsed++; } else hrvRejected++;
-    hrvDebug.push({ m: relMin(t), v: Math.round(v), hr: ctx ? Math.round(ctx.mean) : 0, cv: ctx ? Math.round(ctx.cv * 100) : -1, ok: res.ok ? 1 : 0, w: res.why });
+    hrvDebug.push({ m: relMin(t), v: Math.round(v), hr: ctx ? Math.round(ctx.mean) : 0, cv: ctx ? Math.round(ctx.cv * 100) : -1, rr: isGoodHRVSample(t, qmap) ? 1 : 0, ok: res.ok ? 1 : 0, w: res.why });
   }
   validHrv.sort((a, b) => a.t - b.t);
-  const nearestHrv = (t: number, win = 35 * 60_000): number | null => {
+  const nearestHrv = (t: number, win = HRV_WIN_MIN * 60_000): number | null => {
     let best: number | null = null, bestDt = win;
     for (const s of validHrv) { const dt = Math.abs(s.t - t); if (dt <= bestDt) { bestDt = dt; best = s.v; } }
     return best;
