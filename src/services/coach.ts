@@ -74,6 +74,20 @@ export interface CoachPlan {
   cautions?:  string;
   workout?:   WatchWorkout | null; // structured watch workout (null = rest, no push)
   generatedAt: string;
+  genTempC?:  number;        // apparent temp (°C) when generated — for staleness checks
+  genStrain?: number;        // the day's accumulated strain when generated
+}
+
+// A cached plan goes stale when the day's conditions drift from when it was written:
+// the apparent temperature (heat changes the strain a session causes) or the strain
+// already accumulated today (which moves the remaining advisable budget).
+const TEMP_DRIFT_C = 4;
+const STRAIN_DRIFT = 10;
+export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean {
+  const nowTemp = snap.weather?.apparentC ?? snap.weather?.tempC;
+  if (plan.genTempC != null && nowTemp != null && Math.abs(nowTemp - plan.genTempC) >= TEMP_DRIFT_C) return true;
+  if (plan.genStrain != null && snap.strainReal != null && Math.abs(snap.strainReal - plan.genStrain) >= STRAIN_DRIFT) return true;
+  return false;
 }
 
 // The detailed rules now live in editable knowledge files (coachFiles.ts). The wrapper
@@ -230,6 +244,8 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
     workout,
     generatedAt: new Date().toISOString(),
+    genTempC:  snap.weather?.apparentC ?? snap.weather?.tempC,
+    genStrain: snap.strainReal,
   };
 }
 

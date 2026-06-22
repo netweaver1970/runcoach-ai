@@ -29,7 +29,7 @@ import {
 } from '../src/services/healthkit';
 import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
-import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, CoachPlan } from '../src/services/coach';
+import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, CoachPlan } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 
@@ -105,7 +105,7 @@ export default function HomeScreen() {
       // date = cs.date), so the home and detail always read the exact same cached plan.
       const cs = await assembleCoachSnapshot(snap.strain ?? null);
       let plan = await loadCachedPlan(cs.date);
-      if (!plan) {
+      if (!plan || planNeedsRefresh(plan, cs)) {     // regen if heat/strain drifted
         plan = await getCoachPlan(cs);
         await saveCachedPlan(cs.date, plan);
       }

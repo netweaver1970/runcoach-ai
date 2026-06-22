@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl,
@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, synthesizeWorkout, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, synthesizeWorkout, planNeedsRefresh, CoachPlan } from '../src/services/coach';
 import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
@@ -114,7 +114,12 @@ export default function StrainDetailScreen() {
   };
 
   // Load any plan already cached for the viewed day (one per calendar day).
-  useEffect(() => { setPlan(null); loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); }); }, [targetDate]);
+  const staleRegenRef = useRef(false);
+  useEffect(() => {
+    staleRegenRef.current = false;
+    setPlan(null);
+    loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); });
+  }, [targetDate]);
 
   const requestPlan = async () => {
     setPlanLoading(true); setPlanError(null);
@@ -167,6 +172,16 @@ export default function StrainDetailScreen() {
       setPlanLoading(false);
     }
   };
+
+  // Auto-refresh today's plan if it was written under materially different heat/strain.
+  useEffect(() => {
+    if (!plan || !weather || !targetIsToday || planLoading || staleRegenRef.current) return;
+    const snapLike = { weather: { apparentC: weather.apparentC, tempC: weather.tempC }, strainReal: real } as any;
+    if (planNeedsRefresh(plan, snapLike)) {
+      staleRegenRef.current = true;
+      requestPlan();
+    }
+  }, [plan, weather, targetIsToday, planLoading, real]);
 
   return (
     <SafeAreaView style={s.container}>
