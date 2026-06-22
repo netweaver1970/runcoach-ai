@@ -89,9 +89,23 @@ const TEMP_DRIFT_C = 4;
 const STRAIN_DRIFT = 10;
 export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean {
   const nowTemp = snap.weather?.apparentC ?? snap.weather?.tempC;
+  // A plan from before conditions-tracking has no genTempC — refresh it once so it
+  // picks up the current weather (and gets stamped for future drift checks).
+  if (nowTemp != null && plan.genTempC == null) return true;
   if (plan.genTempC != null && nowTemp != null && Math.abs(nowTemp - plan.genTempC) >= TEMP_DRIFT_C) return true;
   if (plan.genStrain != null && snap.strainReal != null && Math.abs(snap.strainReal - plan.genStrain) >= STRAIN_DRIFT) return true;
   return false;
+}
+
+// How much a given effort's cardiovascular strain is inflated by heat + humidity today.
+// ~+2%/°C of apparent temp above 18°C, plus a humidity penalty above 60% RH. The coach
+// must scale the session DOWN by this so run+drills stay within the (temp-independent) band.
+export function heatStrainFactor(w?: CoachSnapshot['weather']): number {
+  if (!w) return 1;
+  const t = w.apparentC ?? w.tempC;
+  let f = 1 + Math.max(0, t - 18) * 0.02;
+  if (w.humidity > 60) f += (w.humidity - 60) * 0.003;
+  return Math.min(1.6, Math.round(f * 100) / 100);
 }
 
 // The detailed rules now live in editable knowledge files (coachFiles.ts). The wrapper
@@ -102,8 +116,12 @@ follow every rule in it. You receive a JSON snapshot of today's physiology, trai
 and weather. OTHER TRAINING: recentActivities lists recent NON-run sessions (dance, walk, cardio/HIIT, \
 strength). They carry no running structure or power zones, but they add real fatigue and already count in \
 today's strain — factor them in (e.g. tired legs after a long dance session → ease the run). Today's strain TARGET is fixed and provided as advisableLow–advisableHigh — treat that as THE \
-target; do NOT invent a different band. Prescribe a session whose total strain (run + drills, adjusted for \
-heat/humidity) lands within it, never more than 10% over the ceiling. In the rationale, ALWAYS state where \
+target; do NOT invent a different band. HEAT: heatStrainFactor says a given effort costs that MULTIPLE of its \
+normal strain today (heat + humidity). The target band is temperature-independent, so to keep run+drills within \
+it you MUST scale the session DOWN by heatStrainFactor — cut running minutes to roughly runMinutes ÷ \
+heatStrainFactor (and/or drop a notch in intensity). Make the cut explicit in the rationale (e.g. "28°C, \
+factor 1.20 → 25→21 min"). Prescribe a session whose total strain (run + drills × heatStrainFactor) lands within \
+the band, never more than 10% over the ceiling. In the rationale, ALWAYS state where \
 today's actual strain (strainReal) sits relative to the target band — BELOW / WITHIN / ABOVE — and why that \
 is appropriate for your call (e.g. "strain 7% is below the 23–47% band, which is right given low recovery — \
 rest"). Use the exact strainReal figure; never invent a different number. SpO₂ note: brief overnight dips to \
@@ -215,9 +233,12 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
   const knowledge = await buildKnowledgePrompt();
   const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}`;
+  const heatFactor = heatStrainFactor(snap.weather);
+  // Heat shrinks the achievable running time for the same strain — cap the budget by it.
+  const heatBudget = snap.tofBudgetTodayMin != null ? Math.round(snap.tofBudgetTodayMin / heatFactor) : undefined;
   const txt = await callLLM({
     system,
-    messages: [{ role: 'user', content: JSON.stringify(snap) }],
+    messages: [{ role: 'user', content: JSON.stringify({ ...snap, heatStrainFactor: heatFactor, tofBudgetTodayMin: heatBudget ?? snap.tofBudgetTodayMin }) }],
     maxTokens: 1200,
   });
   const match = txt.match(/\{[\s\S]*\}/);
@@ -226,7 +247,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   const intensity: CoachIntensity =
     ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : 'easy';
   const runMinutes = Math.max(0, Math.min(
-    snap.tofBudgetTodayMin ?? 999,
+    heatBudget ?? snap.tofBudgetTodayMin ?? 999,    // heat-adjusted running cap
     Math.round(Number(o.runMinutes)) || 0,
   ));
   // The LLM should design the workout; if it omitted one on a run day, synthesize a
