@@ -75,27 +75,37 @@ export async function ensureZonesFile(): Promise<void> {
   );
 }
 
-// Decode the step name the native WorkoutProxy patch encodes into an activity's UUID
-// suffix (…::meta::title=…|WorkoutStepName=…|…::stat::…). Used to spot the "Drills" step.
-function stepNameFromUuid(uuid: string): string {
+// Decode the step name + type the native WorkoutProxy patch encodes into an activity's
+// UUID suffix (…::meta::title=…|WorkoutStepName=…|WorkoutStepType=…|…::stat::…).
+// WorkoutStepType: 0=Warmup, 1=Work, 2=Recovery, 3=Cooldown.
+function segInfo(uuid: string): { name: string; type: number } {
   const m = uuid.indexOf('::meta::');
-  if (m < 0) return '';
+  if (m < 0) return { name: '', type: -1 };
   const s = uuid.indexOf('::stat::', m);
   const metaStr = uuid.slice(m + 8, s >= 0 ? s : undefined);
-  let title = '', stepName = '';
+  let title = '', stepName = '', type = -1;
   for (const pair of metaStr.split('|')) {
     const eq = pair.indexOf('=');
     if (eq < 0) continue;
     const k = pair.slice(0, eq), v = pair.slice(eq + 1);
-    if (k === 'title') title = v;
+    if (k === 'title')           title    = v;
     if (k === 'WorkoutStepName') stepName = v;
+    if (k === 'WorkoutStepType') type     = parseInt(v, 10);
   }
-  return title || stepName;
+  return { name: title || stepName, type };
+}
+
+// Real work only — exclude warm-up, drills, recovery jogs and cool-down from calibration.
+function isRealWork(name: string, type: number): boolean {
+  if (/drill|warm|cool|recover|rest/i.test(name)) return false;
+  if (type === 0 || type === 2 || type === 3) return false; // warmup / recovery / cooldown
+  if (type === 1) return true;                              // work
+  return /work/i.test(name);                                // fallback by name
 }
 
 interface RunWindow {
   start: number; end: number;
-  drillRanges: { from: number; to: number }[];
+  workRanges: { from: number; to: number }[]; // real work segments; empty for free runs
   uuid: string; tempC?: number; note?: string;
 }
 
@@ -108,16 +118,17 @@ async function latestRun(): Promise<RunWindow | null> {
   if (!run) return null;
   const start = new Date(run.startDate).getTime();
   const durSec = typeof run.duration === 'object' && run.duration !== null ? (run.duration.quantity ?? 0) : (run.duration ?? 0);
-  // Time ranges of any "Drills" step → excluded from the power/HR-zone calibration.
-  const drillRanges = ((run.activities ?? []) as any[])
-    .filter(a => /drill/i.test(stepNameFromUuid(a?.uuid ?? '')))
+  // Time ranges of the REAL WORK steps — the only data the calibration uses (structured
+  // runs). Empty for free runs (no steps), where we fall back to the whole window.
+  const workRanges = ((run.activities ?? []) as any[])
+    .filter(a => { const { name, type } = segInfo(a?.uuid ?? ''); return isRealWork(name, type); })
     .map(a => ({ from: new Date(a.startDate).getTime(), to: a.endDate ? new Date(a.endDate).getTime() : 0 }))
     .filter(r => r.to > r.from);
   // Conditions that bias the power-vs-HR relationship: recorded temp + the athlete's note.
   const uuid = String(run.uuid ?? '').split('::')[0];
   const meta = uuid ? await getRunMeta(uuid).catch(() => ({} as any)) : ({} as any);
   const tempC = meta?.tempC ?? extractWeatherTempC(run);
-  return { start, end: start + durSec * 1000, drillRanges, uuid, tempC, note: meta?.note };
+  return { start, end: start + durSec * 1000, workRanges, uuid, tempC, note: meta?.note };
 }
 
 export interface RunZoneAnalysis {
@@ -130,7 +141,9 @@ export interface RunZoneAnalysis {
 export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAnalysis | null> {
   const run = prefetched ?? await latestRun();
   if (!run) return null;
-  const inDrill = (t: number) => run.drillRanges.some(r => t >= r.from && t <= r.to);
+  // Structured run → use only the real work segments; free run → use the whole window.
+  const workOnly = run.workRanges.length > 0;
+  const inWork = (t: number) => run.workRanges.some(r => t >= r.from && t <= r.to);
   const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
   const rows = zoneTable(maxHR, pz);
   const from = new Date(run.start), to = new Date(run.end);
@@ -150,7 +163,7 @@ export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAna
   for (const p of pwr) {
     while (hi + 1 < hr.length && hr[hi + 1].t <= p.t) hi++;
     const bpm = hr[hi]?.v ?? 0;
-    if (bpm <= 0 || p.v <= 0 || inDrill(p.t)) continue; // drills excluded from calibration
+    if (bpm <= 0 || p.v <= 0 || (workOnly && !inWork(p.t))) continue; // real work only
     const zi = zoneOf(bpm);
     acc[zi].pSum += p.v; acc[zi].n++; acc[zi].hrSum += bpm;
   }
@@ -201,7 +214,8 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
   const user =
     `Current file:\n"""\n${current}\n"""\n\n` +
     `Conditions:\n${condText}\n\n` +
-    `Latest run (${analysis.date}, ${analysis.durationMin} min) — observed power by HR zone (drills already excluded):\n` +
+    `Latest run (${analysis.date}, ${analysis.durationMin} min) — observed power by HR zone ` +
+    `(warm-up, drills, recovery jogs & cool-down excluded; real work only):\n` +
     analysis.perZone.map(z => `${z.z}: ${z.minutes} min, avg HR ${z.avgHR}, avg power ${z.avgPower} W`).join('\n');
 
   const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 900 }))
