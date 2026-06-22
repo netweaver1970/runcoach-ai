@@ -1,0 +1,7 @@
+{
+  "name": "runcoach-workout",
+  "version": "0.1.0",
+  "description": "Push structured WorkoutKit workouts to the Apple Watch.",
+  "main": "index.ts",
+  "private": true
+}

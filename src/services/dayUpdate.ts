@@ -12,6 +12,7 @@ import HealthKit from '@kingstinct/react-native-healthkit';
 import { HealthSnapshot } from '../types';
 import { fetchHealthSnapshot, saveSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot, getCoachPlan, saveCachedPlan } from './coach';
+import { pushWorkoutToWatch, clearWatchWorkout } from './watchWorkout';
 
 const AUTO_KEY = 'dayview_auto_v1';
 const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
@@ -59,6 +60,9 @@ export async function maybeRunDayView(opts: {
     const plan = await getCoachPlan(cs);
     await saveCachedPlan(cs.date, plan);
     headline = plan.headline;
+    // Push (or clear) the structured "Day" workout on the watch — only on run days.
+    if (plan.workout) pushWorkoutToWatch(plan.workout).catch(() => {});
+    else clearWatchWorkout().catch(() => {});
   } catch { /* e.g. no API key — KPIs still refreshed; the plan stays on-demand */ }
 
   try {

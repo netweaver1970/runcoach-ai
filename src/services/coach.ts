@@ -39,6 +39,24 @@ export interface CoachSnapshot {
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
 
+// A structured running workout for the Apple Watch (WorkoutKit): warmup → drills →
+// work/recovery blocks → cooldown. Null on rest days (no watch workout pushed).
+export interface WatchWorkoutBlock {
+  repeats:     number;          // how many work+recovery reps
+  workMinutes: number;          // work-interval duration
+  restMinutes: number;          // recovery duration (0 = continuous)
+  paceLowSecPerKm?:  number;    // target pace window (faster bound, sec/km)
+  paceHighSecPerKm?: number;    // slower bound, sec/km
+  label?:      string;          // e.g. "5K effort"
+}
+export interface WatchWorkout {
+  name:          string;        // always overwrite the same-named workout, e.g. "Day"
+  warmupMeters:  number;        // always 600
+  drillsMinutes: number;        // small drills block after warmup (0 to skip)
+  blocks:        WatchWorkoutBlock[];
+  cooldownMeters: number;       // always 600
+}
+
 export interface CoachPlan {
   headline:   string;        // one-line readiness verdict
   session:    string;        // the recommended session
@@ -49,6 +67,7 @@ export interface CoachPlan {
   strainHigh: number;
   rationale:  string;
   cautions?:  string;
+  workout?:   WatchWorkout | null; // structured watch workout (null = rest, no push)
   generatedAt: string;
 }
 
@@ -64,18 +83,51 @@ today's actual strain (strainReal) sits relative to the target band — BELOW / 
 is appropriate for your call (e.g. "strain 7% is below the 23–47% band, which is right given low recovery — \
 rest"). Use the exact strainReal figure; never invent a different number. SpO₂ note: brief overnight dips to \
 ~92–95% are normal and must NOT reduce load on their own — only treat SpO₂ as a concern if it is below ~92%. \
-Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all the data.`;
+Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all the data.
+
+WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
+"workout" object for the Apple Watch that pushes today's strain to the UPPER end of the target band \
+(near strainHigh): a 600m warmup, a short drills block (drillsMinutes, ~3–5 min, 0 to skip), one or more \
+work blocks (reps × workMinutes at a target pace, with restMinutes recovery), and a 600m cooldown. Choose \
+reps/durations/paces so total running stays ≤ tofBudgetTodayMin yet reaches the upper band. Give pace as a \
+range in SECONDS PER KM (paceLowSecPerKm = faster bound, paceHighSecPerKm = slower); omit pace if unsure. \
+If intensity is "rest", set workout to null (no watch workout).`;
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
-{"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string}. \
+{"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string,\
+"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"paceLowSecPerKm":number,"paceHighSecPerKm":number,"label":string}],"cooldownMeters":600}}. \
 Be concise and skimmable — no filler. headline ≤ 7 words (the outlook); session ≤ 25 words \
 (type, run minutes, run/walk or alternation if relevant); runMinutes = prescribed running time-on-feet \
 (≤ tofBudgetTodayMin); strength ≤ 22 words (just the named exercises × sets/reps); rationale ≤ 22 words \
-(the 1–2 signals that drove it); cautions ≤ 12 words ("" if none).`;
+(the 1–2 signals that drove it); cautions ≤ 12 words ("" if none). workout = null when intensity is rest.`;
 
 function clampScore(n: any, fallback: number): number {
   const v = Number(n);
   return Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : fallback;
+}
+
+const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
+
+// Validate/clamp the LLM's workout into a safe WatchWorkout (or null on rest/garbage).
+function parseWorkout(o: any, intensity: CoachIntensity): WatchWorkout | null {
+  if (intensity === 'rest' || !o || typeof o !== 'object') return null;
+  const rawBlocks = Array.isArray(o.blocks) ? o.blocks : [];
+  const blocks: WatchWorkoutBlock[] = rawBlocks.slice(0, 8).map((b: any) => ({
+    repeats:     Math.max(1, Math.min(30, Math.round(num(b?.repeats) ?? 1))),
+    workMinutes: Math.max(0.5, Math.min(120, num(b?.workMinutes) ?? 5)),
+    restMinutes: Math.max(0, Math.min(30, num(b?.restMinutes) ?? 0)),
+    paceLowSecPerKm:  num(b?.paceLowSecPerKm),
+    paceHighSecPerKm: num(b?.paceHighSecPerKm),
+    label: b?.label ? String(b.label).slice(0, 40) : undefined,
+  })).filter((b: WatchWorkoutBlock) => b.workMinutes > 0);
+  if (blocks.length === 0) return null;
+  return {
+    name: 'Day',
+    warmupMeters:  600,
+    drillsMinutes: Math.max(0, Math.min(20, num(o.drillsMinutes) ?? 4)),
+    blocks,
+    cooldownMeters: 600,
+  };
 }
 
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
@@ -84,7 +136,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   const txt = await callLLM({
     system,
     messages: [{ role: 'user', content: JSON.stringify(snap) }],
-    maxTokens: 600,
+    maxTokens: 900,
   });
   const match = txt.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Coach response was not JSON.');
@@ -105,6 +157,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     strainHigh: clampScore(snap.advisableHigh, 60),
     rationale:  String(o.rationale ?? '').slice(0, 400),
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
+    workout:    parseWorkout(o.workout, intensity),
     generatedAt: new Date().toISOString(),
   };
 }

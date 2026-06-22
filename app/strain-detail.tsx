@@ -13,6 +13,12 @@ import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, Co
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
+import { pushWorkoutToWatch, watchModuleAvailable } from '../src/services/watchWorkout';
+
+const fmtPace = (secPerKm: number) => {
+  const m = Math.floor(secPerKm / 60), s = Math.round(secPerKm % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+};
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -34,6 +40,20 @@ export default function StrainDetailScreen() {
   const [plan, setPlan] = useState<CoachPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [watchSending, setWatchSending] = useState(false);
+  const [watchMsg, setWatchMsg] = useState<string | null>(null);
+
+  const sendToWatch = async () => {
+    if (!plan?.workout) return;
+    setWatchSending(true); setWatchMsg(null);
+    try {
+      if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
+      const ok = await pushWorkoutToWatch(plan.workout);
+      setWatchMsg(ok ? '✓ Sent — open the Workout app on your watch.' : 'Could not send (needs iOS 17+ and permission).');
+    } catch (e: any) {
+      setWatchMsg(e?.message ?? 'Send failed.');
+    } finally { setWatchSending(false); }
+  };
 
   useEffect(() => {
     Promise.all([fetchOurDailyComponents(1), fetchDailyDurationHistory()])
@@ -209,6 +229,27 @@ export default function StrainDetailScreen() {
               ) : null}
               <Text style={s.coachRationale}>{plan.rationale}</Text>
               {plan.cautions ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
+
+              {plan.workout && (
+                <View style={s.workoutBox}>
+                  <Text style={s.workoutTitle}>⌚ WATCH WORKOUT · {plan.workout.name}</Text>
+                  <Text style={s.workoutStep}>1. Warm-up {plan.workout.warmupMeters} m</Text>
+                  {plan.workout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {plan.workout.drillsMinutes} min</Text>}
+                  {plan.workout.blocks.map((b, idx) => (
+                    <Text key={idx} style={s.workoutStep}>
+                      {plan.workout!.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
+                      {b.paceLowSecPerKm && b.paceHighSecPerKm ? ` @ ${fmtPace(b.paceLowSecPerKm)}–${fmtPace(b.paceHighSecPerKm)}/km` : ''}
+                      {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){b.label ? ` · ${b.label}` : ''}
+                    </Text>
+                  ))}
+                  <Text style={s.workoutStep}>Cool-down {plan.workout.cooldownMeters} m</Text>
+                  <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
+                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : '⌚ Send to Watch'}</Text>
+                  </TouchableOpacity>
+                  {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
+                </View>
+              )}
+
               <TouchableOpacity onPress={requestPlan} disabled={planLoading}>
                 <Text style={s.coachRefresh}>{planLoading ? 'Thinking…' : '↻ Regenerate'}</Text>
               </TouchableOpacity>
@@ -322,6 +363,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   strengthRow: { backgroundColor: c.bg, borderRadius: 8, padding: 10, marginBottom: 8 },
   strengthLabel: { fontSize: 10, fontWeight: '800', color: '#16a085', letterSpacing: 0.4, marginBottom: 3 },
   strengthText: { fontSize: 13, color: c.text, lineHeight: 19 },
+  workoutBox: { backgroundColor: c.bg, borderRadius: 8, padding: 12, marginTop: 4, marginBottom: 8 },
+  workoutTitle: { fontSize: 10, fontWeight: '800', color: '#FF6B35', letterSpacing: 0.4, marginBottom: 6 },
+  workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
+  watchBtn: { backgroundColor: '#FF6B35', borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
+  watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },
   coachCaution: { fontSize: 12, color: '#e67e22', marginTop: 8, lineHeight: 18 },
   coachRefresh: { fontSize: 12, color: '#FF6B35', fontWeight: '600', marginTop: 12 },
