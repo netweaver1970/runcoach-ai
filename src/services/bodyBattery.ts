@@ -34,7 +34,8 @@ const BASELINE_DAYS = 14;     // HRV baseline window
 const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
 const SLEEP_CHARGE  = 0.125;  // per-minute while asleep
 const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.085;  // additional per-minute drain at full stress
+const STRESS_DRAIN  = 0.068;  // additional per-minute drain at full stress (we over-drained
+                              // ~20%: 22-Jun dump rate 0.072 vs Bevel 0.061 → end 8 not 0)
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.

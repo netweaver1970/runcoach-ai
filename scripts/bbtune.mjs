@@ -9,8 +9,13 @@ const { restHR, maxHR, hrvBaseline, now } = d.meta;
 const CFG = {
   // HRV trust (rrgap is NO LONGER a hard reject — stable, moderate HR is the arbiter):
   V_MIN: 5, V_MAX: 110, HR_HIGH: 20, CV_MAX: 18,
-  W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 45,
-  REST_STRESS: 33, SLEEP_CHARGE: 0.075, BASE_DRAIN: 0.010, STRESS_DRAIN: 0.060, SEED: 50, BIN_MIN: 10,
+  W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 65,
+  REST_STRESS: 33, SLEEP_CHARGE: 0.125, SEED: 42, BIN_MIN: 10,
+  BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.012,
+  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.085,
+  // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
+  // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
+  AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
 };
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -29,16 +34,16 @@ const stressAt = (hr, vHrv, a) => {
   return a ? Math.min(st, 14) : st;
 };
 
-const lastM = d.bins3.at(-1)[0];
+const bins = d.bins ?? d.bins3.map(([m, hr, a]) => ({ m, hr, a }));
+const lastM = bins.at(-1).m;
 let battery = CFG.SEED;
 const out = [];
-for (const [m, hr, a] of d.bins3) {
+for (const { m, hr, a } of bins) {
   const vHrv = nearestHrv(m);
   const stress = stressAt(hr, vHrv, !!a);
-  const hour = new Date(now - (lastM - m) * 60000).getHours();
-  const night = hour >= 22 || hour < 8;
-  const recovering = a || (night && stress < CFG.REST_STRESS);
-  const rate = recovering ? CFG.SLEEP_CHARGE * (a ? 1 : 0.75) : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);
+  const rate = a
+    ? CFG.SLEEP_CHARGE                                          // asleep → charge (Bevel: sleep band only)
+    : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);    // awake → drain (declines all day)
   battery = clamp(battery + rate * CFG.BIN_MIN, 0, 100);
   out.push({ m, hr, a, hrv: vHrv, stress: Math.round(stress), battery: Math.round(battery) });
 }
