@@ -66,8 +66,8 @@ struct KPIRow: View {
       }
       Spacer(minLength: 0)
       if kpi.series.count > 1 {
-        Chart(kpi.series, id: \.t) { pt in
-          LineMark(x: .value("t", pt.t), y: .value("v", pt.v)).foregroundStyle(color).interpolationMethod(.monotone)
+        Chart(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
+          LineMark(x: .value("i", i), y: .value("v", pt.v)).foregroundStyle(color).interpolationMethod(.monotone)
         }
         .chartXAxis(.hidden).chartYAxis(.hidden)
         .frame(width: 52, height: 28)
@@ -89,10 +89,10 @@ struct KPIDetailView: View {
           Text(kpi.unit).font(.system(size: 16, weight: .semibold)).foregroundColor(.secondary)
         }
         if kpi.series.count > 1 {
-          Chart(kpi.series, id: \.t) { pt in
-            AreaMark(x: .value("t", pt.t), y: .value("v", pt.v))
+          Chart(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
+            AreaMark(x: .value("i", i), y: .value("v", pt.v))
               .foregroundStyle(LinearGradient(colors: [color.opacity(0.35), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-            LineMark(x: .value("t", pt.t), y: .value("v", pt.v))
+            LineMark(x: .value("i", i), y: .value("v", pt.v))
               .foregroundStyle(color).interpolationMethod(.monotone)
           }
           .chartXAxis(.hidden)
@@ -107,7 +107,7 @@ struct KPIDetailView: View {
         } else {
           Text("No history yet").font(.system(size: 12)).foregroundColor(.secondary).padding(.vertical, 8)
         }
-        Text(relTime(kpi.series.last?.t)).font(.system(size: 11)).foregroundColor(.secondary)
+        Text("\(relTime(kpi.series.last?.t)) · \(kpi.series.count) pts").font(.system(size: 11)).foregroundColor(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 4)

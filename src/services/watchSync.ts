@@ -41,6 +41,18 @@ const ms = (d: string) => Date.parse(d.length <= 10 ? d + 'T12:00:00' : d);
 
 interface OutKPI { key: string; label: string; unit: string; value: number; color: string; series: { t: number; v: number }[] }
 
+// Keep series small + clean for WatchConnectivity: drop bad/NaN timestamps (one bad point
+// blows up the chart's x-domain → an empty-looking graph), sort by time, and downsample to
+// ~80 points so the payload stays tiny and the watch chart renders fast.
+function prep(pts: { t: number; v: number }[], n = 80): { t: number; v: number }[] {
+  const clean = pts.filter(p => Number.isFinite(p.t) && Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
+  if (clean.length <= n) return clean;
+  const step = (clean.length - 1) / (n - 1);
+  const out: { t: number; v: number }[] = [];
+  for (let i = 0; i < n; i++) out.push(clean[Math.round(i * step)]);
+  return out;
+}
+
 export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
   if (!WatchSync) return false;
   try {
@@ -52,8 +64,8 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
     const kpis: OutKPI[] = [];
 
     if (bb) {
-      kpis.push({ key: 'stress', label: 'Stress', unit: '', value: bb.currentStress, color: stressColor(bb.currentStress), series: bb.series.map((p: any) => ({ t: p.t, v: p.stress })) });
-      kpis.push({ key: 'battery', label: 'Body Battery', unit: '%', value: bb.current, color: batteryColor(bb.current), series: bb.series.map((p: any) => ({ t: p.t, v: p.battery })) });
+      kpis.push({ key: 'stress', label: 'Stress', unit: '', value: bb.currentStress, color: stressColor(bb.currentStress), series: prep(bb.series.map((p: any) => ({ t: p.t, v: p.stress }))) });
+      kpis.push({ key: 'battery', label: 'Body Battery', unit: '%', value: bb.current, color: batteryColor(bb.current), series: prep(bb.series.map((p: any) => ({ t: p.t, v: p.battery }))) });
     }
     if (snap) {
       if (snap.todayRecovery?.recoveryScore != null)
@@ -61,13 +73,13 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
       if (snap.strain?.real != null)
         kpis.push({ key: 'strain', label: 'Strain', unit: '%', value: Math.round(snap.strain.real), color: '#e67e22', series: [] });
       const tl = (snap.trainingLoad ?? []).slice(-30);
-      if (tl.length) kpis.push({ key: 'cardio', label: 'Cardio Load', unit: '', value: Math.round(tl.at(-1)!.atl), color: '#3B82F6', series: tl.map((d: any) => ({ t: ms(d.date), v: Math.round(d.atl) })) });
+      if (tl.length) kpis.push({ key: 'cardio', label: 'Cardio Load', unit: '', value: Math.round(tl.at(-1)!.atl), color: '#3B82F6', series: prep(tl.map((d: any) => ({ t: ms(d.date), v: Math.round(d.atl) }))) });
       const rhr = (snap.restingHR ?? []).slice(-21);
-      if (rhr.length) kpis.push({ key: 'rhr', label: 'Resting HR', unit: '', value: rhr.at(-1)!.value, color: '#60A5FA', series: rhr.map((d: any) => ({ t: ms(d.date), v: d.value })) });
+      if (rhr.length) kpis.push({ key: 'rhr', label: 'Resting HR', unit: '', value: rhr.at(-1)!.value, color: '#60A5FA', series: prep(rhr.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
       const hrv = (snap.hrv ?? []).slice(-21);
-      if (hrv.length) kpis.push({ key: 'hrv', label: 'HRV', unit: 'ms', value: hrv.at(-1)!.value, color: '#A78BFA', series: hrv.map((d: any) => ({ t: ms(d.date), v: d.value })) });
+      if (hrv.length) kpis.push({ key: 'hrv', label: 'HRV', unit: 'ms', value: hrv.at(-1)!.value, color: '#A78BFA', series: prep(hrv.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
       const vo2 = (snap.vo2max ?? []).slice(-21);
-      if (vo2.length) kpis.push({ key: 'vo2', label: 'VO₂ Max', unit: '', value: vo2.at(-1)!.value, color: '#2DD4BF', series: vo2.map((d: any) => ({ t: ms(d.date), v: d.value })) });
+      if (vo2.length) kpis.push({ key: 'vo2', label: 'VO₂ Max', unit: '', value: vo2.at(-1)!.value, color: '#2DD4BF', series: prep(vo2.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
     }
     if (!kpis.length) return false;
 
