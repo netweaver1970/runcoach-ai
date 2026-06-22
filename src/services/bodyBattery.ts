@@ -26,13 +26,13 @@ const BIN_MIN = 10;
 const WINDOW_H = 60;          // compute window (2+ nights so the seed washes out)
 const BASELINE_DAYS = 14;     // HRV baseline window
 
-// Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges only when
-// recovering (asleep, or genuinely calm at NIGHT) and drains all day — slowly when calm,
-// fast when stressed. This prevents day-long calm from pinning it at 100.
+// Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges ONLY while
+// asleep (Bevel's curve rises inside the sleep band, then declines monotonically all day) and
+// drains whenever awake — slowly when calm, fast when stressed.
 // Calibrated against Bevel (see scripts/bbtune.mjs against a device dump): battery now,
 // drain and avg daytime stress match Bevel.
-const REST_STRESS   = 33;     // below this AND at night → recovering (Bevel sleep-stress ~25)
-const SLEEP_CHARGE  = 0.125;  // per-minute while recovering
+const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
+const SLEEP_CHARGE  = 0.125;  // per-minute while asleep
 const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
 const STRESS_DRAIN  = 0.085;  // additional per-minute drain at full stress
 const SEED          = 42;     // starting level at the window edge
@@ -180,13 +180,12 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
     let stress = asleep ? Math.min(stressAt(avgHR, vHrv), 14) : stressAt(avgHR, vHrv);
-    // Charge only while recovering (asleep, or genuinely calm at night); otherwise drain —
-    // slowly when calm, fast when stressed. So a calm-but-awake day never tops up to 100.
-    const hour = new Date(t + binMs / 2).getHours();
-    const night = hour >= 22 || hour < 8;
-    const recovering = asleep || (night && stress < REST_STRESS);
-    const rate = recovering
-      ? SLEEP_CHARGE * (asleep ? 1 : 0.75)
+    // Bevel only charges inside the sleep band — the Energy Bank then declines all day.
+    // Charging while merely calm-and-awake (our battery kept climbing for ~an hour AFTER
+    // waking) over-filled it ~15 pts above Bevel, so charge ONLY while actually asleep;
+    // awake always drains — gently when calm, fast when stressed.
+    const rate = asleep
+      ? SLEEP_CHARGE
       : -(BASE_DRAIN + (stress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep });
