@@ -339,7 +339,7 @@ function buildSession(
  * `precededByGap: boolean`.  The FIRST beat is always preceded by a gap (no
  * prior measurement), so we only look at beats after index 0.
  */
-function buildHeartbeatQualityMap(
+export function buildHeartbeatQualityMap(
   heartbeatSeries: readonly { startDate: Date | string; heartbeats: readonly { precededByGap: boolean }[] }[]
 ): Map<number, boolean> {
   const map = new Map<number, boolean>();
@@ -386,7 +386,7 @@ function computeRMSSD(
  * Looks for the nearest heartbeat series within 10 s tolerance.
  * Returns true (include) if no matching series is found (can't assess).
  */
-function isGoodHRVSample(sampleStartMs: number, qualityMap: Map<number, boolean>): boolean {
+export function isGoodHRVSample(sampleStartMs: number, qualityMap: Map<number, boolean>): boolean {
   const TOLERANCE = 10_000; // ms
   for (const [seriesMs, good] of qualityMap) {
     if (Math.abs(seriesMs - sampleStartMs) < TOLERANCE) return good;

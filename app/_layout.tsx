@@ -49,6 +49,7 @@ function RootStack() {
         <Stack.Screen name="recovery-detail" options={{ headerShown: false }} />
         <Stack.Screen name="sleep-detail" options={{ headerShown: false }} />
         <Stack.Screen name="strain-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="body-battery" options={{ headerShown: false }} />
         <Stack.Screen name="history" options={{ headerShown: false }} />
         <Stack.Screen name="training-load" options={{ headerShown: false }} />
         <Stack.Screen name="coach-knowledge" options={{ headerShown: false }} />

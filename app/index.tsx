@@ -32,6 +32,9 @@ import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, T
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, CoachPlan } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
+import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
+
+const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 
 // Bump the trailing schema rev when the snapshot shape changes, to force one full rescan.
 const SCAN_MARKER = `${Constants.expoConfig?.version ?? '0'}|s1`;
@@ -78,6 +81,7 @@ export default function HomeScreen() {
   const [hasApiKey, setHasApiKey]       = useState(false);
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
   const [sportFilter, setSportFilter]   = useState<SportFilter>('Run');
+  const [bodyBattery, setBodyBattery]   = useState<BodyBattery | null>(null);
   const [syncMonths, setSyncMonthsState] = useState<SyncMonths>(3);
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
   const [recommendation, setRecommendation] = useState<TrainingRecommendation | null>(null);
@@ -166,6 +170,7 @@ export default function HomeScreen() {
       ]);
       setSnapshot(snap);
       saveSnapshotCache(snap).catch(() => {});
+      computeBodyBattery().then(setBodyBattery).catch(() => {}); // non-blocking
       // Only a FULL scan marks this version as fully scanned (so light starts stay light).
       if (!light) SecureStore.setItemAsync(SCAN_MARKER_KEY, SCAN_MARKER).catch(() => {});
       setHasApiKey(!!key);
@@ -441,6 +446,21 @@ export default function HomeScreen() {
               params: { str: JSON.stringify(snapshot.strain), rec: recovery ? JSON.stringify(recovery) : undefined },
             }) : undefined}
           />
+        )}
+
+        {/* Body Battery — tap for the charge/discharge graph */}
+        {isTodayView && bodyBattery && (
+          <TouchableOpacity style={styles.bbCard} onPress={() => router.push('/body-battery' as any)} activeOpacity={0.85}>
+            <Text style={styles.bbEmoji}>🔋</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bbTitle}>Body Battery</Text>
+              <Text style={styles.bbSub}>
+                {bodyBattery.trendPerHour >= 0 ? '▲ charging' : '▼ draining'} {Math.abs(bodyBattery.trendPerHour)}/h · stress {bodyBattery.currentStress}
+              </Text>
+            </View>
+            <Text style={[styles.bbVal, { color: batteryColor(bodyBattery.current) }]}>{bodyBattery.current}%</Text>
+            <Text style={styles.bbChevron}>›</Text>
+          </TouchableOpacity>
         )}
 
         {/* Training load (CTL/ATL/TSB) — as of the viewed day */}
@@ -1245,6 +1265,17 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 8,
     borderWidth: 1, borderColor: c.border,
   },
+  bbCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 16, marginTop: 4, marginBottom: 4,
+    backgroundColor: c.surface, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+    borderLeftWidth: 4, borderLeftColor: '#22C55E',
+  },
+  bbEmoji: { fontSize: 20 },
+  bbTitle: { fontSize: 14, fontWeight: '700', color: c.text },
+  bbSub: { fontSize: 12, color: c.textSub, marginTop: 1 },
+  bbVal: { fontSize: 22, fontWeight: '800' },
+  bbChevron: { fontSize: 20, color: c.textSub, fontWeight: '300' },
   actEmoji: { fontSize: 22 },
   actName:  { fontSize: 15, fontWeight: '600', color: c.text },
   actMeta:  { fontSize: 12, color: c.textSub, marginTop: 2 },
