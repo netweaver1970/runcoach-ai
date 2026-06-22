@@ -17,10 +17,11 @@ const INTENSITY_COLOR: Record<string, string> = {
 };
 
 export default function StrainDetailScreen() {
-  const { data } = useLocalSearchParams<{ data: string }>();
+  const { data, date } = useLocalSearchParams<{ data: string; date?: string }>();
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
   const strain = data ? JSON.parse(data) as DayStrain : null;
+  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [tof, setTof] = useState<TofPlan | null>(null);
@@ -116,7 +117,10 @@ export default function StrainDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={s.title}>Strain Detail</Text>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={s.title}>Strain Detail</Text>
+          {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+        </View>
         <TouchableOpacity onPress={() => navTo('strain')} style={{ paddingHorizontal: 4 }}>
           <Text style={s.historyLink}>History ›</Text>
         </TouchableOpacity>
@@ -244,6 +248,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
   historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
+  headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
   scroll:   { padding: 12, paddingBottom: 40 },
 
   hero: {

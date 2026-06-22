@@ -11,6 +11,8 @@ import {
   ScrollView,
   AppState,
   AppStateStatus,
+  PanResponder,
+  Modal,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -29,6 +31,8 @@ import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, g
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus } from '../src/services/trainingLoad';
 import { maybeRunDayView, startSleepObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
+import { fetchOurDailyComponents } from '../src/services/healthkit';
+import { buildDayView, toDateKey } from '../src/services/dayView';
 import { loadRunMeta } from '../src/services/runMeta';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain } from '../src/types';
@@ -57,6 +61,12 @@ export default function HomeScreen() {
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
   const [recommendation, setRecommendation] = useState<TrainingRecommendation | null>(null);
   const [loadingRec, setLoadingRec]     = useState(false);
+  // ── Historic time-travel ──────────────────────────────────────────────────
+  const [viewDate, setViewDate] = useState<Date>(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; });
+  const [dayComps, setDayComps] = useState<Record<string, Record<string, number>>>({});
+  const [compsLoading, setCompsLoading] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const shiftDayRef = useRef<(d: number) => void>(() => {});
   const appState      = useRef(AppState.currentState);
   // Ref so `load` never needs syncMonths in its dependency array (avoids double-load)
   const syncMonthsRef  = useRef<SyncMonths>(3);
@@ -298,6 +308,38 @@ export default function HomeScreen() {
     thisWeekRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60
   );
 
+  // ── Historic time-travel: any day's wellness from the per-day components ────
+  const ensureComps = useCallback(() => {
+    if (compsLoading || Object.keys(dayComps).length > 0) return;
+    setCompsLoading(true);
+    fetchOurDailyComponents(1).then(setDayComps).catch(() => {}).finally(() => setCompsLoading(false));
+  }, [compsLoading, dayComps]);
+
+  const todayKey    = toDateKey(new Date());
+  const isTodayView = toDateKey(viewDate) === todayKey;
+  const dayView     = buildDayView(viewDate, snapshot, dayComps);
+
+  const shiftDay = useCallback((delta: number) => {
+    setViewDate(prev => {
+      const d = new Date(prev); d.setDate(d.getDate() + delta); d.setHours(0, 0, 0, 0);
+      return toDateKey(d) > todayKey ? prev : d;          // never the future
+    });
+    if (delta < 0) ensureComps();
+  }, [todayKey, ensureComps]);
+  const goToday = useCallback(() => { const d = new Date(); d.setHours(0, 0, 0, 0); setViewDate(d); }, []);
+
+  shiftDayRef.current = shiftDay;
+  const swipe = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+    onPanResponderRelease: (_e, g) => {
+      if (g.dx > 45) shiftDayRef.current(-1);             // swipe right → previous day
+      else if (g.dx < -45) shiftDayRef.current(1);        // swipe left  → next day
+    },
+  })).current;
+
+  // Recent days available in the picker (most recent first).
+  const pickerDays = Object.keys(dayComps).sort().reverse();
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
@@ -312,24 +354,34 @@ export default function HomeScreen() {
         }
         contentContainerStyle={{ paddingBottom: 32 }}
       >
-        {/* Wellness rings — top priority */}
-        <WellnessRings
-          recovery={recovery}
-          strain={snapshot?.strain ?? null}
-          onRefresh={onRefresh}
-          refreshing={refreshing}
-          onShowHistory={() => router.push({ pathname: '/history' as any, params: { type: 'hrv' } })}
-        />
+        {/* Wellness rings — time-travelable (swipe ← → or use the date picker) */}
+        <View {...swipe.panHandlers}>
+          <WellnessRings
+            recovery={dayView.recovery}
+            strain={dayView.strain}
+            onRefresh={onRefresh}
+            refreshing={refreshing}
+            onShowHistory={() => router.push({ pathname: '/history' as any, params: { type: 'hrv' } })}
+            viewDate={viewDate}
+            isToday={isTodayView}
+            canGoNext={!isTodayView}
+            onPrev={() => shiftDay(-1)}
+            onNext={() => shiftDay(1)}
+            onPickDate={() => { ensureComps(); setPickerOpen(true); }}
+            historic={!isTodayView}
+            loadingDay={compsLoading && !isTodayView}
+          />
+        </View>
 
-        {/* Training recommendation */}
-        {(loadingRec || recommendation) && (
+        {/* Training recommendation — only meaningful for today */}
+        {isTodayView && (loadingRec || recommendation) && (
           <TrainingRecommendationCard rec={recommendation} loading={loadingRec} strain={snapshot?.strain ?? null} />
         )}
 
-        {/* Training load (CTL/ATL/TSB) — its own block */}
-        {snapshot?.trainingLoad && snapshot.trainingLoad.length > 0 && (
+        {/* Training load (CTL/ATL/TSB) — as of the viewed day */}
+        {dayView.trainingLoad.length > 0 && (
           <TrainingLoadCard
-            series={snapshot.trainingLoad}
+            series={dayView.trainingLoad}
             onPress={() => router.push('/training-load' as any)}
           />
         )}
@@ -481,6 +533,46 @@ export default function HomeScreen() {
           ))
         )}
       </ScrollView>
+
+      {/* Day picker */}
+      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
+        <TouchableOpacity style={styles.pickerBackdrop} activeOpacity={1} onPress={() => setPickerOpen(false)}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>Jump to a day</Text>
+            <TouchableOpacity
+              style={[styles.pickerRow, isTodayView && styles.pickerRowActive]}
+              onPress={() => { goToday(); setPickerOpen(false); }}
+            >
+              <Text style={styles.pickerRowText}>Today</Text>
+            </TouchableOpacity>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {pickerDays.map(k => {
+                const d = new Date(k + 'T00:00:00');
+                const rec = dayComps[k]?.recoveryScore;
+                const str = dayComps[k]?.strainScore;
+                const active = k === toDateKey(viewDate);
+                return (
+                  <TouchableOpacity
+                    key={k}
+                    style={[styles.pickerRow, active && styles.pickerRowActive]}
+                    onPress={() => { const nd = new Date(d); nd.setHours(0,0,0,0); setViewDate(nd); setPickerOpen(false); }}
+                  >
+                    <Text style={styles.pickerRowText}>
+                      {d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    </Text>
+                    <Text style={styles.pickerRowMeta}>
+                      {rec != null ? `rec ${Math.round(rec)}` : ''}{str != null ? `  ·  strain ${Math.round(str)}%` : ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {pickerDays.length === 0 && (
+                <Text style={styles.pickerEmpty}>{compsLoading ? 'Loading days…' : 'No history loaded yet.'}</Text>
+              )}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -804,39 +896,67 @@ type WellnessRingsProps = {
   onRefresh: () => void;
   refreshing: boolean;
   onShowHistory: () => void;
+  viewDate: Date;
+  isToday: boolean;
+  canGoNext: boolean;
+  onPrev: () => void;
+  onNext: () => void;
+  onPickDate: () => void;
+  historic: boolean;
+  loadingDay: boolean;
 };
 
-function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRingsProps) {
+function WellnessRings({
+  recovery, strain, onRefresh, refreshing,
+  viewDate, isToday, canGoNext, onPrev, onNext, onPickDate, historic, loadingDay,
+}: WellnessRingsProps) {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
-  const today  = new Date().toLocaleDateString('en-GB', {
-    weekday: 'short', day: 'numeric', month: 'short',
-  });
+  const dateKey = toDateKey(viewDate);
+  const dateLbl = viewDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
   const navToRecovery = () => {
-    if (recovery) router.push({ pathname: '/recovery-detail' as any, params: { data: JSON.stringify(recovery) } });
+    if (recovery) router.push({ pathname: '/recovery-detail' as any, params: { data: JSON.stringify(recovery), date: dateKey } });
   };
   const navToSleep = () => {
-    if (recovery) router.push({ pathname: '/sleep-detail' as any, params: { data: JSON.stringify(recovery) } });
+    if (recovery) router.push({ pathname: '/sleep-detail' as any, params: { data: JSON.stringify(recovery), date: dateKey } });
   };
   const navToStrain = () => {
-    if (strain) router.push({ pathname: '/strain-detail' as any, params: { data: JSON.stringify(strain) } });
+    if (strain) router.push({ pathname: '/strain-detail' as any, params: { data: JSON.stringify(strain), date: dateKey } });
   };
 
-  // Nothing at all yet
+  const DateNav = (
+    <View style={styles.wellnessHeader}>
+      <Text style={styles.wellnessTitle}>{isToday ? "Today's Wellness" : 'Wellness'}</Text>
+      <View style={styles.dateNav}>
+        <TouchableOpacity onPress={onPrev} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.dateArrow}>‹</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={onPickDate}>
+          <Text style={[styles.wellnessSubtitle, historic && { color: '#FF6B35', fontWeight: '700' }]}>{dateLbl}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={onNext} disabled={!canGoNext} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={[styles.dateArrow, !canGoNext && { opacity: 0.25 }]}>›</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  // Nothing at all (today not synced, or a past day with no data)
   if (!recovery && !strain) {
     return (
       <View style={styles.wellnessCard}>
-        <View style={styles.wellnessHeader}>
-          <Text style={styles.wellnessTitle}>Today's Wellness</Text>
-          <Text style={styles.wellnessSubtitle}>{today}</Text>
-        </View>
-        <Text style={styles.wellnessUnavailable}>🌙  Waiting for data to sync…</Text>
-        <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={refreshing}>
-          {refreshing
-            ? <ActivityIndicator size="small" color="#FF6B35" />
-            : <Text style={styles.refreshBtnText}>↻  Refresh</Text>}
-        </TouchableOpacity>
+        {DateNav}
+        <Text style={styles.wellnessUnavailable}>
+          {loadingDay ? '⏳  Loading day…' : historic ? '🗓  No data for this day' : '🌙  Waiting for data to sync…'}
+        </Text>
+        {!historic && (
+          <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={refreshing}>
+            {refreshing
+              ? <ActivityIndicator size="small" color="#FF6B35" />
+              : <Text style={styles.refreshBtnText}>↻  Refresh</Text>}
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -850,10 +970,7 @@ function WellnessRings({ recovery, strain, onRefresh, refreshing }: WellnessRing
 
   return (
     <View style={styles.wellnessCard}>
-      <View style={styles.wellnessHeader}>
-        <Text style={styles.wellnessTitle}>Today's Wellness</Text>
-        <Text style={styles.wellnessSubtitle}>{today}</Text>
-      </View>
+      {DateNav}
 
       <View style={styles.ringsRow}>
         {/* Strain — double ring (real effort + safe range), tap → detail */}
@@ -1002,6 +1119,16 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   wellnessHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   wellnessTitle: { fontSize: 15, fontWeight: '700', color: c.text },
   wellnessSubtitle: { fontSize: 12, color: c.textFaint },
+  dateNav: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  dateArrow: { fontSize: 22, color: '#FF6B35', fontWeight: '700', lineHeight: 24 },
+  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  pickerSheet: { backgroundColor: c.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28 },
+  pickerTitle: { fontSize: 16, fontWeight: '800', color: c.text, marginBottom: 10 },
+  pickerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.border },
+  pickerRowActive: { backgroundColor: '#FF6B3522', borderRadius: 8, paddingHorizontal: 8 },
+  pickerRowText: { fontSize: 15, fontWeight: '600', color: c.text },
+  pickerRowMeta: { fontSize: 12, color: c.textFaint },
+  pickerEmpty: { fontSize: 13, color: c.textFaint, paddingVertical: 16, textAlign: 'center' },
   ringsRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', marginBottom: 2 },
   ringHint: { fontSize: 9, color: c.textFaint, marginTop: 3 },
   strainCaption: { fontSize: 9, fontWeight: '700' },

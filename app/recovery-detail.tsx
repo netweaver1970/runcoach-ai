@@ -35,9 +35,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function RecoveryDetailScreen() {
-  const { data } = useLocalSearchParams<{ data: string }>();
+  const { data, date } = useLocalSearchParams<{ data: string; date?: string }>();
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
+  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
 
   const [hist, setHist] = useState<Record<string, number[]>>({});
@@ -80,7 +81,10 @@ export default function RecoveryDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={s.title}>Recovery Detail</Text>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={s.title}>Recovery Detail</Text>
+          {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+        </View>
         <TouchableOpacity onPress={() => router.push({ pathname: '/history' as any, params: { type: 'recovery' } })} style={{ paddingHorizontal: 4 }}>
           <Text style={s.historyLink}>History ›</Text>
         </TouchableOpacity>
@@ -220,6 +224,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
   historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
+  headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
   center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText:{ fontSize: 15, color: c.textFaint },
   scroll:   { padding: 12, paddingBottom: 40 },

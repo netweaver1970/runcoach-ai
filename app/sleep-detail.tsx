@@ -205,7 +205,8 @@ function SubKPICard({
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function SleepDetailScreen() {
-  const { data } = useLocalSearchParams<{ data: string }>();
+  const { data, date } = useLocalSearchParams<{ data: string; date?: string }>();
+  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
   const router   = useRouter();
   const s = useThemedStyles(makeS);
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
@@ -242,7 +243,10 @@ export default function SleepDetailScreen() {
           <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
             <Text style={s.backText}>‹ Back</Text>
           </TouchableOpacity>
-          <Text style={s.title}>Sleep Detail</Text>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={s.title}>Sleep Detail</Text>
+            {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+          </View>
           <View style={{ width: 60 }} />
         </View>
         <View style={s.center}>
@@ -306,7 +310,10 @@ export default function SleepDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={s.title}>Sleep Detail</Text>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={s.title}>Sleep Detail</Text>
+          {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+        </View>
         <View style={{ width: 60 }} />
       </View>
 
@@ -574,6 +581,7 @@ const makeS = (c: Palette) => StyleSheet.create({
   },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
+  headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
   center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText:{ fontSize: 15, color: c.textFaint },
   scroll:   { padding: 12, paddingBottom: 40 },

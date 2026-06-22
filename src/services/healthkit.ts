@@ -674,14 +674,14 @@ function computeRecoveryScore(
 }
 
 // Bevel-aligned bands: Optimal >67 / Normal 34-67 / Poor <34.
-function scoreToLabel(score: number): DailyRecovery['label'] {
+export function scoreToLabel(score: number): DailyRecovery['label'] {
   if (score >= 67) return 'optimal';
   if (score >= 50) return 'good';
   if (score >= 34) return 'moderate';
   return 'poor';
 }
 
-function scoreToColor(score: number): string {
+export function scoreToColor(score: number): string {
   if (score >= 67) return '#27ae60';   // green
   if (score >= 50) return '#2ecc71';   // lighter green
   if (score >= 34) return '#f39c12';   // amber
