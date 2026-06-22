@@ -101,10 +101,11 @@ export default function HomeScreen() {
     if (!key) return;
     setLoadingRec(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
-      let plan = await loadCachedPlan(today);
+      // Use the SAME key the Strain screen + morning day-view use (the latest component
+      // date = cs.date), so the home and detail always read the exact same cached plan.
+      const cs = await assembleCoachSnapshot(snap.strain ?? null);
+      let plan = await loadCachedPlan(cs.date);
       if (!plan) {
-        const cs = await assembleCoachSnapshot(snap.strain ?? null);
         plan = await getCoachPlan(cs);
         await saveCachedPlan(cs.date, plan);
       }
