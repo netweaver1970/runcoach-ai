@@ -23,14 +23,15 @@ const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
 const ASLEEP = new Set([1, 3, 4, 5]); // asleepUnspecified/core/deep/REM (0=inBed, 2=awake)
 
 const BIN_MIN = 10;
-const WINDOW_H = 40;          // compute window (warm-up + last 24h shown)
+const WINDOW_H = 60;          // compute window (2+ nights so the seed washes out)
 const BASELINE_DAYS = 14;     // HRV baseline window
 
-// Battery dynamics (per-minute). Tuned so a full night roughly tops up and a hard/stressful
-// day drains meaningfully; refine against Bevel later.
-const STRESS_PIVOT  = 30;     // stress below this charges, above discharges
-const CHARGE_K      = 0.020;  // per-minute per stress-unit away from pivot
-const SLEEP_CHARGE  = 0.18;   // per-minute while asleep
+// Battery dynamics (per-minute). Calibrated toward Bevel's "Energy Bank": a night charges
+// ~+30% (peak ~45%, NOT 100), a normal day drains ~-30%. Refine as more Bevel days land.
+const STRESS_PIVOT  = 32;     // stress below this charges, above discharges
+const CHARGE_K      = 0.0022; // per-minute per stress-unit away from pivot (gentle drain)
+const SLEEP_CHARGE  = 0.095;  // per-minute while asleep (~+30% over a ~5h night)
+const SEED          = 30;     // starting level 60h ago — washed out by two nights
 
 const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { return await fn(); } catch { return fb; } };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -41,6 +42,8 @@ export interface BodyBattery {
   currentStress: number;  // 0–100 now
   trendPerHour: number;   // battery change over the last hour (+charging / −draining)
   dayLow: number; dayHigh: number;
+  totalCharged: number;   // sum of + deltas over last 24h (Bevel "Total Charged")
+  totalDrained: number;   // sum of − deltas over last 24h (Bevel "Total Drained")
   series: BatteryPoint[]; // last ~24h, BIN_MIN spacing
   hrvBaseline: number; restHR: number;
   hrvUsed: number; hrvRejected: number; // selectivity transparency
@@ -143,7 +146,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     return clamp(0.55 * base + 0.45 * Math.max(base, hrvStress), 0, 100);
   };
 
-  let battery = 55; // seed; the 40h warm-up (incl. overnight) makes "now" insensitive to it
+  let battery = SEED; // washed out by the two nights inside the 60h window
   const series: BatteryPoint[] = [];
   for (let t = start; t <= now; t += binMs) {
     // mean HR in [t, t+bin)
@@ -167,12 +170,21 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   const hourAgo = series.find(p => p.t >= now - 3_600_000) ?? last;
   const bats = shown.map(p => p.battery);
 
+  // Cumulative charge/drain over the shown window (Bevel's "Total Charged/Drained").
+  let totalCharged = 0, totalDrained = 0;
+  for (let i = 1; i < shown.length; i++) {
+    const d = shown[i].battery - shown[i - 1].battery;
+    if (d > 0) totalCharged += d; else totalDrained += d;
+  }
+
   return {
     current: last.battery,
     currentStress: last.stress,
     trendPerHour: Math.round(last.battery - hourAgo.battery),
     dayLow: bats.length ? Math.min(...bats) : last.battery,
     dayHigh: bats.length ? Math.max(...bats) : last.battery,
+    totalCharged: Math.round(totalCharged),
+    totalDrained: Math.round(totalDrained),
     series: shown,
     hrvBaseline: Math.round(hrvBaseline),
     restHR,

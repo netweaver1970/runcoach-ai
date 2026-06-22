@@ -49,6 +49,17 @@ export default function BodyBatteryScreen() {
               </Text>
             </View>
 
+            <View style={s.chargeRow}>
+              <View style={s.chargeCard}>
+                <Text style={[s.chargeVal, { color: '#22C55E' }]}>+{data.totalCharged}%</Text>
+                <Text style={s.chargeLbl}>Total Charged</Text>
+              </View>
+              <View style={s.chargeCard}>
+                <Text style={[s.chargeVal, { color: '#EF4444' }]}>{data.totalDrained}%</Text>
+                <Text style={s.chargeLbl}>Total Drained</Text>
+              </View>
+            </View>
+
             <BatteryGraph data={data} />
 
             <View style={s.statsRow}>
@@ -159,6 +170,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   big: { fontSize: 64, fontWeight: '800' },
   pct: { fontSize: 26, fontWeight: '700' },
   heroSub: { fontSize: 14, color: c.textSub, marginTop: 2 },
+  chargeRow: { flexDirection: 'row', gap: 12, marginBottom: 4 },
+  chargeCard: { flex: 1, backgroundColor: c.surface, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  chargeVal: { fontSize: 22, fontWeight: '800' },
+  chargeLbl: { fontSize: 12, color: c.textSub, marginTop: 2 },
   graphCard: { backgroundColor: c.surface, borderRadius: 14, padding: 8, marginVertical: 10 },
   graphCaption: { fontSize: 11, color: c.textSub, textAlign: 'center', marginTop: 4 },
   gridColor: { color: c.border },
