@@ -26,12 +26,14 @@ const BIN_MIN = 10;
 const WINDOW_H = 60;          // compute window (2+ nights so the seed washes out)
 const BASELINE_DAYS = 14;     // HRV baseline window
 
-// Battery dynamics (per-minute). Calibrated toward Bevel's "Energy Bank": a night charges
-// ~+30% (peak ~45%, NOT 100), a normal day drains ~-30%. Refine as more Bevel days land.
-const STRESS_PIVOT  = 32;     // stress below this charges, above discharges
-const CHARGE_K      = 0.0022; // per-minute per stress-unit away from pivot (gentle drain)
-const SLEEP_CHARGE  = 0.095;  // per-minute while asleep (~+30% over a ~5h night)
-const SEED          = 30;     // starting level 60h ago — washed out by two nights
+// Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges only when
+// recovering (asleep, or genuinely calm at NIGHT) and drains all day — slowly when calm,
+// fast when stressed. This prevents day-long calm from pinning it at 100.
+const REST_STRESS   = 22;     // below this AND at night → recovering (charge)
+const SLEEP_CHARGE  = 0.085;  // per-minute while recovering (~+30% over a ~6h night)
+const BASE_DRAIN    = 0.025;  // per-minute awake baseline drain (even when calm)
+const STRESS_DRAIN  = 0.085;  // additional per-minute drain at full stress
+const SEED          = 50;     // washed out by two day/night cycles in the 60h window
 
 const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { return await fn(); } catch { return fb; } };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -99,8 +101,10 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     if (!(v >= 5 && v <= 200)) return false;            // implausible SDNN
     if (!isGoodHRVSample(t, qmap)) return false;        // R-R gaps → motion
     if (useHrContext) {
+      // Reject MOVEMENT (erratic HR / clear exercise), but NOT a genuinely elevated-yet-
+      // STABLE HR — heat/stress raises HR while still, and that low-HRV read is real signal.
       const s = hrStatsNear(t);
-      if (s && (s.mean > restHR + 18 || s.cv > 0.12)) return false; // not at rest / erratic (movement)
+      if (s && (s.mean > restHR + 45 || s.cv > 0.12)) return false;
     }
     return true;
   };
@@ -141,9 +145,10 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const hrr = clamp((avgHR - restHR) / Math.max(20, maxHR - restHR), 0, 1);
     const base = 100 * clamp((hrr - 0.04) / 0.45, 0, 1);
     if (vHrv == null) return base;
-    const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, 2.2);     // >1 = HRV suppressed
+    const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, 2.6);     // >1 = HRV suppressed
     const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100;
-    return clamp(0.55 * base + 0.45 * Math.max(base, hrvStress), 0, 100);
+    // HRV-dominant (Bevel-like): suppressed HRV reads high stress even at a modest HR.
+    return clamp(0.35 * base + 0.65 * Math.max(base, hrvStress), 0, 100);
   };
 
   let battery = SEED; // washed out by the two nights inside the 60h window
@@ -156,8 +161,15 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const asleep = isAsleep(t + binMs / 2);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
-    let stress = asleep ? Math.min(stressAt(avgHR, nearestHrv(t)), 12) : stressAt(avgHR, nearestHrv(t));
-    const rate = asleep ? SLEEP_CHARGE : (STRESS_PIVOT - stress) * CHARGE_K;
+    let stress = asleep ? Math.min(stressAt(avgHR, nearestHrv(t)), 14) : stressAt(avgHR, nearestHrv(t));
+    // Charge only while recovering (asleep, or genuinely calm at night); otherwise drain —
+    // slowly when calm, fast when stressed. So a calm-but-awake day never tops up to 100.
+    const hour = new Date(t + binMs / 2).getHours();
+    const night = hour >= 22 || hour < 8;
+    const recovering = asleep || (night && stress < REST_STRESS);
+    const rate = recovering
+      ? SLEEP_CHARGE * (asleep ? 1 : 0.75)
+      : -(BASE_DRAIN + (stress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep });
   }
