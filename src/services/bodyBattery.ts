@@ -29,10 +29,10 @@ const BASELINE_DAYS = 14;     // HRV baseline window
 // Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges only when
 // recovering (asleep, or genuinely calm at NIGHT) and drains all day — slowly when calm,
 // fast when stressed. This prevents day-long calm from pinning it at 100.
-const REST_STRESS   = 22;     // below this AND at night → recovering (charge)
+const REST_STRESS   = 33;     // below this AND at night → recovering (Bevel sleep-stress ~25)
 const SLEEP_CHARGE  = 0.085;  // per-minute while recovering (~+30% over a ~6h night)
-const BASE_DRAIN    = 0.025;  // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.085;  // additional per-minute drain at full stress
+const BASE_DRAIN    = 0.008;  // per-minute awake baseline drain (even when calm)
+const STRESS_DRAIN  = 0.050;  // additional per-minute drain at full stress (→ ~-33%/day at stress 62)
 const SEED          = 50;     // washed out by two day/night cycles in the 60h window
 
 const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { return await fn(); } catch { return fb; } };
@@ -104,7 +104,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       // Reject MOVEMENT (erratic HR / clear exercise), but NOT a genuinely elevated-yet-
       // STABLE HR — heat/stress raises HR while still, and that low-HRV read is real signal.
       const s = hrStatsNear(t);
-      if (s && (s.mean > restHR + 45 || s.cv > 0.12)) return false;
+      if (s && (s.mean > restHR + 45 || s.cv > 0.18)) return false;
     }
     return true;
   };
@@ -125,7 +125,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     else hrvRejected++;
   }
   validHrv.sort((a, b) => a.t - b.t);
-  const nearestHrv = (t: number, win = 20 * 60_000): number | null => {
+  const nearestHrv = (t: number, win = 35 * 60_000): number | null => {
     let best: number | null = null, bestDt = win;
     for (const s of validHrv) { const dt = Math.abs(s.t - t); if (dt <= bestDt) { bestDt = dt; best = s.v; } }
     return best;
