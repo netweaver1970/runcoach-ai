@@ -4,7 +4,7 @@ module.exports = {
   type: "watch",
   name: "RunCoach",
   icon: "../../assets/icon.png",
-  deploymentTarget: "9.0",
+  deploymentTarget: "11.0",
   frameworks: ["SwiftUI", "WatchConnectivity", "Charts", "WidgetKit"],
   // App Group shared with the watch complication so it can read the selected KPI.
   entitlements: {
