@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator,
+  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
@@ -34,6 +34,7 @@ export default function StrainDetailScreen() {
   const [dur, setDur] = useState<{ date: string; value: number }[]>([]);
   const [weather, setWeather] = useState<WeatherNow | null>(null);
   const [loadingH, setLoadingH] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [plan, setPlan] = useState<CoachPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -55,13 +56,20 @@ export default function StrainDetailScreen() {
     } finally { setWatchSending(false); }
   };
 
-  useEffect(() => {
-    Promise.all([fetchOurDailyComponents(1), fetchDailyDurationHistory()])
+  // Fast by default: load only ~the last week of daily components. Pull down for the
+  // full month (longer history sparklines).
+  const loadHistory = useCallback((months: number, isRefresh = false) => {
+    if (isRefresh) setRefreshing(true); else setLoadingH(true);
+    Promise.all([fetchOurDailyComponents(months), fetchDailyDurationHistory()])
       .then(([c, d]) => { setComps(c); setDur(d); })
       .catch(() => {})
-      .finally(() => setLoadingH(false));
-    getLocalWeather().then(setWeather).catch(() => {});
+      .finally(() => { setLoadingH(false); setRefreshing(false); });
   }, []);
+  useEffect(() => {
+    loadHistory(0.3);                                  // ~last 9 days — quick
+    getLocalWeather().then(setWeather).catch(() => {});
+  }, [loadHistory]);
+  const onRefresh = useCallback(() => loadHistory(1, true), [loadHistory]); // full month
 
   const hist = useMemo(
     () => buildHistories(comps, ['strainScore', 'exerciseDuration', 'daytimeHR', 'totalEnergy', 'stepCount', 'cardioLoad']),
@@ -176,7 +184,10 @@ export default function StrainDetailScreen() {
       </View>
 
       <View style={{ flex: 1 }} {...swipe}>
-      <ScrollView contentContainerStyle={s.scroll}>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={status.color} />}
+      >
 
         {/* Score hero */}
         <View style={[s.hero, { borderColor: status.color }]}>

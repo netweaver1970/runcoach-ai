@@ -79,6 +79,7 @@ export default function SettingsScreen() {
   const [exporting, setExporting] = useState(false);
   const [dayViewAuto, setDayViewAuto] = useState(true);
   const [preparing, setPreparing] = useState(false);
+  const [activeCat, setActiveCat] = useState<string | null>(null);
 
   useEffect(() => {
     loadLLMConfig().then(cfg => {
@@ -235,10 +236,32 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      <View style={styles.navHeader}>
+        {activeCat
+          ? <TouchableOpacity onPress={() => setActiveCat(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Text style={styles.backLink}>‹ Settings</Text></TouchableOpacity>
+          : <View style={{ width: 70 }} />}
+        <Text style={styles.navTitle}>{activeCat ? (CATEGORIES.find(x => x.id === activeCat)?.label ?? 'Settings') : 'Settings'}</Text>
+        <View style={{ width: 70 }} />
+      </View>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        {!activeCat && (
+          <View style={styles.catList}>
+            {CATEGORIES.map(cat => (
+              <TouchableOpacity key={cat.id} style={styles.catRow} onPress={() => setActiveCat(cat.id)}>
+                <Text style={styles.catIcon}>{cat.icon}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.catLabel}>{cat.label}</Text>
+                  <Text style={styles.catDesc}>{cat.desc}</Text>
+                </View>
+                <Text style={styles.catChevron}>›</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+        <ActiveCat.Provider value={activeCat}>
 
         {/* Appearance */}
-        <Section title="Appearance">
+        <Section title="Appearance" cat="appearance">
           <Text style={styles.fieldLabel}>Theme</Text>
           <View style={styles.themeRow}>
             {([['light', '☀️ Light'], ['dark', '🌙 Dark'], ['system', '⚙️ System']] as [ThemeMode, string][]).map(([m, lbl]) => (
@@ -277,7 +300,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* AI Provider & Model */}
-        <Section title="AI Provider & Model">
+        <Section title="AI Provider & Model" cat="coaching">
           <Text style={styles.hint}>
             Keys stored securely in the iOS Keychain — never leave your device.
           </Text>
@@ -391,7 +414,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Daily recovery */}
-        <Section title="Daily Recovery Notification">
+        <Section title="Daily Recovery Notification" cat="automation">
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.switchLabel}>Every morning at 7:30 AM</Text>
@@ -422,7 +445,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Auto day view */}
-        <Section title="Auto Day View">
+        <Section title="Auto Day View" cat="automation">
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.switchLabel}>Prepare automatically each morning</Text>
@@ -467,7 +490,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Weekly coach */}
-        <Section title="Weekly Coach Report">
+        <Section title="Weekly Coach Report" cat="coaching">
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.switchLabel}>Every Monday at 8:00 AM</Text>
@@ -483,7 +506,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Power Zones */}
-        <Section title="Power Zones (watts)">
+        <Section title="Power Zones (watts)" cat="zones">
           <Text style={styles.hint}>
             When your Apple Watch records running power, these thresholds override the HR-based auto-classification.
             Set to 0 to leave a boundary unconfigured.
@@ -577,7 +600,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Long Run Threshold */}
-        <Section title="Long Run Threshold">
+        <Section title="Long Run Threshold" cat="zones">
           <Text style={styles.hint}>
             Runs longer than this are classified as "Long Run" regardless of pace or HR.
             Changing this clears the classification cache so all runs are re-evaluated.
@@ -603,7 +626,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* AI History Depth */}
-        <Section title="AI History Depth">
+        <Section title="AI History Depth" cat="coaching">
           <Text style={styles.hint}>
             Weeks of run history included in AI prompts. More = richer context but slightly more tokens. Minimum 6 weeks.
           </Text>
@@ -637,7 +660,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Body Weight */}
-        <Section title="Body Weight">
+        <Section title="Body Weight" cat="profile">
           <Text style={styles.hint}>
             Used to estimate running power (W) when Apple Watch power data is unavailable.
             Auto-filled from Apple Health if recorded there.
@@ -663,7 +686,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Bevel Calibration */}
-        <Section title="Bevel Calibration">
+        <Section title="Bevel Calibration" cat="zones">
           <Text style={styles.hint}>
             Import Bevel screenshots (the AI reads the values) or manually enter daily scores, to reverse-engineer scoring weights and improve RunCoach AI's algorithms.
           </Text>
@@ -693,7 +716,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Section>
 
-        <Section title="Backup & Restore">
+        <Section title="Backup & Restore" cat="data">
           <Text style={styles.hint}>
             Save all your settings — theme, AI provider/keys, training thresholds, coaching memory, Bevel
             calibration and every coaching-knowledge file — to one file you can store or move to another device.
@@ -741,7 +764,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Section>
 
-        <Section title="Coaching Knowledge">
+        <Section title="Coaching Knowledge" cat="coaching">
           <Text style={styles.hint}>
             The coach's rules and references live in editable files that are fed into its prompt — tune the rules,
             list your preferred strength exercises and pre-run drills, set a weekly schedule, or add your own.
@@ -757,7 +780,7 @@ export default function SettingsScreen() {
 
         {/* Model info */}
         {/* Coaching Memory */}
-        <Section title="Coaching Memory">
+        <Section title="Coaching Memory" cat="coaching">
           <Text style={styles.hint}>
             Your coach builds a memory note from your conversations — goals, patterns, agreements.
             {'\n\n'}
@@ -811,7 +834,7 @@ export default function SettingsScreen() {
 
 
         {/* Export */}
-        <Section title="Data Export">
+        <Section title="Data Export" cat="data">
           <Text style={styles.hint}>
             Export your complete health snapshot as JSON for analysis or backup.
             Load the main screen first to ensure data is fresh.
@@ -845,21 +868,36 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Data info */}
-        <Section title="Data & Privacy">
+        <Section title="Data & Privacy" cat="data">
           <Text style={styles.hint}>
             RunCoach AI reads Apple Health data directly on your device.{'\n\n'}
             Your health data is sent to Anthropic's API only when you request a coaching report. Anthropic does not use API data to train models.{'\n\n'}
             No data is stored on any server. Your API key stays in the iOS Keychain.
           </Text>
         </Section>
+        </ActiveCat.Provider>
 
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+// Settings hierarchy: a landing list of categories → each opens only its own sections.
+const ActiveCat = React.createContext<string | null>(null);
+
+const CATEGORIES: { id: string; label: string; icon: string; desc: string }[] = [
+  { id: 'coaching',   label: 'Coaching & AI',              icon: '🧠', desc: 'Provider, knowledge, memory, reports, history depth' },
+  { id: 'zones',      label: 'Zones & Training',           icon: '🏃', desc: 'Power zones, long-run threshold, Bevel calibration' },
+  { id: 'automation', label: 'Notifications & Automation', icon: '🔔', desc: 'Daily recovery alert, auto day view' },
+  { id: 'profile',    label: 'Profile',                    icon: '👤', desc: 'Body weight' },
+  { id: 'appearance', label: 'Appearance',                 icon: '🎨', desc: 'Theme & text size' },
+  { id: 'data',       label: 'Data & Backup',              icon: '💾', desc: 'Backup/restore, export, privacy' },
+];
+
+function Section({ title, cat, children }: { title: string; cat?: string; children: React.ReactNode }) {
   const styles = useThemedStyles(makeStyles);
+  const active = React.useContext(ActiveCat);
+  if (cat && active !== cat) return null; // hidden until its category is opened
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -870,6 +908,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 const makeStyles = (c: Palette) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.bg },
+  navHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
+  },
+  navTitle: { fontSize: 17, fontWeight: '700', color: c.text },
+  backLink: { fontSize: 16, color: c.accent, fontWeight: '600', width: 70 },
+  catList: { gap: 10, marginBottom: 8 },
+  catRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    padding: 16, borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt,
+  },
+  catIcon: { fontSize: 24 },
+  catLabel: { fontSize: 16, fontWeight: '600', color: c.text },
+  catDesc: { fontSize: 12, color: c.textSub, marginTop: 2 },
+  catChevron: { fontSize: 22, color: c.textSub, fontWeight: '300' },
   themeRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   themeBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, alignItems: 'center', backgroundColor: c.surfaceAlt },
   themeBtnActive: { backgroundColor: c.accent, borderColor: c.accent },
