@@ -70,7 +70,27 @@ export async function ensureZonesFile(): Promise<void> {
   );
 }
 
-async function latestRunWindow(): Promise<{ start: number; end: number } | null> {
+// Decode the step name the native WorkoutProxy patch encodes into an activity's UUID
+// suffix (…::meta::title=…|WorkoutStepName=…|…::stat::…). Used to spot the "Drills" step.
+function stepNameFromUuid(uuid: string): string {
+  const m = uuid.indexOf('::meta::');
+  if (m < 0) return '';
+  const s = uuid.indexOf('::stat::', m);
+  const metaStr = uuid.slice(m + 8, s >= 0 ? s : undefined);
+  let title = '', stepName = '';
+  for (const pair of metaStr.split('|')) {
+    const eq = pair.indexOf('=');
+    if (eq < 0) continue;
+    const k = pair.slice(0, eq), v = pair.slice(eq + 1);
+    if (k === 'title') title = v;
+    if (k === 'WorkoutStepName') stepName = v;
+  }
+  return title || stepName;
+}
+
+interface RunWindow { start: number; end: number; drillRanges: { from: number; to: number }[]; }
+
+async function latestRun(): Promise<RunWindow | null> {
   const workouts: any[] = await safe(() => (HealthKit.queryWorkoutSamples as any)({
     filter: { startDate: new Date(Date.now() - 14 * 86_400_000), endDate: new Date() },
     limit: 50, ascending: false, energyUnit: 'kcal', distanceUnit: 'm',
@@ -79,7 +99,12 @@ async function latestRunWindow(): Promise<{ start: number; end: number } | null>
   if (!run) return null;
   const start = new Date(run.startDate).getTime();
   const durSec = typeof run.duration === 'object' && run.duration !== null ? (run.duration.quantity ?? 0) : (run.duration ?? 0);
-  return { start, end: start + durSec * 1000 };
+  // Time ranges of any "Drills" step → excluded from the power/HR-zone calibration.
+  const drillRanges = ((run.activities ?? []) as any[])
+    .filter(a => /drill/i.test(stepNameFromUuid(a?.uuid ?? '')))
+    .map(a => ({ from: new Date(a.startDate).getTime(), to: a.endDate ? new Date(a.endDate).getTime() : 0 }))
+    .filter(r => r.to > r.from);
+  return { start, end: start + durSec * 1000, drillRanges };
 }
 
 export interface RunZoneAnalysis {
@@ -90,8 +115,9 @@ export interface RunZoneAnalysis {
 
 /** Observed average running power at each HR zone for the most recent run. */
 export async function analyzeLastRun(): Promise<RunZoneAnalysis | null> {
-  const run = await latestRunWindow();
+  const run = await latestRun();
   if (!run) return null;
+  const inDrill = (t: number) => run.drillRanges.some(r => t >= r.from && t <= r.to);
   const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
   const rows = zoneTable(maxHR, pz);
   const from = new Date(run.start), to = new Date(run.end);
@@ -111,7 +137,7 @@ export async function analyzeLastRun(): Promise<RunZoneAnalysis | null> {
   for (const p of pwr) {
     while (hi + 1 < hr.length && hr[hi + 1].t <= p.t) hi++;
     const bpm = hr[hi]?.v ?? 0;
-    if (bpm <= 0 || p.v <= 0) continue;
+    if (bpm <= 0 || p.v <= 0 || inDrill(p.t)) continue; // drills excluded from calibration
     const zi = zoneOf(bpm);
     acc[zi].pSum += p.v; acc[zi].n++; acc[zi].hrSum += bpm;
   }
@@ -153,7 +179,7 @@ export async function recalibrateZonesFromLastRun(): Promise<{ updated: boolean;
 
 /** Auto-recalibrate when a run newer than the last analysed one is available. */
 export async function maybeAutoRecalibrate(): Promise<boolean> {
-  const run = await latestRunWindow();
+  const run = await latestRun();
   if (!run) return false;
   let last = 0;
   try {
