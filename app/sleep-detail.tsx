@@ -8,6 +8,7 @@ import { DailyRecovery, SleepSession } from '../src/types';
 import { fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory } from '../src/services/healthkit';
 import { computeSleepBankSeries, computeSleepNeeded } from '../src/services/trainingLoad';
 import { useThemedStyles, Palette } from '../src/theme';
+import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import {
   normaliseKPIs, applyWeights,
   DEFAULT_SLEEP_WEIGHTS, SleepWeights,
@@ -205,12 +206,13 @@ function SubKPICard({
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function SleepDetailScreen() {
-  const { data, date } = useLocalSearchParams<{ data: string; date?: string }>();
-  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
-  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const { rec, str, date } = useLocalSearchParams<{ rec?: string; str?: string; date?: string }>();
+  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' }) : '';
+  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
   const router   = useRouter();
   const s = useThemedStyles(makeS);
-  const recovery = data ? JSON.parse(data) as DailyRecovery : null;
+  const swipe = useDetailSwipe('/sleep-detail', { rec, str, date });
+  const recovery = rec ? JSON.parse(rec) as DailyRecovery : null;
 
   const [history, setHistory]       = useState<SleepSession[]>([]);
   const [hrDipHistory, setHrDipH]   = useState<number[]>([]);
@@ -318,6 +320,7 @@ export default function SleepDetailScreen() {
         <View style={{ width: 60 }} />
       </View>
 
+      <View style={{ flex: 1 }} {...swipe}>
       <ScrollView contentContainerStyle={s.scroll}>
 
         {/* Score hero */}
@@ -516,6 +519,7 @@ export default function SleepDetailScreen() {
         </View>
 
       </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }

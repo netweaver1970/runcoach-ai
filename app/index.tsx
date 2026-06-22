@@ -342,6 +342,9 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Whole screen is day-swipeable (← → between days); the responder only claims
+          horizontal gestures so vertical scroll + pull-to-refresh still work. */}
+      <View style={{ flex: 1 }} {...swipe.panHandlers}>
       <ScrollView
         refreshControl={
           <RefreshControl
@@ -355,7 +358,7 @@ export default function HomeScreen() {
         contentContainerStyle={{ paddingBottom: 32 }}
       >
         {/* Wellness rings — time-travelable (swipe ← → or use the date picker) */}
-        <View {...swipe.panHandlers}>
+        <View>
           <WellnessRings
             recovery={dayView.recovery}
             strain={dayView.strain}
@@ -533,6 +536,7 @@ export default function HomeScreen() {
           ))
         )}
       </ScrollView>
+      </View>
 
       {/* Day picker */}
       <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
@@ -915,15 +919,16 @@ function WellnessRings({
   const dateKey = toDateKey(viewDate);
   const dateLbl = viewDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
-  const navToRecovery = () => {
-    if (recovery) router.push({ pathname: '/recovery-detail' as any, params: { data: JSON.stringify(recovery), date: dateKey } });
+  // Carry BOTH the day's recovery + strain to every detail screen so swiping between
+  // Strain/Recovery/Sleep keeps the same day's data.
+  const detailParams = {
+    rec: recovery ? JSON.stringify(recovery) : undefined,
+    str: strain ? JSON.stringify(strain) : undefined,
+    date: dateKey,
   };
-  const navToSleep = () => {
-    if (recovery) router.push({ pathname: '/sleep-detail' as any, params: { data: JSON.stringify(recovery), date: dateKey } });
-  };
-  const navToStrain = () => {
-    if (strain) router.push({ pathname: '/strain-detail' as any, params: { data: JSON.stringify(strain), date: dateKey } });
-  };
+  const navToRecovery = () => { if (recovery) router.push({ pathname: '/recovery-detail' as any, params: detailParams }); };
+  const navToSleep    = () => { if (recovery) router.push({ pathname: '/sleep-detail' as any, params: detailParams }); };
+  const navToStrain   = () => { if (strain) router.push({ pathname: '/strain-detail' as any, params: detailParams }); };
 
   const DateNav = (
     <View style={styles.wellnessHeader}>

@@ -8,6 +8,7 @@ import { DailyRecovery } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
+import { useDetailSwipe } from '../src/components/useDetailSwipe';
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
@@ -35,12 +36,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function RecoveryDetailScreen() {
-  const { data, date } = useLocalSearchParams<{ data: string; date?: string }>();
+  const { rec, str, date } = useLocalSearchParams<{ rec?: string; str?: string; date?: string }>();
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
-  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
-  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-  const recovery = data ? JSON.parse(data) as DailyRecovery : null;
+  const swipe = useDetailSwipe('/recovery-detail', { rec, str, date });
+  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' }) : '';
+  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
+  const recovery = rec ? JSON.parse(rec) as DailyRecovery : null;
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [loadingH, setLoadingH] = useState(true);
@@ -96,6 +98,7 @@ export default function RecoveryDetailScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={{ flex: 1 }} {...swipe}>
       <ScrollView contentContainerStyle={s.scroll}>
 
         {/* Score hero */}
@@ -218,6 +221,7 @@ export default function RecoveryDetailScreen() {
         )}
 
       </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }

@@ -12,18 +12,20 @@ import { strainStatus } from '../src/services/trainingLoad';
 import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan } from '../src/services/coach';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
+import { useDetailSwipe } from '../src/components/useDetailSwipe';
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
 };
 
 export default function StrainDetailScreen() {
-  const { data, date } = useLocalSearchParams<{ data: string; date?: string }>();
+  const { str, rec, date } = useLocalSearchParams<{ str?: string; rec?: string; date?: string }>();
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
-  const strain = data ? JSON.parse(data) as DayStrain : null;
-  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
-  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const strain = str ? JSON.parse(str) as DayStrain : null;
+  const swipe = useDetailSwipe('/strain-detail', { rec, str, date });
+  const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' }) : '';
+  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [dur, setDur] = useState<{ date: string; value: number }[]>([]);
@@ -138,6 +140,7 @@ export default function StrainDetailScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={{ flex: 1 }} {...swipe}>
       <ScrollView contentContainerStyle={s.scroll}>
 
         {/* Score hero */}
@@ -248,6 +251,7 @@ export default function StrainDetailScreen() {
         <Text style={s.metricsDate}>📅 {dayLabel}</Text>
 
       </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }

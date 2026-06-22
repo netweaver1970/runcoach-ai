@@ -5,7 +5,7 @@
  * the live snapshot (intra-day, full fidelity); past days come from the cached
  * components so we don't re-run the whole snapshot per swipe.
  */
-import { HealthSnapshot, DailyRecovery, DayStrain, DailyLoad } from '../types';
+import { HealthSnapshot, DailyRecovery, DayStrain, DailyLoad, SleepSession } from '../types';
 import { scoreToLabel, scoreToColor } from './healthkit';
 import { advisableStrainRange } from './trainingLoad';
 
@@ -25,7 +25,34 @@ export function toDateKey(d: Date): string {
 
 type Comp = Record<string, number>;
 
-function recoveryFromComp(date: string, c: Comp): DailyRecovery {
+// Anchor a clock-minute value (minutes since local midnight) to a date → ISO string.
+function clockToISO(clockMin: number, base: Date): string {
+  const d = new Date(base); d.setHours(0, 0, 0, 0); d.setMinutes(clockMin);
+  return d.toISOString();
+}
+
+/** Reconstruct a SleepSession from a day's components (awake time isn't stored → 0). */
+function sleepFromComp(dateKey: string, viewDate: Date, c: Comp): SleepSession | null {
+  if (c.timeAsleep == null) return null;
+  const total = c.timeAsleep;
+  const deep  = c.deepSleep ?? 0;
+  const rem   = c.remSleep ?? 0;
+  const core  = Math.max(0, total - deep - rem);
+  const wake  = c.wakeTime != null ? clockToISO(c.wakeTime, viewDate) : '';
+  // Bedtime ≥ noon → previous evening; < noon → early-morning of the view day.
+  const bed = c.sleepTime != null
+    ? clockToISO(c.sleepTime, c.sleepTime >= 720 ? new Date(viewDate.getTime() - 86_400_000) : viewDate)
+    : '';
+  return {
+    date: dateKey,
+    bedtime: bed || wake,
+    wakeTime: wake || bed,
+    totalMinutes: total, deepMinutes: deep, remMinutes: rem, coreMinutes: core,
+    awakeMinutes: 0, segments: [],
+  };
+}
+
+function recoveryFromComp(date: string, viewDate: Date, c: Comp): DailyRecovery {
   const score = Math.round(c.recoveryScore ?? 0);
   return {
     date,
@@ -36,7 +63,7 @@ function recoveryFromComp(date: string, c: Comp): DailyRecovery {
     sleepScore:          Math.round(c.sleepScore ?? 0),
     baseline7Day:        0,
     trend:               'stable',
-    sleep:               null,
+    sleep:               sleepFromComp(date, viewDate, c),
     label:               scoreToLabel(score),
     color:               scoreToColor(score),
   };
@@ -95,7 +122,7 @@ export function buildDayView(
   }
   return {
     date: key, isToday, hasData: true,
-    recovery: c.recoveryScore != null ? recoveryFromComp(key, c) : null,
+    recovery: c.recoveryScore != null ? recoveryFromComp(key, viewDate, c) : null,
     strain:   c.strainScore  != null ? strainFromComp(c) : null,
     trainingLoad: loadSeriesUpTo(key, comps),
   };
