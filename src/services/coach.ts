@@ -11,6 +11,7 @@ import { buildKnowledgePrompt } from './coachFiles';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
+import { ensureZonesFile } from './zones';
 import { DayStrain } from '../types';
 
 export interface CoachSnapshot {
@@ -48,7 +49,8 @@ export interface WatchWorkoutBlock {
   repeats:     number;          // how many work+recovery reps
   workMinutes: number;          // work-interval duration
   restMinutes: number;          // recovery duration (0 = continuous)
-  powerLowWatts?:  number;      // target running-power window (lower bound, watts)
+  hrZone?:     string;          // driving HR zone: Z1–Z5
+  powerLowWatts?:  number;      // power window mapped from the HR zone (lower bound, watts)
   powerHighWatts?: number;      // upper bound, watts
   label?:      string;          // e.g. "tempo", "VO2"
 }
@@ -91,15 +93,16 @@ Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all th
 WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
 "workout" object for the Apple Watch that pushes today's strain to the UPPER end of the target band \
 (near strainHigh): a 600m warmup, a short drills block (drillsMinutes, ~3–5 min, 0 to skip), one or more \
-work blocks (reps × workMinutes at a target POWER, with restMinutes recovery), and a 600m cooldown. Choose \
-reps/durations/power so total running stays ≤ tofBudgetTodayMin yet reaches the upper band. Target POWER (not \
-pace) in WATTS using the athlete's powerZones: easy/recovery ≤ recoveryMax, aerobic ≤ z2Max, tempo \
-tempoMin–tempoMax, intervals ≥ intervalsMin. Give powerLowWatts/powerHighWatts per block (omit if no \
-powerZones provided). If intensity is "rest", set workout to null (no watch workout).`;
+work blocks (reps × workMinutes, with restMinutes recovery), and a 600m cooldown. Choose reps/durations so total \
+running stays ≤ tofBudgetTodayMin yet reaches the upper band. The HR ZONE + duration + structure are the DRIVING \
+facts: set each block's hrZone (Z1–Z5) and the matching powerLowWatts/powerHighWatts by reading them straight \
+from the "Power & HR Zones" table in the COACHING KNOWLEDGE above (that table is calibrated from real runs — use \
+its watt ranges, do not invent them). If no zones table is present, omit power. If intensity is "rest", set \
+workout to null (no watch workout).`;
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
 {"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string,\
-"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"powerLowWatts":number,"powerHighWatts":number,"label":string}],"cooldownMeters":600}}. \
+"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"hrZone":"Z1".."Z5","powerLowWatts":number,"powerHighWatts":number,"label":string}],"cooldownMeters":600}}. \
 Be concise and skimmable — no filler. headline ≤ 7 words (the outlook); session ≤ 25 words \
 (type, run minutes, run/walk or alternation if relevant); runMinutes = prescribed running time-on-feet \
 (≤ tofBudgetTodayMin); strength ≤ 22 words (just the named exercises × sets/reps); rationale ≤ 22 words \
@@ -127,6 +130,7 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
     repeats:     Math.max(1, Math.min(30, Math.round(num(b?.repeats) ?? 1))),
     workMinutes: Math.max(0.5, Math.min(120, num(b?.workMinutes) ?? 5)),
     restMinutes: Math.max(0, Math.min(30, num(b?.restMinutes) ?? 0)),
+    hrZone: typeof b?.hrZone === 'string' && /^Z[1-5]$/.test(b.hrZone) ? b.hrZone : undefined,
     powerLowWatts:  watts(b?.powerLowWatts),
     powerHighWatts: watts(b?.powerHighWatts),
     label: b?.label ? String(b.label).slice(0, 40) : undefined,
@@ -142,6 +146,7 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
 }
 
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
+  await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
   const knowledge = await buildKnowledgePrompt();
   const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}`;
   const txt = await callLLM({

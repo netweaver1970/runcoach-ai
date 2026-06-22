@@ -238,7 +238,8 @@ export default function StrainDetailScreen() {
                   {plan.workout.blocks.map((b, idx) => (
                     <Text key={idx} style={s.workoutStep}>
                       {plan.workout!.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
-                      {b.powerLowWatts && b.powerHighWatts ? ` @ ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
+                      {b.hrZone ? ` @ ${b.hrZone}` : ''}
+                      {b.powerLowWatts && b.powerHighWatts ? ` ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
                       {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){b.label ? ` · ${b.label}` : ''}
                     </Text>
                   ))}

@@ -13,6 +13,7 @@ import { HealthSnapshot } from '../types';
 import { fetchHealthSnapshot, saveSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot, getCoachPlan, saveCachedPlan } from './coach';
 import { pushWorkoutToWatch, clearWatchWorkout } from './watchWorkout';
+import { maybeAutoRecalibrate } from './zones';
 
 const AUTO_KEY = 'dayview_auto_v1';
 const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
@@ -56,6 +57,8 @@ export async function maybeRunDayView(opts: {
 
   let headline: string | undefined;
   try {
+    // If a new run landed, refine the Power & HR Zones file before planning today.
+    await maybeAutoRecalibrate().catch(() => {});
     const cs   = await assembleCoachSnapshot(snap.strain ?? null);
     const plan = await getCoachPlan(cs);
     await saveCachedPlan(cs.date, plan);
@@ -102,4 +105,23 @@ export async function startSleepObserver(months: number): Promise<void> {
 export function stopSleepObserver(): void {
   try { if (observerId) (HealthKit as any).unsubscribeQueries?.([observerId]); } catch { /* ignore */ }
   observerId = null;
+}
+
+// ─── HealthKit observer: recalibrate zones when a new run lands ─────────────────
+let workoutObsId: string | null = null;
+const WORKOUT_ID = 'HKWorkoutTypeIdentifier';
+
+export async function startWorkoutObserver(): Promise<void> {
+  if (workoutObsId) return;
+  try {
+    await (HealthKit as any).enableBackgroundDelivery?.(WORKOUT_ID, 'immediate');
+    workoutObsId = (HealthKit as any).subscribeToChanges?.(WORKOUT_ID, () => {
+      maybeAutoRecalibrate().catch(() => {});
+    }) ?? null;
+  } catch { /* observer unavailable — the foreground trigger still covers it */ }
+}
+
+export function stopWorkoutObserver(): void {
+  try { if (workoutObsId) (HealthKit as any).unsubscribeQueries?.([workoutObsId]); } catch { /* ignore */ }
+  workoutObsId = null;
 }

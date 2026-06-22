@@ -25,6 +25,7 @@ import {
   LLMProvider,
 } from '../src/services/llm';
 import { PowerZones } from '../src/types';
+import { recalibrateZonesFromLastRun } from '../src/services/zones';
 import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
 import * as FileSystem from 'expo-file-system';
@@ -67,6 +68,8 @@ export default function SettingsScreen() {
   const [massSaved, setMassSaved] = useState(false);
   const [powerZones, setPowerZones] = useState<PowerZones>(DEFAULT_POWER_ZONES);
   const [powerZonesSaved, setPowerZonesSaved] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibMsg, setCalibMsg] = useState('');
   const [longRunMin, setLongRunMin] = useState(String(DEFAULT_LONG_RUN_MINUTES));
   const [longRunSaved, setLongRunSaved] = useState(false);
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
@@ -114,6 +117,18 @@ export default function SettingsScreen() {
     await savePowerZones(powerZones);
     setPowerZonesSaved(true);
     setTimeout(() => setPowerZonesSaved(false), 2000);
+  };
+
+  const handleRecalibrate = async () => {
+    setCalibrating(true); setCalibMsg('');
+    try {
+      const res = await recalibrateZonesFromLastRun();
+      setCalibMsg(res.updated ? '✓ Zones refined from your last run (see “Power & HR Zones” in Coaching Knowledge)' : (res.reason ?? 'Nothing to update'));
+    } catch (e: any) {
+      setCalibMsg('Failed: ' + (e?.message ?? 'error'));
+    } finally {
+      setCalibrating(false);
+    }
   };
 
   const handleSaveMass = async () => {
@@ -546,6 +561,19 @@ export default function SettingsScreen() {
           >
             <Text style={styles.btnText}>{powerZonesSaved ? '✓ Saved' : 'Save Power Zones'}</Text>
           </TouchableOpacity>
+
+          <Text style={[styles.hint, { marginTop: 14 }]}>
+            HR zones (Z1–Z5) map to these watts in the editable “Power & HR Zones” coaching file.
+            The coach auto-refines that map after every run; you can also trigger it now.
+          </Text>
+          <TouchableOpacity
+            style={[styles.btn, { backgroundColor: '#2b2b2e' }]}
+            onPress={handleRecalibrate}
+            disabled={calibrating}
+          >
+            <Text style={styles.btnText}>{calibrating ? 'Analyzing last run…' : '⚙︎ Recalibrate zones from last run'}</Text>
+          </TouchableOpacity>
+          {calibMsg ? <Text style={[styles.hint, { marginTop: 8 }]}>{calibMsg}</Text> : null}
         </Section>
 
         {/* Long Run Threshold */}

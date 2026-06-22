@@ -203,6 +203,21 @@ export async function deleteKnowledge(id: string): Promise<void> {
   try { await FileSystem.deleteAsync(pathOf(id), { idempotent: true }); } catch { /* ignore */ }
 }
 
+/** Create-or-update a knowledge file with a fixed id (e.g. the singleton zones file). */
+export async function upsertKnowledge(id: string, title: string, description: string, content: string): Promise<void> {
+  await ensureDir();
+  await writeKnowledgeContent(id, content);
+  const idx = await readIndex();
+  const m = idx.find(x => x.id === id);
+  if (m) { if (!m.title) m.title = title; if (!m.description) m.description = description; }
+  else idx.push({ id, title, description, enabled: true, builtin: false, order: idx.length ? Math.max(...idx.map(k => k.order)) + 1 : 0 });
+  await writeIndex(idx);
+}
+
+export async function knowledgeExists(id: string): Promise<boolean> {
+  return (await readIndex()).some(m => m.id === id);
+}
+
 /** Restore a builtin file to its shipped default content. */
 export async function resetKnowledge(id: string): Promise<string> {
   const content = defaultContent(id);

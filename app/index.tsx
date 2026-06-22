@@ -30,7 +30,8 @@ import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, getTrainingRecommendation, TrainingRecommendation } from '../src/services/claude';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus } from '../src/services/trainingLoad';
-import { maybeRunDayView, startSleepObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
+import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
+import { maybeAutoRecalibrate } from '../src/services/zones';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { buildDayView, toDateKey } from '../src/services/dayView';
 import { loadRunMeta } from '../src/services/runMeta';
@@ -191,7 +192,12 @@ export default function HomeScreen() {
   useEffect(() => { load(); }, [load]);
 
   // Wake the app on new sleep data (HealthKit observer) → auto-prepare the day view.
-  useEffect(() => { startSleepObserver(syncMonthsRef.current); }, []);
+  // Wake on a new run → recalibrate the Power & HR Zones; also catch up on foreground.
+  useEffect(() => {
+    startSleepObserver(syncMonthsRef.current);
+    startWorkoutObserver();
+    maybeAutoRecalibrate().catch(() => {});
+  }, []);
 
   // ── Re-apply overrides when returning from workout detail ─────────────────
   // IMPORTANT: do NOT close over `snapshot` here — useCallback(fn, []) captures
