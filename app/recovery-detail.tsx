@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator,
@@ -39,18 +39,24 @@ export default function RecoveryDetailScreen() {
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
   const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
+  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   const recovery = data ? JSON.parse(data) as DailyRecovery : null;
 
-  const [hist, setHist] = useState<Record<string, number[]>>({});
+  const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [loadingH, setLoadingH] = useState(true);
   useEffect(() => {
-    fetchOurDailyComponents(1)
-      .then(c => setHist(buildHistories(c, ['restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip'])))
-      .catch(() => {})
-      .finally(() => setLoadingH(false));
+    fetchOurDailyComponents(1).then(setComps).catch(() => {}).finally(() => setLoadingH(false));
   }, []);
+  const hist = useMemo(
+    () => buildHistories(comps, ['restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
+    [comps],
+  );
+  // Sub-KPI values for the VIEWED day (the `date` param), not just today.
+  const dates = Object.keys(comps).sort();
+  const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : '');
+  const target = comps[targetDate] ?? {};
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
-  const last = (k: string) => { const a = hist[k]; return a && a.length ? a[a.length - 1] : null; };
+  const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
   if (!recovery) {
     return (
@@ -116,6 +122,7 @@ export default function RecoveryDetailScreen() {
             <Text style={s.rowSub}>Loading 30-day history…</Text>
           </View>
         )}
+        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <Text style={s.sectionTitle}>RECOVERY METRICS</Text>
         <View style={s.card}>
           <SubKPICard label="Resting HRV"   value={last('restingHrv') !== null ? `${last('restingHrv')}` : '—'} unit="ms"  history={hist.restingHrv ?? []}       higherIsBetter        color="#8e44ad" onPress={() => navTo('hrv')} />
@@ -124,6 +131,7 @@ export default function RecoveryDetailScreen() {
           <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
           <SubKPICard label="Heart Rate Dip" value={last('heartRateDip') !== null ? `${last('heartRateDip')}` : '—'} unit="%" history={hist.heartRateDip ?? []} higherIsBetter color="#16a085" onPress={() => navTo('sleep-hrdip')} />
         </View>
+        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <View style={{ height: 14 }} />
 
         {/* HRV */}
@@ -225,6 +233,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
   historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
   headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
+  metricsDate: { fontSize: 13, fontWeight: '800', color: '#FF6B35', textAlign: 'center', paddingVertical: 8 },
   center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText:{ fontSize: 15, color: c.textFaint },
   scroll:   { padding: 12, paddingBottom: 40 },

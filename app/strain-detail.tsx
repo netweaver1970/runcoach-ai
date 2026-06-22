@@ -23,6 +23,7 @@ export default function StrainDetailScreen() {
   const s = useThemedStyles(makeStyles);
   const strain = data ? JSON.parse(data) as DayStrain : null;
   const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
+  const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [dur, setDur] = useState<{ date: string; value: number }[]>([]);
@@ -234,6 +235,7 @@ export default function StrainDetailScreen() {
         )}
 
         {/* Sub-KPI metrics (sleep-detail pattern: sparkline + tap → history) */}
+        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <Text style={s.sectionTitle}>STRAIN METRICS</Text>
         <View style={s.card}>
           <SubKPICard label="Strain Score"      value={last('strainScore') !== null ? `${last('strainScore')}` : `${real}`} unit="%" history={hist.strainScore ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('strain')} />
@@ -243,6 +245,7 @@ export default function StrainDetailScreen() {
           <SubKPICard label="Total Energy"       value={last('totalEnergy') !== null ? `${last('totalEnergy')}` : '—'} unit="kcal" history={hist.totalEnergy ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('total-energy')} />
           <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
         </View>
+        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
 
       </ScrollView>
     </SafeAreaView>
@@ -260,6 +263,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
   historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
   headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
+  metricsDate: { fontSize: 13, fontWeight: '800', color: '#FF6B35', textAlign: 'center', paddingVertical: 8 },
   scroll:   { padding: 12, paddingBottom: 40 },
 
   hero: {
