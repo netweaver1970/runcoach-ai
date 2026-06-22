@@ -166,13 +166,40 @@ export function buildExportPayload(
 
 // ─── Value parsing (raw on-screen string → canonical number) ──────────────────────
 
-/** European number format: '.' = thousands separator, ',' = decimal. */
+/**
+ * Parse a number that may be in European (',' decimal, '.' thousands) OR plain
+ * dot-decimal form — the vision model emits both. A bare '.' is treated as thousands
+ * ONLY when it groups exactly 3 trailing digits (11.592 → 11592); otherwise it's a
+ * decimal point (94.1 → 94.1, 35.9 → 35.9) so we don't 10× biometrics like SpO₂/HRV.
+ */
 export function parseEuroNumber(s: string): number | null {
-  const cleaned = s.replace(/[^\d.,-]/g, '');
+  let cleaned = s.replace(/[^\d.,-]/g, '');
   if (!cleaned || cleaned === '-') return null;
-  const norm = cleaned.replace(/\./g, '').replace(',', '.');
+  const neg = cleaned.startsWith('-');
+  cleaned = cleaned.replace(/-/g, '');
+
+  const hasDot = cleaned.includes('.');
+  const hasComma = cleaned.includes(',');
+  let norm: string;
+  if (hasDot && hasComma) {
+    // The rightmost separator is the decimal; the other groups thousands.
+    norm = cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.')
+      ? cleaned.replace(/\./g, '').replace(',', '.')
+      : cleaned.replace(/,/g, '');
+  } else if (hasComma) {
+    norm = cleaned.replace(',', '.');                 // comma = decimal
+  } else if (hasDot) {
+    const dots = cleaned.split('.').length - 1;
+    const lastGroup = cleaned.slice(cleaned.lastIndexOf('.') + 1);
+    norm = (dots === 1 && lastGroup.length !== 3)
+      ? cleaned                                        // single '.' + 1–2 (or 4+) digits = decimal
+      : cleaned.replace(/\./g, '');                    // 3-digit group(s) = thousands
+  } else {
+    norm = cleaned;
+  }
   const n = Number(norm);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
 }
 
 /** '1h 10m' → 70, '43m' → 43, '5h 2m' → 302, '2h' → 120. */
