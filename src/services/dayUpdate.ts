@@ -59,7 +59,7 @@ export async function maybeRunDayView(opts: {
   try {
     // If a new run landed, refine the Power & HR Zones file before planning today.
     await maybeAutoRecalibrate().catch(() => {});
-    const cs   = await assembleCoachSnapshot(snap.strain ?? null);
+    const cs   = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
     const plan = await getCoachPlan(cs);
     await saveCachedPlan(cs.date, plan);
     headline = plan.headline;

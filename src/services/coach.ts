@@ -12,7 +12,8 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory } from './healthkit'
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
 import { ensureZonesFile } from './zones';
-import { DayStrain } from '../types';
+import { activityCategory } from './trainingLoad';
+import { DayStrain, ActivitySummary } from '../types';
 
 export interface CoachSnapshot {
   date:          string;
@@ -39,6 +40,9 @@ export interface CoachSnapshot {
   };
   // Running-power zones (watts) so the watch workout can target POWER, not pace.
   powerZones?: { recoveryMax: number; z2Max: number; tempoMin: number; tempoMax: number; intervalsMin: number };
+  // Recent NON-run training (dance/walk/cardio/strength) — no zones/structure, but real
+  // fatigue/load the coach should weigh alongside the runs.
+  recentActivities?: { date: string; name: string; durationMin: number; avgHR?: number }[];
 }
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
@@ -95,7 +99,9 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
 // can't break JSON parsing.
 const ROLE = `You are a running coach. The COACHING KNOWLEDGE below is AUTHORITATIVE — \
 follow every rule in it. You receive a JSON snapshot of today's physiology, training load, time-on-feet \
-and weather. Today's strain TARGET is fixed and provided as advisableLow–advisableHigh — treat that as THE \
+and weather. OTHER TRAINING: recentActivities lists recent NON-run sessions (dance, walk, cardio/HIIT, \
+strength). They carry no running structure or power zones, but they add real fatigue and already count in \
+today's strain — factor them in (e.g. tired legs after a long dance session → ease the run). Today's strain TARGET is fixed and provided as advisableLow–advisableHigh — treat that as THE \
 target; do NOT invent a different band. Prescribe a session whose total strain (run + drills, adjusted for \
 heat/humidity) lands within it, never more than 10% over the ceiling. In the rationale, ALWAYS state where \
 today's actual strain (strainReal) sits relative to the target band — BELOW / WITHIN / ABOVE — and why that \
@@ -299,7 +305,7 @@ export function computeTimeOnFeetPlan(
  * Single source used by both the Strain screen and the background day-view updater, so
  * the on-demand plan and the auto-prepared plan are identical.
  */
-export async function assembleCoachSnapshot(strain: DayStrain | null): Promise<CoachSnapshot> {
+export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[]): Promise<CoachSnapshot> {
   const [comps, dur, weather, powerZones] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
@@ -342,7 +348,20 @@ export async function assembleCoachSnapshot(strain: DayStrain | null): Promise<C
       windKmh: weather.windKmh, description: weather.description, place: weather.place,
     } : undefined,
     powerZones,
+    recentActivities: buildRecentActivities(activities),
   };
+}
+
+// Last ~14 days of NON-run sessions, newest first — fatigue the coach should weigh.
+function buildRecentActivities(activities?: ActivitySummary[]): CoachSnapshot['recentActivities'] {
+  if (!activities?.length) return undefined;
+  const cutoff = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
+  const out = activities
+    .filter(a => activityCategory(a.activityType) !== 'Run' && a.date.slice(0, 10) >= cutoff && a.durationMin >= 5)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 12)
+    .map(a => ({ date: a.date.slice(0, 10), name: a.name, durationMin: Math.round(a.durationMin), avgHR: a.avgHR || undefined }));
+  return out.length ? out : undefined;
 }
 
 // Cache one plan per calendar day (never serve a previous day's plan).

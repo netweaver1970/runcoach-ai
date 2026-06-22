@@ -37,14 +37,14 @@ import * as SecureStore from 'expo-secure-store';
 const SCAN_MARKER = `${Constants.expoConfig?.version ?? '0'}|s1`;
 const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
-import { tsbStatus, strainStatus, cardioLoadStatus } from '../src/services/trainingLoad';
+import { tsbStatus, strainStatus, cardioLoadStatus, activityCategory } from '../src/services/trainingLoad';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
 import { maybeAutoRecalibrate } from '../src/services/zones';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { buildDayView, toDateKey } from '../src/services/dayView';
 import { loadRunMeta } from '../src/services/runMeta';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain } from '../src/types';
+import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain, ActivitySummary } from '../src/types';
 // WorkoutLabel is used by the RunFilter type and RUN_FILTERS array
 
 type RunFilter = 'All' | WorkoutLabel;
@@ -58,6 +58,17 @@ const RUN_FILTERS: { label: string; value: RunFilter; emoji: string }[] = [
   { label: 'Recovery', value: 'Recovery', emoji: '🟣' },
 ];
 
+// Top-level sport filter (default Runs). Non-run sports have no zones/structure — shown
+// as simple start-to-end cards from the all-workout activity list.
+type SportFilter = 'Run' | 'Walk' | 'Dance' | 'Cardio' | 'All';
+const SPORT_FILTERS: { label: string; value: SportFilter; emoji: string }[] = [
+  { label: 'Runs',   value: 'Run',    emoji: '🏃' },
+  { label: 'Walk',   value: 'Walk',   emoji: '🚶' },
+  { label: 'Dance',  value: 'Dance',  emoji: '💃' },
+  { label: 'Cardio', value: 'Cardio', emoji: '🔥' },
+  { label: 'All',    value: 'All',    emoji: '✨' },
+];
+
 export default function HomeScreen() {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
@@ -66,6 +77,7 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing]     = useState(false);
   const [hasApiKey, setHasApiKey]       = useState(false);
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
+  const [sportFilter, setSportFilter]   = useState<SportFilter>('Run');
   const [syncMonths, setSyncMonthsState] = useState<SyncMonths>(3);
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
   const [recommendation, setRecommendation] = useState<TrainingRecommendation | null>(null);
@@ -103,7 +115,7 @@ export default function HomeScreen() {
     try {
       // Use the SAME key the Strain screen + morning day-view use (the latest component
       // date = cs.date), so the home and detail always read the exact same cached plan.
-      const cs = await assembleCoachSnapshot(snap.strain ?? null);
+      const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
       let plan = await loadCachedPlan(cs.date);
       if (!plan || planNeedsRefresh(plan, cs)) {     // regen if heat/strain drifted
         plan = await getCoachPlan(cs);
@@ -351,6 +363,12 @@ export default function HomeScreen() {
 
   const allRuns = snapshot?.runs ?? [];
   const runs = runFilter === 'All' ? allRuns : allRuns.filter((r) => r.label === runFilter);
+  // Non-run sports: filter the all-workout activity list by category (newest first).
+  const allActivities = snapshot?.activities ?? [];
+  const sportActivities = (sportFilter === 'All'
+    ? allActivities
+    : allActivities.filter((a) => activityCategory(a.activityType) === sportFilter)
+  ).slice().sort((a, b) => b.date.localeCompare(a.date));
   const latestVO2 = snapshot?.vo2max?.slice(-1)[0];
   const latestRHR = snapshot?.restingHR?.slice(-1)[0];
   const recovery = snapshot?.todayRecovery ?? null;
@@ -511,11 +529,13 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* Recent runs */}
+        {/* Recent activity */}
         <View style={styles.sectionRow}>
-          <Text style={styles.sectionTitle}>Recent Runs</Text>
+          <Text style={styles.sectionTitle}>
+            {sportFilter === 'Run' ? 'Recent Runs' : sportFilter === 'All' ? 'Recent Activity' : `Recent ${sportFilter}`}
+          </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            {runFilter !== 'All' && (
+            {sportFilter === 'Run' && runFilter !== 'All' && (
               <Text style={styles.filterCount}>{runs.length} of {allRuns.length}</Text>
             )}
             <TouchableOpacity onPress={promptSyncMonths} style={styles.monthsBtn}>
@@ -524,20 +544,20 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Filter chips */}
+        {/* Sport filter (top level) */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterBar}
           style={{ marginBottom: 8 }}
         >
-          {RUN_FILTERS.map((f) => {
-            const active = runFilter === f.value;
+          {SPORT_FILTERS.map((f) => {
+            const active = sportFilter === f.value;
             return (
               <TouchableOpacity
                 key={f.value}
                 style={[styles.filterChip, active && styles.filterChipActive]}
-                onPress={() => setRunFilter(f.value)}
+                onPress={() => setSportFilter(f.value)}
               >
                 <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
                   {f.emoji} {f.label}
@@ -547,7 +567,40 @@ export default function HomeScreen() {
           })}
         </ScrollView>
 
-        {runs.length === 0 ? (
+        {/* Run-label sub-filter — only for Runs */}
+        {sportFilter === 'Run' && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterBar}
+            style={{ marginBottom: 8 }}
+          >
+            {RUN_FILTERS.map((f) => {
+              const active = runFilter === f.value;
+              return (
+                <TouchableOpacity
+                  key={f.value}
+                  style={[styles.filterChip, active && styles.filterChipActive]}
+                  onPress={() => setRunFilter(f.value)}
+                >
+                  <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                    {f.emoji} {f.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        {sportFilter !== 'Run' ? (
+          sportActivities.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>No {sportFilter === 'All' ? 'activities' : sportFilter.toLowerCase()} in the last {syncMonths} month{syncMonths > 1 ? 's' : ''}.</Text>
+            </View>
+          ) : (
+            sportActivities.map((a) => <ActivityCard key={a.uuid} activity={a} />)
+          )
+        ) : runs.length === 0 ? (
           <View style={styles.emptyBox}>
             {runFilter !== 'All' ? (
               <>
@@ -1069,6 +1122,33 @@ const LABEL_STYLE: Record<string, { color: string; bg: string; emoji: string }> 
   Unknown:   { color: '#888',    bg: '#f5f5f5', emoji: '⚪' },
 };
 
+const SPORT_EMOJI: Record<string, string> = { Run: '🏃', Walk: '🚶', Dance: '💃', Cardio: '🔥', Other: '🏅' };
+
+// Simple start-to-end card for non-run sports (no zones/structure to show).
+function ActivityCard({ activity }: { activity: ActivitySummary }) {
+  const styles = useThemedStyles(makeStyles);
+  const d = new Date(activity.date);
+  const dateStr = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const emoji = SPORT_EMOJI[activityCategory(activity.activityType)] ?? '🏅';
+  return (
+    <View style={styles.actCard}>
+      <Text style={styles.actEmoji}>{emoji}</Text>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.actName}>{activity.name}</Text>
+        <Text style={styles.actMeta}>{dateStr}</Text>
+      </View>
+      <View style={{ alignItems: 'flex-end' }}>
+        <Text style={styles.actStat}>
+          {Math.round(activity.durationMin)} min{activity.distanceKm > 0 ? ` · ${activity.distanceKm} km` : ''}
+        </Text>
+        <Text style={styles.actSub}>
+          {activity.avgHR > 0 ? `${activity.avgHR} bpm · ` : ''}{activity.kcal} kcal
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] }) {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
@@ -1153,6 +1233,16 @@ function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] })
 const makeStyles = (c: Palette) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.bg },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: c.bg },
+  actCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: c.border,
+  },
+  actEmoji: { fontSize: 22 },
+  actName:  { fontSize: 15, fontWeight: '600', color: c.text },
+  actMeta:  { fontSize: 12, color: c.textSub, marginTop: 2 },
+  actStat:  { fontSize: 14, fontWeight: '600', color: c.text },
+  actSub:   { fontSize: 12, color: c.textSub, marginTop: 2 },
   loadingText: { marginTop: 12, color: c.textSub, fontSize: 15, textAlign: 'center' },
   progressTrack: {
     marginTop: 16, width: 220, height: 6, borderRadius: 3,

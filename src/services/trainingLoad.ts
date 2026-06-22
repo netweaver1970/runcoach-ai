@@ -42,8 +42,22 @@ const ACTIVITY_META: Record<number, ActivityMeta> = {
   59: { name: 'Mobility',     factor: 0.3 },  // flexibility / preparationAndRecovery
   35: { name: 'Rope',         factor: 1.0 },  // jumpRope
   70: { name: 'Tennis',       factor: 0.8 },  // tennis / racquet
+  77: { name: 'Dance',        factor: 0.7 },  // cardioDance
+  78: { name: 'Dance',        factor: 0.55 }, // socialDance
+  79: { name: 'Core',         factor: 0.55 }, // coreTraining
   3:  { name: 'Strength',     factor: 0.6 },  // americanFootball? no — keep generic; rarely used
 };
+
+// Coarse sport categories for the main-screen filter + coach context. Running keeps its
+// own structured pipeline (zones/classification); everything else is start-to-end only.
+export type SportCategory = 'Run' | 'Walk' | 'Dance' | 'Cardio' | 'Other';
+export function activityCategory(type: number): SportCategory {
+  if (type === 37) return 'Run';
+  if (type === 52 || type === 24) return 'Walk';                        // walking, hiking
+  if (type === 77 || type === 78) return 'Dance';                       // cardio/social dance
+  if ([63, 79, 16, 44, 13, 46, 35, 70].includes(type)) return 'Cardio'; // HIIT/Tabata/VO2, core, elliptical, row, bike, swim, rope, racquet
+  return 'Other';                                                       // strength, yoga, mobility, …
+}
 
 export function activityName(type: number): string {
   return ACTIVITY_META[type]?.name ?? 'Workout';
