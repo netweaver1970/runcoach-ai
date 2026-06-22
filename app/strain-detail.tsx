@@ -9,8 +9,9 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan, TofPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, CoachPlan } from '../src/services/coach';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
+import { toDateKey } from '../src/services/dayView';
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -24,7 +25,7 @@ export default function StrainDetailScreen() {
   const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
-  const [tof, setTof] = useState<TofPlan | null>(null);
+  const [dur, setDur] = useState<{ date: string; value: number }[]>([]);
   const [weather, setWeather] = useState<WeatherNow | null>(null);
   const [loadingH, setLoadingH] = useState(true);
   const [plan, setPlan] = useState<CoachPlan | null>(null);
@@ -33,7 +34,7 @@ export default function StrainDetailScreen() {
 
   useEffect(() => {
     Promise.all([fetchOurDailyComponents(1), fetchDailyDurationHistory()])
-      .then(([c, dur]) => { setComps(c); setTof(computeTimeOnFeetPlan(dur)); })
+      .then(([c, d]) => { setComps(c); setDur(d); })
       .catch(() => {})
       .finally(() => setLoadingH(false));
     getLocalWeather().then(setWeather).catch(() => {});
@@ -44,18 +45,28 @@ export default function StrainDetailScreen() {
     [comps],
   );
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
-  const last = (k: string) => { const a = hist[k]; return a && a.length ? a[a.length - 1] : null; };
+  // Sub-KPI values for the VIEWED day (target is defined below; this closure runs in render).
+  const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
   const real   = strain?.real ?? 0;
   const status = strain ? strainStatus(strain) : { label: '—', color: '#888' };
 
-  // Latest day's full component record feeds the coach snapshot (rich inputs).
-  const dates    = Object.keys(comps).sort();
-  const latest   = dates.length ? comps[dates[dates.length - 1]] : {};
-  const latestDate = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
-  // Single source of truth for the displayed band + drivers: the readiness that
-  // produced today's strain band (computed once in the snapshot, carried on DayStrain).
-  // No divergent recompute here — the ring, hero, this card and the coach all agree.
+  // The coach plan is built for the VIEWED day (the `date` param), not just today.
+  const dates      = Object.keys(comps).sort();
+  const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
+  const target     = comps[targetDate] ?? {};
+  const targetIsToday = targetDate === toDateKey(new Date());
+  // Rolling time-on-feet budget as of the viewed day.
+  const tof = useMemo(
+    () => (dur.length ? computeTimeOnFeetPlan(dur, new Date(targetDate + 'T00:00:00')) : null),
+    [dur, targetDate],
+  );
+  // Strain history up to and including the viewed day (for recent/yesterday context).
+  const strainHistUpTo = dates.filter(d => d <= targetDate)
+    .map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
+
+  // Single source of truth for the displayed band + drivers: the readiness carried on
+  // the viewed day's DayStrain — the ring, hero, this card and the coach all agree.
   const readiness = {
     readiness: strain?.readiness ?? 0,
     acwr:      strain?.acwr ?? 0,
@@ -64,46 +75,46 @@ export default function StrainDetailScreen() {
     safeHigh:  strain?.safeHigh ?? 0,
   };
 
-  // Load any plan already generated today (one per calendar day).
-  useEffect(() => { loadCachedPlan(latestDate).then(p => { if (p) setPlan(p); }); }, [latestDate]);
+  // Load any plan already cached for the viewed day (one per calendar day).
+  useEffect(() => { setPlan(null); loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); }); }, [targetDate]);
 
   const requestPlan = async () => {
     setPlanLoading(true); setPlanError(null);
     try {
-      const strainHist = hist.strainScore ?? [];
       const p = await getCoachPlan({
-        date:         latestDate,
-        recovery:     latest.recoveryScore,
-        hrv:          latest.restingHrv,
-        rhr:          latest.restingHr,
-        respRate:     latest.respiratoryRate,
-        spO2:         latest.oxygenSaturation,
-        sleepScore:   latest.sleepScore,
-        sleepMin:     latest.timeAsleep,
-        sleepDebtMin: latest.sleepBank,
-        ctl:          latest.ctl,
-        atl:          latest.cardioLoad,
-        tsb:          latest.tsb,
+        date:         targetDate,
+        recovery:     target.recoveryScore,
+        hrv:          target.restingHrv,
+        rhr:          target.restingHr,
+        respRate:     target.respiratoryRate,
+        spO2:         target.oxygenSaturation,
+        sleepScore:   target.sleepScore,
+        sleepMin:     target.timeAsleep,
+        sleepDebtMin: target.sleepBank,
+        ctl:          target.ctl,
+        atl:          target.cardioLoad,
+        tsb:          target.tsb,
         acwr:         readiness.acwr || undefined,
         strainReal:   real,
         advisableLow:  strain?.safeLow,
         advisableHigh: strain?.safeHigh,
         readiness:    readiness.readiness,
         drivers:      readiness.drivers,
-        recentStrain: strainHist.slice(-10),
+        recentStrain: strainHistUpTo.slice(-10),
         recentTimeOnFeet:  tof?.series14,
         tof7d:             tof?.tof7d,
         tofPrev7d:         tof?.tofPrev7d,
         tofBudgetTodayMin: tof?.budgetTodayMin,
         yesterdayTofMin:   tof?.yesterdayMin,
-        yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
-        weather: weather ? {
+        yesterdayStrain:   strainHistUpTo.length >= 2 ? strainHistUpTo[strainHistUpTo.length - 2] : undefined,
+        // Live weather only makes sense for today; past days had different conditions.
+        weather: (targetIsToday && weather) ? {
           tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
           windKmh: weather.windKmh, description: weather.description, place: weather.place,
         } : undefined,
       });
       setPlan(p);
-      await saveCachedPlan(latestDate, p);
+      await saveCachedPlan(targetDate, p);
     } catch (e: any) {
       setPlanError(e?.message ?? 'Could not reach the coach.');
     } finally {
@@ -161,7 +172,7 @@ export default function StrainDetailScreen() {
                 7-day time on feet {tof.tof7d}m · +10% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
               </Text>
             )}
-            {weather && (
+            {weather && targetIsToday && (
               <Text style={s.readyTof}>
                 🌡 {weatherSummary(weather)}{weather.place ? ` · ${weather.place}` : ''}
               </Text>
