@@ -110,6 +110,18 @@ export default function BevelImportScreen() {
     ]);
   };
 
+  // Remove a pending screenshot from the review list; if it was already saved, also
+  // delete the stored day.
+  const removeItem = (it: ReviewItem) => {
+    const drop = () => setItems(prev => prev.filter(p => p.id !== it.id));
+    if (!it.saved) { drop(); return; }
+    Alert.alert('Remove screenshot?', `Also delete the saved ${it.kpi} for ${it.date}?`, [
+      { text: 'Just remove', onPress: drop },
+      { text: 'Delete day', style: 'destructive', onPress: async () => { await deleteBevelDay(it.date); drop(); refreshStored(); } },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
@@ -147,9 +159,14 @@ export default function BevelImportScreen() {
                 <View style={[s.kpiBadge, { backgroundColor: KPI_COLOR[it.kpi] + (c.mode === 'dark' ? '2e' : '22') }]}>
                   <Text style={[s.kpiBadgeText, { color: KPI_COLOR[it.kpi] }]}>{scale.label}</Text>
                 </View>
-                {it.saved
-                  ? <Text style={s.savedTag}>✓ Saved</Text>
-                  : <TouchableOpacity style={s.saveBtn} onPress={() => saveItem(it)}><Text style={s.saveBtnText}>Save</Text></TouchableOpacity>}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  {it.saved
+                    ? <Text style={s.savedTag}>✓ Saved</Text>
+                    : <TouchableOpacity style={s.saveBtn} onPress={() => saveItem(it)}><Text style={s.saveBtnText}>Save</Text></TouchableOpacity>}
+                  <TouchableOpacity onPress={() => removeItem(it)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={s.removeX}>✕</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <View style={s.dateRow}>
@@ -234,6 +251,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   saveBtn: { backgroundColor: c.accent, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 6 },
   saveBtnText: { color: c.onAccent, fontSize: 13, fontWeight: '700' },
   savedTag: { color: '#27ae60', fontSize: 13, fontWeight: '700' },
+  removeX: { color: '#e74c3c', fontSize: 18, fontWeight: '800' },
   dateRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
   dateLabel: { color: c.textSub, fontSize: 13, width: 44 },
   dateInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, color: c.text, fontSize: 14, borderWidth: 1, borderColor: c.border },

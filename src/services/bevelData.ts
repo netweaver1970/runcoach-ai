@@ -225,6 +225,43 @@ export function parseClockMin(s: string): number | null {
   return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+const isoDate = (y: number, m: number, d: number) => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${y}-${p(m + 1)}-${p(d)}`;
+};
+
+/**
+ * Normalise whatever the vision model returns for the date to YYYY-MM-DD. Handles
+ * ISO, "21 Jun 2026", "Jun 21, 2026", "21/06/2026" (DD/MM), "21 June" (current year),
+ * etc. — so a Bevel screenshot's printed date is used instead of defaulting to today.
+ */
+export function parseFlexibleDate(s: unknown): string | null {
+  if (typeof s !== 'string') return null;
+  const t = s.trim();
+  if (!t || /null|none/i.test(t)) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;                       // already ISO
+  const lower = t.toLowerCase();
+  const yr = () => new Date().getFullYear();
+
+  // "21 jun 2026" / "21 june 2026" / "21 jun"
+  let m = lower.match(/\b(\d{1,2})\s+([a-z]{3,9})\.?(?:\s+(\d{4}))?/);
+  if (m && MONTHS[m[2].slice(0, 3)] != null) return isoDate(m[3] ? +m[3] : yr(), MONTHS[m[2].slice(0, 3)], +m[1]);
+  // "jun 21 2026" / "jun 21, 2026"
+  m = lower.match(/\b([a-z]{3,9})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?/);
+  if (m && MONTHS[m[1].slice(0, 3)] != null) return isoDate(m[3] ? +m[3] : yr(), MONTHS[m[1].slice(0, 3)], +m[2]);
+  // "21/06/2026" or "21-06-26" (DD/MM/YYYY — European)
+  m = t.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/);
+  if (m) {
+    const d = +m[1], mo = +m[2] - 1; let y = +m[3]; if (y < 100) y += 2000;
+    if (mo >= 0 && mo <= 11 && d >= 1 && d <= 31) return isoDate(y, mo, d);
+  }
+  const parsed = new Date(t);
+  return isNaN(parsed.getTime()) ? null : isoDate(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
 export function toCanonical(unit: UnitKind, raw: string): number | null {
   const s = (raw ?? '').toString().trim();
   if (!s) return null;
@@ -295,9 +332,14 @@ export function buildBevelExtractionPrompt(): string {
     'chart) and a NORMAL RANGE band (top-right). Capture those printed figures too when visible — but',
     'again, ONLY the printed text, never a value read off the chart curve.',
     '',
+    'THE DATE IS IMPORTANT: find the calendar date printed ON the screenshot — it may be at the top,',
+    'in a header, beside or below the big headline value, e.g. "21 Jun 2026", "Sun 21 Jun", "21/06/2026".',
+    'Return it as the data\'s date. If a date range is shown, use the END date. Do NOT use today\'s date or',
+    'guess — only report a date you can actually read; use null if truly none is visible.',
+    '',
     'Return ONLY a JSON object, no prose, no code fences:',
     '{',
-    '  "date": "YYYY-MM-DD",            // the calendar date shown beside the headline value; if a range is shown use the END date; null if none',
+    '  "date": "YYYY-MM-DD",            // the date printed on the screenshot (see above); null if none visible',
     '  "kpi": "strain|recovery|sleep",  // which KPI this screen belongs to; "unknown" if unclear',
     '  "components": { "<key>": "<raw on-screen string>", ... },  // today/headline value per component you can read',
     '  "averages":   { "<key>": { "avg": "<raw>", "low": "<raw>", "high": "<raw>" }, ... }  // 30-day avg + normal band, when printed',
@@ -365,7 +407,7 @@ export function parseBevelExtraction(text: string): BevelExtraction {
     throw new Error('No readable values in the screenshot.');
   }
 
-  const date = typeof obj.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.date) ? obj.date : null;
+  const date = parseFlexibleDate(obj.date);
   return { date, kpi, record: { score, components }, averages, raw };
 }
 
