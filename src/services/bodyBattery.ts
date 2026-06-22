@@ -50,6 +50,7 @@ export interface BodyBattery {
   hrvBaseline: number; restHR: number;
   hrvUsed: number; hrvRejected: number; // selectivity transparency
   computedAt: number;
+  debug: any;             // raw trace for off-device calibration (Copy debug)
 }
 
 interface Sample { t: number; v: number; }
@@ -97,32 +98,39 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   // ── HRV trust filter ──────────────────────────────────────────────────────────
   const qmap = buildHeartbeatQualityMap(beatsRaw as any[]);
-  const trustHRV = (t: number, v: number, useHrContext: boolean): boolean => {
-    if (!(v >= 5 && v <= 200)) return false;            // implausible SDNN
-    if (!isGoodHRVSample(t, qmap)) return false;        // R-R gaps → motion
+  const trustHRV = (t: number, v: number, useHrContext: boolean): { ok: boolean; why: string } => {
+    if (!(v >= 5 && v <= 200)) return { ok: false, why: 'value' };  // implausible SDNN
+    if (!isGoodHRVSample(t, qmap)) return { ok: false, why: 'rrgap' }; // R-R gaps → motion
     if (useHrContext) {
       // Reject MOVEMENT (erratic HR / clear exercise), but NOT a genuinely elevated-yet-
       // STABLE HR — heat/stress raises HR while still, and that low-HRV read is real signal.
       const s = hrStatsNear(t);
-      if (s && (s.mean > restHR + 45 || s.cv > 0.18)) return false;
+      if (s && s.mean > restHR + 45) return { ok: false, why: 'hr-high' };
+      if (s && s.cv > 0.18)          return { ok: false, why: 'hr-erratic' };
     }
-    return true;
+    return { ok: true, why: 'ok' };
   };
 
   // Baseline HRV from trusted readings over 14d (HR context not needed for plausibility-only baseline).
   const baseVals = (hrvBaseRaw as any[])
     .map(s => ({ t: new Date(s.startDate).getTime(), v: s.quantity as number }))
-    .filter(s => trustHRV(s.t, s.v, false))
+    .filter(s => trustHRV(s.t, s.v, false).ok)
     .map(s => s.v);
   const hrvBaseline = median(baseVals) || 45;
 
-  // Trusted HRV inside the compute window (with HR-movement context).
+  // Trusted HRV inside the compute window (with HR-movement context). Capture per-sample
+  // debug so the calibration can be replayed/diagnosed off-device.
+  const fromMs = from.getTime();
+  const relMin = (t: number) => Math.round((t - fromMs) / 60_000);
   let hrvUsed = 0, hrvRejected = 0;
   const validHrv: Sample[] = [];
+  const hrvDebug: any[] = [];
   for (const s of (hrvRaw as any[])) {
     const t = new Date(s.startDate).getTime(), v = s.quantity as number;
-    if (trustHRV(t, v, true)) { validHrv.push({ t, v }); hrvUsed++; }
-    else hrvRejected++;
+    const ctx = hrStatsNear(t);
+    const res = trustHRV(t, v, true);
+    if (res.ok) { validHrv.push({ t, v }); hrvUsed++; } else hrvRejected++;
+    hrvDebug.push({ m: relMin(t), v: Math.round(v), hr: ctx ? Math.round(ctx.mean) : 0, cv: ctx ? Math.round(ctx.cv * 100) : -1, ok: res.ok ? 1 : 0, w: res.why });
   }
   validHrv.sort((a, b) => a.t - b.t);
   const nearestHrv = (t: number, win = 35 * 60_000): number | null => {
@@ -153,6 +161,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   let battery = SEED; // washed out by the two nights inside the 60h window
   const series: BatteryPoint[] = [];
+  const binDebug: any[] = [];
   for (let t = start; t <= now; t += binMs) {
     // mean HR in [t, t+bin)
     let sum = 0, n = 0;
@@ -161,7 +170,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const asleep = isAsleep(t + binMs / 2);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
-    let stress = asleep ? Math.min(stressAt(avgHR, nearestHrv(t)), 14) : stressAt(avgHR, nearestHrv(t));
+    const vHrv = nearestHrv(t);
+    let stress = asleep ? Math.min(stressAt(avgHR, vHrv), 14) : stressAt(avgHR, vHrv);
     // Charge only while recovering (asleep, or genuinely calm at night); otherwise drain —
     // slowly when calm, fast when stressed. So a calm-but-awake day never tops up to 100.
     const hour = new Date(t + binMs / 2).getHours();
@@ -172,6 +182,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       : -(BASE_DRAIN + (stress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep });
+    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
   }
   if (!series.length) return null;
 
@@ -202,5 +213,11 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     restHR,
     hrvUsed, hrvRejected,
     computedAt: now,
+    debug: {
+      meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
+        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE, BASE_DRAIN, STRESS_DRAIN, SEED, WINDOW_H } },
+      hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
+      bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
+    },
   };
 }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
 import Svg, { Path, Rect, Line, Circle, Text as SvgText } from 'react-native-svg';
+import * as Clipboard from 'expo-clipboard';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
 
@@ -14,6 +15,7 @@ export default function BodyBatteryScreen() {
   const [data, setData] = useState<BodyBattery | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback((isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoading(true);
@@ -77,7 +79,17 @@ export default function BodyBatteryScreen() {
               HRV selectivity: <Text style={{ fontWeight: '700' }}>{data.hrvUsed} used</Text> ·{' '}
               {data.hrvRejected} rejected (movement / AFib-app noise filtered out).
             </Text>
-            <Text style={[s.note, { fontStyle: 'italic' }]}>Our estimate — not yet calibrated against Bevel.</Text>
+            <Text style={[s.note, { fontStyle: 'italic' }]}>Our estimate — being calibrated against Bevel.</Text>
+
+            <TouchableOpacity
+              style={s.debugBtn}
+              onPress={async () => {
+                await Clipboard.setStringAsync(JSON.stringify(data.debug));
+                setCopied(true); setTimeout(() => setCopied(false), 2500);
+              }}
+            >
+              <Text style={s.debugBtnText}>{copied ? '✓ Copied — paste it to the coach' : '⧉ Copy calibration data'}</Text>
+            </TouchableOpacity>
           </>
         )}
       </ScrollView>
@@ -182,4 +194,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   statVal: { fontSize: 18, fontWeight: '800', color: c.text },
   statLbl: { fontSize: 11, color: c.textSub, marginTop: 2 },
   note: { fontSize: 12.5, color: c.textSub, lineHeight: 18, marginBottom: 8 },
+  debugBtn: { marginTop: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center' },
+  debugBtnText: { fontSize: 14, fontWeight: '600', color: c.textSub },
 });
