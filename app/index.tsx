@@ -25,9 +25,17 @@ import {
   formatPace,
   subscribeToWorkoutChanges,
   saveSnapshotCache,
+  loadSnapshotCache,
 } from '../src/services/healthkit';
 import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
-import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, getTrainingRecommendation, TrainingRecommendation } from '../src/services/claude';
+import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
+import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, CoachPlan } from '../src/services/coach';
+import Constants from 'expo-constants';
+import * as SecureStore from 'expo-secure-store';
+
+// Bump the trailing schema rev when the snapshot shape changes, to force one full rescan.
+const SCAN_MARKER = `${Constants.expoConfig?.version ?? '0'}|s1`;
+const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus } from '../src/services/trainingLoad';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
@@ -85,26 +93,28 @@ export default function HomeScreen() {
     return city ? `Location: ${city} · ${when}` : when;
   }, []);
 
-  // ── Generate (or refresh) the training recommendation ─────────────────────
-  // Weather is fetched here (GPS → Open-Meteo) and passed in. getTrainingRecommendation
-  // caches by a key that includes the run-label signature, so a reclassification
-  // automatically yields a fresh recommendation.
+  // ── Today's recommendation = the SAME coach plan the Strain screen shows ───
+  // Reads the cached coach plan (pre-generated each morning by the day-view) so the home
+  // card and the Strain-detail plan never disagree; only generates if none is cached yet.
   const refreshRecommendation = useCallback(async (snap: HealthSnapshot) => {
     const key = await getApiKey();
-    if (!key || snap.runs.length === 0) return;
+    if (!key) return;
     setLoadingRec(true);
     try {
-      const localCtx = buildLocalContext();
-      const weather  = await getLocalWeather();           // null if denied/unavailable
-      const wxStr    = weather ? weatherSummary(weather) : undefined;
-      const rec = await getTrainingRecommendation(snap, localCtx, wxStr);
-      setRecommendation(rec);
+      const today = new Date().toISOString().slice(0, 10);
+      let plan = await loadCachedPlan(today);
+      if (!plan) {
+        const cs = await assembleCoachSnapshot(snap.strain ?? null);
+        plan = await getCoachPlan(cs);
+        await saveCachedPlan(cs.date, plan);
+      }
+      setRecommendation(coachPlanToRec(plan));
     } catch {
       // silently ignore — card simply won't appear/update
     } finally {
       setLoadingRec(false);
     }
-  }, [buildLocalContext]);
+  }, []);
 
   // Load persisted sync-months preference once on mount (does NOT trigger a re-load)
   useEffect(() => {
@@ -115,22 +125,19 @@ export default function HomeScreen() {
   }, []);
 
   // ── Core load function ──────────────────────────────────────────────────
-  const load = useCallback(async (isRefresh = false, monthsOverride?: SyncMonths) => {
+  const load = useCallback(async (isRefresh = false, monthsOverride?: SyncMonths, light = false, silent = false) => {
     // Prevent concurrent loads (AppState + workout subscription can both fire at startup)
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
 
     const months = monthsOverride ?? syncMonthsRef.current;
-    if (isRefresh) {
-      setRefreshing(true);  // Set inside load so it's always paired with the finally reset
-    } else {
-      setLoading(true);
-      setLoadingStep(null);
-    }
+    if (silent) { /* background refresh over already-shown cache — no blocking spinner */ }
+    else if (isRefresh) setRefreshing(true); // paired with the finally reset
+    else { setLoading(true); setLoadingStep(null); }
     try {
       const granted = await requestPermissions();
       if (!granted) {
-        Alert.alert(
+        if (!silent) Alert.alert(
           'Health Access Required',
           'RunCoach AI needs Apple Health access. Allow it in Settings → Privacy → Health.'
         );
@@ -139,18 +146,19 @@ export default function HomeScreen() {
       const [snap, key] = await Promise.all([
         fetchHealthSnapshot({
           months,
-          onProgress: (step, pct) => setLoadingStep({ step, pct }),
+          light,
+          onProgress: silent ? undefined : (step, pct) => setLoadingStep({ step, pct }),
         }),
         getApiKey(),
       ]);
       setSnapshot(snap);
       saveSnapshotCache(snap).catch(() => {});
+      // Only a FULL scan marks this version as fully scanned (so light starts stay light).
+      if (!light) SecureStore.setItemAsync(SCAN_MARKER_KEY, SCAN_MARKER).catch(() => {});
       setHasApiKey(!!key);
 
-      // Load training recommendation non-blocking (weather + load aware, cached by signature)
-      if (key && snap.runs.length > 0) {
-        refreshRecommendation(snap);
-      }
+      // Today's recommendation = the cached coach plan (same source as the Strain screen).
+      if (key) refreshRecommendation(snap);
 
       // Auto-prepare the AI day view once last night is fully determined (idempotent
       // per night; reuses this snapshot; silent — they're already in the app).
@@ -158,7 +166,7 @@ export default function HomeScreen() {
         if (on) maybeRunDayView({ months, snap, notify: false }).catch(() => {});
       });
     } catch (err: any) {
-      Alert.alert('Error loading health data', err.message);
+      if (!silent) Alert.alert('Error loading health data', err.message);
     } finally {
       isLoadingRef.current = false;
       setLoading(false);
@@ -189,7 +197,27 @@ export default function HomeScreen() {
   }, [syncMonths, load]);
 
   // ── Initial load ────────────────────────────────────────────────────────
-  useEffect(() => { load(); }, [load]);
+  // Show the cached snapshot instantly, then refresh in the background. A normal start
+  // (same version) does a fast LIGHT refresh; a new version or first launch does a full
+  // scan with the spinner. Pull-to-refresh always forces a full refresh.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [cached, prevMarker] = await Promise.all([
+        loadSnapshotCache(),
+        SecureStore.getItemAsync(SCAN_MARKER_KEY).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (cached && prevMarker === SCAN_MARKER) {
+        setSnapshot(cached);
+        setLoading(false);
+        load(false, undefined, true, true);  // light + silent background refresh
+      } else {
+        load(false, undefined, false, false); // full scan with spinner
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [load]);
 
   // Wake the app on new sleep data (HealthKit observer) → auto-prepare the day view.
   // Wake on a new run → recalibrate the Power & HR Zones; also catch up on foreground.
@@ -585,6 +613,23 @@ export default function HomeScreen() {
       </Modal>
     </SafeAreaView>
   );
+}
+
+// Map the coach plan → the home card's TrainingRecommendation shape, so both screens
+// (home + Strain detail) are driven by one source of truth.
+function coachPlanToRec(p: CoachPlan): TrainingRecommendation {
+  if (p.intensity === 'rest' || !p.workout) {
+    return { type: 'Rest', duration: '—', zone: '—', reason: p.headline || p.rationale };
+  }
+  const zones = p.workout.blocks.map(b => b.hrZone).filter((z): z is string => !!z);
+  const zone  = zones.sort().pop() ?? ''; // hardest zone of the day (Z1<…<Z5 lexically)
+  const type: TrainingRecommendation['type'] =
+    zone === 'Z1' ? 'Easy' :
+    zone === 'Z2' ? 'Z2' :
+    zone === 'Z3' ? 'Tempo' :
+    (zone === 'Z4' || zone === 'Z5') ? 'Intervals' :
+    (p.intensity === 'easy' ? 'Z2' : p.intensity === 'hard' ? 'Intervals' : 'Tempo');
+  return { type, duration: `${p.runMinutes} min`, zone: zone || '—', reason: p.headline || p.rationale };
 }
 
 // ─── Training Recommendation Card ────────────────────────────────────────────

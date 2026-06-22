@@ -876,11 +876,20 @@ export interface FetchOptions {
   months?: number;
   /** Called with a human-readable step name and 0-100 progress percentage */
   onProgress?: (step: string, pct: number) => void;
+  /**
+   * Fast incremental refresh: shrink the CTL/ATL warm-up windows (365→180d active energy,
+   * 150→120d workouts). Still well-converged (~1.4% residual) but much quicker. Used on a
+   * normal app start; a full refresh (pull-down / new version) recomputes the long window.
+   */
+  light?: boolean;
 }
 
 export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<HealthSnapshot> {
   const months = Math.max(1, Math.min(24, opts.months ?? 3));
   const progress = (step: string, pct: number) => opts.onProgress?.(step, Math.round(pct));
+  // Warm-up windows for the CTL/ATL EWMAs — trimmed in light (incremental) refresh.
+  const aeWarmupDays = opts.light ? 180 : Math.max(months * 30, 365);
+  const woWarmupDays = opts.light ? 120 : Math.max(months * 30, 150);
 
   const now          = new Date();
   const sinceDate    = daysAgo(months * 30);
@@ -1179,7 +1188,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // All workouts (ANY type) for the training-load model — wider window (≥150d) so CTL warms up
     safeQuery(
       () => (HealthKit.queryWorkoutSamples as any)({
-        filter: { startDate: daysAgo(Math.max(months * 30, 150)), endDate: now },
+        filter: { startDate: daysAgo(woWarmupDays), endDate: now },
         limit: 1000,
         ascending: false,
         energyUnit: 'kcal',
@@ -1188,10 +1197,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       [] as any[]
     ),
     loadRunMeta(),
-    // Daily active energy (all movement) — basis for strain + CTL/ATL. Warm up a full
-    // year (~8.7× the 42-day CTL time-constant) so today's CTL/ATL/TSB are fully converged
-    // (seed bias <0.02%) and match the training-load detail screen exactly.
-    fetchDailyActiveEnergy(daysAgo(Math.max(months * 30, 365)), now),
+    // Daily active energy (all movement) — basis for strain + CTL/ATL. A full year
+    // (~8.7× the 42-day CTL time-constant) makes today's CTL/ATL/TSB fully converged;
+    // a light refresh uses 180d (~1.4% residual) for speed.
+    fetchDailyActiveEnergy(daysAgo(aeWarmupDays), now),
   ]);
 
   // Classify runs AFTER we have longRunMinutes
