@@ -44,11 +44,38 @@ const AVG_FILE = `${FileSystem.documentDirectory}runcoach-bevel-averages.json`;
 
 // ─── Storage ────────────────────────────────────────────────────────────────────
 
+// Plausible upper bound per biometric; a value above it is almost certainly a dropped
+// decimal (e.g. HRV 359 = 35.9, SpO₂ 941 = 94.1) — divide by 10 to recover it.
+const SANE_MAX: Record<string, number> = {
+  restingHrv: 150, restingHr: 130, daytimeHR: 130, respiratoryRate: 40, oxygenSaturation: 100,
+};
+function sanitizeRecord(r?: BevelKpiRecord): boolean {
+  if (!r?.components) return false;
+  let changed = false;
+  for (const k of Object.keys(r.components)) {
+    const max = SANE_MAX[k];
+    if (max == null) continue;
+    let v = r.components[k], i = 0;
+    while (v > max && i < 2) { v /= 10; i++; }
+    if (i > 0) { r.components[k] = Math.round(v * 10) / 10; changed = true; }
+  }
+  return changed;
+}
+function sanitizeDay(d: BevelDay): boolean {
+  return [d.strain, d.recovery, d.sleep].reduce((ch, r) => sanitizeRecord(r) || ch, false);
+}
+
 export async function loadBevelData(): Promise<Record<string, BevelDay>> {
   try {
     const info = await FileSystem.getInfoAsync(FILE);
     if (!info.exists) return {};
-    return JSON.parse(await FileSystem.readAsStringAsync(FILE)) as Record<string, BevelDay>;
+    const all = JSON.parse(await FileSystem.readAsStringAsync(FILE)) as Record<string, BevelDay>;
+    // Auto-correct any dropped-decimal biometrics (e.g. an old corrupt import) and
+    // persist the fix once.
+    let changed = false;
+    for (const k of Object.keys(all)) if (sanitizeDay(all[k])) changed = true;
+    if (changed) write(all).catch(() => {});
+    return all;
   } catch {
     return {};
   }
@@ -69,6 +96,7 @@ export async function saveBevelKpi(
   // Strain captured for *today* is a partial intra-day reading.
   const todayStr = new Date().toISOString().slice(0, 10);
   if (kpi === 'strain' && date === todayStr) record.partial = true;
+  sanitizeRecord(record); // guard against a dropped-decimal slipping through extraction
   day[kpi] = record;
   day.capturedAt = new Date().toISOString();
   all[date] = day;
