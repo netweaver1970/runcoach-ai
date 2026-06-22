@@ -29,7 +29,6 @@
     },
     "plugins": [
       "@bacons/apple-targets",
-      "./plugins/withWatchAppIcon",
       "./plugins/withDisableLldb",
       "./plugins/withHealthKitCapability",
       "expo-router",

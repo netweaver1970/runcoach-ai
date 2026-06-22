@@ -5,6 +5,8 @@
   "scripts": {
     "start": "expo start",
     "ios": "expo run:ios",
+    "prebuild:ios": "expo prebuild --clean -p ios --no-install && node scripts/fix-watch-icon.mjs && cd ios && pod install",
+    "fix-watch-icon": "node scripts/fix-watch-icon.mjs",
     "lint": "expo lint",
     "postinstall": "patch-package",
     "android": "expo run:android"
