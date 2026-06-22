@@ -12,13 +12,14 @@ const CFG = {
   W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 65,
   REST_STRESS: 33, SLEEP_CHARGE: 0.125, SEED: 42, BIN_MIN: 10,
   BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.012,
-  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.068,
+  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.055,
   // Stress smoothing (Bevel-style momentum): EWMA per 10-min bin. SMOOTH=1 → raw/instant
   // (twitchy, drops to 0); lower = smoother + stickier. RISE applies a faster attack so
   // stress climbs quickly but decays slowly, like Bevel. FLOOR keeps awake stress off 0.
-  SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 1,
+  // Defaults = SHIPPED production values (bodyBattery.ts).
+  SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 0.20,
   RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
-  FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 0,
+  FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 10,
   // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
   // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
   AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
@@ -70,4 +71,7 @@ console.log(`NOW   stress ${out.at(-1).stress}   battery ${out.at(-1).battery}% 
 console.log(`DAY   avgStress ${avg}   peak ${peak}%   charged +${Math.round(charged)}%   drained ${Math.round(drained)}%`);
 const sLo = Math.min(...day.map(p => p.stress)), sHi = Math.max(...day.map(p => p.stress)), zeros = day.filter(p => p.stress < 5).length;
 console.log(`STRESS day(awake): min ${sLo}  max ${sHi}  drops<5: ${zeros}/${day.length} bins`);
-console.log(`BEVEL target:  stress ~78 now / ~62 avg, smooth (NO drops to 0)   battery ~8`);
+// Time-in-zone over the whole shown window (incl. sleep) like Bevel's High/Med/Low.
+const pct = (f) => Math.round(100 * shown.filter(f).length / shown.length);
+console.log(`ZONES  Low(<34) ${pct(p => p.stress < 34)}%  Med(34-66) ${pct(p => p.stress >= 34 && p.stress < 67)}%  High(≥67) ${pct(p => p.stress >= 67)}%`);
+console.log(`BEVEL  stress ~78 now / ~62 avg, no drops to 0   battery ~8   zones Low 26 / Med 25 / High 49`);

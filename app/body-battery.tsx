@@ -63,6 +63,7 @@ export default function BodyBatteryScreen() {
             </View>
 
             <BatteryGraph data={data} />
+            <StressGraph data={data} />
 
             <View style={s.statsRow}>
               <Stat label="Today low" value={`${data.dayLow}%`} />
@@ -170,6 +171,64 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
   );
 }
 
+// Stress over the same 24h, Bevel-style: a line coloured by level (green→amber→red).
+function StressGraph({ data }: { data: BodyBattery }) {
+  const s = useThemedStyles(makeStyles);
+  const { c } = useTheme();
+  const grid = c.border, axis = c.textSub;
+  const W = Math.round(Dimensions.get('window').width) - 32;
+  const H = 150;
+  const padL = 26, padR = 8, padT = 10, padB = 18;
+  const gw = W - padL - padR, gh = H - padT - padB;
+  const pts = data.series;
+  if (pts.length < 2) return null;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+  const x = (t: number) => padL + ((t - t0) / Math.max(1, t1 - t0)) * gw;
+  const y = (v: number) => padT + (1 - v / 100) * gh;
+
+  // Sleep bands (contiguous asleep runs)
+  const bands: { s: number; e: number }[] = [];
+  for (const p of pts) {
+    if (!p.asleep) continue;
+    const last = bands[bands.length - 1];
+    if (last && p.t - last.e <= 15 * 60_000) last.e = p.t;
+    else bands.push({ s: p.t, e: p.t });
+  }
+
+  const cur = pts[pts.length - 1];
+  const hourLabels = [0, 6, 12, 18].map(h => {
+    const t = t0 + (h / 24) * (t1 - t0);
+    return { t, label: new Date(t).getHours() + 'h' };
+  });
+
+  return (
+    <View style={s.graphCard}>
+      <Text style={s.graphTitle}>Stress  <Text style={{ color: stressColor(cur.stress) }}>{cur.stress}</Text></Text>
+      <Svg width={W} height={H}>
+        {[0, 25, 50, 75, 100].map(v => (
+          <React.Fragment key={v}>
+            <Line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke={grid} strokeWidth={0.5} />
+            <SvgText x={2} y={y(v) + 3} fontSize={8} fill={axis}>{v}</SvgText>
+          </React.Fragment>
+        ))}
+        {bands.map((b, i) => (
+          <Rect key={i} x={x(b.s)} y={padT} width={Math.max(1, x(b.e) - x(b.s))} height={gh} fill="#6366F1" opacity={0.12} />
+        ))}
+        {/* stress line coloured per segment by its level */}
+        {pts.slice(1).map((p, i) => (
+          <Line key={i} x1={x(pts[i].t)} y1={y(pts[i].stress)} x2={x(p.t)} y2={y(p.stress)}
+            stroke={stressColor((pts[i].stress + p.stress) / 2)} strokeWidth={2} />
+        ))}
+        <Circle cx={x(cur.t)} cy={y(cur.stress)} r={3.5} fill={stressColor(cur.stress)} />
+        {hourLabels.map((h, i) => (
+          <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} textAnchor="middle">{h.label}</SvgText>
+        ))}
+      </Svg>
+      <Text style={s.graphCaption}>Stress · last 24h · shaded = asleep</Text>
+    </View>
+  );
+}
+
 const makeStyles = (c: Palette) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
@@ -187,6 +246,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   chargeVal: { fontSize: 22, fontWeight: '800' },
   chargeLbl: { fontSize: 12, color: c.textSub, marginTop: 2 },
   graphCard: { backgroundColor: c.surface, borderRadius: 14, padding: 8, marginVertical: 10 },
+  graphTitle: { fontSize: 13, fontWeight: '700', color: c.text, marginLeft: 4, marginBottom: 2 },
   graphCaption: { fontSize: 11, color: c.textSub, textAlign: 'center', marginTop: 4 },
   gridColor: { color: c.border },
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 10 },
