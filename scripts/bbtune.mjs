@@ -12,7 +12,13 @@ const CFG = {
   W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 65,
   REST_STRESS: 33, SLEEP_CHARGE: 0.125, SEED: 42, BIN_MIN: 10,
   BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.012,
-  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.085,
+  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.068,
+  // Stress smoothing (Bevel-style momentum): EWMA per 10-min bin. SMOOTH=1 → raw/instant
+  // (twitchy, drops to 0); lower = smoother + stickier. RISE applies a faster attack so
+  // stress climbs quickly but decays slowly, like Bevel. FLOOR keeps awake stress off 0.
+  SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 1,
+  RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
+  FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 0,
   // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
   // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
   AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
@@ -37,10 +43,15 @@ const stressAt = (hr, vHrv, a) => {
 const bins = d.bins ?? d.bins3.map(([m, hr, a]) => ({ m, hr, a }));
 const lastM = bins.at(-1).m;
 let battery = CFG.SEED;
+let sm = null;
 const out = [];
 for (const { m, hr, a } of bins) {
   const vHrv = nearestHrv(m);
-  const stress = stressAt(hr, vHrv, !!a);
+  const raw = stressAt(hr, vHrv, !!a);
+  // EWMA momentum: fast attack (RISE) when stress climbs, slow release (SMOOTH) when it falls.
+  const alpha = sm == null ? 1 : (raw > sm ? CFG.RISE : CFG.SMOOTH);
+  sm = sm == null ? raw : alpha * raw + (1 - alpha) * sm;
+  const stress = a ? sm : Math.max(sm, CFG.FLOOR);             // awake floor (Bevel never hits 0)
   const rate = a
     ? CFG.SLEEP_CHARGE                                          // asleep → charge (Bevel: sleep band only)
     : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);    // awake → drain (declines all day)
@@ -57,4 +68,6 @@ console.log('CFG', JSON.stringify(CFG));
 console.log(`HRV: ${d.hrv.length} samples → ${trusted.length} trusted   baseline ${hrvBaseline}ms  rest ${restHR} max ${maxHR}`);
 console.log(`NOW   stress ${out.at(-1).stress}   battery ${out.at(-1).battery}%   (hrv@now ${out.at(-1).hrv ?? '-'})`);
 console.log(`DAY   avgStress ${avg}   peak ${peak}%   charged +${Math.round(charged)}%   drained ${Math.round(drained)}%`);
-console.log(`BEVEL target:  stress~73 now / ~62 avg   battery ~13%   charged +32   drained -33   peak ~47`);
+const sLo = Math.min(...day.map(p => p.stress)), sHi = Math.max(...day.map(p => p.stress)), zeros = day.filter(p => p.stress < 5).length;
+console.log(`STRESS day(awake): min ${sLo}  max ${sHi}  drops<5: ${zeros}/${day.length} bins`);
+console.log(`BEVEL target:  stress ~78 now / ~62 avg, smooth (NO drops to 0)   battery ~8`);

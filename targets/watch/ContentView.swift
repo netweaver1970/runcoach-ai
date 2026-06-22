@@ -107,7 +107,7 @@ struct KPIDetailView: View {
         } else {
           Text("No history yet").font(.system(size: 12)).foregroundColor(.secondary).padding(.vertical, 8)
         }
-        Text("\(relTime(kpi.series.last?.t)) · \(kpi.series.count) pts").font(.system(size: 11)).foregroundColor(.secondary)
+        Text(relTime(kpi.series.last?.t)).font(.system(size: 11)).foregroundColor(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 4)

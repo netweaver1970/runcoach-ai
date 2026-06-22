@@ -34,8 +34,12 @@ const BASELINE_DAYS = 14;     // HRV baseline window
 const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
 const SLEEP_CHARGE  = 0.125;  // per-minute while asleep
 const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.068;  // additional per-minute drain at full stress (we over-drained
-                              // ~20%: 22-Jun dump rate 0.072 vs Bevel 0.061 → end 8 not 0)
+const STRESS_DRAIN  = 0.055;  // additional per-minute drain at full stress (re-tuned for the
+                              // smoothed stress below so the 22-Jun dump still ends at Bevel 8%)
+// Stress momentum (Bevel-like): raw per-bin stress was twitchy — it dropped below 5 for ~16%
+// of the day, unlike Bevel's smooth curve. Rise instantly, decay slowly (EWMA), floor awake.
+const STRESS_SMOOTH = 0.20;   // EWMA weight on the way DOWN (lower = stickier / slower decay)
+const STRESS_FLOOR  = 10;     // awake stress never below this (Bevel never reads 0 while awake)
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
@@ -169,6 +173,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   };
 
   let battery = SEED; // washed out by the two nights inside the 60h window
+  let smStress: number | null = null; // EWMA-smoothed stress (Bevel-style momentum)
   const series: BatteryPoint[] = [];
   const binDebug: any[] = [];
   for (let t = start; t <= now; t += binMs) {
@@ -180,11 +185,15 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
-    let stress = asleep ? Math.min(stressAt(avgHR, vHrv), 14) : stressAt(avgHR, vHrv);
-    // Bevel only charges inside the sleep band — the Energy Bank then declines all day.
-    // Charging while merely calm-and-awake (our battery kept climbing for ~an hour AFTER
-    // waking) over-filled it ~15 pts above Bevel, so charge ONLY while actually asleep;
-    // awake always drains — gently when calm, fast when stressed.
+    const rawStress = asleep ? Math.min(stressAt(avgHR, vHrv), 14) : stressAt(avgHR, vHrv);
+    // Momentum: rise instantly (fast attack), decay slowly (EWMA) — a brief HR dip no longer
+    // crashes stress to 0. Floor awake stress so the curve never bottoms out, like Bevel.
+    smStress = smStress == null ? rawStress
+      : rawStress > smStress ? rawStress
+      : STRESS_SMOOTH * rawStress + (1 - STRESS_SMOOTH) * smStress;
+    const stress = asleep ? smStress : Math.max(smStress, STRESS_FLOOR);
+    // Bevel only charges inside the sleep band — the Energy Bank then declines all day. Charge
+    // ONLY while actually asleep; awake always drains — gently when calm, fast when stressed.
     const rate = asleep
       ? SLEEP_CHARGE
       : -(BASE_DRAIN + (stress / 100) * STRESS_DRAIN);
@@ -223,7 +232,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE, BASE_DRAIN, STRESS_DRAIN, SEED, WINDOW_H } },
+        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE, BASE_DRAIN, STRESS_DRAIN, STRESS_SMOOTH, STRESS_FLOOR, SEED, WINDOW_H } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
     },
