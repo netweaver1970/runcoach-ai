@@ -10,8 +10,13 @@ import HealthKit from '@kingstinct/react-native-healthkit';
 import { PowerZones } from '../types';
 import { getPowerZones } from './claude';
 import { callLLM } from './llm';
-import { loadSnapshotCache } from './healthkit';
+import { loadSnapshotCache, extractWeatherTempC } from './healthkit';
+import { getRunMeta } from './runMeta';
 import { upsertKnowledge, knowledgeExists, readKnowledgeContent } from './coachFiles';
+
+// Above this run-time temperature the auto loop skips calibration: heat elevates HR for a
+// given power, so the observed power-at-HR reads artificially low and would bias zones down.
+const HOT_SKIP_C = 27;
 
 export const ZONES_FILE_ID = 'power-hr-zones';
 const HR_ID    = 'HKQuantityTypeIdentifierHeartRate';
@@ -88,7 +93,11 @@ function stepNameFromUuid(uuid: string): string {
   return title || stepName;
 }
 
-interface RunWindow { start: number; end: number; drillRanges: { from: number; to: number }[]; }
+interface RunWindow {
+  start: number; end: number;
+  drillRanges: { from: number; to: number }[];
+  uuid: string; tempC?: number; note?: string;
+}
 
 async function latestRun(): Promise<RunWindow | null> {
   const workouts: any[] = await safe(() => (HealthKit.queryWorkoutSamples as any)({
@@ -104,7 +113,11 @@ async function latestRun(): Promise<RunWindow | null> {
     .filter(a => /drill/i.test(stepNameFromUuid(a?.uuid ?? '')))
     .map(a => ({ from: new Date(a.startDate).getTime(), to: a.endDate ? new Date(a.endDate).getTime() : 0 }))
     .filter(r => r.to > r.from);
-  return { start, end: start + durSec * 1000, drillRanges };
+  // Conditions that bias the power-vs-HR relationship: recorded temp + the athlete's note.
+  const uuid = String(run.uuid ?? '').split('::')[0];
+  const meta = uuid ? await getRunMeta(uuid).catch(() => ({} as any)) : ({} as any);
+  const tempC = meta?.tempC ?? extractWeatherTempC(run);
+  return { start, end: start + durSec * 1000, drillRanges, uuid, tempC, note: meta?.note };
 }
 
 export interface RunZoneAnalysis {
@@ -114,8 +127,8 @@ export interface RunZoneAnalysis {
 }
 
 /** Observed average running power at each HR zone for the most recent run. */
-export async function analyzeLastRun(): Promise<RunZoneAnalysis | null> {
-  const run = await latestRun();
+export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAnalysis | null> {
+  const run = prefetched ?? await latestRun();
   if (!run) return null;
   const inDrill = (t: number) => run.drillRanges.some(r => t >= r.from && t <= r.to);
   const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
@@ -153,20 +166,42 @@ export async function analyzeLastRun(): Promise<RunZoneAnalysis | null> {
 }
 
 /** Feed the last run's power-by-HR-zone to the LLM to refine the zones file. */
-export async function recalibrateZonesFromLastRun(): Promise<{ updated: boolean; reason?: string }> {
+export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Promise<{ updated: boolean; reason?: string }> {
   await ensureZonesFile();
-  const analysis = await analyzeLastRun();
+  const run = await latestRun();
+  if (!run) return { updated: false, reason: 'No recent run found.' };
+
+  // Heat guard: on the automatic path, don't silently bake in a hot, HR-inflated run.
+  if (opts?.auto && run.tempC != null && run.tempC >= HOT_SKIP_C) {
+    return { updated: false, reason: `Skipped — hot run (${run.tempC}°C) would bias zones low.` };
+  }
+
+  const analysis = await analyzeLastRun(run);
   if (!analysis || analysis.perZone.length === 0) return { updated: false, reason: 'No running-power + HR data in your last run.' };
+
+  // Conditions the LLM should weigh when deciding how much to trust this run.
+  const conditions: string[] = [];
+  if (run.tempC != null) {
+    conditions.push(`Temperature ~${run.tempC}°C${run.tempC >= 24 ? ' (hot — HR runs high for a given power, so observed power-at-HR is understated)' : ''}`);
+  }
+  if (run.note?.trim()) conditions.push(`Athlete's run note: "${run.note.trim()}"`);
+  const condText = conditions.length ? conditions.join('\n') : 'No special conditions noted.';
 
   const current = await readKnowledgeContent(ZONES_FILE_ID);
   const system =
     `You maintain a running coach's "Power & HR Zones" file (a markdown table Zone|Name|HR|Power). ` +
     `Update ONLY the Power (W) column so each HR zone maps to the OBSERVED average running power from the latest run. ` +
-    `Blend gently with the existing values (move ~30% toward observed; don't overreact to one run); keep the HR ranges, ` +
-    `the table structure and the surrounding text. Refresh the "Last calibrated" line. Return ONLY the updated markdown — no code fences.`;
+    `Blend gently with the existing values (move ~30% toward observed; never overreact to one run); keep the HR ranges, ` +
+    `the table structure and the surrounding text.\n\n` +
+    `CRUCIAL — weigh the CONDITIONS, which bias the power-vs-HR relationship: heat and stimulants (caffeine, yohimbine, ` +
+    `pre-workout, etc.) RAISE heart rate for a given power, so observed power-at-HR reads artificially LOW; interruptions ` +
+    `(phone calls, toilet/stops, walking breaks) inject noise. The more the conditions confound the data, the SMALLER the ` +
+    `adjustment you should make (down to none). State, briefly, on the "Last calibrated" line what you did and why ` +
+    `(e.g. "held — hot + yohimbine inflated HR"). Return ONLY the updated markdown — no code fences.`;
   const user =
     `Current file:\n"""\n${current}\n"""\n\n` +
-    `Latest run (${analysis.date}, ${analysis.durationMin} min) — observed power by HR zone:\n` +
+    `Conditions:\n${condText}\n\n` +
+    `Latest run (${analysis.date}, ${analysis.durationMin} min) — observed power by HR zone (drills already excluded):\n` +
     analysis.perZone.map(z => `${z.z}: ${z.minutes} min, avg HR ${z.avgHR}, avg power ${z.avgPower} W`).join('\n');
 
   const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 900 }))
@@ -188,7 +223,7 @@ export async function maybeAutoRecalibrate(): Promise<boolean> {
   } catch { /* ignore */ }
   if (run.start <= last) return false;
 
-  const res = await recalibrateZonesFromLastRun();
+  const res = await recalibrateZonesFromLastRun({ auto: true });
   try { await FileSystem.writeAsStringAsync(LAST_RUN_FILE, JSON.stringify({ start: run.start, at: Date.now() })); } catch { /* ignore */ }
   return res.updated;
 }

@@ -819,7 +819,7 @@ function metaGet(m: any, key: string): any {
  * (HKWeatherTemperature). Returns undefined when absent (e.g. indoor runs).
  * Converts Fahrenheit → Celsius when the unit string indicates °F.
  */
-function extractWeatherTempC(w: any): number | undefined {
+export function extractWeatherTempC(w: any): number | undefined {
   const t = metaGet(w?.metadata, 'HKWeatherTemperature');
   if (t == null) return undefined;
   let value: number;
