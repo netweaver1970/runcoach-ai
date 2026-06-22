@@ -62,7 +62,6 @@ export default function BevelImportScreen() {
     setProgress({ done: 0, total: res.assets.length });
 
     const prompt = buildBevelExtractionPrompt();
-    const today = new Date().toISOString().slice(0, 10);
     const good: ReviewItem[] = [];
     const bad: FailItem[] = [];
 
@@ -75,7 +74,9 @@ export default function BevelImportScreen() {
         const ext = parseBevelExtraction(reply);
         const avgKeys = Object.keys(ext.averages);
         if (avgKeys.length) await saveBevelAverages(ext.averages); // exact 30-day avgs — save immediately
-        good.push({ id, kpi: ext.kpi as BevelKpiKey, date: ext.date ?? today, record: ext.record, avgKeys, saved: false });
+        // Leave the date BLANK when the screenshot's date couldn't be read — the review
+        // UI flags it and won't save until the user enters the day (never assume today).
+        good.push({ id, kpi: ext.kpi as BevelKpiKey, date: ext.date ?? '', record: ext.record, avgKeys, saved: false });
       } catch (e: any) {
         bad.push({ id, error: e?.message ?? String(e) });
       }
@@ -100,7 +101,10 @@ export default function BevelImportScreen() {
   };
 
   const saveAll = async () => {
-    for (const it of items) if (!it.saved) await saveItem(it);
+    const ok = /^\d{4}-\d{2}-\d{2}$/;
+    for (const it of items) if (!it.saved && ok.test(it.date)) await saveItem(it);
+    const need = items.filter(it => !it.saved && !ok.test(it.date)).length;
+    if (need) Alert.alert('Dates needed', `${need} screenshot${need > 1 ? 's' : ''} still need the day entered before saving.`);
   };
 
   const removeDay = (date: string) => {
@@ -153,6 +157,7 @@ export default function BevelImportScreen() {
         {items.map(it => {
           const scale = kpiScale(it.kpi);
           const rows = scale.components.filter(comp => it.record.components[comp.key] !== undefined);
+          const validDate = /^\d{4}-\d{2}-\d{2}$/.test(it.date);
           return (
             <View key={it.id} style={s.card}>
               <View style={s.cardHead}>
@@ -162,7 +167,7 @@ export default function BevelImportScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                   {it.saved
                     ? <Text style={s.savedTag}>✓ Saved</Text>
-                    : <TouchableOpacity style={s.saveBtn} onPress={() => saveItem(it)}><Text style={s.saveBtnText}>Save</Text></TouchableOpacity>}
+                    : <TouchableOpacity style={[s.saveBtn, !validDate && s.saveBtnDisabled]} disabled={!validDate} onPress={() => saveItem(it)}><Text style={s.saveBtnText}>Save</Text></TouchableOpacity>}
                   <TouchableOpacity onPress={() => removeItem(it)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Text style={s.removeX}>✕</Text>
                   </TouchableOpacity>
@@ -172,15 +177,18 @@ export default function BevelImportScreen() {
               <View style={s.dateRow}>
                 <Text style={s.dateLabel}>Date</Text>
                 <TextInput
-                  style={s.dateInput}
+                  style={[s.dateInput, !validDate && s.dateInputBad]}
                   value={it.date}
                   onChangeText={t => setDate(it.id, t)}
                   placeholder="YYYY-MM-DD"
-                  placeholderTextColor={c.textFaint}
+                  placeholderTextColor={!validDate ? '#e74c3c' : c.textFaint}
                   autoCapitalize="none"
                   keyboardType="numbers-and-punctuation"
                 />
               </View>
+              {!validDate && (
+                <Text style={s.dateWarn}>⚠️  Date not detected — enter the day shown on this screenshot before saving.</Text>
+              )}
 
               {rows.map(comp => (
                 <View key={comp.key} style={s.valRow}>
@@ -252,6 +260,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   saveBtnText: { color: c.onAccent, fontSize: 13, fontWeight: '700' },
   savedTag: { color: '#27ae60', fontSize: 13, fontWeight: '700' },
   removeX: { color: '#e74c3c', fontSize: 18, fontWeight: '800' },
+  saveBtnDisabled: { opacity: 0.4 },
+  dateInputBad: { borderColor: '#e74c3c', borderWidth: 1.5 },
+  dateWarn: { color: '#e74c3c', fontSize: 12, fontWeight: '600', marginTop: 6 },
   dateRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
   dateLabel: { color: c.textSub, fontSize: 13, width: 44 },
   dateInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, color: c.text, fontSize: 14, borderWidth: 1, borderColor: c.border },
