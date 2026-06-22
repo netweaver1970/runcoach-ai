@@ -9,6 +9,18 @@ import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
 const levelColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 const stressColor = (v: number) => (v >= 70 ? '#EF4444' : v >= 40 ? '#F59E0B' : '#22C55E');
 
+// A data gap wider than this (no HR — watch off / charging) breaks the line into a hole,
+// instead of papering over it with a straight segment.
+const GAP_MS = 25 * 60_000;
+function splitRuns<T extends { t: number }>(pts: T[]): T[][] {
+  const runs: T[][] = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (i === 0 || pts[i].t - pts[i - 1].t > GAP_MS) runs.push([]);
+    runs[runs.length - 1].push(pts[i]);
+  }
+  return runs;
+}
+
 export default function BodyBatteryScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
@@ -122,10 +134,10 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
   const x = (t: number) => padL + ((t - t0) / Math.max(1, t1 - t0)) * gw;
   const y = (v: number) => padT + (1 - v / 100) * gh;
 
-  // Battery line path
-  const linePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(p.battery).toFixed(1)}`).join(' ');
-  // Area under the line
-  const areaPath = `${linePath} L${x(t1).toFixed(1)},${y(0).toFixed(1)} L${x(t0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  // Break line + area across data gaps (watch off) instead of bridging them.
+  const runs = splitRuns(pts);
+  const lineFor = (run: typeof pts) => run.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(p.battery).toFixed(1)}`).join(' ');
+  const areaFor = (run: typeof pts) => run.length < 2 ? '' : `${lineFor(run)} L${x(run[run.length - 1].t).toFixed(1)},${y(0).toFixed(1)} L${x(run[0].t).toFixed(1)},${y(0).toFixed(1)} Z`;
 
   // Sleep bands (contiguous asleep runs)
   const bands: { s: number; e: number }[] = [];
@@ -156,9 +168,9 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
         {bands.map((b, i) => (
           <Rect key={i} x={x(b.s)} y={padT} width={Math.max(1, x(b.e) - x(b.s))} height={gh} fill="#6366F1" opacity={0.12} />
         ))}
-        {/* area + line */}
-        <Path d={areaPath} fill={levelColor(cur.battery)} opacity={0.12} />
-        <Path d={linePath} stroke={levelColor(cur.battery)} strokeWidth={2} fill="none" />
+        {/* area + line (one path per contiguous run; gaps left as holes) */}
+        {runs.map((run, i) => <Path key={`a${i}`} d={areaFor(run)} fill={levelColor(cur.battery)} opacity={0.12} />)}
+        {runs.map((run, i) => <Path key={`l${i}`} d={lineFor(run)} stroke={levelColor(cur.battery)} strokeWidth={2} fill="none" />)}
         {/* now marker */}
         <Circle cx={x(cur.t)} cy={y(cur.battery)} r={3.5} fill={levelColor(cur.battery)} />
         {/* hour ticks */}
@@ -214,10 +226,12 @@ function StressGraph({ data }: { data: BodyBattery }) {
         {bands.map((b, i) => (
           <Rect key={i} x={x(b.s)} y={padT} width={Math.max(1, x(b.e) - x(b.s))} height={gh} fill="#6366F1" opacity={0.12} />
         ))}
-        {/* stress line coloured per segment by its level */}
+        {/* stress line coloured per segment by its level; gaps (watch off) left as holes */}
         {pts.slice(1).map((p, i) => (
-          <Line key={i} x1={x(pts[i].t)} y1={y(pts[i].stress)} x2={x(p.t)} y2={y(p.stress)}
-            stroke={stressColor((pts[i].stress + p.stress) / 2)} strokeWidth={2} />
+          p.t - pts[i].t > GAP_MS ? null : (
+            <Line key={i} x1={x(pts[i].t)} y1={y(pts[i].stress)} x2={x(p.t)} y2={y(p.stress)}
+              stroke={stressColor((pts[i].stress + p.stress) / 2)} strokeWidth={2} />
+          )
         ))}
         <Circle cx={x(cur.t)} cy={y(cur.stress)} r={3.5} fill={stressColor(cur.stress)} />
         {hourLabels.map((h, i) => (
