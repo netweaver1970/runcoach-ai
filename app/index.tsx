@@ -429,9 +429,18 @@ export default function HomeScreen() {
           />
         </View>
 
-        {/* Training recommendation — only meaningful for today */}
+        {/* Training recommendation — only meaningful for today. Tapping opens the Strain
+            detail (same coach plan, fuller view). */}
         {isTodayView && (loadingRec || recommendation) && (
-          <TrainingRecommendationCard rec={recommendation} loading={loadingRec} strain={snapshot?.strain ?? null} />
+          <TrainingRecommendationCard
+            rec={recommendation}
+            loading={loadingRec}
+            strain={snapshot?.strain ?? null}
+            onPress={snapshot?.strain ? () => router.push({
+              pathname: '/strain-detail' as any,
+              params: { str: JSON.stringify(snapshot.strain), rec: recovery ? JSON.stringify(recovery) : undefined },
+            }) : undefined}
+          />
         )}
 
         {/* Training load (CTL/ATL/TSB) — as of the viewed day */}
@@ -695,7 +704,7 @@ const REC_COLORS: Record<string, string> = {
   Rest: '#6B7280', Easy: '#22C55E', Z2: '#22C55E', Tempo: '#F97316', LongRun: '#3B82F6', Intervals: '#EF4444',
 };
 
-function TrainingRecommendationCard({ rec, loading, strain }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null }) {
+function TrainingRecommendationCard({ rec, loading, strain, onPress }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null; onPress?: () => void }) {
   const recStyles = useThemedStyles(makeRecStyles);
   if (loading && !rec) {
     return (
@@ -711,7 +720,7 @@ function TrainingRecommendationCard({ rec, loading, strain }: { rec: TrainingRec
   const icon  = REC_ICONS[rec.type]  ?? '🏃';
 
   return (
-    <View style={[recStyles.card, { borderLeftColor: color }]}>
+    <TouchableOpacity style={[recStyles.card, { borderLeftColor: color }]} onPress={onPress} activeOpacity={0.85} disabled={!onPress}>
       <View style={recStyles.header}>
         <Text style={recStyles.icon}>{icon}</Text>
         <View style={{ flex: 1 }}>
@@ -720,7 +729,7 @@ function TrainingRecommendationCard({ rec, loading, strain }: { rec: TrainingRec
             <Text style={recStyles.meta}>{rec.duration}{rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}</Text>
           )}
         </View>
-        <Text style={recStyles.badge}>Today's plan</Text>
+        <Text style={recStyles.badge}>Today's plan{onPress ? ' ›' : ''}</Text>
       </View>
       <Text style={recStyles.reason}>{rec.reason}</Text>
       {strain && (
@@ -729,7 +738,7 @@ function TrainingRecommendationCard({ rec, loading, strain }: { rec: TrainingRec
           {rec.type !== 'Rest' && rec.zone && rec.zone !== '—' ? `  ·  ${rec.zone}` : ''}
         </Text>
       )}
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -797,11 +806,10 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
           })}
         </View>
       </View>
-      <Text style={tl.band}>
-        Cardio Load <Text style={{ color: cl.color, fontWeight: '800' }}>{Math.round(cl.load)}</Text>
-        {cl.ctl > 0 ? ` · sweet spot ${Math.round(cl.bandLo)}–${Math.round(cl.bandHi)}` : ''}
+      <Text style={tl.hint} numberOfLines={1}>
+        Load <Text style={{ color: cl.color, fontWeight: '800' }}>{Math.round(cl.load)}</Text>
+        {cl.ctl > 0 ? ` · sweet spot ${Math.round(cl.bandLo)}–${Math.round(cl.bandHi)}` : ''}  ›
       </Text>
-      <Text style={tl.hint}>{cl.hint}  ›</Text>
     </TouchableOpacity>
   );
 }
@@ -809,22 +817,21 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
 const makeTlStyles = (c: Palette) => StyleSheet.create({
   card: {
     marginHorizontal: 16, marginTop: 4, marginBottom: 4,
-    backgroundColor: c.surface, borderRadius: 12, padding: 14, gap: 10,
+    backgroundColor: c.surface, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, gap: 6,
     borderLeftWidth: 4, borderLeftColor: '#3B82F6',
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 15, fontWeight: '700', color: c.text },
+  title: { fontSize: 14, fontWeight: '700', color: c.text },
   statusPill: {
     fontSize: 11, fontWeight: '700', borderWidth: 1, borderRadius: 8,
     paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden',
   },
   metricsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  metric: { alignItems: 'center', minWidth: 54 },
-  metricVal: { fontSize: 22, fontWeight: '800' },
-  metricLbl: { fontSize: 11, color: c.textSub, marginTop: 1, fontWeight: '600' },
+  metric: { alignItems: 'center', minWidth: 50 },
+  metricVal: { fontSize: 19, fontWeight: '800' },
+  metricLbl: { fontSize: 10, color: c.textSub, marginTop: 1, fontWeight: '600' },
   metricSub: { fontSize: 9, color: c.textFaint, fontWeight: '600' },
-  band: { fontSize: 12, color: c.textSub, fontWeight: '600' },
-  hint: { fontSize: 12, color: c.textSub, lineHeight: 16 },
+  hint: { fontSize: 12, color: c.textSub },
 });
 
 const makeRecStyles = (c: Palette) => StyleSheet.create({
