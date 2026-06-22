@@ -145,6 +145,35 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
   };
 }
 
+// Fallback structured session when the LLM prescribes a run but omits the workout JSON.
+// Maps the intensity to an HR zone + the matching watt window from the athlete's zones.
+function synthesizeWorkout(
+  intensity: CoachIntensity, runMinutes: number, name: string,
+  pz?: CoachSnapshot['powerZones'],
+): WatchWorkout {
+  const zoneWatts: Record<string, [number?, number?]> = pz ? {
+    Z2: [pz.recoveryMax, pz.z2Max],
+    Z3: [pz.tempoMin, pz.tempoMax],
+    Z4: [pz.tempoMax, pz.intervalsMin],
+  } : {};
+  // Reserve ~6 min for the 600m warm-up + 600m cool-down; the rest is work.
+  const workBudget = Math.max(8, (runMinutes || 35) - 6);
+  let blocks: WatchWorkoutBlock[];
+  if (intensity === 'easy') {
+    const [lo, hi] = zoneWatts.Z2 ?? [];
+    blocks = [{ repeats: 1, workMinutes: Math.min(90, workBudget), restMinutes: 0, hrZone: 'Z2', powerLowWatts: lo, powerHighWatts: hi, label: 'aerobic' }];
+  } else if (intensity === 'hard') {
+    const [lo, hi] = zoneWatts.Z4 ?? [];
+    const reps = Math.max(4, Math.min(8, Math.round(workBudget / 5)));
+    blocks = [{ repeats: reps, workMinutes: 3, restMinutes: 2, hrZone: 'Z4', powerLowWatts: lo, powerHighWatts: hi, label: 'threshold' }];
+  } else { // moderate
+    const [lo, hi] = zoneWatts.Z3 ?? [];
+    const reps = Math.max(3, Math.min(6, Math.round(workBudget / 7)));
+    blocks = [{ repeats: reps, workMinutes: 5, restMinutes: 2, hrZone: 'Z3', powerLowWatts: lo, powerHighWatts: hi, label: 'tempo' }];
+  }
+  return { name, warmupMeters: 600, drillsMinutes: 4, blocks, cooldownMeters: 600 };
+}
+
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
   const knowledge = await buildKnowledgePrompt();
@@ -152,28 +181,34 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   const txt = await callLLM({
     system,
     messages: [{ role: 'user', content: JSON.stringify(snap) }],
-    maxTokens: 900,
+    maxTokens: 1200,
   });
   const match = txt.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Coach response was not JSON.');
   const o = JSON.parse(match[0]);
   const intensity: CoachIntensity =
     ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : 'easy';
+  const runMinutes = Math.max(0, Math.min(
+    snap.tofBudgetTodayMin ?? 999,
+    Math.round(Number(o.runMinutes)) || 0,
+  ));
+  // The LLM should design the workout; if it omitted one on a run day, synthesize a
+  // sensible structured session from the intensity + zones so the watch always has one.
+  const wkName = weekdayName(snap.date);
+  const workout = parseWorkout(o.workout, intensity, wkName)
+    ?? (intensity !== 'rest' ? synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones) : null);
   return {
     headline:   String(o.headline ?? 'Plan ready').slice(0, 120),
     session:    String(o.session ?? '').slice(0, 280),
     strength:   String(o.strength ?? '').slice(0, 240),
     intensity,
-    runMinutes: Math.max(0, Math.min(
-      snap.tofBudgetTodayMin ?? 999,
-      Math.round(Number(o.runMinutes)) || 0,
-    )),
+    runMinutes,
     // Target is the single advisable band (synced with the home ring) — not the LLM's own.
     strainLow:  clampScore(snap.advisableLow, 30),
     strainHigh: clampScore(snap.advisableHigh, 60),
     rationale:  String(o.rationale ?? '').slice(0, 400),
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
-    workout:    parseWorkout(o.workout, intensity, weekdayName(snap.date)),
+    workout,
     generatedAt: new Date().toISOString(),
   };
 }

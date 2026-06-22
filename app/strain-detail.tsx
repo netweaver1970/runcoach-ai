@@ -250,6 +250,9 @@ export default function StrainDetailScreen() {
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
+              {!plan.workout && plan.intensity === 'rest' && (
+                <Text style={s.workoutStep}>⌚ Rest day — no watch workout pushed.</Text>
+              )}
 
               <TouchableOpacity onPress={requestPlan} disabled={planLoading}>
                 <Text style={s.coachRefresh}>{planLoading ? 'Thinking…' : '↻ Regenerate'}</Text>
