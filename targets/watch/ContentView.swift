@@ -66,8 +66,10 @@ struct KPIRow: View {
       }
       Spacer(minLength: 0)
       if kpi.series.count > 1 {
+        let lineStyle = kpi.grad.map { LinearGradient(colors: $0.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom) }
+          ?? LinearGradient(colors: [color, color], startPoint: .top, endPoint: .bottom)
         Chart(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
-          LineMark(x: .value("i", i), y: .value("v", pt.v)).foregroundStyle(color).interpolationMethod(.monotone)
+          LineMark(x: .value("i", i), y: .value("v", pt.v)).foregroundStyle(lineStyle).interpolationMethod(.monotone)
         }
         .chartXAxis(.hidden).chartYAxis(.hidden)
         .frame(width: 52, height: 28)
@@ -89,12 +91,20 @@ struct KPIDetailView: View {
           Text(kpi.unit).font(.system(size: 16, weight: .semibold)).foregroundColor(.secondary)
         }
         if kpi.series.count > 1 {
+          let vals = kpi.series.map(\.v)
+          let fixed = ["stress", "battery", "recovery"].contains(kpi.key)
+          let lo = fixed ? 0 : (vals.min() ?? 0)
+          let hi = fixed ? 100 : (vals.max() ?? 1)
+          // Value-coloured line (Bevel-style): high→low ramp mapped to the y-axis.
+          let lineStyle = kpi.grad.map { LinearGradient(colors: $0.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom) }
+            ?? LinearGradient(colors: [color, color], startPoint: .top, endPoint: .bottom)
           Chart(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
             AreaMark(x: .value("i", i), y: .value("v", pt.v))
-              .foregroundStyle(LinearGradient(colors: [color.opacity(0.35), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+              .foregroundStyle(LinearGradient(colors: [color.opacity(0.30), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
             LineMark(x: .value("i", i), y: .value("v", pt.v))
-              .foregroundStyle(color).interpolationMethod(.monotone)
+              .foregroundStyle(lineStyle).interpolationMethod(.monotone)
           }
+          .chartYScale(domain: lo...(hi > lo ? hi : lo + 1))
           .chartXAxis(.hidden)
           .frame(height: 110)
           if let lo = kpi.series.map(\.v).min(), let hi = kpi.series.map(\.v).max() {

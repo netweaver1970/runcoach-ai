@@ -39,7 +39,13 @@ const stressColor  = (v: number) => (v >= 70 ? '#EF4444' : v >= 40 ? '#F59E0B' :
 const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + 'T12:00:00' : d);
 
-interface OutKPI { key: string; label: string; unit: string; value: number; color: string; series: { t: number; v: number }[] }
+interface OutKPI { key: string; label: string; unit: string; value: number; color: string; grad?: string[]; series: { t: number; v: number }[] }
+
+// Per-KPI colour ramp for the watch graph, ordered TOP→BOTTOM (high value → low value).
+// Bevel-style: green = good, red = bad — direction depends on whether high is good or bad.
+const HIGH_BAD  = ['#EF4444', '#F59E0B', '#22C55E']; // high = red (stress, resting HR)
+const HIGH_GOOD = ['#22C55E', '#F59E0B', '#EF4444']; // high = green (battery, HRV, VO₂)
+const GRAD: Record<string, string[]> = { stress: HIGH_BAD, rhr: HIGH_BAD, battery: HIGH_GOOD, hrv: HIGH_GOOD, vo2: HIGH_GOOD };
 
 // Keep series small + clean for WatchConnectivity: drop bad/NaN timestamps (one bad point
 // blows up the chart's x-domain → an empty-looking graph), sort by time, and downsample to
@@ -82,6 +88,7 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
       if (vo2.length) kpis.push({ key: 'vo2', label: 'VO₂ Max', unit: '', value: vo2.at(-1)!.value, color: '#2DD4BF', series: prep(vo2.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
     }
     if (!kpis.length) return false;
+    for (const k of kpis) if (GRAD[k.key] && k.series.length > 1) k.grad = GRAD[k.key];
 
     // Put the selected KPI first so it's the landing page on the watch.
     const sel = kpis.some(k => k.key === selected) ? selected : kpis[0].key;

@@ -11,6 +11,7 @@ struct KPI: Codable, Identifiable, Hashable {
   let unit: String
   let value: Double
   let color: String          // "#RRGGBB"
+  let grad: [String]?        // optional top→bottom colour ramp for the graph
   let series: [KPIPoint]
 }
 struct KPIPayload: Codable {
