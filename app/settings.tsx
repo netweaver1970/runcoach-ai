@@ -26,6 +26,7 @@ import {
 } from '../src/services/llm';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun } from '../src/services/zones';
+import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
 import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
 import * as FileSystem from 'expo-file-system';
@@ -80,6 +81,8 @@ export default function SettingsScreen() {
   const [dayViewAuto, setDayViewAuto] = useState(true);
   const [preparing, setPreparing] = useState(false);
   const [activeCat, setActiveCat] = useState<string | null>(null);
+  const [watchKPI, setWatchKPIState] = useState('stress');
+  useEffect(() => { getWatchKPI().then(setWatchKPIState); }, []);
 
   useEffect(() => {
     loadLLMConfig().then(cfg => {
@@ -487,6 +490,28 @@ export default function SettingsScreen() {
           >
             <Text style={styles.btnText}>{preparing ? 'Preparing…' : 'Prepare today’s view now'}</Text>
           </TouchableOpacity>
+        </Section>
+
+        {/* Watch complication */}
+        <Section title="Watch Complication" cat="automation">
+          <Text style={styles.hint}>
+            Which KPI shows on your Apple Watch face. Tap the complication to open the watch app and
+            swipe between all KPIs. {watchSyncAvailable() ? 'Data syncs whenever the iPhone app refreshes.' : 'Install the watch app to use this.'}
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {WATCH_KPIS.map(k => {
+              const active = watchKPI === k.key;
+              return (
+                <TouchableOpacity
+                  key={k.key}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => { setWatchKPIState(k.key); setWatchKPI(k.key); }}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{k.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </Section>
 
         {/* Weekly coach */}

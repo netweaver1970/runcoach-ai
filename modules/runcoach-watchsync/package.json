@@ -1,0 +1,7 @@
+{
+  "name": "runcoach-watchsync",
+  "version": "0.1.0",
+  "description": "Push KPI data to the RunCoach watchOS app via WatchConnectivity.",
+  "main": "index.ts",
+  "private": true
+}

@@ -33,6 +33,7 @@ import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, pl
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
+import { syncWatch } from '../src/services/watchSync';
 
 const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 
@@ -170,7 +171,8 @@ export default function HomeScreen() {
       ]);
       setSnapshot(snap);
       saveSnapshotCache(snap).catch(() => {});
-      computeBodyBattery().then(setBodyBattery).catch(() => {}); // non-blocking
+      // Body Battery (non-blocking) → also push KPIs to the watch with what we just computed.
+      computeBodyBattery().then(bb => { setBodyBattery(bb); syncWatch(bb, snap).catch(() => {}); }).catch(() => {});
       // Only a FULL scan marks this version as fully scanned (so light starts stay light).
       if (!light) SecureStore.setItemAsync(SCAN_MARKER_KEY, SCAN_MARKER).catch(() => {});
       setHasApiKey(!!key);
