@@ -10,6 +10,7 @@ import { callLLM } from './llm';
 import { buildKnowledgePrompt } from './coachFiles';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from './healthkit';
 import { getLocalWeather } from './weather';
+import { getPowerZones } from './claude';
 import { DayStrain } from '../types';
 
 export interface CoachSnapshot {
@@ -35,6 +36,8 @@ export interface CoachSnapshot {
     tempC: number; apparentC: number; humidity: number; windKmh: number;
     description: string; place?: string;
   };
+  // Running-power zones (watts) so the watch workout can target POWER, not pace.
+  powerZones?: { recoveryMax: number; z2Max: number; tempoMin: number; tempoMax: number; intervalsMin: number };
 }
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
@@ -45,12 +48,12 @@ export interface WatchWorkoutBlock {
   repeats:     number;          // how many work+recovery reps
   workMinutes: number;          // work-interval duration
   restMinutes: number;          // recovery duration (0 = continuous)
-  paceLowSecPerKm?:  number;    // target pace window (faster bound, sec/km)
-  paceHighSecPerKm?: number;    // slower bound, sec/km
-  label?:      string;          // e.g. "5K effort"
+  powerLowWatts?:  number;      // target running-power window (lower bound, watts)
+  powerHighWatts?: number;      // upper bound, watts
+  label?:      string;          // e.g. "tempo", "VO2"
 }
 export interface WatchWorkout {
-  name:          string;        // always overwrite the same-named workout, e.g. "Day"
+  name:          string;        // weekday slot, e.g. "Mon" — overwrites that day's workout
   warmupMeters:  number;        // always 600
   drillsMinutes: number;        // small drills block after warmup (0 to skip)
   blocks:        WatchWorkoutBlock[];
@@ -88,14 +91,15 @@ Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all th
 WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
 "workout" object for the Apple Watch that pushes today's strain to the UPPER end of the target band \
 (near strainHigh): a 600m warmup, a short drills block (drillsMinutes, ~3–5 min, 0 to skip), one or more \
-work blocks (reps × workMinutes at a target pace, with restMinutes recovery), and a 600m cooldown. Choose \
-reps/durations/paces so total running stays ≤ tofBudgetTodayMin yet reaches the upper band. Give pace as a \
-range in SECONDS PER KM (paceLowSecPerKm = faster bound, paceHighSecPerKm = slower); omit pace if unsure. \
-If intensity is "rest", set workout to null (no watch workout).`;
+work blocks (reps × workMinutes at a target POWER, with restMinutes recovery), and a 600m cooldown. Choose \
+reps/durations/power so total running stays ≤ tofBudgetTodayMin yet reaches the upper band. Target POWER (not \
+pace) in WATTS using the athlete's powerZones: easy/recovery ≤ recoveryMax, aerobic ≤ z2Max, tempo \
+tempoMin–tempoMax, intervals ≥ intervalsMin. Give powerLowWatts/powerHighWatts per block (omit if no \
+powerZones provided). If intensity is "rest", set workout to null (no watch workout).`;
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
 {"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string,\
-"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"paceLowSecPerKm":number,"paceHighSecPerKm":number,"label":string}],"cooldownMeters":600}}. \
+"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"powerLowWatts":number,"powerHighWatts":number,"label":string}],"cooldownMeters":600}}. \
 Be concise and skimmable — no filler. headline ≤ 7 words (the outlook); session ≤ 25 words \
 (type, run minutes, run/walk or alternation if relevant); runMinutes = prescribed running time-on-feet \
 (≤ tofBudgetTodayMin); strength ≤ 22 words (just the named exercises × sets/reps); rationale ≤ 22 words \
@@ -108,21 +112,28 @@ function clampScore(n: any, fallback: number): number {
 
 const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
 
+// Short weekday slot name for the day (e.g. "Mon") — workouts are grouped/overwritten by it.
+function weekdayName(dateKey?: string): string {
+  const d = dateKey ? new Date(dateKey + 'T00:00:00') : new Date();
+  return d.toLocaleDateString('en-US', { weekday: 'short' });
+}
+
 // Validate/clamp the LLM's workout into a safe WatchWorkout (or null on rest/garbage).
-function parseWorkout(o: any, intensity: CoachIntensity): WatchWorkout | null {
+function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWorkout | null {
   if (intensity === 'rest' || !o || typeof o !== 'object') return null;
   const rawBlocks = Array.isArray(o.blocks) ? o.blocks : [];
+  const watts = (v: any) => { const n = num(v); return n != null ? Math.max(50, Math.min(700, Math.round(n))) : undefined; };
   const blocks: WatchWorkoutBlock[] = rawBlocks.slice(0, 8).map((b: any) => ({
     repeats:     Math.max(1, Math.min(30, Math.round(num(b?.repeats) ?? 1))),
     workMinutes: Math.max(0.5, Math.min(120, num(b?.workMinutes) ?? 5)),
     restMinutes: Math.max(0, Math.min(30, num(b?.restMinutes) ?? 0)),
-    paceLowSecPerKm:  num(b?.paceLowSecPerKm),
-    paceHighSecPerKm: num(b?.paceHighSecPerKm),
+    powerLowWatts:  watts(b?.powerLowWatts),
+    powerHighWatts: watts(b?.powerHighWatts),
     label: b?.label ? String(b.label).slice(0, 40) : undefined,
   })).filter((b: WatchWorkoutBlock) => b.workMinutes > 0);
   if (blocks.length === 0) return null;
   return {
-    name: 'Day',
+    name,
     warmupMeters:  600,
     drillsMinutes: Math.max(0, Math.min(20, num(o.drillsMinutes) ?? 4)),
     blocks,
@@ -157,7 +168,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     strainHigh: clampScore(snap.advisableHigh, 60),
     rationale:  String(o.rationale ?? '').slice(0, 400),
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
-    workout:    parseWorkout(o.workout, intensity),
+    workout:    parseWorkout(o.workout, intensity, weekdayName(snap.date)),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -213,10 +224,11 @@ export function computeTimeOnFeetPlan(
  * the on-demand plan and the auto-prepared plan are identical.
  */
 export async function assembleCoachSnapshot(strain: DayStrain | null): Promise<CoachSnapshot> {
-  const [comps, dur, weather] = await Promise.all([
+  const [comps, dur, weather, powerZones] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
     getLocalWeather().catch(() => null),
+    getPowerZones().catch(() => undefined),
   ]);
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};
@@ -253,6 +265,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null): Promise<C
       tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
       windKmh: weather.windKmh, description: weather.description, place: weather.place,
     } : undefined,
+    powerZones,
   };
 }
 

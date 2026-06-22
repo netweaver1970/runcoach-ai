@@ -10,8 +10,12 @@ interface Native {
   isSupported(): Promise<boolean>;
   authorize(): Promise<string>;
   pushDailyWorkout(specJson: string): Promise<boolean>;
-  clearDailyWorkout(): Promise<boolean>;
+  clearDailyWorkout(name: string): Promise<boolean>;
 }
+
+/** Short weekday slot name (e.g. "Mon") for a date — workouts are grouped/overwritten by it. */
+export const weekdaySlot = (date?: Date): string =>
+  (date ?? new Date()).toLocaleDateString('en-US', { weekday: 'short' });
 
 let mod: Native | null = null;
 try { mod = requireNativeModule('RunCoachWorkout'); } catch { mod = null; }
@@ -37,8 +41,8 @@ export async function pushWorkoutToWatch(w: WatchWorkout): Promise<boolean> {
   } catch { return false; }
 }
 
-/** Remove the scheduled "Day" workout (e.g. on a rest day). */
-export async function clearWatchWorkout(): Promise<boolean> {
+/** Remove the named weekday-slot workout (e.g. on a rest day). Defaults to today. */
+export async function clearWatchWorkout(name: string = weekdaySlot()): Promise<boolean> {
   if (!mod) return false;
-  try { return await mod.clearDailyWorkout(); } catch { return false; }
+  try { return await mod.clearDailyWorkout(name); } catch { return false; }
 }

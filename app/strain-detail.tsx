@@ -14,11 +14,7 @@ import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/wea
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { pushWorkoutToWatch, watchModuleAvailable } from '../src/services/watchWorkout';
-
-const fmtPace = (secPerKm: number) => {
-  const m = Math.floor(secPerKm / 60), s = Math.round(secPerKm % 60);
-  return `${m}:${String(s).padStart(2, '0')}`;
-};
+import { getPowerZones } from '../src/services/claude';
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -42,6 +38,9 @@ export default function StrainDetailScreen() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [watchSending, setWatchSending] = useState(false);
   const [watchMsg, setWatchMsg] = useState<string | null>(null);
+
+  const [powerZones, setPowerZones] = useState<any>(undefined);
+  useEffect(() => { getPowerZones().then(setPowerZones).catch(() => {}); }, []);
 
   const sendToWatch = async () => {
     if (!plan?.workout) return;
@@ -130,6 +129,7 @@ export default function StrainDetailScreen() {
         tofBudgetTodayMin: tof?.budgetTodayMin,
         yesterdayTofMin:   tof?.yesterdayMin,
         yesterdayStrain:   strainHistUpTo.length >= 2 ? strainHistUpTo[strainHistUpTo.length - 2] : undefined,
+        powerZones,
         // Live weather only makes sense for today; past days had different conditions.
         weather: (targetIsToday && weather) ? {
           tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
@@ -238,7 +238,7 @@ export default function StrainDetailScreen() {
                   {plan.workout.blocks.map((b, idx) => (
                     <Text key={idx} style={s.workoutStep}>
                       {plan.workout!.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
-                      {b.paceLowSecPerKm && b.paceHighSecPerKm ? ` @ ${fmtPace(b.paceLowSecPerKm)}–${fmtPace(b.paceHighSecPerKm)}/km` : ''}
+                      {b.powerLowWatts && b.powerHighWatts ? ` @ ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
                       {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){b.label ? ` · ${b.label}` : ''}
                     </Text>
                   ))}

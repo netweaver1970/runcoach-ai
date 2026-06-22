@@ -4,7 +4,7 @@ export interface RunCoachWorkoutNative {
   isSupported(): Promise<boolean>;
   authorize(): Promise<string>;
   pushDailyWorkout(specJson: string): Promise<boolean>;
-  clearDailyWorkout(): Promise<boolean>;
+  clearDailyWorkout(name: string): Promise<boolean>;
 }
 
 // Resolves to null if the native module isn't built into this binary.
