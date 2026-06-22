@@ -803,7 +803,7 @@ export async function getTrainingRecommendation(
   ].filter(Boolean).join('\n');
 
   const systemPrompt = `You are an expert running coach planning the athlete's session for TODAY. Output ONLY valid JSON — no markdown, no prose:
-{"type":"Rest|Easy|Z2|Tempo|LongRun|Intervals","duration":"e.g. 45 min","zone":"e.g. Z1-2 or —","reason":"2-3 sentences citing the specific data that drove the call"}
+{"type":"Rest|Easy|Z2|Tempo|LongRun|Intervals","duration":"e.g. 45 min","zone":"e.g. Z1-2 or —","reason":"≤30 words, concise: the call, where strain sits vs the band, and the 1-2 signals that drove it"}
 
 Coaching method — weigh ALL of these like a real coach:
 • RECOVERY: low recovery / HRV well below baseline / poor sleep → easier or rest.

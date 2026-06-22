@@ -51,8 +51,10 @@ export async function getLocalWeather(): Promise<WeatherNow | null> {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') return null;
 
-    const pos = await Location.getLastKnownPositionAsync()
-      ?? await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    // Use a last-known fix ONLY if it's recent (<10 min) — otherwise it can serve a
+    // stale location from a previous city. Fall back to a fresh GPS fix.
+    let pos = await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 });
+    if (!pos) pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
     if (!pos) return null;
 
     const { latitude, longitude } = pos.coords;

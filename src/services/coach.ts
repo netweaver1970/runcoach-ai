@@ -68,9 +68,10 @@ Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all th
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
 {"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string}. \
-headline ≤ 12 words (the outlook); session ≤ 55 words (type, run minutes, how it respects the target band, cap, alternation & weather); \
-runMinutes = prescribed running time-on-feet (≤ tofBudgetTodayMin); strength ≤ 40 words (specific exercises/drills); \
-rationale ≤ 45 words (reference the target band, cap, alternation and weather); cautions ≤ 25 words ("" if none).`;
+Be concise and skimmable — no filler. headline ≤ 7 words (the outlook); session ≤ 25 words \
+(type, run minutes, run/walk or alternation if relevant); runMinutes = prescribed running time-on-feet \
+(≤ tofBudgetTodayMin); strength ≤ 22 words (just the named exercises × sets/reps); rationale ≤ 22 words \
+(the 1–2 signals that drove it); cautions ≤ 12 words ("" if none).`;
 
 function clampScore(n: any, fallback: number): number {
   const v = Number(n);
