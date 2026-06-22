@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
   SafeAreaView, StyleSheet, Share, Alert,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
@@ -41,7 +41,9 @@ export default function BevelAnalysisScreen() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []);
+  // Reload every time the screen regains focus (e.g. returning from Import) so the
+  // comparison + export always reflect just-imported days.
+  useFocusEffect(useCallback(() => { load(); }, []));
 
   const exportData = async () => {
     try {

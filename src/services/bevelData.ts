@@ -70,11 +70,9 @@ export async function loadBevelData(): Promise<Record<string, BevelDay>> {
     const info = await FileSystem.getInfoAsync(FILE);
     if (!info.exists) return {};
     const all = JSON.parse(await FileSystem.readAsStringAsync(FILE)) as Record<string, BevelDay>;
-    // Auto-correct any dropped-decimal biometrics (e.g. an old corrupt import) and
-    // persist the fix once.
-    let changed = false;
-    for (const k of Object.keys(all)) if (sanitizeDay(all[k])) changed = true;
-    if (changed) write(all).catch(() => {});
+    // Auto-correct dropped-decimal biometrics on read only (idempotent). NOT persisted
+    // here — a write-back from a stale load could clobber a concurrent save.
+    for (const k of Object.keys(all)) sanitizeDay(all[k]);
     return all;
   } catch {
     return {};
