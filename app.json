@@ -14,6 +14,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.netweaver1970.runcoachai",
+      "appleTeamId": "DF5WZ9PTMP",
       "infoPlist": {
         "NSHealthShareUsageDescription": "RunCoach AI reads your running workouts, heart rate, VO2 max, HRV, and sleep data to provide personalised coaching advice.",
         "NSHealthUpdateUsageDescription": "RunCoach AI does not write to Apple Health.",

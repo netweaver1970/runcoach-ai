@@ -1,0 +1,17 @@
+diff --git a/node_modules/@bacons/apple-targets/build/config-plugin.js b/node_modules/@bacons/apple-targets/build/config-plugin.js
+index 1111111..2222222 100644
+--- a/node_modules/@bacons/apple-targets/build/config-plugin.js
++++ b/node_modules/@bacons/apple-targets/build/config-plugin.js
+@@ -30,6 +30,12 @@
+         cwd: projectRoot,
+         absolute: true,
+     });
++    // RunCoach patch: process the watchOS app ("watch") BEFORE its extensions
++    // ("watch-widget") so the complication embeds in the watch app, not the main iOS app.
++    targets.sort((a, b) => {
++        const r = (p) => { try { const c = require(p); const t = typeof c === "function" ? "" : c.type; return t === "watch" ? 0 : 1; } catch (e) { return 1; } };
++        return r(a) - r(b);
++    });
+     targets.forEach((configPath) => {
+         const targetConfig = require(configPath);
+         let evaluatedTargetConfigObject = targetConfig;
