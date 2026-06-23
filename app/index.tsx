@@ -422,8 +422,8 @@ export default function HomeScreen() {
     const min = Math.round(todaysRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60);
     const km  = todaysRuns.reduce((s, r) => s + r.distance, 0) / 1000;
     const str = snapshot?.strain ?? null;
-    const topUp = (str && str.real < str.safeLow)
-      ? `Still ${str.safeLow - str.real} pts under your ${str.safeLow}–${str.safeHigh}% target — room for more. Add an easy walk or indoor cycle to top up.`
+    const topUp = (str && str.real < str.safeHigh)
+      ? `At ${str.real}% — room to your ${str.safeHigh}% ceiling. Add an easy walk or indoor cycle to push toward the top of the band.`
       : null;
     return { done: true, min, km, topUp };
   })();
@@ -787,7 +787,7 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
   const typeNm = rec.type === 'LongRun' ? 'Long Run' : rec.type;
   const color  = done ? '#22C55E' : (REC_COLORS[rec.type] ?? '#FF6B35');
   const icon   = done ? '✅' : (REC_ICONS[rec.type] ?? '🏃');
-  const metBand = !!strain && strain.real >= strain.safeLow;
+  const metBand = !!strain && strain.real >= strain.safeHigh;
 
   return (
     <TouchableOpacity style={[recStyles.card, { borderLeftColor: color }, done && recStyles.cardDone]} onPress={onPress} activeOpacity={0.85} disabled={!onPress}>
@@ -816,7 +816,7 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
         <Text style={recStyles.reason}>
           {done
             ? (metBand
-                ? `Prescribed session done — you're at ${strain!.real}%, inside your ${strain!.safeLow}–${strain!.safeHigh}% target. Nicely done.`
+                ? `Prescribed session done — you're at ${strain!.real}%, at the top of your ${strain!.safeLow}–${strain!.safeHigh}% band. Nicely done.`
                 : 'Prescribed session done. ✓')
             : rec.reason}
         </Text>
