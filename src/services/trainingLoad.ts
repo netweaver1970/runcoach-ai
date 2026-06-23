@@ -251,8 +251,10 @@ export function ctlRamp(series: DailyLoad[]): number {
 // ─── Sleep Bank & dynamic Sleep Needed (Bevel-style) ──────────────────────────
 
 // Sleep Needed = base goal + strain tax + debt repayment + efficiency padding.
-const STRAIN_SLEEP_MIN  = 0.7;  // minutes of extra sleep need per strain point…
-const STRAIN_SLEEP_CAP  = 45;   // …capped
+// Sleep need = fixed/age goal + cumulative sleep DEBT + EFFICIENCY padding (the standard model);
+// the training-strain → extra-need term is kept SMALL (evidence for it is modest).
+const STRAIN_SLEEP_MIN  = 0.3;  // minutes of extra sleep need per strain point…
+const STRAIN_SLEEP_CAP  = 20;   // …capped (was 0.7 / 45 — too heavy)
 const DEBT_RECOVERY_DAYS = 4;   // pay down accumulated debt over ~4 nights
 const EFF_PAD_CAP        = 15;   // max minutes added for low sleep efficiency
 
@@ -358,6 +360,17 @@ export function computeStrainTrimp(
 const STRAIN_LOG_A = 45;
 const STRAIN_LOG_B = 0.02;
 
+// Self-normalizing strain: today's load as a PERCENTILE of the athlete's OWN ~90-day daily-TRIMP
+// distribution (research-aligned — compare to your own history, not a fixed Bevel-fit curve). A
+// median day → ~50%, a hard session → ~85%, a rest day → low single digits. Falls back to the log
+// scale until there's enough history.
+export function strainPercentile(trimp: number, history: number[]): number {
+  const h = history.filter((x) => Number.isFinite(x) && x >= 0);
+  if (h.length < 14) return strainFromTrimp(trimp);
+  const below = h.reduce((c, x) => c + (x <= trimp ? 1 : 0), 0);
+  return Math.round((100 * below) / h.length);
+}
+
 export function strainFromTrimp(trimp: number): number {
   if (trimp <= 0) return 0;
   return Math.max(0, Math.round(STRAIN_LOG_A * Math.log(1 + STRAIN_LOG_B * trimp)));
@@ -416,21 +429,36 @@ export function computeDayStrain(
   activityFloor = 0,
   range?: AdvisableRange,
   heatFactor = 1,
+  trimpHistory: number[] = [], // ~90 days of daily TRIMP → percentile scale + ACWR band
+  ctl = 0,                     // chronic load (the maintainable daily load) → anchors the band
 ): DayStrain {
   // Cardio (logged-workout HR) vs daily-activity floor — take the larger, then add
   // any muscular load. The floor lifts rest/unlogged-activity days without inflating
-  // days whose logged-workout cardio already dominates.
+  // days whose logged-workout cardio already dominates. Heat inflates the effective load.
   const base  = Math.max(Math.max(0, cardioTrimp), Math.max(0, activityFloor));
   const trimp = base + Math.max(0, muscularLoad);
-  // Heat inflates the day's strain (a given effort costs more in the heat) — Bevel-style.
-  const real  = Math.min(100, Math.round(strainFromTrimp(trimp) * heatFactor));
-
-  // Prefer the multi-factor advisable range (recovery + sleep + form + ACWR). Fall
-  // back to the recovery-only band if no readiness inputs were supplied.
+  const effTrimp = trimp * heatFactor;
   const r = range ?? advisableStrainRange({ recovery: recovery > 0 ? recovery : undefined, tsb });
 
+  // Percentile scale (self-normalizing) + ACWR-anchored band when we have history + CTL; otherwise
+  // fall back to the calibrated log scale + the readiness-mapped band.
+  const usePct = trimpHistory.filter((x) => x >= 0).length >= 14 && ctl > 0;
+  let real: number, safeLow: number, safeHigh: number, safeMid: number;
+  if (usePct) {
+    real = strainPercentile(effTrimp, trimpHistory);
+    // Maintainable daily load ≈ CTL; scale it by readiness (poor recovery → less), then the ACWR
+    // sweet-spot 0.8–1.3 around it gives the band — all expressed as percentiles of your history.
+    const target = ctl * (0.85 + (r.readiness / 100) * 0.5); // readiness 0→0.85·CTL, 100→1.35·CTL
+    safeLow  = strainPercentile(target * 0.8, trimpHistory);
+    safeHigh = strainPercentile(target * 1.3, trimpHistory);
+    safeMid  = strainPercentile(target, trimpHistory);
+  } else {
+    real = Math.min(100, Math.round(strainFromTrimp(trimp) * heatFactor));
+    safeLow = r.safeLow; safeHigh = r.safeHigh; safeMid = r.safeMid;
+  }
+
   return {
-    real, safeLow: r.safeLow, safeHigh: r.safeHigh, safeMid: r.safeMid,
+    real, safeLow, safeHigh, safeMid,
     trimp: Math.round(trimp),
     cardio: Math.round(cardioTrimp),
     muscular: Math.round(muscularLoad),

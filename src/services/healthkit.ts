@@ -609,9 +609,10 @@ function absoluteRHRScore(hr: number): number {
   return Math.min(95, Math.max(5, 190 - hr * 2.1));
 }
 
-// Calibration vs Bevel: our raw recovery scores averaged ~68 over a 30-day window
-// while Bevel read 55 for the same days, so shift the distribution down to match.
-const RECOVERY_CAL_OFFSET = -13;
+// Recovery z-score scaling: a reading 1 SD above your baseline shifts the score this much.
+// HRV weighted over RHR. (No Bevel offset — the index is self-normalizing to YOUR baseline.)
+const RECOVERY_Z_SCALE = 22;
+const RECOVERY_HRV_W   = 0.65;
 
 function computeRecoveryScore(
   todayRMSSD: number,
@@ -620,58 +621,53 @@ function computeRecoveryScore(
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number } {
   const recent = history.slice(-30).filter((n) => n.weightedRMSSD > 0);
 
-  // ── HRV component ──────────────────────────────────────────────────────────
-  // We blend absolute-population score with z-score vs personal baseline.
-  // • Day 0:  100 % absolute → healthy RMSSD immediately gives a fair score.
-  // • Day 7+:  60 % absolute + 40 % z-score → personal trend matters more.
-  const absHRV = absoluteHRVScore(todayRMSSD);
-
-  let mean   = todayRMSSD;
-  let stddev = 1;
-  let zHRV   = absHRV; // default to absolute when no history
-
-  if (recent.length >= 2) {
-    const values = recent.map((n) => n.weightedRMSSD);
-    mean   = values.reduce((a, b) => a + b, 0) / values.length;
-    stddev = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length) || 1;
-    const z = (todayRMSSD - mean) / stddev;
-    zHRV    = Math.min(100, Math.max(0, 50 + z * 25));
+  const clamp01 = (v: number) => Math.min(100, Math.max(0, v));
+  // ── HRV component: lnRMSSD vs a 7-day personal baseline (research standard) ────
+  // RMSSD is log-normally distributed, so we z-score the NATURAL LOG (Plews et al.;
+  // HRV4Training / Kubios). Score = 50 + z·SCALE. The population anchor only eases the
+  // first week in, then it's pure personal z — no permanent blend, no Bevel offset.
+  const ln = (x: number) => Math.log(Math.max(1, x));
+  const recent7 = recent.slice(-7);
+  let blendedHRV = absoluteHRVScore(todayRMSSD); // cold-start fallback
+  if (recent7.length >= 3) {
+    const lv = recent7.map((n) => ln(n.weightedRMSSD));
+    const m  = lv.reduce((a, b) => a + b, 0) / lv.length;
+    const sd = Math.sqrt(lv.reduce((a, b) => a + (b - m) ** 2, 0) / lv.length) || 0.1;
+    const zHRVscore = clamp01(50 + ((ln(todayRMSSD) - m) / sd) * RECOVERY_Z_SCALE);
+    const w = Math.min(1, recent7.length / 7); // ease in from the anchor over the first week
+    blendedHRV = (1 - w) * absoluteHRVScore(todayRMSSD) + w * zHRVscore;
   }
 
-  const hrvBlend   = Math.min(1, recent.length / 7); // 0 → 1 over first 7 days
-  const blendedHRV = (1 - 0.4 * hrvBlend) * absHRV + 0.4 * hrvBlend * zHRV;
-
-  // ── Overnight-HR component ─────────────────────────────────────────────────
-  const recentWithHR = recent.filter((n) => n.overnightHR > 0);
+  // ── Overnight-HR component: z-score vs a 7-day baseline (lower HR = better) ────
+  const recentWithHR = recent.filter((n) => n.overnightHR > 0).slice(-7);
   let overnightHRBaseline = todayOvernightHR;
   let blendedRHR = todayOvernightHR > 0 ? absoluteRHRScore(todayOvernightHR) : 50;
-
   if (recentWithHR.length >= 3 && todayOvernightHR > 0) {
-    const hrValues = recentWithHR.map((n) => n.overnightHR);
-    const hrMean   = hrValues.reduce((a, b) => a + b, 0) / hrValues.length;
-    const hrStddev = Math.sqrt(hrValues.reduce((a, b) => a + (b - hrMean) ** 2, 0) / hrValues.length) || 1;
+    const hv = recentWithHR.map((n) => n.overnightHR);
+    const hrMean   = hv.reduce((a, b) => a + b, 0) / hv.length;
+    const hrStddev = Math.sqrt(hv.reduce((a, b) => a + (b - hrMean) ** 2, 0) / hv.length) || 1;
     overnightHRBaseline = Math.round(hrMean);
-    const hrZ      = (todayOvernightHR - hrMean) / hrStddev;
-    const zRHR     = Math.min(100, Math.max(0, 50 - hrZ * 25));
-    const hrBlend  = Math.min(1, recentWithHR.length / 7);
-    blendedRHR = (1 - 0.4 * hrBlend) * absoluteRHRScore(todayOvernightHR) + 0.4 * hrBlend * zRHR;
+    const zRHRscore = clamp01(50 - ((todayOvernightHR - hrMean) / hrStddev) * RECOVERY_Z_SCALE);
+    const w = Math.min(1, recentWithHR.length / 7);
+    blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * zRHRscore;
   }
 
-  // ── Final score ────────────────────────────────────────────────────────────
+  // ── Final score: HRV-weighted, self-normalizing (no Bevel offset) ─────────────
   const useRHR = todayOvernightHR > 0;
-  const rawScore = useRHR ? 0.65 * blendedHRV + 0.35 * blendedRHR : blendedHRV;
-  const score    = Math.round(Math.min(100, Math.max(0, rawScore + RECOVERY_CAL_OFFSET)));
+  const rawScore = useRHR ? RECOVERY_HRV_W * blendedHRV + (1 - RECOVERY_HRV_W) * blendedRHR : blendedHRV;
+  const score    = Math.round(clamp01(rawScore));
 
-  // ── Trend (vs 7-day rolling average) ──────────────────────────────────────
+  // ── Baseline + trend (raw RMSSD, for display) ─────────────────────────────
+  const rmssdVals = recent.map((n) => n.weightedRMSSD);
+  const rmssdMean = rmssdVals.length ? rmssdVals.reduce((a, b) => a + b, 0) / rmssdVals.length : todayRMSSD;
+  const rmssdSd   = rmssdVals.length ? Math.sqrt(rmssdVals.reduce((a, b) => a + (b - rmssdMean) ** 2, 0) / rmssdVals.length) || 1 : 1;
   const last7 = recent.slice(-7);
-  const avg7  = last7.length > 0
-    ? last7.reduce((a, b) => a + b.weightedRMSSD, 0) / last7.length
-    : todayRMSSD;
+  const avg7  = last7.length > 0 ? last7.reduce((a, b) => a + b.weightedRMSSD, 0) / last7.length : todayRMSSD;
   const delta = todayRMSSD - avg7;
   const trend: DailyRecovery['trend'] =
-    delta > stddev * 0.3 ? 'rising' : delta < -stddev * 0.3 ? 'falling' : 'stable';
+    delta > rmssdSd * 0.3 ? 'rising' : delta < -rmssdSd * 0.3 ? 'falling' : 'stable';
 
-  return { score, baseline: Math.round(mean * 10) / 10, trend, overnightHRBaseline };
+  return { score, baseline: Math.round(rmssdMean * 10) / 10, trend, overnightHRBaseline };
 }
 
 // Bevel-aligned bands: Optimal >67 / Normal 34-67 / Poor <34.
@@ -1533,8 +1529,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
+  // Percentile strain + ACWR band need the daily-TRIMP distribution + chronic load (CTL).
+  const trimpHistory = [...loadByDay.values()];
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable, heatFactor)
+    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable, heatFactor, trimpHistory, latestLoad?.ctl ?? 0)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
