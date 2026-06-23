@@ -1,111 +1,86 @@
 #!/usr/bin/env node
-// Offline Body-Battery calibration harness. Reads /tmp/bbdata.json (device "Copy
-// calibration data"). Re-derives HRV trust + replays stress/battery so constants tune in
-// seconds. Edit CFG, re-run: node scripts/bbtune.mjs
+// Offline stress / Body-Battery calibration harness. Mirrors bodyBattery.ts:
+//   • STRESS = z-score index vs the athlete's OWN day/night baselines (mean+SD of HRV & resting HR
+//     from trusted reads, split by sleep state): stress = STRESS_BASE + (zHR − zHRV)·STRESS_SCALE,
+//     clamped 0..100. Night adds the sleep-stage bump (REM up, deep at the recovery floor).
+//   • BATTERY = recovery-capped overnight charge (HRV-ratio ceiling) + stress-driven daytime drain.
+// Reads /tmp/bbdata.json (device "Copy calibration data"). Env-override any CFG, re-run:
+//   STRESS_SCALE=15 STAGE_REM=18 node scripts/bbtune.mjs   (zsh: use prefix assignments, not `env $cfg`)
 import fs from 'node:fs';
 const d = JSON.parse(fs.readFileSync(process.argv.find(a => a.endsWith('.json')) || '/tmp/bbdata.json', 'utf8'));
-const { restHR, maxHR, hrvBaseline, now } = d.meta;
+const { restHR, hrvBaseline } = d.meta;
+const env = (k, def) => (process.env[k] != null ? +process.env[k] : def);
 
 const CFG = {
-  // HRV trust (rrgap is NO LONGER a hard reject — stable, moderate HR is the arbiter):
-  V_MIN: 5, V_MAX: 110, HR_HIGH: 20, CV_MAX: 18,
-  W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 65,
-  REST_STRESS: 33, SEED: 42,
-  BIN_MIN: process.env.BIN_MIN != null ? +process.env.BIN_MIN : (d.meta?.constants?.BIN_MIN ?? 10), // from the dump
-  BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.02,
-  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.075,
-  // Recovery-scaled overnight charge (Bevel-style): asleep → approach a CEILING set by a slow
-  // EWMA of HRV/baseline. Poor-HRV night → low ceiling → little charge; good night → full.
-  CHARGE_K:    process.env.CHARGE_K    != null ? +process.env.CHARGE_K    : 0.045,
-  CHARGE_MAX:  process.env.CHARGE_MAX  != null ? +process.env.CHARGE_MAX  : 0.12,
-  CEIL_LO:     process.env.CEIL_LO     != null ? +process.env.CEIL_LO     : 22,
-  CEIL_HI:     process.env.CEIL_HI     != null ? +process.env.CEIL_HI     : 98,
-  CEIL_RLO:    process.env.CEIL_RLO    != null ? +process.env.CEIL_RLO    : 0.62,
-  CEIL_RHI:    process.env.CEIL_RHI    != null ? +process.env.CEIL_RHI    : 1.35,
-  CEIL_HRV_SMOOTH: process.env.CEIL_HRV_SMOOTH != null ? +process.env.CEIL_HRV_SMOOTH : 0.012,
-  // Stress smoothing (Bevel-style momentum): EWMA per 10-min bin. SMOOTH=1 → raw/instant
-  // (twitchy, drops to 0); lower = smoother + stickier. RISE applies a faster attack so
-  // stress climbs quickly but decays slowly, like Bevel. FLOOR keeps awake stress off 0.
-  // Defaults = SHIPPED production values (bodyBattery.ts).
-  SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 0.11, // production (5-min bins); use 0.20 for old 10-min dumps
-  RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
-  FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 18,
-  FLOOR_SOFT: process.env.FLOOR_SOFT != null ? +process.env.FLOOR_SOFT : 0.45, // soft awake floor
-  HR_GATE: process.env.HR_GATE != null ? +process.env.HR_GATE : 12, // bpm above rest for HRV-stress
-  HR_GATE_FLOOR: process.env.HR_GATE_FLOOR != null ? +process.env.HR_GATE_FLOOR : 0.15,
-  SLEEP_CAP: process.env.SLEEP_CAP != null ? +process.env.SLEEP_CAP : 45,
-  SESSION_GAP_MIN: process.env.SESSION_GAP_MIN != null ? +process.env.SESSION_GAP_MIN : 60,
-  // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
-  // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
-  AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
+  BIN_MIN: env('BIN_MIN', d.meta?.constants?.BIN_MIN ?? 5),
+  // z-score stress index
+  STRESS_BASE: env('STRESS_BASE', 26), STRESS_SCALE: env('STRESS_SCALE', 13), BASE_SD_MIN: env('BASE_SD_MIN', 3),
+  STRESS_SMOOTH: env('STRESS_SMOOTH', 0.11), NIGHT_STAGE_SMOOTH: env('NIGHT_STAGE_SMOOTH', 0.35),
+  SESSION_GAP_MIN: env('SESSION_GAP_MIN', 60), HRV_WIN: env('HRV_WIN', 65),
+  // battery (recovery-capped charge + stress drain)
+  SEED: env('SEED', 42), BASE_DRAIN: env('BASE_DRAIN', 0.02), STRESS_DRAIN: env('STRESS_DRAIN', 0.075),
+  CHARGE_K: env('CHARGE_K', 0.045), CHARGE_MAX: env('CHARGE_MAX', 0.12),
+  CEIL_LO: env('CEIL_LO', 22), CEIL_HI: env('CEIL_HI', 98), CEIL_RLO: env('CEIL_RLO', 0.62), CEIL_RHI: env('CEIL_RHI', 1.35),
+  CEIL_HRV_SMOOTH: env('CEIL_HRV_SMOOTH', 0.012),
 };
+// Additive sleep-stage bump on top of the night recovery baseline (env-overridable).
+const STAGE_BUMP = { 0: env('STAGE_BED', 6), 1: env('STAGE_SLP', 3), 2: env('STAGE_WAKE', 8), 3: env('STAGE_CORE', 2), 4: env('STAGE_DEEP', 0), 5: env('STAGE_REM', 14) };
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const mean = a => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
+const stdev = a => { const m = mean(a); return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / Math.max(1, a.length - 1)); };
 
-const trusted = d.hrv.filter(s =>
-  s.v >= CFG.V_MIN && s.v <= CFG.V_MAX &&
-  s.hr <= restHR + CFG.HR_HIGH &&
-  s.cv <= CFG.CV_MAX
-).map(s => ({ m: s.m, v: s.v }));
-
-const nearestHrv = (m) => { let best = null, dt = CFG.HRV_WIN; for (const s of trusted) { const x = Math.abs(s.m - m); if (x <= dt) { dt = x; best = s.v; } } return best; };
-const stressAt = (hr, vHrv, a) => {
-  const hrr = clamp((hr - restHR) / Math.max(20, maxHR - restHR), 0, 1);
-  const base = 100 * clamp((hrr - 0.04) / 0.45, 0, 1);
-  let st = base;
-  if (vHrv != null) {
-    const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, CFG.SUPP_CAP);
-    const gate = clamp(CFG.HR_GATE_FLOOR + (hr - restHR) / CFG.HR_GATE, CFG.HR_GATE_FLOOR, 1); // small floor at rest
-    const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100 * gate;
-    st = clamp(CFG.W_HR * base + CFG.W_HRV * Math.max(base, hrvStress), 0, 100);
-  }
-  return a ? Math.min(st, CFG.SLEEP_CAP) : st;
-};
-
-const bins = d.bins ?? d.bins3.map(([m, hr, a]) => ({ m, hr, a }));
-const lastM = bins.at(-1).m;
-// Night = asleep OR a micro-wake inside the night session. Use the dump's `ses` flag if present
-// (new dumps), else derive it: a bin within SESSION_GAP of asleep bins on BOTH sides.
+const bins = d.bins ?? [];
+// Night per bin: dump's `ses` if present, else derive (within SESSION_GAP of asleep on both sides).
 const GAPB = Math.round(CFG.SESSION_GAP_MIN / CFG.BIN_MIN);
 const aIdx = bins.map((b, i) => (b.a ? i : -1)).filter(i => i >= 0);
 const nightArr = bins.map((b, i) => b.ses != null ? !!b.ses
   : (!!b.a || (aIdx.some(j => j <= i && i - j <= GAPB) && aIdx.some(j => j >= i && j - i <= GAPB))));
+const nightAtM = (m) => { let best = 1e9, ni = false; for (let i = 0; i < bins.length; i++) { const dd = Math.abs(bins[i].m - m); if (dd < best) { best = dd; ni = nightArr[i]; } } return ni; };
 
-let battery = CFG.SEED;
-let sm = null, smR = null, lastHrv = hrvBaseline;
+// Trusted reads (dump's ok flag) carry their resting HR; split day/night → baselines (mean+SD).
+const trusted = d.hrv.filter(s => s.ok).map(s => ({ m: s.m, v: s.v, hr: s.hr, night: nightAtM(s.m) }));
+const mkBase = (reads, fb) => reads.length >= 6
+  ? { hvM: mean(reads.map(r => r.v)), hvS: Math.max(CFG.BASE_SD_MIN, stdev(reads.map(r => r.v))),
+      hrM: mean(reads.map(r => r.hr)), hrS: Math.max(CFG.BASE_SD_MIN, stdev(reads.map(r => r.hr))) }
+  : fb;
+const fb = { hvM: hrvBaseline, hvS: 15, hrM: restHR, hrS: 6 };
+const dayBase = mkBase(trusted.filter(r => !r.night), fb);
+const nightBase = mkBase(trusted.filter(r => r.night), dayBase);
+const nearestHrv = (m) => { let best = null, dt = CFG.HRV_WIN; for (const s of trusted) { const x = Math.abs(s.m - m); if (x <= dt) { dt = x; best = s.v; } } return best; };
+const zStress = (hr, vHrv, b) => { const zHR = (hr - b.hrM) / b.hrS; const zHRV = vHrv != null ? (vHrv - b.hvM) / b.hvS : 0; return clamp(CFG.STRESS_BASE + (zHR - zHRV) * CFG.STRESS_SCALE, 0, 100); };
+
+let battery = CFG.SEED, sm = null, smR = null, lastHrv = hrvBaseline;
 const out = [];
 for (let i = 0; i < bins.length; i++) {
-  const { m, hr, a } = bins[i];
+  const { m, hr, a, stg = -1 } = bins[i];
   const night = nightArr[i];
   const vHrv = nearestHrv(m);
-  const raw = stressAt(hr, vHrv, night);
-  // Fast attack (RISE) only AWAKE-DAY; at night smooth both ways so a brief wake can't spike.
-  const alpha = sm == null ? 1 : ((raw > sm && !night) ? CFG.RISE : CFG.SMOOTH);
+  let raw = zStress(hr, vHrv, night ? nightBase : dayBase);
+  if (night && stg >= 0) raw = clamp(raw + (STAGE_BUMP[stg] ?? 0), 0, 100);
+  const alpha = sm == null ? 1 : (night ? CFG.NIGHT_STAGE_SMOOTH : (raw > sm ? 1 : CFG.STRESS_SMOOTH));
   sm = sm == null ? raw : alpha * raw + (1 - alpha) * sm;
-  const stress = night ? sm : (sm >= CFG.FLOOR ? sm : CFG.FLOOR - (CFG.FLOOR - sm) * CFG.FLOOR_SOFT); // soft floor
-  // Recovery ceiling: slow EWMA of HRV/baseline → the whole night's recovery caps the charge.
   if (vHrv != null) lastHrv = vHrv;
   const ratio = lastHrv / Math.max(1, hrvBaseline);
   smR = smR == null ? ratio : CFG.CEIL_HRV_SMOOTH * ratio + (1 - CFG.CEIL_HRV_SMOOTH) * smR;
   const ceil = clamp(CFG.CEIL_LO + (CFG.CEIL_HI - CFG.CEIL_LO) * ((smR - CFG.CEIL_RLO) / (CFG.CEIL_RHI - CFG.CEIL_RLO)), 20, 100);
-  const rate = a // battery charges only during ACTUAL sleep (not micro-wakes)
+  const rate = a // charge only during ACTUAL sleep (not micro-wakes)
     ? Math.max(0, Math.min(CFG.CHARGE_MAX, CFG.CHARGE_K * (ceil - battery)))
-    : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);
+    : -(CFG.BASE_DRAIN + (sm / 100) * CFG.STRESS_DRAIN);
   battery = clamp(battery + rate * CFG.BIN_MIN, 0, 100);
-  out.push({ m, hr, a, hrv: vHrv, stress: Math.round(stress), battery: Math.round(battery) });
+  out.push({ m, a, night, stg, stress: Math.round(sm), battery: Math.round(battery) });
 }
-const cut = lastM - 24 * 60, shown = out.filter(p => p.m >= cut);
+const lastM = bins.at(-1).m, cut = lastM - 24 * 60, shown = out.filter(p => p.m >= cut);
 let charged = 0, drained = 0, peak = 0;
 for (let i = 1; i < shown.length; i++) { const dd = shown[i].battery - shown[i - 1].battery; if (dd > 0) charged += dd; else drained += dd; }
 for (const p of shown) peak = Math.max(peak, p.battery);
-const day = shown.filter(p => !p.a);
-const avg = Math.round(day.reduce((a, p) => a + p.stress, 0) / Math.max(1, day.length));
+const avg = arr => Math.round(arr.reduce((s, p) => s + p.stress, 0) / Math.max(1, arr.length));
+const day = shown.filter(p => !p.night), nite = shown.filter(p => p.night);
+const f = b => `${b.hvM.toFixed(0)}±${b.hvS.toFixed(0)}ms / HR ${b.hrM.toFixed(0)}±${b.hrS.toFixed(0)}`;
 console.log('CFG', JSON.stringify(CFG));
-console.log(`HRV: ${d.hrv.length} samples → ${trusted.length} trusted   baseline ${hrvBaseline}ms  rest ${restHR} max ${maxHR}`);
-console.log(`NOW   stress ${out.at(-1).stress}   battery ${out.at(-1).battery}%   (hrv@now ${out.at(-1).hrv ?? '-'})`);
-console.log(`DAY   avgStress ${avg}   peak ${peak}%   charged +${Math.round(charged)}%   drained ${Math.round(drained)}%`);
-const sLo = Math.min(...day.map(p => p.stress)), sHi = Math.max(...day.map(p => p.stress)), zeros = day.filter(p => p.stress < 5).length;
-console.log(`STRESS day(awake): min ${sLo}  max ${sHi}  drops<5: ${zeros}/${day.length} bins`);
-// Time-in-zone over the whole shown window (incl. sleep) like Bevel's High/Med/Low.
-const pct = (f) => Math.round(100 * shown.filter(f).length / shown.length);
-console.log(`ZONES  Low(<34) ${pct(p => p.stress < 34)}%  Med(34-66) ${pct(p => p.stress >= 34 && p.stress < 67)}%  High(≥67) ${pct(p => p.stress >= 67)}%`);
-console.log(`BEVEL  stress ~78 now / ~62 avg, no drops to 0   battery ~8   zones Low 26 / Med 25 / High 49`);
+console.log(`BASELINE  day HRV ${f(dayBase)}   night HRV ${f(nightBase)}   (${trusted.length} trusted reads)`);
+console.log(`NOW    stress ${out.at(-1).stress}   battery ${out.at(-1).battery}%`);
+console.log(`STRESS day avg ${avg(day)} (min ${Math.min(...day.map(p=>p.stress))}/max ${Math.max(...day.map(p=>p.stress))})   night avg ${avg(nite)}`);
+console.log(`BATTERY peak ${peak}%   charged +${Math.round(charged)}%   drained ${Math.round(drained)}%`);
+// REM square-wave check: avg night stress in REM vs deep+core.
+const rem = nite.filter(p => p.stg === 5), dc = nite.filter(p => p.stg === 3 || p.stg === 4);
+if (rem.length && dc.length) console.log(`REM bump  REM ${avg(rem)}  vs  deep+core ${avg(dc)}  (Δ ${avg(rem) - avg(dc)})`);
