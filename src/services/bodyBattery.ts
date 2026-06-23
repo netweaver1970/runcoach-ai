@@ -48,7 +48,9 @@ const CEIL_HRV_SMOOTH = 0.012;// EWMA weight on hrvRatio → whole-night recover
 // of the day, unlike Bevel's smooth curve. Rise instantly, decay slowly (EWMA), floor awake.
 const STRESS_SMOOTH = 0.11;   // EWMA weight on the way DOWN; tuned for 5-min bins to keep the
                               // same ~45-min decay as the calibrated 0.20-at-10-min (= 1-√0.8)
-const STRESS_FLOOR  = 10;     // awake stress never below this (Bevel never reads 0 while awake)
+const STRESS_FLOOR  = 18;     // awake stress never below this (Bevel's calm baseline sits ~20-30)
+const STRESS_HR_GATE = 12;    // HRV-driven stress needs HR this far above resting to count (bpm);
+                              // at/below resting a suppressed HRV read is noise, not stress
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
@@ -186,8 +188,12 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const base = 100 * clamp((hrr - 0.04) / 0.45, 0, 1);
     if (vHrv == null) return base;
     const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, 2.6);     // >1 = HRV suppressed
-    const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100;
-    // HRV-dominant (Bevel-like): suppressed HRV reads high stress even at a modest HR.
+    // Gate HRV-driven stress by HR elevation: a suppressed HRV reading at/below resting HR is
+    // noise / normal sleep variation, not stress (you can't be highly stressed at resting HR).
+    // Without this, a brief overnight awakening spikes stress to ~65 — the phantom 3am peak.
+    const hrGate = clamp((avgHR - restHR) / STRESS_HR_GATE, 0, 1);
+    const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100 * hrGate;
+    // HRV-dominant (Bevel-like): suppressed HRV reads high stress when HR is also up (heat/stress).
     return clamp(0.35 * base + 0.65 * Math.max(base, hrvStress), 0, 100);
   };
 
@@ -269,7 +275,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, SEED, WINDOW_H } },
+        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, STRESS_HR_GATE, SEED, WINDOW_H } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
     },

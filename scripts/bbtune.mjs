@@ -28,7 +28,8 @@ const CFG = {
   // Defaults = SHIPPED production values (bodyBattery.ts).
   SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 0.11, // production (5-min bins); use 0.20 for old 10-min dumps
   RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
-  FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 10,
+  FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 18,
+  HR_GATE: process.env.HR_GATE != null ? +process.env.HR_GATE : 12, // bpm above rest for HRV-stress
   // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
   // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
   AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
@@ -46,7 +47,12 @@ const stressAt = (hr, vHrv, a) => {
   const hrr = clamp((hr - restHR) / Math.max(20, maxHR - restHR), 0, 1);
   const base = 100 * clamp((hrr - 0.04) / 0.45, 0, 1);
   let st = base;
-  if (vHrv != null) { const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, CFG.SUPP_CAP); st = clamp(CFG.W_HR * base + CFG.W_HRV * Math.max(base, clamp((supp - 0.85) / 0.9, 0, 1) * 100), 0, 100); }
+  if (vHrv != null) {
+    const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, CFG.SUPP_CAP);
+    const gate = clamp((hr - restHR) / CFG.HR_GATE, 0, 1); // suppressed HRV at resting HR = noise
+    const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100 * gate;
+    st = clamp(CFG.W_HR * base + CFG.W_HRV * Math.max(base, hrvStress), 0, 100);
+  }
   return a ? Math.min(st, 14) : st;
 };
 
