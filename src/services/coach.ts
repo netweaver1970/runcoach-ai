@@ -385,8 +385,16 @@ function buildRecentActivities(activities?: ActivitySummary[]): CoachSnapshot['r
   return out.length ? out : undefined;
 }
 
-// Cache one plan per calendar day (never serve a previous day's plan).
+// Cache one plan per calendar day (never serve a previous day's plan). The plan stays
+// DYNAMIC — it regenerates through the day as conditions drift (heat, accumulated strain).
 const planFile = (date: string) => `${FileSystem.documentDirectory}coach-plan-${date}.json`;
+
+// Time-stamped history of every prescription version generated for a day. Lets the run
+// analysis reconstruct the prescription that was in effect WHEN A RUN STARTED — i.e. the
+// pre-run prescription that drove the decision to train — without freezing the live plan.
+const planLogFile = (date: string) => `${FileSystem.documentDirectory}coach-plan-log-${date}.json`;
+const PLAN_LOG_CAP = 16;
+interface PlanLogEntry { at: string; plan: CoachPlan }
 
 export async function loadCachedPlan(date: string): Promise<CoachPlan | null> {
   try {
@@ -397,6 +405,45 @@ export async function loadCachedPlan(date: string): Promise<CoachPlan | null> {
   } catch { return null; }
 }
 
+async function readPlanLog(date: string): Promise<PlanLogEntry[]> {
+  try {
+    const f = planLogFile(date);
+    const info = await FileSystem.getInfoAsync(f);
+    if (!info.exists) return [];
+    const arr = JSON.parse(await FileSystem.readAsStringAsync(f));
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
 export async function saveCachedPlan(date: string, plan: CoachPlan): Promise<void> {
   try { await FileSystem.writeAsStringAsync(planFile(date), JSON.stringify(plan)); } catch { /* ignore */ }
+  // Append this version to the day's prescription log (timestamped at generation time),
+  // so a later run can be judged against whatever prescription was live when it started.
+  try {
+    const at = plan.generatedAt ?? new Date().toISOString();
+    const log = await readPlanLog(date);
+    if (log.length === 0 || log[log.length - 1].at !== at) log.push({ at, plan });
+    const trimmed = log.slice(-PLAN_LOG_CAP);
+    await FileSystem.writeAsStringAsync(planLogFile(date), JSON.stringify(trimmed));
+  } catch { /* ignore */ }
+}
+
+/**
+ * The prescription that was in effect at instant `atMs` (e.g. a run's start time) — the
+ * latest logged version generated at or before that moment. Falls back to the earliest
+ * version on record (if the run predates any logged plan), then to the live plan. Keeps
+ * the plan dynamic while judging a run against the pre-run prescription.
+ */
+export async function loadPrescriptionAt(date: string, atMs: number): Promise<CoachPlan | null> {
+  const log = await readPlanLog(date);
+  if (log.length > 0) {
+    const sorted = [...log].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    let chosen: CoachPlan | null = null;
+    for (const e of sorted) {
+      if (new Date(e.at).getTime() <= atMs) chosen = e.plan;
+      else break;
+    }
+    return chosen ?? sorted[0].plan; // before any logged plan → earliest on record
+  }
+  return loadCachedPlan(date);
 }

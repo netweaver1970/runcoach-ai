@@ -33,7 +33,7 @@ import {
   makeMsg,
   PersistedMessage,
 } from '../src/services/chatMemory';
-import { loadCachedPlan } from '../src/services/coach';
+import { loadPrescriptionAt } from '../src/services/coach';
 import { buildPrescriptionContext } from '../src/services/runAnalysis';
 import { HealthSnapshot } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
@@ -188,7 +188,7 @@ export default function ChatScreen() {
             const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
             // Full data → system prompt (invisible); short question → visible user message.
             // Append the day's prescription so the coach judges the run against the plan.
-            const plan = await loadCachedPlan(focusRun.date.slice(0, 10)).catch(() => null);
+            const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
             const systemContext = [
               buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail),
               buildPrescriptionContext(plan),
@@ -227,7 +227,7 @@ export default function ChatScreen() {
               .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
               .slice(0, 10);
             const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
-            const plan = await loadCachedPlan(focusRun.date.slice(0, 10)).catch(() => null);
+            const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
             const systemContext = [
               buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail),
               buildPrescriptionContext(plan),

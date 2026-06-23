@@ -13,7 +13,7 @@ import * as Notifications from 'expo-notifications';
 import { HealthSnapshot, RunWorkout } from '../types';
 import { callLLM } from './llm';
 import { getApiKey, buildNewRunUserMessage } from './claude';
-import { loadCachedPlan, CoachPlan } from './coach';
+import { loadPrescriptionAt, CoachPlan } from './coach';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
 
 export interface RunAnalysis {
@@ -81,7 +81,7 @@ export function formatPrescription(plan: CoachPlan | null): string {
 export function buildPrescriptionContext(plan: CoachPlan | null): string {
   const block = formatPrescription(plan);
   if (!block) return '';
-  return `PRESCRIBED FOR THIS DAY — the coach set this plan in the morning, already weighing HRV, recovery, training load, the +10% time-on-feet cap and heat. Judge the run AGAINST THIS PLAN, not against generic mileage goals:
+  return `PRESCRIBED BEFORE THIS RUN — this is the plan that was in effect when the athlete set off, from the pre-run HRV, recovery, training load, the +10% time-on-feet cap and heat. It is what drove the decision to train. Judge the run AGAINST THIS PLAN, not against generic mileage goals or the athlete's post-run state:
 ${block}
 
 How to use the prescription:
@@ -202,7 +202,7 @@ export async function maybeAnalyzeLatestRun(opts: {
   if (analyzing && !opts.force) return null;
   analyzing = true;
   try {
-    const plan = await loadCachedPlan(run.date.slice(0, 10)).catch(() => null);
+    const plan = await loadPrescriptionAt(run.date.slice(0, 10), new Date(run.date).getTime()).catch(() => null);
     const prevRuns = snap.runs.filter(r => r.uuid !== run.uuid && r.label === run.label).slice(0, 8);
     const analysis = await analyzeRun(snap, run, plan, prevRuns);
     await saveLatestRunAnalysis(analysis);
