@@ -30,6 +30,7 @@ const CFG = {
   SMOOTH: process.env.SMOOTH != null ? +process.env.SMOOTH : 0.11, // production (5-min bins); use 0.20 for old 10-min dumps
   RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
   FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 18,
+  FLOOR_SOFT: process.env.FLOOR_SOFT != null ? +process.env.FLOOR_SOFT : 0.45, // soft awake floor
   HR_GATE: process.env.HR_GATE != null ? +process.env.HR_GATE : 12, // bpm above rest for HRV-stress
   HR_GATE_FLOOR: process.env.HR_GATE_FLOOR != null ? +process.env.HR_GATE_FLOOR : 0.15,
   SLEEP_CAP: process.env.SLEEP_CAP != null ? +process.env.SLEEP_CAP : 45,
@@ -80,7 +81,7 @@ for (let i = 0; i < bins.length; i++) {
   // Fast attack (RISE) only AWAKE-DAY; at night smooth both ways so a brief wake can't spike.
   const alpha = sm == null ? 1 : ((raw > sm && !night) ? CFG.RISE : CFG.SMOOTH);
   sm = sm == null ? raw : alpha * raw + (1 - alpha) * sm;
-  const stress = night ? sm : Math.max(sm, CFG.FLOOR);        // floor only awake-day
+  const stress = night ? sm : (sm >= CFG.FLOOR ? sm : CFG.FLOOR - (CFG.FLOOR - sm) * CFG.FLOOR_SOFT); // soft floor
   // Recovery ceiling: slow EWMA of HRV/baseline → the whole night's recovery caps the charge.
   if (vHrv != null) lastHrv = vHrv;
   const ratio = lastHrv / Math.max(1, hrvBaseline);

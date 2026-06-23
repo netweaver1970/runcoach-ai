@@ -50,13 +50,25 @@ const CEIL_HRV_SMOOTH = 0.012;// EWMA weight on hrvRatio → whole-night recover
 // of the day, unlike Bevel's smooth curve. Rise instantly, decay slowly (EWMA), floor awake.
 const STRESS_SMOOTH = 0.11;   // EWMA weight on the way DOWN; tuned for 5-min bins to keep the
                               // same ~45-min decay as the calibrated 0.20-at-10-min (= 1-√0.8)
-const STRESS_FLOOR  = 18;     // awake stress never below this (Bevel's calm baseline sits ~20-30)
+const STRESS_FLOOR  = 18;     // awake calm baseline (Bevel's sits ~20-30)
+const STRESS_FLOOR_SOFT = 0.45; // SOFT floor: below the floor, ease toward it but still follow the
+                              // signal (×0.45 of the gap) so calm periods keep gentle natural
+                              // variation instead of pinning to a dead-flat line
 const STRESS_HR_GATE = 12;    // HRV-driven stress reaches full weight this far above resting (bpm)
 const STRESS_HR_GATE_FLOOR = 0.15; // …but a small floor remains at/below resting, so suppressed HRV
                               // from e.g. late-night digestion still reads a GENTLE medium (not 0),
                               // while a resting-HR blip stays small (≈15, not the old ≈65 spike)
 const SLEEP_STRESS_CAP = 45;  // asleep stress can show food/arousal medium, but no daytime-level spike
 const SESSION_GAP_MS = 60 * 60_000; // merge sleep segments < 1h apart into one night session
+// Night stress = a RECOVERY baseline (HRV vs personal baseline) + a stage modulation ADDED on top.
+// Research-aligned: night HRV is a recovery-quality signal, shaped by sleep stage. The square wave
+// is only crisp on a well-rested (low-baseline) night; on a poor night the bumps drown in the high
+// baseline. Stage bump: 0 inBed,1 asleepUnspecified,2 awake-in-bed,3 core,4 deep,5 REM.
+const STAGE_BUMP: Record<number, number> = { 0: 6, 1: 3, 2: 8, 3: 2, 4: 0, 5: 14 };
+const NIGHT_STAGE_SMOOTH = 0.35; // stress EWMA at night — fast enough that REM bumps form (not smeared)
+const NIGHT_BASE_LO = 2, NIGHT_BASE_HI = 32;        // recovery baseline range (good night → poor night)
+const NIGHT_BASE_RLO = 0.7, NIGHT_BASE_RHI = 1.4;   // hrvRatio anchors → baseline
+const NIGHT_BASE_SMOOTH = 0.045;                    // baseline EWMA — settles to THIS night in ~1-2h
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
@@ -226,8 +238,9 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   let battery = SEED; // washed out by the two nights inside the 60h window
   let smStress: number | null = null; // EWMA-smoothed stress (Bevel-style momentum)
-  let smHrvRatio: number | null = null; // slow EWMA of HRV/baseline → the night's recovery
-  let lastHrvForCeil = hrvBaseline;     // carry the last trusted HRV across gaps for the ceiling
+  let smHrvRatio: number | null = null; // slow EWMA of HRV/baseline → whole-night recovery (charge)
+  let smHrvNight: number | null = null; // faster EWMA of HRV/baseline → this-night recovery (stress baseline)
+  let lastHrvForCeil = hrvBaseline;     // carry the last trusted HRV across gaps
   const series: BatteryPoint[] = [];
   const binDebug: any[] = [];
   for (let t = start; t <= now; t += binMs) {
@@ -238,31 +251,45 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const mid = t + binMs / 2;
     const asleep = isAsleep(mid);
     const night = asleep || inSleepSession(mid); // asleep OR a micro-wake inside the night
+    const stage = stageAt(mid);                  // HK stage 0..5 (-1 none)
     const workout = inWorkout(mid);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
-    // Night mode (HK sleep session): cap stress so a suppressed-HRV night reads as sleep, not
-    // stress — covering micro-wakes too. Awake-day: full stress.
-    const rawStress = night ? Math.min(stressAt(avgHR, vHrv), SLEEP_STRESS_CAP) : stressAt(avgHR, vHrv);
-    // Momentum: fast attack only when AWAKE-DAY (a real stressor); at night smooth both ways so a
-    // brief awakening can't spike the curve. Workout + settle FREEZES the EWMA (bin → gap).
-    if (!workout) {
-      smStress = smStress == null ? rawStress
-        : (rawStress > smStress && !night) ? rawStress
-        : STRESS_SMOOTH * rawStress + (1 - STRESS_SMOOTH) * smStress;
-    } else if (smStress == null) {
-      smStress = STRESS_FLOOR;
-    }
-    // Floor only applies awake-day (Bevel's calm baseline); the night is free to fall toward 0.
-    const stress = night ? smStress : Math.max(smStress, STRESS_FLOOR);
-    // Recovery ceiling for the overnight charge: a SLOW EWMA of HRV vs baseline so the whole
-    // night's recovery sets the cap (not a momentary blip). Poor HRV → low ceiling → little
-    // charge (Bevel-style); good HRV → high ceiling → full charge.
+    // HRV vs personal baseline drives two things: the overnight CHARGE ceiling (very slow EWMA =
+    // whole-night recovery) and the night STRESS baseline (faster EWMA = this night's recovery).
     if (vHrv != null) lastHrvForCeil = vHrv;
     const hrvRatio = lastHrvForCeil / Math.max(1, hrvBaseline);
     smHrvRatio = smHrvRatio == null ? hrvRatio : CEIL_HRV_SMOOTH * hrvRatio + (1 - CEIL_HRV_SMOOTH) * smHrvRatio;
+    smHrvNight = smHrvNight == null ? hrvRatio : NIGHT_BASE_SMOOTH * hrvRatio + (1 - NIGHT_BASE_SMOOTH) * smHrvNight;
     const chargeCeiling = clamp(CEIL_LO + (CEIL_HI - CEIL_LO) * ((smHrvRatio - CEIL_RLO) / (CEIL_RHI - CEIL_RLO)), 20, 100);
+    // Night recovery baseline: good HRV → low (~2), suppressed → high (~32) so REM bumps drown.
+    const nightBaseline = clamp(NIGHT_BASE_LO + (NIGHT_BASE_HI - NIGHT_BASE_LO) * (NIGHT_BASE_RHI - smHrvNight) / (NIGHT_BASE_RHI - NIGHT_BASE_RLO), NIGHT_BASE_LO, NIGHT_BASE_HI);
+    // Stress source:
+    //  • night → RECOVERY baseline + stage bump (REM bumps, deep floors). HR is flat across stages
+    //    overnight, so HRV-recovery + stage carry it; the square wave only shows on a rested night.
+    //  • awake-day → full HR/HRV stress.
+    const rawStress = night
+      ? clamp(nightBaseline + (stage >= 0 ? STAGE_BUMP[stage] : 0), 0, SLEEP_STRESS_CAP)
+      : stressAt(avgHR, vHrv);
+    // EWMA momentum: fast attack only AWAKE-DAY (a real stressor). At night use a faster weight so
+    // REM/stage transitions actually show (a slow weight smears the square wave flat). Workout +
+    // settle FREEZES the EWMA (bin → gap).
+    if (!workout) {
+      if (smStress == null) {
+        smStress = rawStress;
+      } else {
+        const alpha: number = night ? NIGHT_STAGE_SMOOTH : (rawStress > smStress ? 1 : STRESS_SMOOTH);
+        smStress = alpha * rawStress + (1 - alpha) * smStress;
+      }
+    } else if (smStress == null) {
+      smStress = STRESS_FLOOR;
+    }
+    // Soft awake floor: below it, ease toward the floor but keep following the signal so calm
+    // periods vary gently instead of flatlining. Night is free to fall toward 0.
+    const stress = night
+      ? smStress
+      : (smStress >= STRESS_FLOOR ? smStress : STRESS_FLOOR - (STRESS_FLOOR - smStress) * STRESS_FLOOR_SOFT);
     // Asleep → charge toward the recovery ceiling (never drain in sleep); awake → drain, gently
     // when calm, fast when stressed. The battery still drains for the REAL effort of a workout.
     const drainStress = workout ? Math.max(rawStress, stress) : stress;
@@ -271,7 +298,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       : -(BASE_DRAIN + (drainStress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
-    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stageAt(mid), wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
+    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
   }
   if (!series.length) return null;
 
@@ -304,7 +331,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CHARGE_MAX, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, STRESS_HR_GATE, STRESS_HR_GATE_FLOOR, SLEEP_STRESS_CAP, SEED, WINDOW_H } },
+        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CHARGE_MAX, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, STRESS_FLOOR_SOFT, STRESS_HR_GATE, STRESS_HR_GATE_FLOOR, SLEEP_STRESS_CAP, NIGHT_STAGE_SMOOTH, NIGHT_BASE_LO, NIGHT_BASE_HI, NIGHT_BASE_RLO, NIGHT_BASE_RHI, NIGHT_BASE_SMOOTH, SEED, WINDOW_H } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
     },
