@@ -412,20 +412,25 @@ export default function HomeScreen() {
   const dayView     = buildDayView(viewDate, snapshot, dayComps);
   const pickerDays  = Object.keys(dayComps).sort().reverse();
 
-  // Has today's prescribed run been executed? If so, mark the plan card DONE — and if
-  // there's still strain headroom below the target floor, suggest an easy top-up
-  // (walk / indoor cycle) rather than implying the day is over.
+  // Has today's prescribed run been executed, and how much extra (walk/cardio) was logged?
+  // The card reflects ANY activity (not just runs): the run marks the plan done; cross-training
+  // tops up the strain. The top-up reflects the live strain, which already includes both — and
+  // once the ceiling is reached we say so instead of nagging for more.
   const completion = (() => {
     if (!recommendation || recommendation.type === 'Rest') return null;
     const todaysRuns = allRuns.filter(r => toDateKey(new Date(r.date)) === todayKey);
-    if (todaysRuns.length === 0) return null;
-    const min = Math.round(todaysRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60);
-    const km  = todaysRuns.reduce((s, r) => s + r.distance, 0) / 1000;
+    const todaysActs = (snapshot?.activities ?? []).filter(a => toDateKey(new Date(a.date)) === todayKey);
+    if (todaysRuns.length === 0 && todaysActs.length === 0) return null; // nothing logged today
+    const runMin = Math.round(todaysRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60);
+    const runKm  = todaysRuns.reduce((s, r) => s + r.distance, 0) / 1000;
+    const xMin   = Math.round(todaysActs.reduce((s, a) => s + (a.durationMin ?? 0), 0));
+    const xLabel = todaysActs.length ? activityCategory(todaysActs[0].activityType) : '';
     const str = snapshot?.strain ?? null;
-    const topUp = (str && str.real < str.safeHigh)
+    const atCeiling = !!str && str.real >= str.safeHigh;
+    const topUp = (str && !atCeiling)
       ? `At ${str.real}% — room to your ${str.safeHigh}% ceiling. Add an easy walk or indoor cycle to push toward the top of the band.`
       : null;
-    return { done: true, min, km, topUp };
+    return { runDone: todaysRuns.length > 0, runMin, runKm, xMin, xLabel, topUp, atCeiling, strainReal: str?.real ?? null };
   })();
 
   return (
@@ -771,7 +776,9 @@ const REC_COLORS: Record<string, string> = {
   Rest: '#6B7280', Easy: '#22C55E', Z2: '#22C55E', Tempo: '#F97316', LongRun: '#3B82F6', Intervals: '#EF4444',
 };
 
-function TrainingRecommendationCard({ rec, loading, strain, onPress, completion }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null; onPress?: () => void; completion?: { done: boolean; min: number; km: number; topUp: string | null } | null }) {
+type Completion = { runDone: boolean; runMin: number; runKm: number; xMin: number; xLabel: string; topUp: string | null; atCeiling: boolean; strainReal: number | null };
+
+function TrainingRecommendationCard({ rec, loading, strain, onPress, completion }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null; onPress?: () => void; completion?: Completion | null }) {
   const recStyles = useThemedStyles(makeRecStyles);
   if (loading && !rec) {
     return (
@@ -783,49 +790,49 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
   }
   if (!rec) return null;
 
-  const done   = completion?.done ?? false;
+  const runDone   = completion?.runDone ?? false;
+  const xMin      = completion?.xMin ?? 0;
+  const atCeiling = completion?.atCeiling ?? false;
+  const loggedAny = runDone || xMin > 0;
   const typeNm = rec.type === 'LongRun' ? 'Long Run' : rec.type;
-  const color  = done ? '#22C55E' : (REC_COLORS[rec.type] ?? '#FF6B35');
-  const icon   = done ? '✅' : (REC_ICONS[rec.type] ?? '🏃');
-  const metBand = !!strain && strain.real >= strain.safeHigh;
+  const color  = runDone ? '#22C55E' : (REC_COLORS[rec.type] ?? '#FF6B35');
+  const icon   = runDone ? '✅' : (REC_ICONS[rec.type] ?? '🏃');
 
   return (
-    <TouchableOpacity style={[recStyles.card, { borderLeftColor: color }, done && recStyles.cardDone]} onPress={onPress} activeOpacity={0.85} disabled={!onPress}>
+    <TouchableOpacity style={[recStyles.card, { borderLeftColor: color }, runDone && recStyles.cardDone]} onPress={onPress} activeOpacity={0.85} disabled={!onPress}>
       <View style={recStyles.header}>
         <Text style={recStyles.icon}>{icon}</Text>
         <View style={{ flex: 1 }}>
           <Text style={[recStyles.type, { color }]}>
-            {typeNm}{done ? '  ·  done ✓' : ''}
+            {typeNm}{runDone ? '  ·  done ✓' : ''}
           </Text>
           {rec.type !== 'Rest' && (
             <Text style={recStyles.meta}>
-              {done
-                ? `Completed ${completion!.min} min${completion!.km >= 0.1 ? ` · ${completion!.km.toFixed(1)} km` : ''}`
-                : `${rec.duration}${rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}`}
+              {runDone
+                ? `Completed ${completion!.runMin} min${completion!.runKm >= 0.1 ? ` · ${completion!.runKm.toFixed(1)} km` : ''}${xMin > 0 ? `  ·  +${xMin}min ${completion!.xLabel}` : ''}`
+                : `${rec.duration}${rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}${xMin > 0 ? `  ·  +${xMin}min ${completion!.xLabel} logged` : ''}`}
             </Text>
           )}
         </View>
-        <Text style={[recStyles.badge, done && recStyles.badgeDone]}>
-          {done ? '✓ DONE' : `Today's plan${onPress ? ' ›' : ''}`}
+        <Text style={[recStyles.badge, (runDone || atCeiling) && recStyles.badgeDone]}>
+          {runDone ? '✓ DONE' : atCeiling ? '✓ TARGET' : `Today's plan${onPress ? ' ›' : ''}`}
         </Text>
       </View>
 
-      {done && completion?.topUp ? (
+      {atCeiling ? (
+        <Text style={[recStyles.reason, { color: '#22C55E', fontWeight: '700' }]}>
+          ✓ Strain target reached — you're at {completion!.strainReal}%, top of your {strain!.safeLow}–{strain!.safeHigh}% band.
+        </Text>
+      ) : completion?.topUp ? (
         <Text style={recStyles.topUp}>⚡ {completion.topUp}</Text>
       ) : (
-        <Text style={recStyles.reason}>
-          {done
-            ? (metBand
-                ? `Prescribed session done — you're at ${strain!.real}%, at the top of your ${strain!.safeLow}–${strain!.safeHigh}% band. Nicely done.`
-                : 'Prescribed session done. ✓')
-            : rec.reason}
-        </Text>
+        <Text style={recStyles.reason}>{runDone ? 'Prescribed session done. ✓' : rec.reason}</Text>
       )}
 
       {strain && (
         <Text style={recStyles.target}>
           Target <Text style={{ color: SAFE_COLOR, fontWeight: '800' }}>{strain.safeLow}–{strain.safeHigh}%</Text> strain
-          {done ? `  ·  now ${strain.real}%` : (rec.type !== 'Rest' && rec.zone && rec.zone !== '—' ? `  ·  ${rec.zone}` : '')}
+          {loggedAny ? `  ·  now ${strain.real}%` : (rec.type !== 'Rest' && rec.zone && rec.zone !== '—' ? `  ·  ${rec.zone}` : '')}
         </Text>
       )}
     </TouchableOpacity>
