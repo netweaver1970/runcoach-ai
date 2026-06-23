@@ -87,7 +87,8 @@ ${block}
 How to use the prescription:
 1. Compare ACTUAL vs PRESCRIBED — duration, intensity and structure. If they hit the plan (e.g. 25 min easy prescribed → ~25 min easy run), that is ON PLAN — say so plainly.
 2. The warm-up, drills, work reps and cool-down above are PLANNED blocks. Recognise them — refer to the drills as the prescribed drills block; never treat them as an unexplained anomaly.
-3. Do NOT advise running more / longer / harder than prescribed — the prescription already accounts for recovery and the load cap. Only flag under-running if recovery clearly allowed more.`;
+3. Do NOT advise running more / longer / harder than prescribed — the prescription already accounts for recovery and the load cap. Only flag under-running if recovery clearly allowed more.
+4. Do NOT list as a "decline", weakness or negative anything the athlete executed AS PRESCRIBED. Power within the prescribed watt window, duration matching the prescribed minutes, and intensity matching the plan are ON PLAN — frame them that way, never as a regression. A deliberately shorter or lower-power session (scaled down for heat or recovery) is the plan working as intended; comparing its absolute power/duration unfavourably against longer or harder past runs is WRONG. Reserve "watch-outs"/declines for genuine shortfalls vs the plan (e.g. fell out of the prescribed zone, cut the session short) or real physiological concerns (HRV trend, sleep debt) — never for following the prescription.`;
 }
 
 // ─── Prompt + one-shot LLM call ───────────────────────────────────────────────
@@ -122,7 +123,9 @@ export async function analyzeRun(
   plan: CoachPlan | null,
   prevRuns: RunWorkout[],
 ): Promise<RunAnalysis> {
-  const prescription = buildPrescriptionContext(plan);
+  const prescription = plan
+    ? buildPrescriptionContext(plan)
+    : `NO SESSION WAS PRESCRIBED before this run — today's plan had not been generated when the run started, so there is no prescription to judge against. Do NOT assume it was a rest day or that the athlete should not have run, and do NOT produce a "ran on a rest day / should have rested" verdict. Analyse the run purely on its own merits and recent trends.`;
   const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true);
   const userMsg = [recoveryLoadContext(snap), prescription, runBlock].filter(Boolean).join('\n\n');
 
@@ -193,11 +196,21 @@ export async function maybeAnalyzeLatestRun(opts: {
   if (!snap || !run) return null;
 
   const existing = await loadLatestRunAnalysis();
-  if (!opts.force && existing?.runUUID === run.uuid) return existing; // already analysed
+  if (!opts.force && existing?.runUUID === run.uuid) {
+    // Already analysed this run WITH a prescription → keep it.
+    if (existing.hadPlan) return existing;
+    // The cached analysis was made before today's plan existed (run beat the plan) → it
+    // judged off recovery alone. Re-analyse only once a prescription is actually available.
+    const planNow = await loadPrescriptionAt(run.date.slice(0, 10), new Date(run.date).getTime());
+    if (!planNow) return existing;
+    // else fall through and regenerate against the now-available prescription
+  }
 
   // Only auto-analyse recently-finished runs (avoids back-filling old runs on first launch).
+  // Re-analysing a run we already have (the prescription-less self-heal) is exempt.
   const ageH = (Date.now() - new Date(run.date).getTime()) / 3.6e6;
-  if (!opts.force && ageH > (opts.maxAgeH ?? 18)) return null;
+  const reanalysing = existing?.runUUID === run.uuid;
+  if (!opts.force && !reanalysing && ageH > (opts.maxAgeH ?? 18)) return null;
 
   if (analyzing && !opts.force) return null;
   analyzing = true;
