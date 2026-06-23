@@ -43,6 +43,7 @@ const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus, activityCategory } from '../src/services/trainingLoad';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
+import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
 import { maybeAutoRecalibrate } from '../src/services/zones';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { buildDayView, toDateKey } from '../src/services/dayView';
@@ -87,6 +88,7 @@ export default function HomeScreen() {
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
   const [recommendation, setRecommendation] = useState<TrainingRecommendation | null>(null);
   const [loadingRec, setLoadingRec]     = useState(false);
+  const [runAnalysis, setRunAnalysis]   = useState<RunAnalysis | null>(null);
   // ── Historic time-travel ──────────────────────────────────────────────────
   const [viewDate, setViewDate] = useState<Date>(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; });
   const [dayComps, setDayComps] = useState<Record<string, Record<string, number>>>({});
@@ -180,6 +182,12 @@ export default function HomeScreen() {
       // Today's recommendation = the cached coach plan (same source as the Strain screen).
       if (key) refreshRecommendation(snap);
 
+      // Auto-analyse the latest run (prescription-aware) when one just finished, then
+      // surface the reduced result on the home card. Idempotent + bounded to fresh runs.
+      if (key) maybeAnalyzeLatestRun({ snap, notify: true })
+        .then(a => { if (a) setRunAnalysis(a); })
+        .catch(() => {});
+
       // Auto-prepare the AI day view once last night is fully determined (idempotent
       // per night; reuses this snapshot; silent — they're already in the app).
       isAutoDayViewEnabled().then(on => {
@@ -243,8 +251,9 @@ export default function HomeScreen() {
   // Wake on a new run → recalibrate the Power & HR Zones; also catch up on foreground.
   useEffect(() => {
     startSleepObserver(syncMonthsRef.current);
-    startWorkoutObserver();
+    startWorkoutObserver(syncMonthsRef.current);
     maybeAutoRecalibrate().catch(() => {});
+    loadLatestRunAnalysis().then(setRunAnalysis).catch(() => {});
   }, []);
 
   // ── Re-apply overrides when returning from workout detail ─────────────────
@@ -255,6 +264,9 @@ export default function HomeScreen() {
     // Re-check the API key every time we return to this screen (e.g. after
     // the user saves a key in Settings) so the Chat button appears immediately.
     getApiKey().then((k) => setHasApiKey(!!k)).catch(() => {});
+
+    // Pick up a freshly-generated run analysis (e.g. regenerated on its own screen).
+    loadLatestRunAnalysis().then(setRunAnalysis).catch(() => {});
 
     Promise.all([getRunOverrides(), loadRunMeta()]).then(([overrides, runMeta]) => {
       setSnapshot((prev) => {
@@ -448,6 +460,22 @@ export default function HomeScreen() {
               params: { str: JSON.stringify(snapshot.strain), rec: recovery ? JSON.stringify(recovery) : undefined },
             }) : undefined}
           />
+        )}
+
+        {/* Last run analysis — reduced; tap through to the full prescription-aware review */}
+        {isTodayView && runAnalysis && (
+          <TouchableOpacity
+            style={styles.raCard}
+            onPress={() => router.push('/run-analysis' as any)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.raEmoji}>🏁</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.raTitle} numberOfLines={1}>Run analysis · {runAnalysis.verdict}</Text>
+              <Text style={styles.raSub} numberOfLines={2}>{runAnalysis.headline}</Text>
+            </View>
+            <Text style={styles.bbChevron}>›</Text>
+          </TouchableOpacity>
         )}
 
         {/* Body Battery — tap for the charge/discharge graph */}
@@ -1276,6 +1304,15 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   bbEmoji: { fontSize: 20 },
   bbTitle: { fontSize: 14, fontWeight: '700', color: c.text },
   bbSub: { fontSize: 12, color: c.textSub, marginTop: 1 },
+  raCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 16, marginTop: 4, marginBottom: 4,
+    backgroundColor: c.surface, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+    borderLeftWidth: 4, borderLeftColor: '#FF6B35',
+  },
+  raEmoji: { fontSize: 20 },
+  raTitle: { fontSize: 14, fontWeight: '700', color: c.text },
+  raSub: { fontSize: 12, color: c.textSub, marginTop: 2, lineHeight: 16 },
   bbVal: { fontSize: 22, fontWeight: '800' },
   bbChevron: { fontSize: 20, color: c.textSub, fontWeight: '300' },
   actEmoji: { fontSize: 22 },

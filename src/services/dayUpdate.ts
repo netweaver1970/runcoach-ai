@@ -14,6 +14,7 @@ import { fetchHealthSnapshot, saveSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot, getCoachPlan, saveCachedPlan } from './coach';
 import { pushWorkoutToWatch, clearWatchWorkout } from './watchWorkout';
 import { maybeAutoRecalibrate } from './zones';
+import { maybeAnalyzeLatestRun } from './runAnalysis';
 
 const AUTO_KEY = 'dayview_auto_v1';
 const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
@@ -107,16 +108,18 @@ export function stopSleepObserver(): void {
   observerId = null;
 }
 
-// ─── HealthKit observer: recalibrate zones when a new run lands ─────────────────
+// ─── HealthKit observer: recalibrate zones + analyse the run when one lands ─────
 let workoutObsId: string | null = null;
 const WORKOUT_ID = 'HKWorkoutTypeIdentifier';
 
-export async function startWorkoutObserver(): Promise<void> {
+export async function startWorkoutObserver(months = 3): Promise<void> {
   if (workoutObsId) return;
   try {
     await (HealthKit as any).enableBackgroundDelivery?.(WORKOUT_ID, 'immediate');
     workoutObsId = (HealthKit as any).subscribeToChanges?.(WORKOUT_ID, () => {
       maybeAutoRecalibrate().catch(() => {});
+      // Auto-generate a prescription-aware analysis of the just-finished run + notify.
+      maybeAnalyzeLatestRun({ months, notify: true }).catch(() => {});
     }) ?? null;
   } catch { /* observer unavailable — the foreground trigger still covers it */ }
 }

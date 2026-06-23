@@ -2,11 +2,38 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { TouchableOpacity, Text } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
+import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme } from '../src/theme';
+
+// Route a tapped notification to the right screen based on its `data.screen`.
+function routeNotification(router: ReturnType<typeof useRouter>, data: any) {
+  if (!data || typeof data !== 'object') return;
+  switch (data.screen) {
+    case 'run-analysis':
+      router.push({ pathname: '/run-analysis', params: data.runUUID ? { runUUID: String(data.runUUID) } : {} } as any);
+      break;
+    case 'analysis':
+      router.push('/analysis' as any);
+      break;
+    // 'home' (and anything else) just opens the app — no navigation needed.
+  }
+}
 
 function RootStack() {
   const router = useRouter();
   const { c } = useTheme();
+
+  // Deep-link notification taps (both warm taps and cold launches).
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((resp) => {
+      routeNotification(router, resp.notification.request.content.data);
+    });
+    Notifications.getLastNotificationResponseAsync().then((resp) => {
+      if (resp) routeNotification(router, resp.notification.request.content.data);
+    });
+    return () => sub.remove();
+  }, [router]);
 
   return (
     <>
@@ -35,6 +62,7 @@ function RootStack() {
           }}
         />
         <Stack.Screen name="analysis" options={{ title: 'Coach Report' }} />
+        <Stack.Screen name="run-analysis" options={{ title: 'Run Analysis' }} />
         <Stack.Screen
           name="chat"
           options={{

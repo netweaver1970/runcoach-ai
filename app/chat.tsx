@@ -33,6 +33,8 @@ import {
   makeMsg,
   PersistedMessage,
 } from '../src/services/chatMemory';
+import { loadCachedPlan } from '../src/services/coach';
+import { buildPrescriptionContext } from '../src/services/runAnalysis';
 import { HealthSnapshot } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 
@@ -184,8 +186,13 @@ export default function ChatScreen() {
               .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
               .slice(0, 10);
             const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
-            // Full data → system prompt (invisible); short question → visible user message
-            const systemContext = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail);
+            // Full data → system prompt (invisible); short question → visible user message.
+            // Append the day's prescription so the coach judges the run against the plan.
+            const plan = await loadCachedPlan(focusRun.date.slice(0, 10)).catch(() => null);
+            const systemContext = [
+              buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail),
+              buildPrescriptionContext(plan),
+            ].filter(Boolean).join('\n\n');
             const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             setIsLoaded(true);
             setTimeout(() => autoSend(shortMsg, snap, systemContext), 400);
@@ -220,7 +227,11 @@ export default function ChatScreen() {
               .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
               .slice(0, 10);
             const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
-            const systemContext = buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail);
+            const plan = await loadCachedPlan(focusRun.date.slice(0, 10)).catch(() => null);
+            const systemContext = [
+              buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail),
+              buildPrescriptionContext(plan),
+            ].filter(Boolean).join('\n\n');
             const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             if (latestRun) lastSeenRunRef.current = latestRun.uuid;
             setIsLoaded(true);
