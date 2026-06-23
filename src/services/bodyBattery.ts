@@ -53,7 +53,8 @@ const HRV_WIN_MIN   = 65;     // carry a trusted read this many minutes to fill 
 const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { return await fn(); } catch { return fb; } };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export interface BatteryPoint { t: number; battery: number; stress: number; asleep: boolean; }
+export interface BatteryPoint { t: number; battery: number; stress: number; asleep: boolean; workout: boolean; }
+const WORKOUT_SETTLE_MS = 15 * 60_000; // exclude exercise + this settle window from the stress curve
 export interface BodyBattery {
   current: number;        // 0–100 now
   currentStress: number;  // 0–100 now
@@ -160,6 +161,15 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     .map(s => ({ s: new Date(s.startDate).getTime(), e: new Date(s.endDate).getTime() }));
   const isAsleep = (t: number) => sleepWins.some(w => t >= w.s && t <= w.e);
 
+  // ── Workout windows (+ settle) ───────────────────────────────────────────────
+  // During a workout and for ~15 min after, HR is exercise-driven (and still settling),
+  // not psychological/physiological stress — exclude that span from the stress curve so a
+  // run doesn't read as a stress spike. Built from the snapshot's workouts (runs included).
+  const workoutWins = (((snap as any)?.activities ?? []) as any[])
+    .map(a => { const s = new Date(a.date).getTime(); return { s, e: s + (a.durationMin ?? 0) * 60_000 + WORKOUT_SETTLE_MS }; })
+    .filter(w => Number.isFinite(w.s) && w.e > fromMs);
+  const inWorkout = (t: number) => workoutWins.some(w => t >= w.s && t <= w.e);
+
   // ── Bin + integrate ──────────────────────────────────────────────────────────
   const binMs = BIN_MIN * 60_000;
   const start = Math.floor(from.getTime() / binMs) * binMs;
@@ -183,25 +193,35 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     let sum = 0, n = 0;
     while (hi < hr.length && hr[hi].t < t) hi++;
     for (let j = hi; j < hr.length && hr[j].t < t + binMs; j++) { sum += hr[j].v; n++; }
-    const asleep = isAsleep(t + binMs / 2);
+    const mid = t + binMs / 2;
+    const asleep = isAsleep(mid);
+    const workout = inWorkout(mid);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
     const rawStress = asleep ? Math.min(stressAt(avgHR, vHrv), 14) : stressAt(avgHR, vHrv);
     // Momentum: rise instantly (fast attack), decay slowly (EWMA) — a brief HR dip no longer
     // crashes stress to 0. Floor awake stress so the curve never bottoms out, like Bevel.
-    smStress = smStress == null ? rawStress
-      : rawStress > smStress ? rawStress
-      : STRESS_SMOOTH * rawStress + (1 - STRESS_SMOOTH) * smStress;
+    // During a workout + settle, FREEZE the EWMA so the exercise HR spike never enters the
+    // resting-stress curve (the bin is flagged → charts draw a gap there).
+    if (!workout) {
+      smStress = smStress == null ? rawStress
+        : rawStress > smStress ? rawStress
+        : STRESS_SMOOTH * rawStress + (1 - STRESS_SMOOTH) * smStress;
+    } else if (smStress == null) {
+      smStress = STRESS_FLOOR;
+    }
     const stress = asleep ? smStress : Math.max(smStress, STRESS_FLOOR);
     // Bevel only charges inside the sleep band — the Energy Bank then declines all day. Charge
     // ONLY while actually asleep; awake always drains — gently when calm, fast when stressed.
+    // The battery still drains for the REAL effort of a workout (use the actual exertion).
+    const drainStress = workout ? Math.max(rawStress, stress) : stress;
     const rate = asleep
       ? SLEEP_CHARGE
-      : -(BASE_DRAIN + (stress / 100) * STRESS_DRAIN);
+      : -(BASE_DRAIN + (drainStress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
-    series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep });
-    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
+    series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
+    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
   }
   if (!series.length) return null;
 

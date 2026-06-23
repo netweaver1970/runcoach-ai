@@ -16,6 +16,7 @@ import {
   Alert,
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadRunMeta } from '../src/services/runMeta';
 import {
@@ -77,6 +78,15 @@ interface Message {
   content:  string;
   loading?: boolean;
 }
+
+// Make rendered markdown selectable: `selectable` on the wrapping textgroup <Text>
+// propagates to all nested Text (RN behaviour), so inline bold/italic styling is kept
+// while the whole answer can be highlighted/copied for debugging.
+const SELECTABLE_RULES = {
+  textgroup: (node: any, children: React.ReactNode, _parent: any, mdStyles: any) => (
+    <Text key={node.key} style={mdStyles.textgroup} selectable>{children}</Text>
+  ),
+};
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -397,6 +407,16 @@ export default function ChatScreen() {
     }
   }, [sending, snapshot, memoryNote]);
 
+  // ── Copy helper (long-press a bubble or tap ⧉ Copy → whole message to clipboard) ─
+  const copyMessage = useCallback(async (text: string) => {
+    try {
+      await Clipboard.setStringAsync(text);
+      Alert.alert('Copied', 'The full message is on your clipboard.');
+    } catch {
+      Alert.alert('Copy failed', 'Could not access the clipboard.');
+    }
+  }, []);
+
   // ── Render message ──────────────────────────────────────────────────────────
   const renderMessage = ({ item }: { item: Message }) => {
     if (item.loading) {
@@ -409,7 +429,7 @@ export default function ChatScreen() {
     if (item.role === 'system') {
       return (
         <View style={styles.systemMsg}>
-          <Text style={styles.systemMsgText}>{item.content}</Text>
+          <Text style={styles.systemMsgText} selectable>{item.content}</Text>
         </View>
       );
     }
@@ -417,10 +437,23 @@ export default function ChatScreen() {
     const isUser = item.role === 'user';
     return (
       <View style={[styles.bubbleRow, isUser && styles.bubbleRowUser]}>
-        <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-          <Markdown style={isUser ? mdStylesUser : mdAssistant}>
-            {item.content}
-          </Markdown>
+        <View style={{ maxWidth: isUser ? '82%' : '92%' }}>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            onLongPress={() => copyMessage(item.content)}
+            delayLongPress={300}
+            style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}
+          >
+            <Markdown style={isUser ? mdStylesUser : mdAssistant} rules={SELECTABLE_RULES}>
+              {item.content}
+            </Markdown>
+          </TouchableOpacity>
+          {/* Copy affordance — assistant answers (the ones you debug) get an explicit button */}
+          {!isUser && (
+            <TouchableOpacity onPress={() => copyMessage(item.content)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+              <Text style={styles.copyBtn}>⧉ Copy</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     );
@@ -616,6 +649,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
 
   systemMsg:     { alignItems: 'center', marginVertical: 8 },
   systemMsgText: { fontSize: 12, color: c.textFaint, textAlign: 'center', fontStyle: 'italic' },
+  copyBtn:       { fontSize: 11, color: c.textFaint, fontWeight: '600', marginTop: 3, marginLeft: 6 },
 
   chips: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.surface },
   chip: {

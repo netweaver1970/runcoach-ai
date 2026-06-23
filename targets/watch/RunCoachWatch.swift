@@ -3,7 +3,12 @@ import WatchConnectivity
 import WidgetKit
 
 // ─── Data model (mirrors the JSON the phone pushes) ────────────────────────────
-struct KPIPoint: Codable, Hashable { let t: Double; let v: Double }
+struct KPIPoint: Codable, Hashable {
+  let t: Double
+  let v: Double
+  let a: Int?                // 1 = asleep (sleep shading)
+  let g: Int?               // 1 = break the line before this point (data hole / workout)
+}
 struct KPI: Codable, Identifiable, Hashable {
   var id: String { key }
   let key: String
@@ -12,6 +17,8 @@ struct KPI: Codable, Identifiable, Hashable {
   let value: Double
   let color: String          // "#RRGGBB"
   let grad: [String]?        // optional top→bottom colour ramp for the graph
+  let frame: String?         // "day" → sleep shading + gaps; "multi" → week dividers
+  let marks: [Int]?          // indices for vertical week dividers (Mondays)
   let series: [KPIPoint]
 }
 struct KPIPayload: Codable {

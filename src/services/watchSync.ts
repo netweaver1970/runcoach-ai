@@ -39,7 +39,14 @@ const stressColor  = (v: number) => (v >= 70 ? '#EF4444' : v >= 40 ? '#F59E0B' :
 const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + 'T12:00:00' : d);
 
-interface OutKPI { key: string; label: string; unit: string; value: number; color: string; grad?: string[]; series: { t: number; v: number }[] }
+// series points carry optional context flags: a = asleep, g = break-the-line-before (a data
+// hole or an excluded workout). frame tells the watch how to annotate: "day" → sleep shading +
+// gaps; "multi" → vertical week dividers (Mondays) at the `marks` indices.
+interface CtxPoint { t: number; v: number; a?: number; g?: number }
+interface OutKPI {
+  key: string; label: string; unit: string; value: number; color: string;
+  grad?: string[]; frame?: 'day' | 'multi'; marks?: number[]; series: CtxPoint[];
+}
 
 // Per-KPI colour ramp for the watch graph, ordered TOP→BOTTOM (high value → low value).
 // Bevel-style: green = good, red = bad — direction depends on whether high is good or bad.
@@ -59,6 +66,40 @@ function prep(pts: { t: number; v: number }[], n = 80): { t: number; v: number }
   return out;
 }
 
+// Intraday (last-24h) series for stress/battery: downsample but keep the asleep flag, then
+// mark a break (g=1) before any real data hole (watch off) or excluded workout.
+const HOLE_MS = 30 * 60_000;
+function prepIntraday(
+  src: { t: number; v: number; asleep: boolean; workout: boolean }[],
+  excludeWorkout: boolean,
+  n = 150,
+): CtxPoint[] {
+  let clean = src.filter(p => Number.isFinite(p.t) && Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
+  if (clean.length > n) {
+    const step = (clean.length - 1) / (n - 1);
+    const out: typeof clean = [];
+    for (let i = 0; i < n; i++) out.push(clean[Math.round(i * step)]);
+    clean = out;
+  }
+  const res: CtxPoint[] = [];
+  let prevT: number | null = null, pendingBreak = false;
+  for (const p of clean) {
+    if (excludeWorkout && p.workout) { pendingBreak = true; continue; }
+    const gap = pendingBreak || (prevT != null && p.t - prevT > HOLE_MS);
+    res.push({ t: p.t, v: Math.round(p.v), ...(p.asleep ? { a: 1 } : {}), ...(gap ? { g: 1 } : {}) });
+    prevT = p.t; pendingBreak = false;
+  }
+  return res;
+}
+
+// Indices where a new ISO week (Monday-start) begins — vertical dividers on long charts.
+function weekMarks(pts: { t: number }[]): number[] {
+  const monday = (t: number) => { const d = new Date(t); const off = (d.getDay() + 6) % 7; d.setDate(d.getDate() - off); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const marks: number[] = [];
+  for (let i = 1; i < pts.length; i++) if (monday(pts[i].t) !== monday(pts[i - 1].t)) marks.push(i);
+  return marks;
+}
+
 export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
   if (!WatchSync) return false;
   try {
@@ -70,8 +111,11 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
     const kpis: OutKPI[] = [];
 
     if (bb) {
-      kpis.push({ key: 'stress', label: 'Stress', unit: '', value: bb.currentStress, color: stressColor(bb.currentStress), series: prep(bb.series.map((p: any) => ({ t: p.t, v: p.stress }))) });
-      kpis.push({ key: 'battery', label: 'Body Battery', unit: '%', value: bb.current, color: batteryColor(bb.current), series: prep(bb.series.map((p: any) => ({ t: p.t, v: p.battery }))) });
+      // Intraday: stress excludes workouts (gap); battery keeps them (it really drains).
+      const stressSrc = bb.series.map((p: any) => ({ t: p.t, v: p.stress, asleep: p.asleep, workout: p.workout }));
+      const batterySrc = bb.series.map((p: any) => ({ t: p.t, v: p.battery, asleep: p.asleep, workout: p.workout }));
+      kpis.push({ key: 'stress', label: 'Stress', unit: '', value: bb.currentStress, color: stressColor(bb.currentStress), frame: 'day', series: prepIntraday(stressSrc, true) });
+      kpis.push({ key: 'battery', label: 'Body Battery', unit: '%', value: bb.current, color: batteryColor(bb.current), frame: 'day', series: prepIntraday(batterySrc, false) });
     }
     if (snap) {
       if (snap.todayRecovery?.recoveryScore != null)
@@ -79,13 +123,13 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
       if (snap.strain?.real != null)
         kpis.push({ key: 'strain', label: 'Strain', unit: '%', value: Math.round(snap.strain.real), color: '#e67e22', series: [] });
       const tl = (snap.trainingLoad ?? []).slice(-30);
-      if (tl.length) kpis.push({ key: 'cardio', label: 'Cardio Load', unit: '', value: Math.round(tl.at(-1)!.atl), color: '#3B82F6', series: prep(tl.map((d: any) => ({ t: ms(d.date), v: Math.round(d.atl) }))) });
+      if (tl.length) { const s = prep(tl.map((d: any) => ({ t: ms(d.date), v: Math.round(d.atl) }))); kpis.push({ key: 'cardio', label: 'Cardio Load', unit: '', value: Math.round(tl.at(-1)!.atl), color: '#3B82F6', frame: 'multi', marks: weekMarks(s), series: s }); }
       const rhr = (snap.restingHR ?? []).slice(-21);
-      if (rhr.length) kpis.push({ key: 'rhr', label: 'Resting HR', unit: '', value: rhr.at(-1)!.value, color: '#60A5FA', series: prep(rhr.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
+      if (rhr.length) { const s = prep(rhr.map((d: any) => ({ t: ms(d.date), v: d.value }))); kpis.push({ key: 'rhr', label: 'Resting HR', unit: '', value: rhr.at(-1)!.value, color: '#60A5FA', frame: 'multi', marks: weekMarks(s), series: s }); }
       const hrv = (snap.hrv ?? []).slice(-21);
-      if (hrv.length) kpis.push({ key: 'hrv', label: 'HRV', unit: 'ms', value: hrv.at(-1)!.value, color: '#A78BFA', series: prep(hrv.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
+      if (hrv.length) { const s = prep(hrv.map((d: any) => ({ t: ms(d.date), v: d.value }))); kpis.push({ key: 'hrv', label: 'HRV', unit: 'ms', value: hrv.at(-1)!.value, color: '#A78BFA', frame: 'multi', marks: weekMarks(s), series: s }); }
       const vo2 = (snap.vo2max ?? []).slice(-21);
-      if (vo2.length) kpis.push({ key: 'vo2', label: 'VO₂ Max', unit: '', value: vo2.at(-1)!.value, color: '#2DD4BF', series: prep(vo2.map((d: any) => ({ t: ms(d.date), v: d.value }))) });
+      if (vo2.length) { const s = prep(vo2.map((d: any) => ({ t: ms(d.date), v: d.value }))); kpis.push({ key: 'vo2', label: 'VO₂ Max', unit: '', value: vo2.at(-1)!.value, color: '#2DD4BF', frame: 'multi', marks: weekMarks(s), series: s }); }
     }
     if (!kpis.length) return false;
     for (const k of kpis) if (GRAD[k.key] && k.series.length > 1) k.grad = GRAD[k.key];

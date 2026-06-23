@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as Clipboard from 'expo-clipboard';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
-import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
+import { computeBodyBattery, BodyBattery, BatteryPoint } from '../src/services/bodyBattery';
 
 const levelColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 const stressColor = (v: number) => (v >= 70 ? '#EF4444' : v >= 40 ? '#F59E0B' : '#22C55E');
@@ -222,7 +222,27 @@ function StressGraph({ data }: { data: BodyBattery }) {
   }
 
   const cur = pts[pts.length - 1];
-  const runs = splitRuns(pts);
+
+  // Workout (+settle) bands — the stress curve excludes these (exercise HR ≠ stress); show
+  // them as a faint marker and BREAK the line across them so the gap is explained, not bridged.
+  const wBands: { s: number; e: number }[] = [];
+  for (const p of pts) {
+    if (!p.workout) continue;
+    const last = wBands[wBands.length - 1];
+    if (last && p.t - last.e <= 15 * 60_000) last.e = p.t;
+    else wBands.push({ s: p.t, e: p.t });
+  }
+  // Build line runs from non-workout points, breaking on data gaps OR right after a workout.
+  const runs: BatteryPoint[][] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.workout) continue;
+    const curRun = runs[runs.length - 1];
+    const prev = curRun && curRun.length ? curRun[curRun.length - 1] : null;
+    if (!prev || p.t - prev.t > GAP_MS || (i > 0 && pts[i - 1].workout)) runs.push([p]);
+    else curRun.push(p);
+  }
+
   const hourLabels = [0, 6, 12, 18].map(h => {
     const t = t0 + (h / 24) * (t1 - t0);
     return { t, label: new Date(t).getHours() + 'h' };
@@ -240,6 +260,9 @@ function StressGraph({ data }: { data: BodyBattery }) {
         ))}
         {bands.map((b, i) => (
           <Rect key={i} x={x(b.s)} y={padT} width={Math.max(1, x(b.e) - x(b.s))} height={gh} fill="#6366F1" opacity={0.12} />
+        ))}
+        {wBands.map((b, i) => (
+          <Rect key={`w${i}`} x={x(b.s)} y={padT} width={Math.max(1.5, x(b.e) - x(b.s))} height={gh} fill="#F97316" opacity={0.14} />
         ))}
         {/* smooth stress line with a vertical green→amber→red gradient (gaps left as holes) */}
         <Defs>
@@ -259,7 +282,7 @@ function StressGraph({ data }: { data: BodyBattery }) {
           <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} textAnchor="middle">{h.label}</SvgText>
         ))}
       </Svg>
-      <Text style={s.graphCaption}>Stress · last 24h · shaded = asleep</Text>
+      <Text style={s.graphCaption}>Stress · last 24h · blue = asleep · orange = workout (excluded +15m)</Text>
     </View>
   );
 }

@@ -18,6 +18,34 @@ private func relTime(_ t: Double?) -> String {
   return "\(mins / 60)h ago"
 }
 
+// ─── Chart context helpers ─────────────────────────────────────────────────────
+
+// Break the line into segments at every gap flag (g==1): a data hole or an excluded workout.
+private func segmentIds(_ series: [KPIPoint]) -> [Int] {
+  var out: [Int] = []; var seg = 0
+  for (i, p) in series.enumerated() { if i > 0 && (p.g ?? 0) == 1 { seg += 1 }; out.append(seg) }
+  return out
+}
+
+// Contiguous asleep index ranges (as x-positions, ±0.5) for sleep shading.
+private func sleepRanges(_ series: [KPIPoint]) -> [(Double, Double)] {
+  var ranges: [(Double, Double)] = []; var start: Int? = nil
+  for (i, p) in series.enumerated() {
+    let asleep = (p.a ?? 0) == 1
+    if asleep && start == nil { start = i }
+    if !asleep, let s = start { ranges.append((Double(s) - 0.5, Double(i - 1) + 0.5)); start = nil }
+  }
+  if let s = start { ranges.append((Double(s) - 0.5, Double(series.count - 1) + 0.5)) }
+  return ranges
+}
+
+// Tiny legend under a chart explaining the context annotations.
+private func contextCaption(_ kpi: KPI) -> String? {
+  if kpi.frame == "multi" { return (kpi.marks?.isEmpty == false) ? "┊ week (Mon)" : nil }
+  if kpi.series.contains(where: { ($0.a ?? 0) == 1 }) { return "▓ asleep" }
+  return nil
+}
+
 // ─── Root: hierarchical list of KPIs (tap one to open its graph) ───────────────
 struct ContentView: View {
   @EnvironmentObject var store: KPIStore
@@ -94,25 +122,41 @@ struct KPIDetailView: View {
           let vals = kpi.series.map(\.v)
           let fixed = ["stress", "battery", "recovery"].contains(kpi.key)
           let lo = fixed ? 0 : (vals.min() ?? 0)
-          let hi = fixed ? 100 : (vals.max() ?? 1)
+          let hiRaw = fixed ? 100 : (vals.max() ?? 1)
+          let hi = hiRaw > lo ? hiRaw : lo + 1
           // Value-coloured line (Bevel-style): high→low ramp mapped to the y-axis.
           let lineStyle = kpi.grad.map { LinearGradient(colors: $0.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom) }
             ?? LinearGradient(colors: [color, color], startPoint: .top, endPoint: .bottom)
-          Chart(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
-            AreaMark(x: .value("i", i), y: .value("v", pt.v))
-              .foregroundStyle(LinearGradient(colors: [color.opacity(0.30), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-            LineMark(x: .value("i", i), y: .value("v", pt.v))
-              .foregroundStyle(lineStyle).interpolationMethod(.monotone)
+          // Segment ids break the line at gaps (data holes / workouts); sleep ranges shade the night.
+          let segs = segmentIds(kpi.series)
+          let sleep = sleepRanges(kpi.series)
+          Chart {
+            ForEach(Array(sleep.enumerated()), id: \.offset) { _, r in
+              RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
+                            yStart: .value("lo", lo), yEnd: .value("hi", hi))
+                .foregroundStyle(Color(hex: "6366F1").opacity(0.16))
+            }
+            ForEach(kpi.marks ?? [], id: \.self) { m in
+              RuleMark(x: .value("wk", Double(m) - 0.5))
+                .foregroundStyle(Color.gray.opacity(0.35))
+                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+            }
+            ForEach(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
+              AreaMark(x: .value("i", Double(i)), y: .value("v", pt.v), series: .value("seg", segs[i]))
+                .foregroundStyle(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+              LineMark(x: .value("i", Double(i)), y: .value("v", pt.v), series: .value("seg", segs[i]))
+                .foregroundStyle(lineStyle).interpolationMethod(.monotone)
+            }
           }
-          .chartYScale(domain: lo...(hi > lo ? hi : lo + 1))
+          .chartYScale(domain: lo...hi)
           .chartXAxis(.hidden)
           .frame(height: 110)
-          if let lo = kpi.series.map(\.v).min(), let hi = kpi.series.map(\.v).max() {
-            HStack {
-              Text("low \(fmtVal(lo))").font(.system(size: 11)).foregroundColor(.secondary)
-              Spacer()
-              Text("high \(fmtVal(hi))").font(.system(size: 11)).foregroundColor(.secondary)
-            }
+          HStack {
+            Text("low \(fmtVal(vals.min() ?? 0))").font(.system(size: 11)).foregroundColor(.secondary)
+            Spacer()
+            if let ctx = contextCaption(kpi) { Text(ctx).font(.system(size: 10)).foregroundColor(.secondary) }
+            Spacer()
+            Text("high \(fmtVal(vals.max() ?? 0))").font(.system(size: 11)).foregroundColor(.secondary)
           }
         } else {
           Text("No history yet").font(.system(size: 12)).foregroundColor(.secondary).padding(.vertical, 8)
