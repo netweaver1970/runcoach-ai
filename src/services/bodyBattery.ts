@@ -56,6 +56,7 @@ const STRESS_HR_GATE_FLOOR = 0.15; // …but a small floor remains at/below rest
                               // from e.g. late-night digestion still reads a GENTLE medium (not 0),
                               // while a resting-HR blip stays small (≈15, not the old ≈65 spike)
 const SLEEP_STRESS_CAP = 45;  // asleep stress can show food/arousal medium, but no daytime-level spike
+const SESSION_GAP_MS = 60 * 60_000; // merge sleep segments < 1h apart into one night session
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
@@ -169,11 +170,32 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     return best;
   };
 
-  // ── Sleep windows ──────────────────────────────────────────────────────────────
+  // ── Sleep windows + sessions ──────────────────────────────────────────────────
   const sleepWins = (sleepRaw as any[])
     .filter(s => ASLEEP.has(s.value))
     .map(s => ({ s: new Date(s.startDate).getTime(), e: new Date(s.endDate).getTime() }));
   const isAsleep = (t: number) => sleepWins.some(w => t >= w.s && t <= w.e);
+
+  // Merge asleep windows separated by < SESSION_GAP into overnight "sessions". A brief
+  // awakening INSIDE a session is a micro-wake (still night), not awake-daytime — so we
+  // interpret HRV there as sleep, not stress (HK sleep state gating, per the user). The HR
+  // gate is the general daytime safeguard; this is the night-specific one.
+  const sessions = (() => {
+    const sorted = [...sleepWins].sort((a, b) => a.s - b.s);
+    const out: { s: number; e: number }[] = [];
+    for (const w of sorted) {
+      const last = out[out.length - 1];
+      if (last && w.s - last.e <= SESSION_GAP_MS) last.e = Math.max(last.e, w.e);
+      else out.push({ s: w.s, e: w.e });
+    }
+    return out;
+  })();
+  const inSleepSession = (t: number) => sessions.some(w => t >= w.s && t <= w.e);
+
+  // HK sleep STAGE at t (0 inBed, 1 asleep, 2 awake, 3 core, 4 deep, 5 REM; -1 none) — emitted
+  // in the debug dump so a future capture can calibrate stage-specific stress ceilings.
+  const stageWins = (sleepRaw as any[]).map(s => ({ s: new Date(s.startDate).getTime(), e: new Date(s.endDate).getTime(), v: s.value }));
+  const stageAt = (t: number) => { for (const w of stageWins) if (t >= w.s && t <= w.e) return w.v; return -1; };
 
   // ── Workout windows (+ settle) ───────────────────────────────────────────────
   // During a workout and for ~15 min after, HR is exercise-driven (and still settling),
@@ -215,23 +237,25 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     for (let j = hi; j < hr.length && hr[j].t < t + binMs; j++) { sum += hr[j].v; n++; }
     const mid = t + binMs / 2;
     const asleep = isAsleep(mid);
+    const night = asleep || inSleepSession(mid); // asleep OR a micro-wake inside the night
     const workout = inWorkout(mid);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
-    const rawStress = asleep ? Math.min(stressAt(avgHR, vHrv), SLEEP_STRESS_CAP) : stressAt(avgHR, vHrv);
-    // Momentum: rise instantly (fast attack), decay slowly (EWMA) — a brief HR dip no longer
-    // crashes stress to 0. Floor awake stress so the curve never bottoms out, like Bevel.
-    // During a workout + settle, FREEZE the EWMA so the exercise HR spike never enters the
-    // resting-stress curve (the bin is flagged → charts draw a gap there).
+    // Night mode (HK sleep session): cap stress so a suppressed-HRV night reads as sleep, not
+    // stress — covering micro-wakes too. Awake-day: full stress.
+    const rawStress = night ? Math.min(stressAt(avgHR, vHrv), SLEEP_STRESS_CAP) : stressAt(avgHR, vHrv);
+    // Momentum: fast attack only when AWAKE-DAY (a real stressor); at night smooth both ways so a
+    // brief awakening can't spike the curve. Workout + settle FREEZES the EWMA (bin → gap).
     if (!workout) {
       smStress = smStress == null ? rawStress
-        : rawStress > smStress ? rawStress
+        : (rawStress > smStress && !night) ? rawStress
         : STRESS_SMOOTH * rawStress + (1 - STRESS_SMOOTH) * smStress;
     } else if (smStress == null) {
       smStress = STRESS_FLOOR;
     }
-    const stress = asleep ? smStress : Math.max(smStress, STRESS_FLOOR);
+    // Floor only applies awake-day (Bevel's calm baseline); the night is free to fall toward 0.
+    const stress = night ? smStress : Math.max(smStress, STRESS_FLOOR);
     // Recovery ceiling for the overnight charge: a SLOW EWMA of HRV vs baseline so the whole
     // night's recovery sets the cap (not a momentary blip). Poor HRV → low ceiling → little
     // charge (Bevel-style); good HRV → high ceiling → full charge.
@@ -247,7 +271,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       : -(BASE_DRAIN + (drainStress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
-    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
+    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stageAt(mid), wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
   }
   if (!series.length) return null;
 

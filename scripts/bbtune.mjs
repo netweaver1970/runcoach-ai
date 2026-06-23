@@ -33,6 +33,7 @@ const CFG = {
   HR_GATE: process.env.HR_GATE != null ? +process.env.HR_GATE : 12, // bpm above rest for HRV-stress
   HR_GATE_FLOOR: process.env.HR_GATE_FLOOR != null ? +process.env.HR_GATE_FLOOR : 0.15,
   SLEEP_CAP: process.env.SLEEP_CAP != null ? +process.env.SLEEP_CAP : 45,
+  SESSION_GAP_MIN: process.env.SESSION_GAP_MIN != null ? +process.env.SESSION_GAP_MIN : 60,
   // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
   // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
   AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
@@ -61,24 +62,33 @@ const stressAt = (hr, vHrv, a) => {
 
 const bins = d.bins ?? d.bins3.map(([m, hr, a]) => ({ m, hr, a }));
 const lastM = bins.at(-1).m;
+// Night = asleep OR a micro-wake inside the night session. Use the dump's `ses` flag if present
+// (new dumps), else derive it: a bin within SESSION_GAP of asleep bins on BOTH sides.
+const GAPB = Math.round(CFG.SESSION_GAP_MIN / CFG.BIN_MIN);
+const aIdx = bins.map((b, i) => (b.a ? i : -1)).filter(i => i >= 0);
+const nightArr = bins.map((b, i) => b.ses != null ? !!b.ses
+  : (!!b.a || (aIdx.some(j => j <= i && i - j <= GAPB) && aIdx.some(j => j >= i && j - i <= GAPB))));
+
 let battery = CFG.SEED;
 let sm = null, smR = null, lastHrv = hrvBaseline;
 const out = [];
-for (const { m, hr, a } of bins) {
+for (let i = 0; i < bins.length; i++) {
+  const { m, hr, a } = bins[i];
+  const night = nightArr[i];
   const vHrv = nearestHrv(m);
-  const raw = stressAt(hr, vHrv, !!a);
-  // EWMA momentum: fast attack (RISE) when stress climbs, slow release (SMOOTH) when it falls.
-  const alpha = sm == null ? 1 : (raw > sm ? CFG.RISE : CFG.SMOOTH);
+  const raw = stressAt(hr, vHrv, night);
+  // Fast attack (RISE) only AWAKE-DAY; at night smooth both ways so a brief wake can't spike.
+  const alpha = sm == null ? 1 : ((raw > sm && !night) ? CFG.RISE : CFG.SMOOTH);
   sm = sm == null ? raw : alpha * raw + (1 - alpha) * sm;
-  const stress = a ? sm : Math.max(sm, CFG.FLOOR);             // awake floor (Bevel never hits 0)
+  const stress = night ? sm : Math.max(sm, CFG.FLOOR);        // floor only awake-day
   // Recovery ceiling: slow EWMA of HRV/baseline → the whole night's recovery caps the charge.
   if (vHrv != null) lastHrv = vHrv;
   const ratio = lastHrv / Math.max(1, hrvBaseline);
   smR = smR == null ? ratio : CFG.CEIL_HRV_SMOOTH * ratio + (1 - CFG.CEIL_HRV_SMOOTH) * smR;
   const ceil = clamp(CFG.CEIL_LO + (CFG.CEIL_HI - CFG.CEIL_LO) * ((smR - CFG.CEIL_RLO) / (CFG.CEIL_RHI - CFG.CEIL_RLO)), 20, 100);
-  const rate = a
-    ? Math.max(0, Math.min(CFG.CHARGE_MAX, CFG.CHARGE_K * (ceil - battery))) // asleep → ramp toward ceiling (capped)
-    : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);    // awake → drain (declines all day)
+  const rate = a // battery charges only during ACTUAL sleep (not micro-wakes)
+    ? Math.max(0, Math.min(CFG.CHARGE_MAX, CFG.CHARGE_K * (ceil - battery)))
+    : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);
   battery = clamp(battery + rate * CFG.BIN_MIN, 0, 100);
   out.push({ m, hr, a, hrv: vHrv, stress: Math.round(stress), battery: Math.round(battery) });
 }
