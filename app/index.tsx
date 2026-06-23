@@ -412,6 +412,22 @@ export default function HomeScreen() {
   const dayView     = buildDayView(viewDate, snapshot, dayComps);
   const pickerDays  = Object.keys(dayComps).sort().reverse();
 
+  // Has today's prescribed run been executed? If so, mark the plan card DONE — and if
+  // there's still strain headroom below the target floor, suggest an easy top-up
+  // (walk / indoor cycle) rather than implying the day is over.
+  const completion = (() => {
+    if (!recommendation || recommendation.type === 'Rest') return null;
+    const todaysRuns = allRuns.filter(r => toDateKey(new Date(r.date)) === todayKey);
+    if (todaysRuns.length === 0) return null;
+    const min = Math.round(todaysRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60);
+    const km  = todaysRuns.reduce((s, r) => s + r.distance, 0) / 1000;
+    const str = snapshot?.strain ?? null;
+    const topUp = (str && str.real < str.safeLow)
+      ? `Still ${str.safeLow - str.real} pts under your ${str.safeLow}–${str.safeHigh}% target — room for more. Add an easy walk or indoor cycle to top up.`
+      : null;
+    return { done: true, min, km, topUp };
+  })();
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Whole screen is day-swipeable (← → between days); the responder only claims
@@ -455,6 +471,7 @@ export default function HomeScreen() {
             rec={recommendation}
             loading={loadingRec}
             strain={snapshot?.strain ?? null}
+            completion={completion}
             onPress={snapshot?.strain ? () => router.push({
               pathname: '/strain-detail' as any,
               params: { str: JSON.stringify(snapshot.strain), rec: recovery ? JSON.stringify(recovery) : undefined },
@@ -754,7 +771,7 @@ const REC_COLORS: Record<string, string> = {
   Rest: '#6B7280', Easy: '#22C55E', Z2: '#22C55E', Tempo: '#F97316', LongRun: '#3B82F6', Intervals: '#EF4444',
 };
 
-function TrainingRecommendationCard({ rec, loading, strain, onPress }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null; onPress?: () => void }) {
+function TrainingRecommendationCard({ rec, loading, strain, onPress, completion }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null; onPress?: () => void; completion?: { done: boolean; min: number; km: number; topUp: string | null } | null }) {
   const recStyles = useThemedStyles(makeRecStyles);
   if (loading && !rec) {
     return (
@@ -766,26 +783,49 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress }: { rec: Tr
   }
   if (!rec) return null;
 
-  const color = REC_COLORS[rec.type] ?? '#FF6B35';
-  const icon  = REC_ICONS[rec.type]  ?? '🏃';
+  const done   = completion?.done ?? false;
+  const typeNm = rec.type === 'LongRun' ? 'Long Run' : rec.type;
+  const color  = done ? '#22C55E' : (REC_COLORS[rec.type] ?? '#FF6B35');
+  const icon   = done ? '✅' : (REC_ICONS[rec.type] ?? '🏃');
+  const metBand = !!strain && strain.real >= strain.safeLow;
 
   return (
-    <TouchableOpacity style={[recStyles.card, { borderLeftColor: color }]} onPress={onPress} activeOpacity={0.85} disabled={!onPress}>
+    <TouchableOpacity style={[recStyles.card, { borderLeftColor: color }, done && recStyles.cardDone]} onPress={onPress} activeOpacity={0.85} disabled={!onPress}>
       <View style={recStyles.header}>
         <Text style={recStyles.icon}>{icon}</Text>
         <View style={{ flex: 1 }}>
-          <Text style={[recStyles.type, { color }]}>{rec.type === 'LongRun' ? 'Long Run' : rec.type}</Text>
+          <Text style={[recStyles.type, { color }]}>
+            {typeNm}{done ? '  ·  done ✓' : ''}
+          </Text>
           {rec.type !== 'Rest' && (
-            <Text style={recStyles.meta}>{rec.duration}{rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}</Text>
+            <Text style={recStyles.meta}>
+              {done
+                ? `Completed ${completion!.min} min${completion!.km >= 0.1 ? ` · ${completion!.km.toFixed(1)} km` : ''}`
+                : `${rec.duration}${rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}`}
+            </Text>
           )}
         </View>
-        <Text style={recStyles.badge}>Today's plan{onPress ? ' ›' : ''}</Text>
+        <Text style={[recStyles.badge, done && recStyles.badgeDone]}>
+          {done ? '✓ DONE' : `Today's plan${onPress ? ' ›' : ''}`}
+        </Text>
       </View>
-      <Text style={recStyles.reason}>{rec.reason}</Text>
+
+      {done && completion?.topUp ? (
+        <Text style={recStyles.topUp}>⚡ {completion.topUp}</Text>
+      ) : (
+        <Text style={recStyles.reason}>
+          {done
+            ? (metBand
+                ? `Prescribed session done — you're at ${strain!.real}%, inside your ${strain!.safeLow}–${strain!.safeHigh}% target. Nicely done.`
+                : 'Prescribed session done. ✓')
+            : rec.reason}
+        </Text>
+      )}
+
       {strain && (
         <Text style={recStyles.target}>
           Target <Text style={{ color: SAFE_COLOR, fontWeight: '800' }}>{strain.safeLow}–{strain.safeHigh}%</Text> strain
-          {rec.type !== 'Rest' && rec.zone && rec.zone !== '—' ? `  ·  ${rec.zone}` : ''}
+          {done ? `  ·  now ${strain.real}%` : (rec.type !== 'Rest' && rec.zone && rec.zone !== '—' ? `  ·  ${rec.zone}` : '')}
         </Text>
       )}
     </TouchableOpacity>
@@ -923,6 +963,20 @@ const makeRecStyles = (c: Palette) => StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 8,
     overflow: 'hidden',
+  },
+  badgeDone: {
+    color: '#fff',
+    backgroundColor: '#22C55E',
+    fontWeight: '800',
+  },
+  cardDone: {
+    backgroundColor: c.mode === 'dark' ? '#13241a' : '#F0FBF4',
+  },
+  topUp: {
+    fontSize: 13,
+    color: '#F59E0B',
+    fontWeight: '700',
+    lineHeight: 18,
   },
   reason: {
     fontSize: 13,
