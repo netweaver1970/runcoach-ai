@@ -12,7 +12,7 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory } from './healthkit'
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
 import { ensureZonesFile } from './zones';
-import { activityCategory } from './trainingLoad';
+import { activityCategory, heatStrainFactor } from './trainingLoad';
 import { DayStrain, ActivitySummary } from '../types';
 
 export interface CoachSnapshot {
@@ -97,16 +97,6 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   return false;
 }
 
-// How much a given effort's cardiovascular strain is inflated by heat + humidity today.
-// ~+2%/°C of apparent temp above 18°C, plus a humidity penalty above 60% RH. The coach
-// must scale the session DOWN by this so run+drills stay within the (temp-independent) band.
-export function heatStrainFactor(w?: CoachSnapshot['weather']): number {
-  if (!w) return 1;
-  const t = w.apparentC ?? w.tempC;
-  let f = 1 + Math.max(0, t - 18) * 0.02;
-  if (w.humidity > 60) f += (w.humidity - 60) * 0.003;
-  return Math.min(1.6, Math.round(f * 100) / 100);
-}
 
 // The detailed rules now live in editable knowledge files (coachFiles.ts). The wrapper
 // keeps only the role framing and the (non-editable) output contract so a user edit

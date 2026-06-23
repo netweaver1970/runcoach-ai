@@ -46,7 +46,8 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
+import { getLocalWeather } from './weather';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -1527,10 +1528,13 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const todayActive = [...todayActiveMap.values()][0] ?? 0; // window is today only → one bucket
   const todayExMin  = [...todayExMap.values()][0] ?? 0;
   const todayActivityFloor = activityFloorTrimp(todayActive, todayExMin);
+  // Heat inflates the day's strain (a given effort costs more in the heat) — apply the same
+  // factor the coach uses to scale sessions. Best-effort + cached; no weather → factor 1.
+  const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable)
+    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable, heatFactor)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.

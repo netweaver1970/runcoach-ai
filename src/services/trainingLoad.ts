@@ -395,6 +395,19 @@ export function activityFloorTrimp(activeEnergyKcal: number, exerciseMin: number
  * @param recovery     recovery score 0-100 (0 = unknown)
  * @param tsb          training-stress balance (form)
  */
+// Heat inflates the cardiovascular cost of any effort: ~+2%/°C of apparent temp above 18°C,
+// plus a humidity penalty above 60% RH (capped at 1.6×). Bevel applies this to strain; we now
+// do too (the coach already used it to scale sessions down). Calibrated to a 32°C day where
+// our 36% × 1.28 = 46% ≈ Bevel's 47%.
+export function heatStrainFactor(w?: { tempC?: number; apparentC?: number; humidity?: number } | null): number {
+  if (!w) return 1;
+  const t = w.apparentC ?? w.tempC;
+  if (t == null) return 1;
+  let f = 1 + Math.max(0, t - 18) * 0.02;
+  if ((w.humidity ?? 0) > 60) f += ((w.humidity ?? 0) - 60) * 0.003;
+  return Math.min(1.6, Math.round(f * 100) / 100);
+}
+
 export function computeDayStrain(
   cardioTrimp: number,
   muscularLoad: number,
@@ -402,13 +415,15 @@ export function computeDayStrain(
   tsb: number,
   activityFloor = 0,
   range?: AdvisableRange,
+  heatFactor = 1,
 ): DayStrain {
   // Cardio (logged-workout HR) vs daily-activity floor — take the larger, then add
   // any muscular load. The floor lifts rest/unlogged-activity days without inflating
   // days whose logged-workout cardio already dominates.
   const base  = Math.max(Math.max(0, cardioTrimp), Math.max(0, activityFloor));
   const trimp = base + Math.max(0, muscularLoad);
-  const real  = strainFromTrimp(trimp);
+  // Heat inflates the day's strain (a given effort costs more in the heat) — Bevel-style.
+  const real  = Math.min(100, Math.round(strainFromTrimp(trimp) * heatFactor));
 
   // Prefer the multi-factor advisable range (recovery + sleep + form + ACWR). Fall
   // back to the recovery-only band if no readiness inputs were supplied.
