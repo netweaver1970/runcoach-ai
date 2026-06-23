@@ -28,15 +28,22 @@ const WINDOW_H = 60;          // compute window (2+ nights so the seed washes ou
 const BASELINE_DAYS = 14;     // HRV baseline window
 
 // Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges ONLY while
-// asleep (Bevel's curve rises inside the sleep band, then declines monotonically all day) and
-// drains whenever awake — slowly when calm, fast when stressed.
-// Calibrated against Bevel (see scripts/bbtune.mjs against a device dump): battery now,
-// drain and avg daytime stress match Bevel.
+// asleep — but, like Bevel, the overnight charge is CAPPED BY RECOVERY: a poor-HRV night
+// barely charges, a good night charges fully. Awake it drains, slowly when calm, fast when
+// stressed. Calibrated against Bevel via scripts/bbtune.mjs on the 23-Jun device dump:
+// our NOW 20% vs Bevel 17%, overnight charge to 40% vs Bevel "last charged 38%".
 const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
-const SLEEP_CHARGE  = 0.125;  // per-minute while asleep
-const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.055;  // additional per-minute drain at full stress (re-tuned for the
-                              // smoothed stress below so the 22-Jun dump still ends at Bevel 8%)
+const BASE_DRAIN    = 0.02;   // per-minute awake baseline drain (even when calm)
+const STRESS_DRAIN  = 0.075;  // additional per-minute drain at full stress
+// Recovery-scaled overnight charge: while asleep the battery approaches a CEILING set by how
+// good HRV is vs the 14-day baseline (a slow EWMA so the WHOLE night's recovery sets it, not a
+// momentary HRV blip). CHARGE_K is the per-minute approach rate toward that ceiling.
+const CHARGE_K      = 0.045;  // per-minute approach toward the recovery ceiling while asleep
+const CEIL_LO       = 22;     // charge ceiling at the low HRV-ratio anchor (poor recovery)
+const CEIL_HI       = 98;     // charge ceiling at the high HRV-ratio anchor (great recovery)
+const CEIL_RLO      = 0.62;   // hrvRatio mapped to CEIL_LO
+const CEIL_RHI      = 1.35;   // hrvRatio mapped to CEIL_HI
+const CEIL_HRV_SMOOTH = 0.012;// EWMA weight on hrvRatio → whole-night recovery (slow on purpose)
 // Stress momentum (Bevel-like): raw per-bin stress was twitchy — it dropped below 5 for ~16%
 // of the day, unlike Bevel's smooth curve. Rise instantly, decay slowly (EWMA), floor awake.
 const STRESS_SMOOTH = 0.11;   // EWMA weight on the way DOWN; tuned for 5-min bins to keep the
@@ -186,6 +193,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   let battery = SEED; // washed out by the two nights inside the 60h window
   let smStress: number | null = null; // EWMA-smoothed stress (Bevel-style momentum)
+  let smHrvRatio: number | null = null; // slow EWMA of HRV/baseline → the night's recovery
+  let lastHrvForCeil = hrvBaseline;     // carry the last trusted HRV across gaps for the ceiling
   const series: BatteryPoint[] = [];
   const binDebug: any[] = [];
   for (let t = start; t <= now; t += binMs) {
@@ -212,12 +221,18 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       smStress = STRESS_FLOOR;
     }
     const stress = asleep ? smStress : Math.max(smStress, STRESS_FLOOR);
-    // Bevel only charges inside the sleep band — the Energy Bank then declines all day. Charge
-    // ONLY while actually asleep; awake always drains — gently when calm, fast when stressed.
-    // The battery still drains for the REAL effort of a workout (use the actual exertion).
+    // Recovery ceiling for the overnight charge: a SLOW EWMA of HRV vs baseline so the whole
+    // night's recovery sets the cap (not a momentary blip). Poor HRV → low ceiling → little
+    // charge (Bevel-style); good HRV → high ceiling → full charge.
+    if (vHrv != null) lastHrvForCeil = vHrv;
+    const hrvRatio = lastHrvForCeil / Math.max(1, hrvBaseline);
+    smHrvRatio = smHrvRatio == null ? hrvRatio : CEIL_HRV_SMOOTH * hrvRatio + (1 - CEIL_HRV_SMOOTH) * smHrvRatio;
+    const chargeCeiling = clamp(CEIL_LO + (CEIL_HI - CEIL_LO) * ((smHrvRatio - CEIL_RLO) / (CEIL_RHI - CEIL_RLO)), 20, 100);
+    // Asleep → charge toward the recovery ceiling (never drain in sleep); awake → drain, gently
+    // when calm, fast when stressed. The battery still drains for the REAL effort of a workout.
     const drainStress = workout ? Math.max(rawStress, stress) : stress;
     const rate = asleep
-      ? SLEEP_CHARGE
+      ? Math.max(0, CHARGE_K * (chargeCeiling - battery))
       : -(BASE_DRAIN + (drainStress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
@@ -254,7 +269,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE, BASE_DRAIN, STRESS_DRAIN, STRESS_SMOOTH, STRESS_FLOOR, SEED, WINDOW_H } },
+        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, SEED, WINDOW_H } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
     },

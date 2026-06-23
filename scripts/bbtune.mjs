@@ -10,10 +10,18 @@ const CFG = {
   // HRV trust (rrgap is NO LONGER a hard reject — stable, moderate HR is the arbiter):
   V_MIN: 5, V_MAX: 110, HR_HIGH: 20, CV_MAX: 18,
   W_HR: 0.35, W_HRV: 0.65, SUPP_CAP: 2.6, HRV_WIN: 65,
-  REST_STRESS: 33, SLEEP_CHARGE: 0.125, SEED: 42,
+  REST_STRESS: 33, SEED: 42,
   BIN_MIN: process.env.BIN_MIN != null ? +process.env.BIN_MIN : (d.meta?.constants?.BIN_MIN ?? 10), // from the dump
-  BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.012,
-  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.055,
+  BASE_DRAIN:   process.env.BASE_DRAIN   != null ? +process.env.BASE_DRAIN   : 0.02,
+  STRESS_DRAIN: process.env.STRESS_DRAIN != null ? +process.env.STRESS_DRAIN : 0.075,
+  // Recovery-scaled overnight charge (Bevel-style): asleep → approach a CEILING set by a slow
+  // EWMA of HRV/baseline. Poor-HRV night → low ceiling → little charge; good night → full.
+  CHARGE_K:    process.env.CHARGE_K    != null ? +process.env.CHARGE_K    : 0.045,
+  CEIL_LO:     process.env.CEIL_LO     != null ? +process.env.CEIL_LO     : 22,
+  CEIL_HI:     process.env.CEIL_HI     != null ? +process.env.CEIL_HI     : 98,
+  CEIL_RLO:    process.env.CEIL_RLO    != null ? +process.env.CEIL_RLO    : 0.62,
+  CEIL_RHI:    process.env.CEIL_RHI    != null ? +process.env.CEIL_RHI    : 1.35,
+  CEIL_HRV_SMOOTH: process.env.CEIL_HRV_SMOOTH != null ? +process.env.CEIL_HRV_SMOOTH : 0.012,
   // Stress smoothing (Bevel-style momentum): EWMA per 10-min bin. SMOOTH=1 → raw/instant
   // (twitchy, drops to 0); lower = smoother + stickier. RISE applies a faster attack so
   // stress climbs quickly but decays slowly, like Bevel. FLOOR keeps awake stress off 0.
@@ -45,7 +53,7 @@ const stressAt = (hr, vHrv, a) => {
 const bins = d.bins ?? d.bins3.map(([m, hr, a]) => ({ m, hr, a }));
 const lastM = bins.at(-1).m;
 let battery = CFG.SEED;
-let sm = null;
+let sm = null, smR = null, lastHrv = hrvBaseline;
 const out = [];
 for (const { m, hr, a } of bins) {
   const vHrv = nearestHrv(m);
@@ -54,8 +62,13 @@ for (const { m, hr, a } of bins) {
   const alpha = sm == null ? 1 : (raw > sm ? CFG.RISE : CFG.SMOOTH);
   sm = sm == null ? raw : alpha * raw + (1 - alpha) * sm;
   const stress = a ? sm : Math.max(sm, CFG.FLOOR);             // awake floor (Bevel never hits 0)
+  // Recovery ceiling: slow EWMA of HRV/baseline → the whole night's recovery caps the charge.
+  if (vHrv != null) lastHrv = vHrv;
+  const ratio = lastHrv / Math.max(1, hrvBaseline);
+  smR = smR == null ? ratio : CFG.CEIL_HRV_SMOOTH * ratio + (1 - CFG.CEIL_HRV_SMOOTH) * smR;
+  const ceil = clamp(CFG.CEIL_LO + (CFG.CEIL_HI - CFG.CEIL_LO) * ((smR - CFG.CEIL_RLO) / (CFG.CEIL_RHI - CFG.CEIL_RLO)), 20, 100);
   const rate = a
-    ? CFG.SLEEP_CHARGE                                          // asleep → charge (Bevel: sleep band only)
+    ? Math.max(0, CFG.CHARGE_K * (ceil - battery))             // asleep → approach recovery ceiling
     : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);    // awake → drain (declines all day)
   battery = clamp(battery + rate * CFG.BIN_MIN, 0, 100);
   out.push({ m, hr, a, hrv: vHrv, stress: Math.round(stress), battery: Math.round(battery) });
