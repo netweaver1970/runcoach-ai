@@ -146,7 +146,6 @@ export function computeTrainingLoadSeries(
 
   const out: DailyLoad[] = [];
   let atl = 0, ctl = 0;
-  let prevAtl = 0, prevCtl = 0;
 
   const fromKey = dayKey(fromDate.toISOString());
   const cursor = new Date(warmStart);
@@ -159,10 +158,8 @@ export function computeTrainingLoadSeries(
     if (first) {
       // Seed both EWMAs at the first day's load to limit ramp-up artefacts
       atl = load; ctl = load;
-      prevAtl = atl; prevCtl = ctl;
       first = false;
     } else {
-      prevAtl = atl; prevCtl = ctl;
       atl = atl + LAMBDA_ATL * (load - atl);
       ctl = ctl + LAMBDA_CTL * (load - ctl);
     }
@@ -173,7 +170,10 @@ export function computeTrainingLoadSeries(
         load,
         atl: Math.round(atl * 10) / 10,
         ctl: Math.round(ctl * 10) / 10,
-        tsb: Math.round((prevCtl - prevAtl) * 10) / 10, // form = yesterday's fitness − fatigue
+        // Form reflects SAME-DAY fitness − fatigue so today's training moves it intra-day:
+        // fresh in the morning before load accrues, dropping after a run. (Was yesterday's
+        // CTL−ATL — the lagged convention — which never reacted to today's session.)
+        tsb: Math.round((ctl - atl) * 10) / 10,
       });
     }
     cursor.setDate(cursor.getDate() + 1);
