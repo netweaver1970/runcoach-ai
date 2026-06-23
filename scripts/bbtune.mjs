@@ -17,6 +17,7 @@ const CFG = {
   // Recovery-scaled overnight charge (Bevel-style): asleep → approach a CEILING set by a slow
   // EWMA of HRV/baseline. Poor-HRV night → low ceiling → little charge; good night → full.
   CHARGE_K:    process.env.CHARGE_K    != null ? +process.env.CHARGE_K    : 0.045,
+  CHARGE_MAX:  process.env.CHARGE_MAX  != null ? +process.env.CHARGE_MAX  : 0.12,
   CEIL_LO:     process.env.CEIL_LO     != null ? +process.env.CEIL_LO     : 22,
   CEIL_HI:     process.env.CEIL_HI     != null ? +process.env.CEIL_HI     : 98,
   CEIL_RLO:    process.env.CEIL_RLO    != null ? +process.env.CEIL_RLO    : 0.62,
@@ -30,6 +31,8 @@ const CFG = {
   RISE:   process.env.RISE   != null ? +process.env.RISE   : 1,
   FLOOR:  process.env.FLOOR  != null ? +process.env.FLOOR  : 18,
   HR_GATE: process.env.HR_GATE != null ? +process.env.HR_GATE : 12, // bpm above rest for HRV-stress
+  HR_GATE_FLOOR: process.env.HR_GATE_FLOOR != null ? +process.env.HR_GATE_FLOOR : 0.15,
+  SLEEP_CAP: process.env.SLEEP_CAP != null ? +process.env.SLEEP_CAP : 45,
   // awake-but-calm-at-night charge factor × SLEEP_CHARGE (0 = hold/no charge; 0.75 = old
   // over-charging model that read +15 vs Bevel). Override per-run: AWAKE_CHARGE=0.2 node …
   AWAKE_CHARGE: process.env.AWAKE_CHARGE != null ? +process.env.AWAKE_CHARGE : 0,
@@ -49,11 +52,11 @@ const stressAt = (hr, vHrv, a) => {
   let st = base;
   if (vHrv != null) {
     const supp = clamp(hrvBaseline / Math.max(vHrv, 1), 0.5, CFG.SUPP_CAP);
-    const gate = clamp((hr - restHR) / CFG.HR_GATE, 0, 1); // suppressed HRV at resting HR = noise
+    const gate = clamp(CFG.HR_GATE_FLOOR + (hr - restHR) / CFG.HR_GATE, CFG.HR_GATE_FLOOR, 1); // small floor at rest
     const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100 * gate;
     st = clamp(CFG.W_HR * base + CFG.W_HRV * Math.max(base, hrvStress), 0, 100);
   }
-  return a ? Math.min(st, 14) : st;
+  return a ? Math.min(st, CFG.SLEEP_CAP) : st;
 };
 
 const bins = d.bins ?? d.bins3.map(([m, hr, a]) => ({ m, hr, a }));
@@ -74,7 +77,7 @@ for (const { m, hr, a } of bins) {
   smR = smR == null ? ratio : CFG.CEIL_HRV_SMOOTH * ratio + (1 - CFG.CEIL_HRV_SMOOTH) * smR;
   const ceil = clamp(CFG.CEIL_LO + (CFG.CEIL_HI - CFG.CEIL_LO) * ((smR - CFG.CEIL_RLO) / (CFG.CEIL_RHI - CFG.CEIL_RLO)), 20, 100);
   const rate = a
-    ? Math.max(0, CFG.CHARGE_K * (ceil - battery))             // asleep → approach recovery ceiling
+    ? Math.max(0, Math.min(CFG.CHARGE_MAX, CFG.CHARGE_K * (ceil - battery))) // asleep → ramp toward ceiling (capped)
     : -(CFG.BASE_DRAIN + (stress / 100) * CFG.STRESS_DRAIN);    // awake → drain (declines all day)
   battery = clamp(battery + rate * CFG.BIN_MIN, 0, 100);
   out.push({ m, hr, a, hrv: vHrv, stress: Math.round(stress), battery: Math.round(battery) });

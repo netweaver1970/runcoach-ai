@@ -39,6 +39,8 @@ const STRESS_DRAIN  = 0.075;  // additional per-minute drain at full stress
 // good HRV is vs the 14-day baseline (a slow EWMA so the WHOLE night's recovery sets it, not a
 // momentary HRV blip). CHARGE_K is the per-minute approach rate toward that ceiling.
 const CHARGE_K      = 0.045;  // per-minute approach toward the recovery ceiling while asleep
+const CHARGE_MAX    = 0.12;   // cap on the per-minute charge so it ramps LINEARLY (Bevel-like) when
+                              // far below the ceiling, instead of jumping fast then plateauing
 const CEIL_LO       = 22;     // charge ceiling at the low HRV-ratio anchor (poor recovery)
 const CEIL_HI       = 98;     // charge ceiling at the high HRV-ratio anchor (great recovery)
 const CEIL_RLO      = 0.62;   // hrvRatio mapped to CEIL_LO
@@ -49,8 +51,11 @@ const CEIL_HRV_SMOOTH = 0.012;// EWMA weight on hrvRatio → whole-night recover
 const STRESS_SMOOTH = 0.11;   // EWMA weight on the way DOWN; tuned for 5-min bins to keep the
                               // same ~45-min decay as the calibrated 0.20-at-10-min (= 1-√0.8)
 const STRESS_FLOOR  = 18;     // awake stress never below this (Bevel's calm baseline sits ~20-30)
-const STRESS_HR_GATE = 12;    // HRV-driven stress needs HR this far above resting to count (bpm);
-                              // at/below resting a suppressed HRV read is noise, not stress
+const STRESS_HR_GATE = 12;    // HRV-driven stress reaches full weight this far above resting (bpm)
+const STRESS_HR_GATE_FLOOR = 0.15; // …but a small floor remains at/below resting, so suppressed HRV
+                              // from e.g. late-night digestion still reads a GENTLE medium (not 0),
+                              // while a resting-HR blip stays small (≈15, not the old ≈65 spike)
+const SLEEP_STRESS_CAP = 45;  // asleep stress can show food/arousal medium, but no daytime-level spike
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
@@ -191,7 +196,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // Gate HRV-driven stress by HR elevation: a suppressed HRV reading at/below resting HR is
     // noise / normal sleep variation, not stress (you can't be highly stressed at resting HR).
     // Without this, a brief overnight awakening spikes stress to ~65 — the phantom 3am peak.
-    const hrGate = clamp((avgHR - restHR) / STRESS_HR_GATE, 0, 1);
+    const hrGate = clamp(STRESS_HR_GATE_FLOOR + (avgHR - restHR) / STRESS_HR_GATE, STRESS_HR_GATE_FLOOR, 1);
     const hrvStress = clamp((supp - 0.85) / 0.9, 0, 1) * 100 * hrGate;
     // HRV-dominant (Bevel-like): suppressed HRV reads high stress when HR is also up (heat/stress).
     return clamp(0.35 * base + 0.65 * Math.max(base, hrvStress), 0, 100);
@@ -214,7 +219,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
-    const rawStress = asleep ? Math.min(stressAt(avgHR, vHrv), 14) : stressAt(avgHR, vHrv);
+    const rawStress = asleep ? Math.min(stressAt(avgHR, vHrv), SLEEP_STRESS_CAP) : stressAt(avgHR, vHrv);
     // Momentum: rise instantly (fast attack), decay slowly (EWMA) — a brief HR dip no longer
     // crashes stress to 0. Floor awake stress so the curve never bottoms out, like Bevel.
     // During a workout + settle, FREEZE the EWMA so the exercise HR spike never enters the
@@ -238,7 +243,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // when calm, fast when stressed. The battery still drains for the REAL effort of a workout.
     const drainStress = workout ? Math.max(rawStress, stress) : stress;
     const rate = asleep
-      ? Math.max(0, CHARGE_K * (chargeCeiling - battery))
+      ? Math.max(0, Math.min(CHARGE_MAX, CHARGE_K * (chargeCeiling - battery)))
       : -(BASE_DRAIN + (drainStress / 100) * STRESS_DRAIN);
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
@@ -275,7 +280,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, STRESS_HR_GATE, SEED, WINDOW_H } },
+        constants: { BIN_MIN, REST_STRESS, BASE_DRAIN, STRESS_DRAIN, CHARGE_K, CHARGE_MAX, CEIL_LO, CEIL_HI, CEIL_RLO, CEIL_RHI, CEIL_HRV_SMOOTH, STRESS_SMOOTH, STRESS_FLOOR, STRESS_HR_GATE, STRESS_HR_GATE_FLOOR, SLEEP_STRESS_CAP, SEED, WINDOW_H } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
     },
