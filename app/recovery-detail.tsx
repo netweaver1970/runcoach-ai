@@ -225,8 +225,8 @@ export default function RecoveryDetailScreen() {
         <TouchableOpacity
           style={s.calibBtn}
           onPress={async () => {
-            // Fetch fresh (2 months) so timing/empty-state can't produce an empty dump.
-            const c = (Object.keys(comps).length ? comps : await fetchOurDailyComponents(2).catch(() => ({}))) as Record<string, Record<string, number>>;
+            // Always fetch fresh 3 months so we can see how far back HealthKit actually goes.
+            const c = (await fetchOurDailyComponents(3).catch(() => ({}))) as Record<string, Record<string, number>>;
             const stat = (key: string) => {
               const vals = Object.keys(c).map((d) => c[d][key]).filter((v): v is number => v != null);
               if (!vals.length) return null;
@@ -234,7 +234,7 @@ export default function RecoveryDetailScreen() {
               const sd = Math.sqrt(vals.reduce((a, b) => a + (b - m) ** 2, 0) / vals.length);
               return { mean: Math.round(m * 10) / 10, sd: Math.round(sd * 10) / 10, n: vals.length };
             };
-            const rows = Object.keys(c).sort().slice(-35).map((d) => ({
+            const rows = Object.keys(c).sort().slice(-90).map((d) => ({
               date: d,
               rmssd:    c[d].restingHrv ?? null,        // our TRUE RMSSD (R-R)
               appleRHR: c[d].restingHr ?? null,          // our Apple Resting HR
