@@ -1526,9 +1526,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // factor the coach uses to scale sessions. Best-effort + cached; no weather → factor 1.
   const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
   // Passive strain = NON-WORKOUT steps (workout steps count as active via HR). ≈ Bevel's steps/470.
-  const todayStepSamples = await fetchStepSamples(todayStart, now);
+  // Raw step samples double-count iPhone+Watch, so take the non-workout fraction × de-duped total.
+  const [todayStepSamples, todayStepsDedup] = await Promise.all([
+    fetchStepSamples(todayStart, now),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', todayStart, now),
+  ]);
   const inTodayWin = (t: number) => todayWindows.some((w) => t >= w.s && t <= w.e);
-  const todayNwSteps = todayStepSamples.reduce((sum, s) => sum + (inTodayWin(s.t) ? 0 : s.steps), 0);
+  const rawTot = todayStepSamples.reduce((s, x) => s + x.steps, 0);
+  const rawNw  = todayStepSamples.reduce((s, x) => s + (inTodayWin(x.t) ? 0 : x.steps), 0);
+  const dedupTot = [...todayStepsDedup.values()][0] ?? 0;
+  const todayNwSteps = rawTot > 0 ? dedupTot * (rawNw / rawTot) : dedupTot;
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
@@ -2563,15 +2570,23 @@ async function fetchStepSamples(since: Date, end: Date): Promise<{ t: number; st
   });
 }
 
-// Per-day NON-workout step totals (steps during a workout window are "active", not passive strain).
+// Per-day NON-workout steps. Raw step SAMPLES double-count overlapping sources (iPhone + Watch), so
+// we take the non-workout FRACTION of raw samples and scale it by the de-duplicated daily total.
 function dailyNonWorkoutSteps(
-  samples: { t: number; steps: number; day: string }[], windowsByDay: Map<string, { s: number; e: number }[]>,
+  samples: { t: number; steps: number; day: string }[],
+  windowsByDay: Map<string, { s: number; e: number }[]>,
+  dedupedTotal: Map<string, number>,
 ): Map<string, number> {
-  const out = new Map<string, number>();
+  const rawTotal = new Map<string, number>(), rawNw = new Map<string, number>();
   for (const s of samples) {
+    rawTotal.set(s.day, (rawTotal.get(s.day) ?? 0) + s.steps);
     const wins = windowsByDay.get(s.day) ?? [];
-    if (wins.some((w) => s.t >= w.s && s.t <= w.e)) continue; // during a workout → active, skip
-    out.set(s.day, (out.get(s.day) ?? 0) + s.steps);
+    if (!wins.some((w) => s.t >= w.s && s.t <= w.e)) rawNw.set(s.day, (rawNw.get(s.day) ?? 0) + s.steps);
+  }
+  const out = new Map<string, number>();
+  for (const [day, total] of dedupedTotal) {
+    const rt = rawTotal.get(day) ?? 0, rn = rawNw.get(day) ?? 0;
+    out.set(day, rt > 0 ? Math.round(total * (rn / rt)) : total);
   }
   return out;
 }
@@ -2640,7 +2655,11 @@ export async function fetchStrainHistory(
     }
   }
 
-  const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay);
+  const [stepSamples, stepsDedup] = await Promise.all([
+    fetchStepSamples(since, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end),
+  ]);
+  const nwStepsByDay = dailyNonWorkoutSteps(stepSamples, windowsByDay, stepsDedup);
 
   // One entry per day that has HR data — including rest days — so the chart shows a
   // continuous daily series (and the clear run-day vs rest-day pattern).
@@ -2703,8 +2722,8 @@ export async function fetchStrainCalibration(days = 14): Promise<{ meta: any; da
     if (STRENGTH.has(w.workoutActivityType)) muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
   }
   const stepsByDay   = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
-  const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay);
-  const ZW = [0.1, 1, 2, 4, 6.5, 10];
+  const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay, stepsByDay);
+  const ZW = [0.1, 1, 1, 1.5, 6, 10]; // must match zoneWeight() in trainingLoad
   const zoneOf = (pct: number) => pct >= 0.9 ? 5 : pct >= 0.8 ? 4 : pct >= 0.7 ? 3 : pct >= 0.6 ? 2 : pct >= 0.5 ? 1 : 0;
   const r1 = (n: number) => Math.round(n * 10) / 10;
   const out: StrainCalibDay[] = [];

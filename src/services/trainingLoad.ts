@@ -379,13 +379,15 @@ const STRAIN_LOAD_B  = 0.022; // curvature (raise → reaches the top faster / m
 const STRAIN_LIFETAX_K  = 0.00016; // (export only) load per bpm-over-resting × min of non-workout HR
 const STRAIN_STEP_GAMMA = 2.0;     // load per 1000 NON-WORKOUT steps (≈ Bevel's steps/470 passive)
 
-// Bevel's zones + weights, by %max-HR: Z0 <50%→0.1, Z1 50-60%→1, Z2 60-70%→2, Z3 70-80%→4,
-// Z4 80-90%→6.5, Z5 >90%→10. (Z0 is gated to HR > resting by the caller, so sleep/deep-calm = 0.)
+// Zone weights by %max-HR. CALIBRATED to Bevel's actual strains (not its AI's stated "2..10"):
+// Bevel barely escalates through Z3 — a day with 25 min Z3 scored LOWER than one with 1 min Z3 — and
+// only ramps at Z4 (threshold). So Z1-Z3 are ~flat and the jump is at Z4. Fitted to Geert's workout
+// days within ~5 pts. (Z0 is gated to HR > resting by the caller, so sleep/deep-calm = 0.)
 function zoneWeight(pctMax: number): number {
   if (pctMax >= 0.9) return 10;   // Z5 Maximum
-  if (pctMax >= 0.8) return 6.5;  // Z4 Threshold
-  if (pctMax >= 0.7) return 4;    // Z3 Anaerobic
-  if (pctMax >= 0.6) return 2;    // Z2 Aerobic
+  if (pctMax >= 0.8) return 6;    // Z4 Threshold (the real escalation point)
+  if (pctMax >= 0.7) return 1.5;  // Z3 Anaerobic
+  if (pctMax >= 0.6) return 1;    // Z2 Aerobic
   if (pctMax >= 0.5) return 1;    // Z1 Recovery
   return 0.1;                     // Z0 baseline / background movement
 }
