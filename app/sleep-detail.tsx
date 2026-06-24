@@ -5,15 +5,11 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery, SleepSession } from '../src/types';
-import { fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory } from '../src/services/healthkit';
+import { fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory, computeSleepScore } from '../src/services/healthkit';
 import { computeSleepBankSeries, computeSleepNeeded } from '../src/services/trainingLoad';
 import { useThemedStyles, Palette } from '../src/theme';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
-import {
-  normaliseKPIs, applyWeights,
-  DEFAULT_SLEEP_WEIGHTS, SleepWeights,
-  loadCustomSleepWeights, computePersonalSleepGoal, loadPersonalSleepGoal,
-} from '../src/services/bevelCalibration';
+import { computePersonalSleepGoal, loadPersonalSleepGoal } from '../src/services/bevelCalibration';
 
 const SLEEP_COLOR = '#8e44ad';
 const FALLBACK_SLEEP_GOAL = 375; // 6h15m — used until personal goal loads
@@ -51,15 +47,6 @@ function getSubKPIs(session: SleepSession, hrDipPct: number) {
   };
 }
 
-/** Compute overall sleep score using Bevel's 5-KPI model */
-function computeSleepScore(
-  kpis: ReturnType<typeof getSubKPIs>,
-  sleepGoalMin: number,
-  weights: SleepWeights,
-): number {
-  const scores = normaliseKPIs(kpis, sleepGoalMin);
-  return applyWeights(scores, weights);
-}
 
 type StatusTag = 'Below normal' | 'Normal range' | 'Above normal';
 function getStatus(value: number, mean: number, sd: number, higherIsBetter = true): StatusTag {
@@ -218,7 +205,6 @@ export default function SleepDetailScreen() {
   const [hrDipHistory, setHrDipH]   = useState<number[]>([]);
   const [strainByDate, setStrainByDate] = useState<Map<string, number>>(new Map());
   const [sleepGoalMin, setSleepGoalMin] = useState(FALLBACK_SLEEP_GOAL);
-  const [weights, setWeights]       = useState<SleepWeights>(DEFAULT_SLEEP_WEIGHTS);
   const [loadingH, setLoadingH]     = useState(true);
 
   useEffect(() => {
@@ -226,16 +212,14 @@ export default function SleepDetailScreen() {
       fetchSleepHistory(3),
       fetchOvernightHRHistory(3),
       loadPersonalSleepGoal(),
-      loadCustomSleepWeights(),
       fetchStrainHistory(3),
-    ]).then(([sessions, dipData, savedGoal, customWeights, strainHist]) => {
+    ]).then(([sessions, dipData, savedGoal, strainHist]) => {
       setHistory(sessions);
       setHrDipH(dipData.map(d => d.value));
       setStrainByDate(new Map(strainHist.map(x => [x.date, x.value])));
-      // Personal sleep goal: use stored value, else compute from 90-day median
+      // Personal sleep goal (Sleep Bank / Needed): stored value, else 90-day median.
       const goal = savedGoal ?? computePersonalSleepGoal(sessions);
       setSleepGoalMin(goal > 0 ? goal : FALLBACK_SLEEP_GOAL);
-      if (customWeights) setWeights(customWeights);
     }).catch(() => {}).finally(() => setLoadingH(false));
   }, []);
 
@@ -279,7 +263,9 @@ export default function SleepDetailScreen() {
     const inBed = s.totalMinutes + s.awakeMinutes;
     return inBed > 0 ? (s.totalMinutes / inBed) * 100 : 0;
   });
-  const scoreHistory    = history.map(s => computeSleepScore(getSubKPIs(s, 0), sleepGoalMin, weights));
+  // New 5-pillar model for the sparkline (HR-dip neutral for history) + the live breakdown.
+  const scoreHistory    = history.map((sn, i) => computeSleepScore(sn, 0, 0, history.slice(0, i + 1)).score);
+  const breakdown       = computeSleepScore(sleep, overnightHR, overnightHRBaseline, history);
 
   // Sleep Bank (Bevel-style): rolling 7-night recency-weighted balance of
   // (Time Asleep − dynamic Sleep Needed). Sleep Needed = goal + strain tax + debt + efficiency.
@@ -470,21 +456,21 @@ export default function SleepDetailScreen() {
         <Text style={[s.sectionTitle, { marginTop: 16 }]}>SCORE BREAKDOWN</Text>
         <View style={s.breakdownCard}>
           <Text style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>
-            Goal: {Math.floor(sleepGoalMin / 60)}h{sleepGoalMin % 60 > 0 ? ` ${sleepGoalMin % 60}m` : ''} (90-day personal)
+            Bevel 5-pillar model · bar = how you scored on each pillar (0–100), ×weight
           </Text>
           {([
-            ['Time asleep', weights.totalMinutes],
-            ['Deep sleep',  weights.deepMinutes],
-            ['REM sleep',   weights.remMinutes],
-            ['Efficiency',  weights.efficiency],
-            ['HR dip',      weights.hrDip],
-          ] as [string, number][]).map(([lbl, w]) => (
+            ['Duration',   breakdown.dur,   40],
+            ['Efficiency', breakdown.eff,   20],
+            ['Stages',     breakdown.stage, 20],
+            ['HR dip',     breakdown.dip,   10],
+            ['Consistency',breakdown.cons,  10],
+          ] as [string, number, number][]).map(([lbl, sub, wt]) => (
             <View key={lbl} style={s.breakdownRow}>
-              <Text style={s.breakdownLabel}>{lbl}</Text>
+              <Text style={s.breakdownLabel}>{lbl} <Text style={{ color: '#888', fontSize: 11 }}>·{wt}%</Text></Text>
               <View style={s.breakdownBar}>
-                <View style={[s.breakdownFill, { width: `${Math.round(w * 100)}%` as any, backgroundColor: SLEEP_COLOR }]} />
+                <View style={[s.breakdownFill, { width: `${sub}%` as `${number}%`, backgroundColor: SLEEP_COLOR }]} />
               </View>
-              <Text style={s.breakdownPct}>{Math.round(w * 100)} %</Text>
+              <Text style={s.breakdownPct}>{sub}</Text>
             </View>
           ))}
           <View style={[s.breakdownRow, { borderTopWidth: 1, borderTopColor: '#f0f0f0', marginTop: 4, paddingTop: 8 }]}>

@@ -554,12 +554,13 @@ const SLEEP_SCORE_NEED = 420;
 
 // Bevel's 5-pillar Sleep Score. Weights + mappings reverse-engineered from 30 nights of Bevel data
 // (Duration 40 / Efficiency 20 / Stages 20 / HR-dip 10 / Consistency 10): corr 0.88, bias +2.7.
-function computeSleepScore(
+export interface SleepScoreParts { score: number; dur: number; eff: number; stage: number; dip: number; cons: number }
+export function computeSleepScore(
   session: SleepSession,
   overnightHR: number,
   daytimeHR: number,
   recentSessions: SleepSession[] = [],
-): number {
+): SleepScoreParts {
   const lin = (x: number, a: number, b: number, c: number, d: number) =>
     x <= a ? c : x >= b ? d : c + (d - c) * (x - a) / (b - a);
   const asleep = session.totalMinutes;
@@ -596,7 +597,11 @@ function computeSleepScore(
   }
 
   const raw = 0.40 * durScore + 0.20 * effScore + 0.20 * stageScore + 0.10 * dipScore + 0.10 * consScore;
-  return Math.round(Math.min(100, Math.max(0, raw)));
+  const R = (v: number) => Math.round(v);
+  return {
+    score: R(Math.min(100, Math.max(0, raw))),
+    dur: R(durScore), eff: R(effScore), stage: R(stageScore), dip: R(dipScore), cons: R(consScore),
+  };
 }
 
 // ─── Recovery score ───────────────────────────────────────────────────────────
@@ -1479,7 +1484,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // Full recovery score available — sleep score first, so it can feed recovery's sleep term.
     const historyBefore = nightlyHRV.filter((n) => n.date < recentHRV.date);
     const sleepScore = recentSession
-      ? computeSleepScore(recentSession, recentHRV.overnightHR, daytimeHR, sleepSessions)
+      ? computeSleepScore(recentSession, recentHRV.overnightHR, daytimeHR, sleepSessions).score
       : 0;
     const { score, baseline, trend, breakdown } = computeRecoveryScore(
       recentHRV.weightedRMSSD,
@@ -1507,7 +1512,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     };
   } else if (recentSession) {
     // Sleep session found but HRV not yet synced — show partial recovery card
-    const sleepScore = computeSleepScore(recentSession, 0, daytimeHR, sleepSessions);
+    const sleepScore = computeSleepScore(recentSession, 0, daytimeHR, sleepSessions).score;
     todayRecovery = {
       date:                todayStr,
       weightedRMSSD:       0,
@@ -3548,7 +3553,7 @@ export async function fetchOurDailyComponents(
     if (s.bedtime)          r.sleepTime = clockMinutes(s.bedtime);
     if (s.wakeTime)         r.wakeTime = clockMinutes(s.wakeTime);
     const b = bioByDate.get(s.date);
-    const score = computeSleepScore(s, b?.overnightHR ?? 0, b?.daytimeHR ?? 0, sessions.filter((x) => x.date <= s.date));
+    const score = computeSleepScore(s, b?.overnightHR ?? 0, b?.daytimeHR ?? 0, sessions.filter((x) => x.date <= s.date)).score;
     if (score > 0)          r.sleepScore = score;
   }
   for (const s of strain)   day(s.date).strainScore = s.value;
