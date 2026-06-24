@@ -2602,6 +2602,7 @@ export async function fetchStrainHistory(
 ): Promise<{ date: string; value: number }[]> {
   const end   = toDate ?? new Date();
   const since = new Date(end.getTime() - months * 30 * 86_400_000);
+  since.setHours(0, 0, 0, 0); // whole boundary day (else its morning workouts get sliced off)
 
   const [hrRaw, restingRaw, workouts] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
@@ -2690,6 +2691,8 @@ export interface StrainCalibDay {
 export async function fetchStrainCalibration(days = 14): Promise<{ meta: any; days: StrainCalibDay[] }> {
   const end   = new Date();
   const since = new Date(end.getTime() - days * 86_400_000);
+  since.setHours(0, 0, 0, 0); // snap to midnight so the boundary day is WHOLE — else a morning
+                              // workout on day -N (e.g. Jun 10's 10:58 run) is sliced off → strain ~1
   const [hrRaw, restingRaw, workouts] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(HKQuantityTypeIdentifier.heartRate,
       { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 200_000 }), [] as any[]),
