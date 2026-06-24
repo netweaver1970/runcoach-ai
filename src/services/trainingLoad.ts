@@ -371,9 +371,10 @@ const STRAIN_LOG_B = 0.02;
 // too steep: moderate days read low, hard days slammed to ~95). A = overall level, B = curvature.
 const STRAIN_LOAD_A  = 28;    // overall level (raise → higher scores)
 const STRAIN_LOAD_B  = 0.06;  // curvature (raise → reaches the top faster)
-const STRAIN_BG_FRAC = 0.5;   // background (non-workout) HR at this fraction of workout weight. 0.25
-                              // under-read unlogged activity (34-min walk → ours 8 vs Bevel 14); 0.5
-                              // maps it to ~14. Calm (HRR <0.3) stays 0; logged runs are full weight.
+const STRAIN_BG_FRAC = 0.25;  // background (non-workout) HR at this fraction of workout weight
+const STRAIN_WORKOUT_MIN = 0.32; // a LOGGED workout is deliberate exercise → its minutes count at
+                              // ≥ this even when HR is below the background floor (a slow logged walk
+                              // still earns strain; calibrated so a 34-min walk ≈ Bevel's 14)
 
 // Continuous zone weight by %HR-reserve: light background (≥0.2) ramps in, zones 1..5 at ≥0.5..≥0.9.
 function zoneWeight(hrr: number): number {
@@ -384,7 +385,8 @@ function zoneWeight(hrr: number): number {
   if (hrr >= 0.5) return 1;
   if (hrr >= 0.4) return 0.5;   // brisk-but-not-zone background (a walk)
   if (hrr >= 0.3) return 0.25;  // light background elevation
-  return 0;                     // calm / desk / sleep — NO strain (Bevel keeps passive ~0 here)
+  if (hrr >= 0.1) return 0.05;  // calm-but-awake (desk, mild HR over rest) — a trickle, like Bevel's
+  return 0;                     // at/below rest (deep calm, sleep) → nothing
 }
 
 // Active (workout, full weight) + passive (background, ×BG_FRAC) zone-weighted load over the day's HR.
@@ -400,8 +402,13 @@ export function zoneStrainLoad(
   for (let i = 1; i < s.length; i++) {
     const dt = Math.min(MAX_GAP_MS, s[i].t - s[i - 1].t);
     if (dt <= 0) continue;
-    const w = zoneWeight((s[i].hr - restHR) / (maxHR - restHR));
-    if (w > 0) load += (dt / 60_000) * w * (inWorkout(s[i].t) ? 1 : STRAIN_BG_FRAC);
+    const hrr = (s[i].hr - restHR) / (maxHR - restHR);
+    const wk  = inWorkout(s[i].t);
+    let w = zoneWeight(hrr);
+    // Logged workout = deliberate exercise: count its minutes even when HR is below the background
+    // floor (a slow walk still earns strain), as long as HR is at all above resting.
+    if (wk && hrr > 0.1) w = Math.max(STRAIN_WORKOUT_MIN, w);
+    if (w > 0) load += (dt / 60_000) * w * (wk ? 1 : STRAIN_BG_FRAC);
   }
   return load;
 }
