@@ -240,7 +240,7 @@ export default function TrainingLoadScreen() {
       const e = counts.get(st.label) ?? { color: st.color, days: 0 };
       e.days += 1; counts.set(st.label, e); total += 1;
     }
-    const ORDER = ['Building', 'Detraining', 'Maintaining', 'Productive', 'Peaking', 'Overreaching'];
+    const ORDER = ['Building', 'Detraining', 'Maintaining', 'Peaking', 'Productive', 'Fatigued', 'Overtraining'];
     return total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
       label: l, color: counts.get(l)!.color, days: counts.get(l)!.days,
       pct: Math.round((counts.get(l)!.days / total) * 100),

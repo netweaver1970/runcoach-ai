@@ -204,15 +204,17 @@ export interface CardioLoad {
   ratio:  number;   // ATL / CTL
   bandLo: number;   // optimal-load floor  ≈ 0.8·CTL
   bandHi: number;   // optimal-load ceiling ≈ 1.3·CTL
-  label:  string;   // Detraining | Maintaining | Productive | Peaking | Overreaching
+  label:  string;   // Building|Detraining|Maintaining|Peaking|Productive|Fatigued|Overtraining
   color:  string;
   hint:   string;
 }
 
 /**
  * Bevel-style training status from the ATL/CTL ratio (optimal band ≈ 0.8–1.3):
- *   <0.8 → Detraining (losing stimulus) — unless freshly tapered with a built base (TSB↑) → Peaking
- *   0.8–1.0 → Maintaining   ·   1.0–1.3 → Productive (sweet spot)   ·   >1.3 → Overreaching
+ *   ≥1.5 → Overtraining · 1.3–1.5 → Fatigued · 1.0–1.3 → Productive (sweet spot) ·
+ *   0.8–1.0 → Maintaining · <0.8 → Detraining (losing stimulus).
+ * Peaking is rare + special: a STRONG taper (ATL well below CTL, TSB ≥ 30% of CTL) on a
+ * BUILT base (CTL ≥ 18) — fresh and race-ready, not just "any low-load day".
  */
 export function cardioLoadStatus(atl: number, ctl: number, tsb = 0): CardioLoad {
   const ratio  = ctl > 0 ? atl / ctl : 0;
@@ -221,14 +223,16 @@ export function cardioLoadStatus(atl: number, ctl: number, tsb = 0): CardioLoad 
   let label: string, color: string, hint: string;
   if (ctl <= 0) {
     label = 'Building'; color = '#7f8c8d'; hint = 'Not enough history yet — keep logging activity to set your baseline.';
-  } else if (ratio > 1.3) {
-    label = 'Overreaching'; color = '#e74c3c'; hint = 'Acute load well above your fitness baseline — back off / recover to absorb it.';
+  } else if (ratio >= 1.5) {
+    label = 'Overtraining'; color = '#e74c3c'; hint = 'Acute load far above your fitness baseline — high overtraining risk; recover now.';
+  } else if (ratio >= 1.3) {
+    label = 'Fatigued';     color = '#e84393'; hint = 'Recent load is outpacing your fitness — fatigue building; ease off to absorb it.';
   } else if (ratio >= 1.0) {
     label = 'Productive';   color = '#27ae60'; hint = 'Load slightly above baseline — the sweet spot for building fitness.';
   } else if (ratio >= 0.8) {
     label = 'Maintaining';  color = '#2ecc71'; hint = 'Load roughly matches your baseline — holding fitness steady.';
-  } else if (tsb >= 4) {
-    label = 'Peaking';      color = '#3498db'; hint = 'Fresh on a built base — primed for a race or key session.';
+  } else if (ctl >= 18 && tsb >= 0.30 * ctl) {
+    label = 'Peaking';      color = '#3498db'; hint = 'Fresh on a built base — tapered and primed for a race or key session.';
   } else {
     label = 'Detraining';   color = '#f39c12'; hint = 'Load below your baseline — fitness will fade without more stimulus.';
   }

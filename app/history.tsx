@@ -697,7 +697,7 @@ export default function HistoryScreen() {
             e.days += 1; counts.set(st.label, e); total += 1;
           }
           setCardioByDate(byDate);
-          const ORDER = ['Building', 'Detraining', 'Maintaining', 'Productive', 'Peaking', 'Overreaching'];
+          const ORDER = ['Building', 'Detraining', 'Maintaining', 'Peaking', 'Productive', 'Fatigued', 'Overtraining'];
           setCardioStatus(total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
             label: l, color: counts.get(l)!.color, days: counts.get(l)!.days,
             pct: Math.round((counts.get(l)!.days / total) * 100),
