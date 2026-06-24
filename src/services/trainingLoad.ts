@@ -371,14 +371,13 @@ const STRAIN_LOAD_B  = 0.022; // curvature (raise → reaches the top faster / m
 // baseline (caffeine/stress/standing nudge HR above rest → ~strain 1, capped). STEPS are the motion
 // term and they GROW the score (a high-step day = moderate passive even with low HR). Verified:
 // today 4,775 non-workout steps + low HR → passive 3 (on top of the logged walk's active 12 = 15).
-// Bevel's PASSIVE strain ("life tax") = background-HR elevation + STEPS, added to the active (workout)
-// load and pushed through the same log. HR life tax = the EXTRA beats over resting summed across
-// awake non-workout minutes (Bevel: "how many extra beats your awake baseline cost you vs your
-// resting minimum"); uncapped. Steps = motion proxy. (Validated vs Bevel: today 4,775 steps + low HR
-// → passive ~3. NOTE: on a high-background-stress day the true curve is steeper than this linear
-// "extra beats" — that needs our z-score stress integral; first-pass here grows but under-reads it.)
-const STRAIN_LIFETAX_K  = 0.00016; // load per (bpm-over-resting × minute) of awake non-workout HR
-const STRAIN_STEP_GAMMA = 0.4;     // load per 1000 day-steps (motion)
+// Bevel's PASSIVE strain is, to a striking degree, just NON-WORKOUT STEPS — linear. Validated
+// against 7 of Geert's rest days: Bevel passive ≈ steps/470 (R²≈0.99). The HR "life tax" / daytime-HR
+// delta drives Bevel's separate STRESS score, NOT the strain (Jun 22: delta 21 — the highest — but
+// strain only 3, matching its low 1,449 steps). So passive = STEP_GAMMA × non-workout steps; the HR
+// life-tax term is kept only for the calibration export (informational), not added to strain.
+const STRAIN_LIFETAX_K  = 0.00016; // (export only) load per bpm-over-resting × min of non-workout HR
+const STRAIN_STEP_GAMMA = 2.0;     // load per 1000 NON-WORKOUT steps (≈ Bevel's steps/470 passive)
 
 // Bevel's zones + weights, by %max-HR: Z0 <50%→0.1, Z1 50-60%→1, Z2 60-70%→2, Z3 70-80%→4,
 // Z4 80-90%→6.5, Z5 >90%→10. (Z0 is gated to HR > resting by the caller, so sleep/deep-calm = 0.)
@@ -401,8 +400,9 @@ export function zoneStrainLoad(
   const s = [...samples].sort((a, b) => a.t - b.t);
   const inWorkout = (t: number) => workoutWins.some((w) => t >= w.s && t <= w.e);
   const MAX_GAP_MS = 8 * 60_000;
-  const b = zoneStrainBreakdown(samples, restHR, maxHR, workoutWins);
-  return b.workLoad + b.lifeTax;
+  // Strain's ACTIVE load = workout HR zones only. Passive (non-workout steps) is added by the caller
+  // as passiveLoad; the HR life tax is NOT added (it tracks the stress score, not strain).
+  return zoneStrainBreakdown(samples, restHR, maxHR, workoutWins).workLoad;
 }
 
 // Same computation, but returns the parts + the daytime-HR stats — for calibration export / fitting.
@@ -436,11 +436,9 @@ export function strainFromLoad(rawLoad: number): number {
   return Math.min(100, Math.round(STRAIN_LOAD_A * Math.log(1 + STRAIN_LOAD_B * rawLoad)));
 }
 
-// Passive motion term: load from the DAY's total steps (Bevel counts steps continuously, workout on
-// or off/paused — so steps live only in passive, while HR drives active; no double-count). Added to
-// the background-HR baseline, then through the same log. Provisional: 4,775 steps → ~1.9 load.
-export function stepStrainLoad(daySteps: number): number {
-  return STRAIN_STEP_GAMMA * Math.max(0, daySteps) / 1000;
+// Passive strain = NON-WORKOUT steps (workout steps are "active" via HR). Linear, ≈ Bevel's steps/470.
+export function stepStrainLoad(nonWorkoutSteps: number): number {
+  return STRAIN_STEP_GAMMA * Math.max(0, nonWorkoutSteps) / 1000;
 }
 
 export function strainFromTrimp(trimp: number): number {

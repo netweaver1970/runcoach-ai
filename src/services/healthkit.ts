@@ -1525,14 +1525,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // Heat inflates the day's strain (a given effort costs more in the heat) — apply the same
   // factor the coach uses to scale sessions. Best-effort + cached; no weather → factor 1.
   const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
-  // Passive strain = HR "life tax" (inside activeZoneLoad) + STEPS (motion). Bevel counts the day's
-  // total steps (workout on/off); we pass them as the passiveLoad term.
-  const todayStepsMap = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', todayStart, now);
-  const todaySteps = [...todayStepsMap.values()][0] ?? 0;
+  // Passive strain = NON-WORKOUT steps (workout steps count as active via HR). ≈ Bevel's steps/470.
+  const todayStepSamples = await fetchStepSamples(todayStart, now);
+  const inTodayWin = (t: number) => todayWindows.some((w) => t >= w.s && t <= w.e);
+  const todayNwSteps = todayStepSamples.reduce((sum, s) => sum + (inTodayWin(s.t) ? 0 : s.steps), 0);
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todaySteps), advisable, heatFactor)
+    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
@@ -2551,6 +2551,31 @@ export async function fetchTrainingLoadHistory(
   return computeTrainingLoadSeries(loadByDay, fromDate, end);
 }
 
+// Time-stamped step buckets → lets us split workout vs non-workout steps (only the latter is passive).
+async function fetchStepSamples(since: Date, end: Date): Promise<{ t: number; steps: number; day: string }[]> {
+  const raw = await safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+    HKQuantityTypeIdentifier.stepCount,
+    { filter: { startDate: since, endDate: end }, unit: 'count', ascending: true, limit: 50_000 }), [] as any[]);
+  return (raw as any[]).map((s: any) => {
+    const t0 = new Date(toISOStr(s.startDate)).getTime();
+    const t1 = s.endDate ? new Date(toISOStr(s.endDate)).getTime() : t0;
+    return { t: (t0 + t1) / 2, steps: s.quantity as number, day: toDateStr(toISOStr(s.startDate)) };
+  });
+}
+
+// Per-day NON-workout step totals (steps during a workout window are "active", not passive strain).
+function dailyNonWorkoutSteps(
+  samples: { t: number; steps: number; day: string }[], windowsByDay: Map<string, { s: number; e: number }[]>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const s of samples) {
+    const wins = windowsByDay.get(s.day) ?? [];
+    if (wins.some((w) => s.t >= w.s && s.t <= w.e)) continue; // during a workout → active, skip
+    out.set(s.day, (out.get(s.day) ?? 0) + s.steps);
+  }
+  return out;
+}
+
 /**
  * Daily Strain history (Bevel 0-10 scale) — per-day TRIMP from 24/7 heart rate +
  * muscular load from strength workouts, log-scaled. On-demand (can be slow for 1Y
@@ -2615,15 +2640,15 @@ export async function fetchStrainHistory(
     }
   }
 
-  const stepsByDay = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
+  const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay);
 
   // One entry per day that has HR data — including rest days — so the chart shows a
   // continuous daily series (and the clear run-day vs rest-day pattern).
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
-    // Same model as today's live strain: workout zone load + HR life-tax + steps, log-squashed.
+    // Same model as today's live strain: workout HR-zone load (active) + non-workout steps (passive).
     const zoneLoad = zoneStrainLoad(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const rawLoad  = zoneLoad + stepStrainLoad(stepsByDay.get(day) ?? 0) + (muscularByDay.get(day) ?? 0);
+    const rawLoad  = zoneLoad + stepStrainLoad(nwStepsByDay.get(day) ?? 0) + (muscularByDay.get(day) ?? 0);
     out.push({ date: day, value: strainFromLoad(rawLoad) }); // 0-100 (Bevel %)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
@@ -2632,8 +2657,9 @@ export async function fetchStrainHistory(
 export interface StrainCalibDay {
   date: string;
   ourStrain: number; ourActive: number;          // our totals
-  activeLoad: number; lifeTaxLoad: number; stepLoad: number; // our raw-load parts
-  steps: number; daytimeHR: number; restHR: number; hrDelta: number; // life-tax inputs
+  activeLoad: number; stepLoad: number; lifeTaxLoad: number; // our raw-load parts (lifeTax = info only)
+  steps: number; nwSteps: number; daytimeHR: number; restHR: number; hrDelta: number; // passive inputs
+  workouts: { type: number; durMin: number; zMin: number[]; load: number }[]; // per-workout zone minutes
   bevelStrain: number | null; bevelActive: number | null; bevelPassive: number | null; bevelStress: number | null;
 }
 
@@ -2664,33 +2690,54 @@ export async function fetchStrainCalibration(days = 14): Promise<{ meta: any; da
   const byDay = new Map<string, { t: number; hr: number }[]>();
   for (const s of hr) { if (!byDay.has(s.day)) byDay.set(s.day, []); byDay.get(s.day)!.push({ t: s.t, hr: s.hr }); }
   const STRENGTH = new Set([20, 50]);
-  const muscularByDay = new Map<string, number>(); const windowsByDay = new Map<string, { s: number; e: number }[]>();
+  const muscularByDay = new Map<string, number>();
+  const windowsByDay  = new Map<string, { s: number; e: number }[]>();
+  const woByDay       = new Map<string, { s: number; e: number; type: number }[]>();
   for (const w of (workouts as any[])) {
     const day = toDateStr(toISOStr(w.startDate)); const ws = new Date(toISOStr(w.startDate)).getTime();
+    const win = { s: ws, e: ws + workoutDurationSec(w) * 1000, type: w.workoutActivityType as number };
     if (!windowsByDay.has(day)) windowsByDay.set(day, []);
-    windowsByDay.get(day)!.push({ s: ws, e: ws + workoutDurationSec(w) * 1000 });
+    windowsByDay.get(day)!.push({ s: win.s, e: win.e });
+    if (!woByDay.has(day)) woByDay.set(day, []);
+    woByDay.get(day)!.push(win);
     if (STRENGTH.has(w.workoutActivityType)) muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
   }
-  const stepsByDay = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
+  const stepsByDay   = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
+  const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay);
+  const ZW = [0.1, 1, 2, 4, 6.5, 10];
+  const zoneOf = (pct: number) => pct >= 0.9 ? 5 : pct >= 0.8 ? 4 : pct >= 0.7 ? 3 : pct >= 0.6 ? 2 : pct >= 0.5 ? 1 : 0;
   const r1 = (n: number) => Math.round(n * 10) / 10;
   const out: StrainCalibDay[] = [];
   for (const [day, samples] of byDay) {
     const b = zoneStrainBreakdown(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const steps = Math.round(stepsByDay.get(day) ?? 0);
-    const stepLd = stepStrainLoad(steps); const muscular = muscularByDay.get(day) ?? 0;
+    const nwSteps = Math.round(nwStepsByDay.get(day) ?? 0);
+    const stepLd = stepStrainLoad(nwSteps); const muscular = muscularByDay.get(day) ?? 0;
+    const sorted = [...samples].sort((a, b) => a.t - b.t);
+    const wos = (woByDay.get(day) ?? []).map((w) => {
+      const zMin = [0, 0, 0, 0, 0, 0]; let load = 0, dur = 0;
+      for (let i = 1; i < sorted.length; i++) {
+        const t = sorted[i].t; if (t < w.s || t > w.e) continue;
+        const dt = Math.min(8 * 60_000, sorted[i].t - sorted[i - 1].t); if (dt <= 0) continue;
+        const dtMin = dt / 60_000; const z = zoneOf(sorted[i].hr / maxHR);
+        zMin[z] += dtMin; load += dtMin * ZW[z]; dur += dtMin;
+      }
+      return { type: w.type, durMin: Math.round(dur), zMin: zMin.map((m) => Math.round(m)), load: r1(load) };
+    });
     out.push({
       date: day,
-      ourStrain: strainFromLoad(b.workLoad + b.lifeTax + stepLd + muscular),
+      ourStrain: strainFromLoad(b.workLoad + stepLd + muscular),
       ourActive: strainFromLoad(b.workLoad),
-      activeLoad: r1(b.workLoad), lifeTaxLoad: r1(b.lifeTax), stepLoad: r1(stepLd),
-      steps, daytimeHR: Math.round(b.dayHRmean), restHR, hrDelta: Math.round(b.dayHRmean - restHR),
+      activeLoad: r1(b.workLoad), stepLoad: r1(stepLd), lifeTaxLoad: r1(b.lifeTax),
+      steps: Math.round(stepsByDay.get(day) ?? 0), nwSteps,
+      daytimeHR: Math.round(b.dayHRmean), restHR, hrDelta: Math.round(b.dayHRmean - restHR),
+      workouts: wos,
       bevelStrain: null, bevelActive: null, bevelPassive: null, bevelStress: null,
     });
   }
   out.sort((a, b) => a.date.localeCompare(b.date));
   return {
-    meta: { restHR, maxHR, gamma: { step: 0.4, lifetaxK: 0.00016 },
-      note: 'Per day OURS + inputs. Fill bevel* from your Bevel history (totalStrain, and active/passive/non-activity-stress if shown). ourStrain should match bevelStrain — the gap is the life tax. Goal: fit passive = f(hrDelta, steps) (HR delta = power-law throttle, steps = volume).' },
+    meta: { restHR, maxHR, stepGamma: 2.0, zoneWeights: ZW,
+      note: 'PASSIVE now = nwSteps (non-workout steps) × 2.0/1000 (Bevel ≈ steps/470); life tax dropped. ACTIVE = per-workout zone load. Fill bevelStrain (+active/passive) per day. workouts[].zMin = minutes in Z0..Z5 — use to diagnose why active over-counts vs Bevel.' },
     days: out,
   };
 }
