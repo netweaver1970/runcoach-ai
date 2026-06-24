@@ -1513,7 +1513,15 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   }
   const latestLoad = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1] : null;
   const latestTsb = latestLoad?.tsb ?? 0;
-  // Advisable strain band from the full picture — recovery + sleep + form + ACWR —
+  // 14-day strain BASELINE (mean of completed days) — personalizes the target range to the athlete's
+  // own volume, Bevel-style. Best-effort; degrades to the fixed conservative map if unavailable.
+  const strainBaseline = await fetchStrainHistory(0.5, now)
+    .then((h) => {
+      const vals = h.filter((s) => s.date < todayStr).map((s) => s.value).slice(-14);
+      return vals.length >= 4 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+    })
+    .catch(() => 0);
+  // Advisable strain band from the full picture — baseline + recovery + sleep + form + ACWR —
   // not recovery alone.
   const advisable = advisableStrainRange({
     recovery:   todayRecovery?.recoveryScore,
@@ -1521,6 +1529,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     tsb:        latestTsb,
     ctl:        latestLoad?.ctl,
     atl:        latestLoad?.atl,
+    baseline:   strainBaseline,
   });
   // Heat inflates the day's strain (a given effort costs more in the heat) — apply the same
   // factor the coach uses to scale sessions. Best-effort + cached; no weather → factor 1.

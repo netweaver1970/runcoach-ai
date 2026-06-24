@@ -236,6 +236,39 @@ export default function StrainDetailScreen() {
           </View>
         </View>
 
+        {/* Target Strain Range — baseline-anchored, recovery-widened (Bevel-style) */}
+        {strain && (() => {
+          const lo = strain.safeLow, hi = strain.safeHigh, mid = strain.safeMid;
+          const max = Math.max(60, hi + 8, real + 8);
+          const pos = (v: number) =>
+            `${Math.max(0, Math.min(100, (v / max) * 100))}%` as `${number}%`;
+          const toGo = mid - real;
+          return (
+            <View style={s.rangeCard}>
+              <Text style={s.sectionTitle}>TARGET STRAIN RANGE</Text>
+              <View style={s.rangeHeadRow}>
+                <Text style={s.rangeBig}>{lo}–{hi}<Text style={s.rangePctUnit}> %</Text></Text>
+                <Text style={s.rangeMidLabel}>midpoint {mid}%</Text>
+              </View>
+              <View style={s.rangeTrack}>
+                <View style={[s.rangeBand, { left: pos(lo), width: pos(hi - lo) }]} />
+                <View style={[s.rangeMidTick, { left: pos(mid) }]} />
+                <View style={[s.rangeNow, { left: pos(real), backgroundColor: status.color }]} />
+              </View>
+              <View style={s.rangeScaleRow}>
+                <Text style={s.rangeScaleTxt}>0</Text>
+                <Text style={s.rangeScaleTxt}>{Math.round(max)}</Text>
+              </View>
+              <Text style={s.rangeSub}>
+                {strain.baseline ? `14-day baseline ${strain.baseline}% · ` : ''}
+                you're at {real}% — {toGo > 0
+                  ? `${toGo}% to your optimal target`
+                  : toGo < 0 ? `${-toGo}% over the midpoint` : 'right on target'}.
+              </Text>
+            </View>
+          );
+        })()}
+
         {/* Readiness — multi-factor (recovery + sleep + form + ACWR + illness guards) */}
         {!loadingH && dates.length > 0 && (
           <View style={s.readyCard}>
@@ -417,6 +450,22 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   rowSub: { fontSize: 11, color: c.textFaint },
+
+  rangeCard: {
+    backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 14,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
+  },
+  rangeHeadRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 },
+  rangeBig:     { fontSize: 24, fontWeight: '800', color: c.text },
+  rangePctUnit: { fontSize: 14, color: c.textFaint, fontWeight: '700' },
+  rangeMidLabel:{ fontSize: 12, color: c.textSub, fontWeight: '600' },
+  rangeTrack:   { position: 'relative', height: 16, borderRadius: 8, backgroundColor: c.bg },
+  rangeBand:    { position: 'absolute', top: 0, bottom: 0, backgroundColor: '#27ae6033', borderRadius: 8, borderWidth: 1, borderColor: '#27ae60' },
+  rangeMidTick: { position: 'absolute', top: -3, bottom: -3, width: 2, marginLeft: -1, backgroundColor: c.textSub },
+  rangeNow:     { position: 'absolute', top: -4, bottom: -4, width: 3, borderRadius: 2, marginLeft: -1.5 },
+  rangeScaleRow:{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
+  rangeScaleTxt:{ fontSize: 10, color: c.textFaint },
+  rangeSub:     { fontSize: 12, color: c.textSub, marginTop: 8, lineHeight: 18 },
 
   readyCard: {
     backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 14,

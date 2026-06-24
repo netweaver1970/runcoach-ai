@@ -515,7 +515,7 @@ export function computeDayStrain(
     trimp: Math.round(rawLoad),
     cardio: Math.round(activeLoad),
     muscular: Math.round(muscularLoad),
-    readiness: r.readiness, drivers: r.drivers, acwr: r.acwr,
+    readiness: r.readiness, drivers: r.drivers, acwr: r.acwr, baseline: r.baseline,
   };
 }
 
@@ -537,6 +537,7 @@ export interface ReadinessInputs {
   respBaseline?: number;  // personal respiratory-rate baseline
   spO2?:        number;   // last night mean blood-oxygen %
   yesterdayStrain?: number; // yesterday's strain — enforce quality→recovery alternation
+  baseline?:    number;   // 14-day mean total daily strain — Bevel's personal anchor for the range
 }
 
 export interface AdvisableRange {
@@ -546,6 +547,7 @@ export interface AdvisableRange {
   readiness: number;    // 0-100 composite
   acwr:      number;    // acute:chronic ratio (0 if unknown)
   drivers:   string[];  // human-readable factors that moved the band
+  baseline?: number;    // 14-day strain baseline that anchored the range (if provided)
 }
 
 export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
@@ -603,21 +605,33 @@ export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
   }
 
   readiness = clamp01to100(readiness);
+  const R = readiness / 100;
 
-  // Map readiness → advisable mid-strain — deliberately CONSERVATIVE (injury-first).
-  // readiness 100 → ~58, 55 → ~40, 0 → ~18. The ceiling is held lower than the floor
-  // is loose, so the safe option is always "go a bit easier".
-  const safeMid    = clamp01to100(18 + readiness * 0.40);
-  const spread     = 1 - Math.abs(readiness - 50) / 50;     // 0 at extremes, 1 mid
-  const widthUp    = 6 + Math.round(spread * 3);             // 6–9  (tight ceiling)
-  const widthDown  = 11 + Math.round(spread * 4);            // 11–15 (easier is fine)
+  // Bevel-style Target Strain Range: anchor on the athlete's OWN 14-day strain baseline, then let
+  // recovery/readiness expand the ceiling. Fitted to Bevel (baseline 23.3 → R .13: 20–40, R .76:
+  // 21–55): the floor barely moves with recovery, the ceiling is the lever. Until we have a baseline
+  // (early days) fall back to the fixed conservative map.
+  let safeLow: number, safeHigh: number, safeMid: number;
+  if (i.baseline != null && i.baseline > 0) {
+    safeLow  = clamp01to100(i.baseline * (0.83 + 0.10 * R));
+    safeHigh = clamp01to100(i.baseline * (1.59 + 1.03 * R));
+    safeMid  = clamp01to100((safeLow + safeHigh) / 2);
+  } else {
+    // Map readiness → advisable mid-strain — deliberately CONSERVATIVE (injury-first).
+    // readiness 100 → ~58, 55 → ~40, 0 → ~18. Ceiling tighter than the floor is loose.
+    safeMid          = clamp01to100(18 + readiness * 0.40);
+    const spread     = 1 - Math.abs(readiness - 50) / 50;   // 0 at extremes, 1 mid
+    const widthUp    = 6 + Math.round(spread * 3);          // 6–9  (tight ceiling)
+    const widthDown  = 11 + Math.round(spread * 4);         // 11–15 (easier is fine)
+    safeLow  = clamp01to100(safeMid - widthDown);
+    safeHigh = clamp01to100(safeMid + widthUp);
+  }
   return {
-    safeLow:  clamp01to100(safeMid - widthDown),
-    safeHigh: clamp01to100(safeMid + widthUp),
-    safeMid,
+    safeLow, safeHigh, safeMid,
     readiness: Math.round(readiness),
     acwr: Math.round(acwr * 100) / 100,
     drivers,
+    baseline: i.baseline != null && i.baseline > 0 ? Math.round(i.baseline * 10) / 10 : undefined,
   };
 }
 

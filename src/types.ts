@@ -158,6 +158,7 @@ export interface DayStrain {
   readiness?: number;    // 0-100 composite
   drivers?:   string[];  // human-readable factors
   acwr?:      number;    // acute:chronic ratio
+  baseline?:  number;    // 14-day mean total strain that anchored the range (Bevel-style)
 }
 
 // ─── Sleep ───────────────────────────────────────────────────────────────────
