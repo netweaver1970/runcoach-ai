@@ -367,6 +367,8 @@ const STRAIN_LOG_B = 0.02;
 // 38-min walk (28min Z0 + 10min Z1 → RawLoad 12.6) = 12; yesterday's (20·Z0 + 14·Z1 → 16) = 15.
 const STRAIN_LOAD_A  = 46;    // log level (grid-fit to Bevel's 8 per-workout strains, avg err 1.3)
 const STRAIN_LOAD_B  = 0.022; // curvature (raise → reaches the top faster / more diminishing)
+// Target-range floor: Bevel's "minimum active-recovery load" — pinned at ~20 across 14 validated days.
+const ACTIVE_RECOVERY_FLOOR = 20;
 // Bevel's PASSIVE strain (non-workout) = background HR + STEPS. The HR part is a small saturating
 // baseline (caffeine/stress/standing nudge HR above rest → ~strain 1, capped). STEPS are the motion
 // term and they GROW the score (a high-step day = moderate passive even with low HR). Verified:
@@ -613,7 +615,10 @@ export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
   // (early days) fall back to the fixed conservative map.
   let safeLow: number, safeHigh: number, safeMid: number;
   if (i.baseline != null && i.baseline > 0) {
-    safeLow  = clamp01to100(i.baseline * (0.83 + 0.10 * R));
+    // Floor = the active-recovery maintenance load, held at ~20 (Bevel pins it there even when the
+    // daily baseline dips — validated across 14 days, floor err 0.21). It rises above 20 only when
+    // the baseline itself climbs, so it self-scales with fitness. Ceiling is the recovery-driven lever.
+    safeLow  = clamp01to100(Math.max(ACTIVE_RECOVERY_FLOOR, i.baseline * (0.83 + 0.10 * R)));
     safeHigh = clamp01to100(i.baseline * (1.59 + 1.03 * R));
     safeMid  = clamp01to100((safeLow + safeHigh) / 2);
   } else {
