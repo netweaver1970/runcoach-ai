@@ -19,6 +19,7 @@ import {
   fetchOurDailyComponents,
 } from '../src/services/healthkit';
 import { WeeklyMileage, TimelineEvent } from '../src/types';
+import { cardioLoadStatus } from '../src/services/trainingLoad';
 import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
@@ -583,6 +584,8 @@ export default function HistoryScreen() {
   const [pageOffset, setPageOffset]     = useState(0);
   const [rawData, setRawData]           = useState<DataPoint[]>([]);
   const [prevRawData, setPrevRawData]   = useState<DataPoint[]>([]);
+  // Cardio-load only: per-day training-status breakdown over the loaded period.
+  const [cardioStatus, setCardioStatus] = useState<{ label: string; color: string; days: number; pct: number }[]>([]);
   const [cumulativeMode, setCumulative] = useState(false);
   const [loading, setLoading]           = useState(true);
   const [error, setError]               = useState<string | null>(null);
@@ -658,6 +661,22 @@ export default function HistoryScreen() {
           .map(([date, c]) => ({ label: date, fullDate: date, value: c[key] }))
           .sort((a, b) => a.fullDate.localeCompare(b.fullDate));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+        // Cardio status breakdown (per-day ATL/CTL/TSB → status) over the loaded period.
+        if (histType === 'cardio-load') {
+          const counts = new Map<string, { color: string; days: number }>();
+          let total = 0;
+          for (const c of Object.values(comps)) {
+            if (c.cardioLoad === undefined) continue;
+            const st = cardioLoadStatus(c.cardioLoad, c.ctl ?? 0, c.tsb ?? 0);
+            const e = counts.get(st.label) ?? { color: st.color, days: 0 };
+            e.days += 1; counts.set(st.label, e); total += 1;
+          }
+          const ORDER = ['Building', 'Detraining', 'Maintaining', 'Productive', 'Peaking', 'Overreaching'];
+          setCardioStatus(total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
+            label: l, color: counts.get(l)!.color, days: counts.get(l)!.days,
+            pct: Math.round((counts.get(l)!.days / total) * 100),
+          })));
+        } else { setCardioStatus([]); }
       } else if (histType !== 'timeline' && !SLEEP_TYPES.has(histType)) {
         const h = await fetchHRVHistory(months, endDate);
         const daily = h.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
@@ -977,6 +996,23 @@ export default function HistoryScreen() {
             </Text>
           </View>
 
+          {/* Cardio status breakdown — days in each training state over the period */}
+          {histType === 'cardio-load' && cardioStatus.length > 0 && (
+            <View style={s.statusCard}>
+              <Text style={s.statusTitle}>CARDIO STATUS BREAKDOWN</Text>
+              {cardioStatus.map((st) => (
+                <View key={st.label} style={s.statusRow}>
+                  <Text style={s.statusLabel}>{st.label}</Text>
+                  <Text style={s.statusDays}>{st.days}d</Text>
+                  <View style={s.statusBarBg}>
+                    <View style={[s.statusBarFill, { width: `${st.pct}%` as `${number}%`, backgroundColor: st.color }]} />
+                  </View>
+                  <Text style={s.statusPct}>{st.pct}%</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {/* Readings list — hide in cumulative mode; for 1Y summable use monthly totals */}
           {!cumulativeMode && (
           <>
@@ -1078,6 +1114,14 @@ const makeS = (c: Palette) => StyleSheet.create({
     fontSize: 12, fontWeight: '700', color: c.textSub,
     textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginLeft: 2,
   },
+  statusCard: { backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 16 },
+  statusTitle: { fontSize: 12, fontWeight: '700', color: c.textSub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
+  statusRow:   { flexDirection: 'row', alignItems: 'center', paddingVertical: 7 },
+  statusLabel: { fontSize: 14, fontWeight: '600', color: c.text, width: 104 },
+  statusDays:  { fontSize: 13, color: c.textSub, width: 34 },
+  statusBarBg: { flex: 1, height: 8, borderRadius: 4, backgroundColor: c.bg, marginHorizontal: 8, overflow: 'hidden' },
+  statusBarFill: { height: 8, borderRadius: 4 },
+  statusPct:   { fontSize: 14, fontWeight: '700', color: c.text, width: 44, textAlign: 'right' },
   listRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: c.surface, borderRadius: 8,

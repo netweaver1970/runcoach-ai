@@ -52,7 +52,7 @@ export default function RecoveryDetailScreen() {
     fetchOurDailyComponents(1).then(setComps).catch(() => {}).finally(() => setLoadingH(false));
   }, []);
   const hist = useMemo(
-    () => buildHistories(comps, ['restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
+    () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
     [comps],
   );
   // Sub-KPI values for the VIEWED day (the `date` param), not just today.
@@ -127,6 +127,7 @@ export default function RecoveryDetailScreen() {
         <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <Text style={s.sectionTitle}>RECOVERY METRICS</Text>
         <View style={s.card}>
+          <SubKPICard label="Recovery Score" value={`${recoveryScore}`} unit="/100" history={[...(hist.recoveryScore ?? []), recoveryScore]} higherIsBetter color={color} onPress={() => navTo('recovery')} />
           <SubKPICard label="Resting HRV"   value={last('restingHrv') !== null ? `${last('restingHrv')}` : '—'} unit="ms"  history={hist.restingHrv ?? []}       higherIsBetter        color="#8e44ad" onPress={() => navTo('hrv')} />
           <SubKPICard label="Resting HR"    value={last('restingHr') !== null ? `${last('restingHr')}` : '—'}   unit="bpm" history={hist.restingHr ?? []}        higherIsBetter={false} color="#e74c3c" onPress={() => navTo('rhr')} />
           <SubKPICard label="Respiratory Rate" value={last('respiratoryRate') !== null ? `${last('respiratoryRate')}` : '—'} unit="rpm" history={hist.respiratoryRate ?? []} higherIsBetter={false} color="#2980b9" onPress={() => navTo('resp-rate')} />
