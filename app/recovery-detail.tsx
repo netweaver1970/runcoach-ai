@@ -225,21 +225,23 @@ export default function RecoveryDetailScreen() {
         <TouchableOpacity
           style={s.calibBtn}
           onPress={async () => {
+            // Fetch fresh (2 months) so timing/empty-state can't produce an empty dump.
+            const c = (Object.keys(comps).length ? comps : await fetchOurDailyComponents(2).catch(() => ({}))) as Record<string, Record<string, number>>;
             const stat = (key: string) => {
-              const vals = Object.keys(comps).map((d) => comps[d][key]).filter((v): v is number => v != null);
+              const vals = Object.keys(c).map((d) => c[d][key]).filter((v): v is number => v != null);
               if (!vals.length) return null;
               const m = vals.reduce((a, b) => a + b, 0) / vals.length;
               const sd = Math.sqrt(vals.reduce((a, b) => a + (b - m) ** 2, 0) / vals.length);
               return { mean: Math.round(m * 10) / 10, sd: Math.round(sd * 10) / 10, n: vals.length };
             };
-            const rows = Object.keys(comps).sort().slice(-30).map((d) => ({
+            const rows = Object.keys(c).sort().slice(-35).map((d) => ({
               date: d,
-              rmssd:    comps[d].restingHrv ?? null,        // our TRUE RMSSD (R-R)
-              appleRHR: comps[d].restingHr ?? null,          // our Apple Resting HR
-              rr:       comps[d].respiratoryRate ?? null,
-              hrDip:    comps[d].heartRateDip ?? null,
-              recovery: comps[d].recoveryScore ?? null,
-              sleep:    comps[d].sleepScore ?? null,
+              rmssd:    c[d].restingHrv ?? null,        // our TRUE RMSSD (R-R)
+              appleRHR: c[d].restingHr ?? null,          // our Apple Resting HR
+              rr:       c[d].respiratoryRate ?? null,
+              hrDip:    c[d].heartRateDip ?? null,
+              recovery: c[d].recoveryScore ?? null,
+              sleep:    c[d].sleepScore ?? null,
             }));
             const payload = {
               note: 'compare to Bevel: rmssd→RMSSD, appleRHR→RHR, recovery→Recovery',
@@ -247,7 +249,7 @@ export default function RecoveryDetailScreen() {
               days: rows,
             };
             await Clipboard.setStringAsync(JSON.stringify(payload));
-            setCalibCopied(true);
+            setCalibCopied(rows.length > 0);
             setTimeout(() => setCalibCopied(false), 2500);
           }}
         >
