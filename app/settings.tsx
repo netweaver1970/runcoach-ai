@@ -18,6 +18,7 @@ import {
   getPowerZones, savePowerZones, DEFAULT_POWER_ZONES,
   getLongRunMinutes, setLongRunMinutes, DEFAULT_LONG_RUN_MINUTES,
   getAiWeeks, setAiWeeks, DEFAULT_AI_WEEKS,
+  getUserMaxHr, setUserMaxHr,
 } from '../src/services/claude';
 import {
   loadLLMConfig, saveLLMConfig, deleteLLMApiKey, validateLLMKey,
@@ -77,6 +78,8 @@ export default function SettingsScreen() {
   const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
   const [capPctSaved, setCapPctSaved] = useState(false);
   const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
+  const [maxHr, setMaxHr] = useState('');
+  const [maxHrSaved, setMaxHrSaved] = useState(false);
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
   const [aiWeeksSaved, setAiWeeksSaved] = useState(false);
   const [coachMemory, setCoachMemory] = useState('');
@@ -104,6 +107,7 @@ export default function SettingsScreen() {
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
     getLoadCapPct().then(p => setCapPct(String(p)));
     getLoadCapBasis().then(setCapBasisState);
+    getUserMaxHr().then(h => setMaxHr(h > 0 ? String(h) : ''));
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
     isAutoDayViewEnabled().then(setDayViewAuto);
@@ -173,6 +177,17 @@ export default function SettingsScreen() {
     await setLoadCapPct(n);
     setCapPctSaved(true);
     setTimeout(() => setCapPctSaved(false), 2000);
+  };
+
+  const handleSaveMaxHr = async () => {
+    const n = parseInt(maxHr, 10);
+    if (isNaN(n) || n < 150 || n > 220) {
+      Alert.alert('Invalid value', 'Enter your max HR between 150 and 220 bpm.');
+      return;
+    }
+    await setUserMaxHr(n);
+    setMaxHrSaved(true);
+    setTimeout(() => setMaxHrSaved(false), 2000);
   };
 
   const handleSave = useCallback(async () => {
@@ -663,6 +678,32 @@ export default function SettingsScreen() {
               onPress={handleSaveLongRun}
             >
               <Text style={styles.btnText}>{longRunSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+        </Section>
+
+        <Section title="Max Heart Rate" cat="zones">
+          <Text style={styles.hint}>
+            Your true max HR sets the strain zones (Bevel-style %max-HR). We can only observe a peak
+            from logged runs, which under-reads it if you don't sprint — making strain read too high.
+            Set your real max (e.g. a recent test, or 220−age) for accurate zones. Leave blank for auto.
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={maxHr}
+              onChangeText={setMaxHr}
+              placeholder="auto"
+              placeholderTextColor="#bbb"
+              keyboardType="number-pad"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>bpm</Text>
+            <TouchableOpacity
+              style={[styles.btn, maxHrSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={handleSaveMaxHr}
+            >
+              <Text style={styles.btnText}>{maxHrSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
         </Section>

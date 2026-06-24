@@ -194,6 +194,19 @@ export async function setLongRunMinutes(minutes: number): Promise<void> {
   await SecureStore.setItemAsync(LONG_RUN_MINUTES_KEY, String(Math.round(minutes)));
 }
 
+// True max HR for %max-HR strain zones. We can only OBSERVE a peak from logged runs, which badly
+// under-estimates it for easy-only runners (→ zones shift up → strain inflates). Let the user set
+// their real max; 0 = auto (observed peak, floored).
+const MAX_HR_KEY = 'user_max_hr';
+export async function getUserMaxHr(): Promise<number> {
+  const raw = await SecureStore.getItemAsync(MAX_HR_KEY);
+  const n = raw ? parseInt(raw, 10) : 0;
+  return Number.isFinite(n) && n >= 150 && n <= 220 ? n : 0; // 0 = auto
+}
+export async function setUserMaxHr(bpm: number): Promise<void> {
+  await SecureStore.setItemAsync(MAX_HR_KEY, String(Math.round(bpm)));
+}
+
 const AI_WEEKS_KEY = 'ai_weeks';
 export const DEFAULT_AI_WEEKS = 8;
 export async function getAiWeeks(): Promise<number> {

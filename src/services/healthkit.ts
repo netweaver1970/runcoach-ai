@@ -57,7 +57,7 @@ import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRun
 import {
   getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, getRunOverrides, isPowerZonesConfigured,
-  getLongRunMinutes, getHrUnreliableRuns,
+  getLongRunMinutes, getHrUnreliableRuns, getUserMaxHr,
 } from './claude';
 import { loadEvents } from './timelineEvents';
 
@@ -1491,11 +1491,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       const s = new Date(toISOStr(w.startDate)).getTime();
       return { s, e: s + workoutDurationSec(w) * 1000 };
     });
+  // %max-HR strain zones need the TRUE max HR. The observed run peak under-estimates it for
+  // easy-only runners (zones shift up → strain inflates), so prefer the user's set max; else floor
+  // the observed peak at a sane adult default.
+  const userMaxHr = await getUserMaxHr();
+  const strainMaxHR = userMaxHr > 0 ? userMaxHr : Math.max(190, maxHR);
   // Zone-weighted active+passive strain load (workout HR full weight, background HR ×fraction).
   const activeZoneLoad = zoneStrainLoad(
     (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number })),
     restHRForTrimp,
-    maxHR,
+    strainMaxHR,
     todayWindows,
   );
   // Muscular load from today's strength/resistance workouts (HK types 20/50).
@@ -2587,7 +2592,8 @@ export async function fetchStrainHistory(
   const restHR = restVals.length > 0 ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 50;
   let peak = 0;
   for (const sm of hr) if (sm.hr > peak) peak = sm.hr;
-  const maxHR = Math.max(185, Math.min(205, Math.round(peak)));
+  const userMaxHr = await getUserMaxHr();
+  const maxHR = userMaxHr > 0 ? userMaxHr : Math.max(190, Math.min(205, Math.round(peak)));
 
   // Bucket HR by day; workout windows per day (HR inside = exercise, full weight)
   const byDay = new Map<string, { t: number; hr: number }[]>();
