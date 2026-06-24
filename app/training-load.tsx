@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
-import { tsbStatus } from '../src/services/trainingLoad';
+import { tsbStatus, cardioLoadStatus } from '../src/services/trainingLoad';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DailyLoad } from '../src/types';
 
@@ -84,8 +84,8 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const stride = Math.max(1, Math.ceil(data.length / 120));
   const pts = data.filter((_, i) => i % stride === 0 || i === data.length - 1);
 
-  // Scale across all three series; force 0 into range so the TSB zero line shows
-  const allVals = pts.flatMap(d => [d.ctl, d.atl, d.tsb]);
+  // Scale across all three series + the optimal-load band top (1.3×CTL); force 0 in so TSB zero shows
+  const allVals = pts.flatMap(d => [d.ctl, d.atl, d.tsb, d.ctl * 1.3]);
   const scale = niceScale(Math.min(...allVals, 0), Math.max(...allVals, 1));
   const toY = (v: number) => CHART_H - ((v - scale.min) / (scale.max - scale.min)) * CHART_H;
   const xOf = (i: number) => (i / Math.max(1, pts.length - 1)) * plotW;
@@ -136,9 +136,33 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
             height: t === 0 ? 1.5 : 1, backgroundColor: t === 0 ? c.textFaint : c.gridline,
           }} />
         ))}
+        {/* Optimal-load band: 0.8–1.3×CTL per day (the "calculated range") */}
+        {pts.map((d, i) => {
+          if (d.ctl <= 0) return null;
+          const yTop = toY(d.ctl * 1.3), yBot = toY(d.ctl * 0.8);
+          const w = plotW / Math.max(1, pts.length - 1) + 1;
+          return (
+            <View key={`band-${i}`} style={{
+              position: 'absolute', left: xOf(i) - w / 2, width: w,
+              top: yTop, height: Math.max(1, yBot - yTop),
+              backgroundColor: '#8e7cc326',
+            }} />
+          );
+        })}
         {renderLine('ctl', CTL_COLOR)}
         {renderLine('atl', ATL_COLOR)}
         {renderLine('tsb', TSB_COLOR, 2)}
+        {/* Cardio-status dots on the ATL (load) line */}
+        {pts.map((d, i) => {
+          const st = cardioLoadStatus(d.atl, d.ctl, d.tsb);
+          return (
+            <View key={`st-${i}`} style={{
+              position: 'absolute', left: xOf(i) - 3.5, top: toY(d.atl) - 3.5,
+              width: 7, height: 7, borderRadius: 3.5, backgroundColor: st.color,
+              borderWidth: 1, borderColor: c.bg,
+            }} />
+          );
+        })}
 
         {/* Cursor: vertical line, series dots, tooltip */}
         {cur && (
@@ -206,6 +230,22 @@ export default function TrainingLoadScreen() {
   const rampWk = data.length >= 8
     ? Math.round((data[data.length - 1].ctl - data[data.length - 8].ctl) * 10) / 10
     : 0;
+
+  // Cardio-status breakdown: days in each training state over the displayed period.
+  const cardioBreakdown = (() => {
+    const counts = new Map<string, { color: string; days: number }>();
+    let total = 0;
+    for (const d of data) {
+      const st = cardioLoadStatus(d.atl, d.ctl, d.tsb);
+      const e = counts.get(st.label) ?? { color: st.color, days: 0 };
+      e.days += 1; counts.set(st.label, e); total += 1;
+    }
+    const ORDER = ['Building', 'Detraining', 'Maintaining', 'Productive', 'Peaking', 'Overreaching'];
+    return total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
+      label: l, color: counts.get(l)!.color, days: counts.get(l)!.days,
+      pct: Math.round((counts.get(l)!.days / total) * 100),
+    }));
+  })();
 
   const onChartLayout = (e: LayoutChangeEvent) => setInnerW(e.nativeEvent.layout.width - CARD_PADDING * 2);
 
@@ -305,8 +345,25 @@ export default function TrainingLoadScreen() {
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: ATL_COLOR }]} /><Text style={s.legendText}>Fatigue</Text></View>
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: TSB_COLOR }]} /><Text style={s.legendText}>Form</Text></View>
             </View>
-            <Text style={s.scrubHint}>Drag across the chart to read any day</Text>
+            <Text style={s.scrubHint}>Shaded band = optimal load (0.8–1.3× fitness) · dot colour = daily status</Text>
           </View>
+
+          {/* Cardio status breakdown over the period */}
+          {cardioBreakdown.length > 0 && (
+            <View style={s.statusCard}>
+              <Text style={s.statusCardTitle}>CARDIO STATUS BREAKDOWN</Text>
+              {cardioBreakdown.map((st) => (
+                <View key={st.label} style={s.statusRow}>
+                  <Text style={s.statusName}>{st.label}</Text>
+                  <Text style={s.statusDaysTxt}>{st.days}d</Text>
+                  <View style={s.statusBarBg}>
+                    <View style={[s.statusBarFill, { width: `${st.pct}%` as `${number}%`, backgroundColor: st.color }]} />
+                  </View>
+                  <Text style={s.statusPctTxt}>{st.pct}%</Text>
+                </View>
+              ))}
+            </View>
+          )}
 
           {/* Explainer */}
           <View style={s.explainer}>
@@ -395,6 +452,14 @@ const makeS = (c: Palette) => StyleSheet.create({
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendText: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   scrubHint: { fontSize: 11, color: c.textFaint, textAlign: 'center', marginTop: 6, fontStyle: 'italic' },
+  statusCard: { backgroundColor: c.surface, borderRadius: 14, padding: 14, marginBottom: 14 },
+  statusCardTitle: { fontSize: 12, fontWeight: '700', color: c.textSub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 7 },
+  statusName: { fontSize: 14, fontWeight: '600', color: c.text, width: 104 },
+  statusDaysTxt: { fontSize: 13, color: c.textSub, width: 34 },
+  statusBarBg: { flex: 1, height: 8, borderRadius: 4, backgroundColor: c.bg, marginHorizontal: 8, overflow: 'hidden' },
+  statusBarFill: { height: 8, borderRadius: 4 },
+  statusPctTxt: { fontSize: 14, fontWeight: '700', color: c.text, width: 44, textAlign: 'right' },
 
   explainer: {
     backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 16,
