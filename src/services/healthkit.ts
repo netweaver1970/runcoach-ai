@@ -534,59 +534,54 @@ function restfulDaytimeHR(vals: number[]): number {
 
 const DEFAULT_SLEEP_GOAL_MINUTES = 480; // 8 hours
 
+// Duration target for the Sleep Score ≈ Bevel's dynamic Sleep Need (base 6h15m + strain +
+// debt), which averages ~7h. Best-fit constant over Bevel's 30 nights (R² peaks at 420).
+const SLEEP_SCORE_NEED = 420;
+
+// Bevel's 5-pillar Sleep Score. Weights + mappings reverse-engineered from 30 nights of Bevel data
+// (Duration 40 / Efficiency 20 / Stages 20 / HR-dip 10 / Consistency 10): corr 0.88, bias +2.7.
 function computeSleepScore(
   session: SleepSession,
   overnightHR: number,
   daytimeHR: number,
+  recentSessions: SleepSession[] = [],
 ): number {
-  // 1. Time asleep score (40%): how close to 8h goal
-  const goalRatio = Math.min(1.2, session.totalMinutes / DEFAULT_SLEEP_GOAL_MINUTES);
-  const timeScore =
-    goalRatio >= 1.0 ? 100
-    : goalRatio >= 0.85 ? 70 + (goalRatio - 0.85) / 0.15 * 30
-    : goalRatio >= 0.60 ? 30 + (goalRatio - 0.60) / 0.25 * 40
-    : goalRatio * 50;
+  const lin = (x: number, a: number, b: number, c: number, d: number) =>
+    x <= a ? c : x >= b ? d : c + (d - c) * (x - a) / (b - a);
+  const asleep = session.totalMinutes;
 
-  // 2. Sleep stages score (25%): deep+REM fraction of total sleep
-  const deepRemFrac = session.totalMinutes > 0
-    ? (session.deepMinutes + session.remMinutes) / session.totalMinutes
-    : 0;
-  const stagesScore =
-    deepRemFrac >= 0.40 ? 100
-    : deepRemFrac >= 0.25 ? 60 + (deepRemFrac - 0.25) / 0.15 * 40
-    : deepRemFrac >= 0.10 ? 20 + (deepRemFrac - 0.10) / 0.15 * 40
-    : deepRemFrac * 200;
+  // 1. Duration (40%): time asleep vs Sleep Need. 0 at <50%, 50 at ~75%, 100 at 100%+.
+  const r = SLEEP_SCORE_NEED > 0 ? asleep / SLEEP_SCORE_NEED : 1;
+  const durScore = r >= 1 ? 100 : r >= 0.75 ? lin(r, 0.75, 1, 50, 100) : r >= 0.5 ? lin(r, 0.5, 0.75, 0, 50) : 0;
 
-  // 3. Sleep efficiency (15%): time asleep / (asleep + awake in bed)
-  const totalInBed = session.totalMinutes + session.awakeMinutes;
-  const efficiency = totalInBed > 0 ? session.totalMinutes / totalInBed : 1;
-  const effScore = Math.min(100, efficiency * 110);
+  // 2. Efficiency (20%): asleep / time-in-bed. 0 at <60%, 50 at ~75%, 100 at 95%+.
+  const totalInBed = asleep + session.awakeMinutes;
+  const eff = totalInBed > 0 ? (asleep / totalInBed) * 100 : 100;
+  const effScore = eff >= 95 ? 100 : eff >= 75 ? lin(eff, 75, 95, 50, 100) : eff >= 60 ? lin(eff, 60, 75, 0, 50) : 0;
 
-  // 4. HR dip score (10%): overnight HR vs daytime HR
-  let hrDipScore = 50;
+  // 3. Stages (20%): REM ≥20% of sleep + Deep ≥15%, each worth 50 (full credit at/above target).
+  const remPct  = asleep > 0 ? session.remMinutes  / asleep : 0;
+  const deepPct = asleep > 0 ? session.deepMinutes / asleep : 0;
+  const stageScore = 50 * Math.min(1, remPct / 0.20) + 50 * Math.min(1, deepPct / 0.15);
+
+  // 4. HR dip (10%): overnight HR drop from daytime HR. 0 at no dip, 50 at ~6%, 100 at 15%+.
+  let dipScore = 60; // neutral when HR data is missing
   if (overnightHR > 0 && daytimeHR > 0) {
-    const dip = (daytimeHR - overnightHR) / daytimeHR;
-    hrDipScore =
-      dip >= 0.25 ? 100
-      : dip >= 0.15 ? 70 + (dip - 0.15) / 0.10 * 30
-      : dip >= 0.05 ? 20 + (dip - 0.05) / 0.10 * 50
-      : Math.max(0, dip * 400);
+    const dip = (daytimeHR - overnightHR) / daytimeHR * 100;
+    dipScore = dip >= 15 ? 100 : dip >= 6 ? lin(dip, 6, 15, 50, 100) : dip >= 0 ? lin(dip, 0, 6, 0, 50) : 0;
   }
 
-  // 5. Sleep continuity (10%): less awake time = better
-  const awakeFrac = totalInBed > 0 ? session.awakeMinutes / totalInBed : 0;
-  const continuityScore =
-    awakeFrac <= 0.05 ? 100
-    : awakeFrac <= 0.15 ? 100 - (awakeFrac - 0.05) / 0.10 * 50
-    : Math.max(0, 50 - (awakeFrac - 0.15) * 300);
+  // 5. Consistency (10%): bed/wake timing variability over the last 7 nights (±30 min = full credit).
+  let consScore = 75; // neutral until we have a few nights
+  const win = recentSessions.filter((s) => s.bedtime && s.wakeTime).slice(-7);
+  if (win.length >= 3) {
+    const eve = (cm: number) => { let m = cm - 1080; if (m < 0) m += 1440; return m; }; // minutes from 18:00 (wrap)
+    const sd  = (a: number[]) => { const m = a.reduce((x, y) => x + y, 0) / a.length; return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); };
+    const variability = (sd(win.map((s) => eve(clockMinutes(s.bedtime)))) + sd(win.map((s) => clockMinutes(s.wakeTime)))) / 2;
+    consScore = Math.max(0, Math.min(100, 100 - Math.max(0, variability - 30) * 1.4));
+  }
 
-  const raw =
-    timeScore       * 0.40 +
-    stagesScore     * 0.25 +
-    effScore        * 0.15 +
-    hrDipScore      * 0.10 +
-    continuityScore * 0.10;
-
+  const raw = 0.40 * durScore + 0.20 * effScore + 0.20 * stageScore + 0.10 * dipScore + 0.10 * consScore;
   return Math.round(Math.min(100, Math.max(0, raw)));
 }
 
@@ -618,7 +613,8 @@ const RECOVERY_HRV_W   = 0.75;
 function computeRecoveryScore(
   todayRMSSD: number,
   todayOvernightHR: number,
-  history: NightlyHRV[]
+  history: NightlyHRV[],
+  sleepScore = 0,
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number } {
   const recent = history.slice(-60).filter((n) => n.weightedRMSSD > 0);
 
@@ -650,9 +646,13 @@ function computeRecoveryScore(
     blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * zRHRscore;
   }
 
-  // ── Final score: HRV-weighted, self-normalizing (no Bevel offset) ─────────────
+  // ── Final score: HRV-weighted core + sleep "multiplier" ───────────────────────
   const useRHR = todayOvernightHR > 0;
-  const rawScore = useRHR ? RECOVERY_HRV_W * blendedHRV + (1 - RECOVERY_HRV_W) * blendedRHR : blendedHRV;
+  let rawScore = useRHR ? RECOVERY_HRV_W * blendedHRV + (1 - RECOVERY_HRV_W) * blendedRHR : blendedHRV;
+  // Sleep lifts/caps recovery (Bevel fit: +0.32/pt vs a neutral 72). Applied only when we have a
+  // sleep score for the night; this closes the high-HRV/bad-sleep gap (core R² .918 → full .985,
+  // pending the RR illness penalty). RR penalty deferred — needs respiratory rate in the snapshot.
+  if (sleepScore > 0) rawScore += 0.32 * (sleepScore - 72);
   const score    = Math.round(clamp01(rawScore));
 
   // ── Baseline + trend (raw RMSSD, for display) ─────────────────────────────
@@ -1415,16 +1415,17 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   }
 
   if (recentHRV && recentHRV.weightedRMSSD > 0) {
-    // Full recovery score available
+    // Full recovery score available — sleep score first, so it can feed recovery's sleep term.
     const historyBefore = nightlyHRV.filter((n) => n.date < recentHRV.date);
+    const sleepScore = recentSession
+      ? computeSleepScore(recentSession, recentHRV.overnightHR, daytimeHR, sleepSessions)
+      : 0;
     const { score, baseline, trend } = computeRecoveryScore(
       recentHRV.weightedRMSSD,
       recentHRV.overnightHR,
-      historyBefore
+      historyBefore,
+      sleepScore,
     );
-    const sleepScore = recentSession
-      ? computeSleepScore(recentSession, recentHRV.overnightHR, daytimeHR)
-      : 0;
     todayRecovery = {
       date:                todayStr,
       weightedRMSSD:       recentHRV.weightedRMSSD,
@@ -1442,7 +1443,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     };
   } else if (recentSession) {
     // Sleep session found but HRV not yet synced — show partial recovery card
-    const sleepScore = computeSleepScore(recentSession, 0, daytimeHR);
+    const sleepScore = computeSleepScore(recentSession, 0, daytimeHR, sleepSessions);
     todayRecovery = {
       date:                todayStr,
       weightedRMSSD:       0,
@@ -3481,7 +3482,7 @@ export async function fetchOurDailyComponents(
     if (s.bedtime)          r.sleepTime = clockMinutes(s.bedtime);
     if (s.wakeTime)         r.wakeTime = clockMinutes(s.wakeTime);
     const b = bioByDate.get(s.date);
-    const score = computeSleepScore(s, b?.overnightHR ?? 0, b?.daytimeHR ?? 0);
+    const score = computeSleepScore(s, b?.overnightHR ?? 0, b?.daytimeHR ?? 0, sessions.filter((x) => x.date <= s.date));
     if (score > 0)          r.sleepScore = score;
   }
   for (const s of strain)   day(s.date).strainScore = s.value;
