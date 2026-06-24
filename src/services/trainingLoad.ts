@@ -360,36 +360,30 @@ export function computeStrainTrimp(
 const STRAIN_LOG_A = 45;
 const STRAIN_LOG_B = 0.02;
 
-// ── Zone-weighted strain (Bevel-style, research-aligned) ──────────────────────
-// Bevel: Strain = ActiveStrain + PassiveStrain, then a squash to 0-100.
-//   • ActiveStrain  = workout HR, Edwards/eTRIMP zone-weighted (minutes-in-zone × weight 1..5).
-//   • PassiveStrain = BACKGROUND (non-workout) HR above your resting baseline + steps/motion —
-//     so elevated background HR (stress, errands, stairs) still adds load, but more gently.
-// Calm/sleep HR sits at/below rest → contributes nothing, so the score starts near zero each
-// morning. A SIGMOID squash bounds it and makes gains harder near the top. Constants are tunable.
-// Squash: Bevel says strain "increases logarithmically", so a log curve (not a sigmoid — that was
-// too steep: moderate days read low, hard days slammed to ~95). A = overall level, B = curvature.
-const STRAIN_LOAD_A  = 28;    // overall level (raise → higher scores)
-const STRAIN_LOAD_B  = 0.06;  // curvature (raise → reaches the top faster)
-const STRAIN_BG_FRAC = 0.25;  // background (non-workout) HR at this fraction of workout weight
-const STRAIN_WORKOUT_MIN = 0.32; // a LOGGED workout is deliberate exercise → its minutes count at
-                              // ≥ this even when HR is below the background floor (a slow logged walk
-                              // still earns strain; calibrated so a 34-min walk ≈ Bevel's 14)
+// ── Zone-weighted strain (Bevel's published model) ────────────────────────────
+// Reverse-engineered from Bevel's own breakdown of Geert's walks: a TRIMP-style weighted-HR
+// integration. RawLoad = Σ (minutes-in-zone × zone weight); zones are %max-HR; then a near-linear-
+// at-low-end log maps RawLoad → 0-100 (diminishing returns up high). Verified exactly: today's
+// 38-min walk (28min Z0 + 10min Z1 → RawLoad 12.6) = 12; yesterday's (20·Z0 + 14·Z1 → 16) = 15.
+const STRAIN_LOAD_A  = 49;    // log fit so RawLoad ≈ strain at the low end (12.6 → 12)
+const STRAIN_LOAD_B  = 0.022; // curvature (raise → reaches the top faster / more diminishing)
+const STRAIN_BG_FRAC = 0.1;   // background (non-workout) HR counts at this fraction of workout weight
+const STRAIN_BG_CAP  = 0.94;  // …and the TOTAL background load saturates here → strain ~1. Bevel's
+                              // "non-activity" strain reaches ~1 within an hour of waking, then HOLDS
+                              // (it doesn't grow all day) — this cap reproduces that.
 
-// Continuous zone weight by %HR-reserve: light background (≥0.2) ramps in, zones 1..5 at ≥0.5..≥0.9.
-function zoneWeight(hrr: number): number {
-  if (hrr >= 0.9) return 5;
-  if (hrr >= 0.8) return 4;
-  if (hrr >= 0.7) return 3;
-  if (hrr >= 0.6) return 2;
-  if (hrr >= 0.5) return 1;
-  if (hrr >= 0.4) return 0.5;   // brisk-but-not-zone background (a walk)
-  if (hrr >= 0.3) return 0.25;  // light background elevation
-  if (hrr >= 0.1) return 0.05;  // calm-but-awake (desk, mild HR over rest) — a trickle, like Bevel's
-  return 0;                     // at/below rest (deep calm, sleep) → nothing
+// Bevel's zones + weights, by %max-HR: Z0 <50%→0.1, Z1 50-60%→1, Z2 60-70%→2, Z3 70-80%→4,
+// Z4 80-90%→6.5, Z5 >90%→10. (Z0 is gated to HR > resting by the caller, so sleep/deep-calm = 0.)
+function zoneWeight(pctMax: number): number {
+  if (pctMax >= 0.9) return 10;   // Z5 Maximum
+  if (pctMax >= 0.8) return 6.5;  // Z4 Threshold
+  if (pctMax >= 0.7) return 4;    // Z3 Anaerobic
+  if (pctMax >= 0.6) return 2;    // Z2 Aerobic
+  if (pctMax >= 0.5) return 1;    // Z1 Recovery
+  return 0.1;                     // Z0 baseline / background movement
 }
 
-// Active (workout, full weight) + passive (background, ×BG_FRAC) zone-weighted load over the day's HR.
+// Active (workout, full weight) + passive (background, ×BG_FRAC, capped) zone-weighted load.
 export function zoneStrainLoad(
   samples: { t: number; hr: number }[], restHR: number, maxHR: number,
   workoutWins: { s: number; e: number }[] = [],
@@ -398,19 +392,18 @@ export function zoneStrainLoad(
   const s = [...samples].sort((a, b) => a.t - b.t);
   const inWorkout = (t: number) => workoutWins.some((w) => t >= w.s && t <= w.e);
   const MAX_GAP_MS = 8 * 60_000;
-  let load = 0;
+  // Workout load is uncapped (real exercise); background load saturates (Bevel-style "non-activity").
+  let workLoad = 0, bgLoad = 0;
   for (let i = 1; i < s.length; i++) {
     const dt = Math.min(MAX_GAP_MS, s[i].t - s[i - 1].t);
     if (dt <= 0) continue;
-    const hrr = (s[i].hr - restHR) / (maxHR - restHR);
-    const wk  = inWorkout(s[i].t);
-    let w = zoneWeight(hrr);
-    // Logged workout = deliberate exercise: count its minutes even when HR is below the background
-    // floor (a slow walk still earns strain), as long as HR is at all above resting.
-    if (wk && hrr > 0.1) w = Math.max(STRAIN_WORKOUT_MIN, w);
-    if (w > 0) load += (dt / 60_000) * w * (wk ? 1 : STRAIN_BG_FRAC);
+    if (s[i].hr <= restHR) continue;   // at/below resting → no strain (sleep, deep calm)
+    const w = zoneWeight(s[i].hr / maxHR);
+    const dtMin = dt / 60_000;
+    if (inWorkout(s[i].t)) workLoad += dtMin * w;
+    else                   bgLoad   += dtMin * w * STRAIN_BG_FRAC;
   }
-  return load;
+  return workLoad + Math.min(bgLoad, STRAIN_BG_CAP);
 }
 
 // Logarithmic squash: RawLoad → 0-100 strain (diminishing returns near the top, Bevel-style).
