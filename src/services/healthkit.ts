@@ -382,6 +382,19 @@ function computeRMSSD(
   return n > 0 ? Math.sqrt(sumSq / n) : 0;
 }
 
+// True RMSSD for one night: the global heartbeat series windowed to the sleep session.
+// (Recovery is fit to Bevel's RMSSD, which runs ~20% below Apple's SDNN — see computeRMSSD.)
+function nightlyTrueRMSSD(session: SleepSession, allSeries: readonly any[]): number {
+  if (!allSeries || allSeries.length === 0) return 0;
+  const start = new Date(session.bedtime).getTime() - 90 * 60_000;
+  const end   = new Date(session.wakeTime).getTime() + 60 * 60_000;
+  const series = allSeries.filter((s) => {
+    const t = new Date(s.startDate).getTime();
+    return t >= start && t <= end;
+  });
+  return series.length > 0 ? computeRMSSD(series as any) : 0;
+}
+
 /**
  * Is the HRV sample at `sampleStartMs` considered good quality?
  * Looks for the nearest heartbeat series within 10 s tolerance.
@@ -1290,7 +1303,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const globalQualityMap = buildHeartbeatQualityMap(allHeartbeatSeries as any[]);
 
   const nightlyHRV: NightlyHRV[] = sleepSessions.map((session) => {
-    const { weightedRMSSD, annotatedSamples } = computeWeightedRMSSD(session, hrvSamplesForSleep, globalQualityMap);
+    const { weightedRMSSD: sdnnRMSSD, annotatedSamples } = computeWeightedRMSSD(session, hrvSamplesForSleep, globalQualityMap);
+    // Recovery is fit to Bevel's TRUE RMSSD (R-R intervals), ~20% below Apple's SDNN. Prefer it;
+    // fall back to the SDNN-weighted value on nights without a heartbeat series.
+    const trueRMSSD = nightlyTrueRMSSD(session, allHeartbeatSeries as any[]);
+    const weightedRMSSD = trueRMSSD > 0 ? trueRMSSD : sdnnRMSSD;
     const overnightHR = computeOvernightHR(session, sleepHRSamples);
     return { date: session.date, samples: annotatedSamples, weightedRMSSD, overnightHR };
   });
@@ -3088,9 +3105,11 @@ export async function fetchHRVHistory(months: number, toDate?: Date): Promise<{ 
 
   const results: { date: string; value: number }[] = [];
   for (const session of sessions) {
-    const { weightedRMSSD } = computeWeightedRMSSD(session, normHRV, qualityMap);
-    if (weightedRMSSD > 0) {
-      results.push({ date: session.date, value: Math.round(weightedRMSSD) });
+    // Prefer Bevel's true RMSSD (R-R intervals); fall back to the SDNN-weighted value.
+    const trueRMSSD = nightlyTrueRMSSD(session, hbsRaw as any[]);
+    const value = trueRMSSD > 0 ? trueRMSSD : computeWeightedRMSSD(session, normHRV, qualityMap).weightedRMSSD;
+    if (value > 0) {
+      results.push({ date: session.date, value: Math.round(value) });
     }
   }
 
