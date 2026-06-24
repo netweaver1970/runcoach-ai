@@ -42,6 +42,7 @@ export default function BodyBatteryScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedCorr, setCopiedCorr] = useState(false);
 
   const load = useCallback((isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoading(true);
@@ -117,6 +118,20 @@ export default function BodyBatteryScreen() {
             >
               <Text style={s.debugBtnText}>{copied ? '✓ Copied — paste it to the coach' : '⧉ Copy calibration data'}</Text>
             </TouchableOpacity>
+
+            {data.correlation && (
+              <TouchableOpacity
+                style={s.debugBtn}
+                onPress={async () => {
+                  await Clipboard.setStringAsync(JSON.stringify(data.correlation));
+                  setCopiedCorr(true); setTimeout(() => setCopiedCorr(false), 2500);
+                }}
+              >
+                <Text style={s.debugBtnText}>
+                  {copiedCorr ? '✓ Copied — paste it to the coach' : '⧉ Copy correlation data (sleep structure + buckets)'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </>
         )}
       </ScrollView>

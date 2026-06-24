@@ -90,6 +90,7 @@ export interface BodyBattery {
   hrvUsed: number; hrvRejected: number; // selectivity transparency
   computedAt: number;
   debug: any;             // raw trace for off-device calibration (Copy debug)
+  correlation: any;       // last-night stage timeline + per-bin series (Copy correlation data)
 }
 
 interface Sample { t: number; v: number; }
@@ -249,6 +250,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   let lastHrvForCeil = hrvBaseline;     // carry the last trusted HRV across gaps
   const series: BatteryPoint[] = [];
   const binDebug: any[] = [];
+  const corrBins: { t: number; s: number; hr: number; hrv: number; stg: number; a: number; b: number }[] = [];
   for (let t = start; t <= now; t += binMs) {
     // mean HR in [t, t+bin)
     let sum = 0, n = 0;
@@ -297,6 +299,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     battery = clamp(battery + rate * BIN_MIN, 0, 100);
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
     binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
+    corrBins.push({ t, s: Math.round(stress), hr: Math.round(avgHR), hrv: vHrv ? Math.round(vHrv) : 0, stg: stage, a: night ? 1 : 0, b: Math.round(battery) });
   }
   if (!series.length) return null;
 
@@ -312,6 +315,44 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   for (let i = 1; i < shown.length; i++) {
     const d = shown[i].battery - shown[i - 1].battery;
     if (d > 0) totalCharged += d; else totalDrained += d;
+  }
+
+  // ── Correlation dump: the most recent night + the morning after, for fitting the recovery model
+  // ΔE_bucket = w(stage)·(a − b·stress) (sleep charges, wake drains, no ceiling). Pair each bin's
+  // stress + HK stage with Bevel's energy reading at that clock time.
+  const STG_LABEL: Record<number, string> = { 0: 'inBed', 1: 'asleep', 2: 'awake', 3: 'core', 4: 'deep', 5: 'REM' };
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const hhmm = (t: number) => { const d = new Date(t); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+  let nEnd = -1;
+  for (let i = corrBins.length - 1; i >= 0; i--) { if (corrBins[i].a) { nEnd = i; break; } }
+  let nStart = nEnd;
+  while (nStart > 0 && corrBins[nStart - 1].a) nStart--;
+  let correlation: any = null;
+  if (nEnd >= 0) {
+    const stages: { stage: string; from: string; to: string; min: number }[] = [];
+    let lastStg = NaN;
+    for (let i = nStart; i <= nEnd; i++) {
+      const b = corrBins[i];
+      if (b.stg === lastStg && stages.length) {
+        const cur = stages[stages.length - 1];
+        cur.to = hhmm(b.t + binMs); cur.min += BIN_MIN;
+      } else {
+        stages.push({ stage: STG_LABEL[b.stg] ?? '—', from: hhmm(b.t), to: hhmm(b.t + binMs), min: BIN_MIN });
+        lastStg = b.stg;
+      }
+    }
+    const from = Math.max(0, nStart - 3);               // a little pre-sleep context (charge onset)
+    const bins = corrBins.slice(from).map((b) => ({
+      t: hhmm(b.t), stress: b.s, hr: b.hr, hrv: b.hrv || undefined,
+      stage: STG_LABEL[b.stg] ?? '—', asleep: b.a, ourBattery: b.b,
+    }));
+    correlation = {
+      note: 'Per-bin OURS/HK over the last night + the morning after. To fit the recovery model, pair each bin (or 6-min bucket) stress + stage with Bevel\'s ENERGY reading at that clock time, then regress ΔE = w(stage)·(a − b·stress). Sleep charges, wake drains, no ceiling.',
+      binMin: BIN_MIN, restHR, hrvBaseline: Math.round(hrvBaseline),
+      night: `${hhmm(corrBins[nStart].t)}→${hhmm(corrBins[nEnd].t + binMs)}`,
+      stages,   // HK sleep-stage timeline (distinct blocks)
+      bins,     // {t, stress, hr, hrv, stage, asleep, ourBattery}
+    };
   }
 
   return {
@@ -334,5 +375,6 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
     },
+    correlation,       // last-night stage timeline + per-bin series for the recovery-model fit
   };
 }
