@@ -262,6 +262,12 @@ export default function StrainDetailScreen() {
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
+              {tof && tof.nextRunInDays > 0 && (
+                <Text style={s.coachNextRun}>
+                  🏃 Next run <Text style={{ fontWeight: '800' }}>{tof.nextRunLabel}</Text>
+                  {tof.nextRunInDays === 1 ? ' (tomorrow)' : ` (in ${tof.nextRunInDays} days)`} — when the +10% volume cap frees up
+                </Text>
+              )}
               {plan.strength ? (
                 <View style={s.strengthRow}>
                   <Text style={s.strengthLabel}>🦵 LEG STRENGTH</Text>
@@ -405,6 +411,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   intensityText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
   coachTarget: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   coachSession: { fontSize: 14, color: c.text, fontWeight: '600', marginBottom: 6, lineHeight: 20 },
+  coachNextRun: { fontSize: 13, color: '#22C55E', fontWeight: '600', marginBottom: 8, lineHeight: 19 },
   strengthRow: { backgroundColor: c.bg, borderRadius: 8, padding: 10, marginBottom: 8 },
   strengthLabel: { fontSize: 10, fontWeight: '800', color: '#16a085', letterSpacing: 0.4, marginBottom: 3 },
   strengthText: { fontSize: 13, color: c.text, lineHeight: 19 },

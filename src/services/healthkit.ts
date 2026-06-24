@@ -2762,6 +2762,80 @@ export async function fetchWeeklyDurationHistory(months: number, toDate?: Date):
  * Daily time-on-feet (minutes) for the last ~31 days.
  * Mirrors fetchDailyMileageHistory but returns duration.
  */
+// Phases that DON'T count toward time-on-feet: warmup, cooldown, recovery, and any walk segment.
+const TOF_EXCLUDE_PHASE = /warm|cool|recover|rest|walk|prep/i;
+
+/**
+ * "Real" running time-on-feet for one workout = WORK + DRILLS only, EXCLUDING warmup, cooldown,
+ * recovery (inter-rep rest) and walk segments. Reads the structured-workout segment labels from
+ * w.activities (WorkoutProxy UUID-suffix patch); a segment counts unless it's an explicit
+ * warmup/cooldown/recovery/walk phase. Falls back to the workout's total duration for an
+ * unstructured run (no segments). Returns SECONDS.
+ */
+function workDrillsSeconds(w: any): number {
+  const totalSec = typeof w.duration === 'object' && w.duration !== null
+    ? (w.duration.quantity as number) ?? 0 : (w.duration as number) ?? 0;
+  const acts: any[] = w.activities ?? [];
+
+  const segs = acts.map((act: any) => {
+    const uuidStr: string = act.uuid ?? '';
+    const sep = uuidStr.indexOf('::');
+    let stepType = -1, stepActType = -1, title = '', stepName = '', distanceM = 0;
+    if (sep >= 0) {
+      const restS   = uuidStr.slice(sep + 2);
+      const metaSep = restS.indexOf('::meta::');
+      const statSep = restS.indexOf('::stat::');
+      if (metaSep >= 0) {
+        const end = statSep >= 0 && statSep > metaSep ? statSep : restS.length;
+        for (const pair of restS.slice(metaSep + 8, end).split('|')) {
+          const eq = pair.indexOf('='); if (eq < 0) continue;
+          const k = pair.slice(0, eq), v = pair.slice(eq + 1);
+          if (k === 'title')           title    = v;
+          if (k === 'WorkoutStepName') stepName = v;
+          if (k === 'WorkoutStepType') stepType = parseInt(v, 10);
+        }
+      }
+      if (statSep >= 0) {
+        for (const pair of restS.slice(statSep + 8).split(';')) {
+          const eq = pair.indexOf('='); if (eq < 0) continue;
+          const k = pair.slice(0, eq);
+          if (k === 'dist')    distanceM   = parseFloat(pair.slice(eq + 1));
+          if (k === 'stepAct') stepActType = parseFloat(pair.slice(eq + 1));
+        }
+      }
+    }
+    const aStart = new Date(toISOStr(act.startDate)).getTime();
+    const aEnd   = act.endDate ? new Date(toISOStr(act.endDate)).getTime() : aStart;
+    const durationSec = (act as any).duration > 0 ? (act as any).duration : Math.max(0, (aEnd - aStart) / 1000);
+    let label = title || stepName
+      || (['Warmup', 'Work', 'Recovery', 'Cooldown'][stepType] ?? '')
+      || (stepActType === HK_COOLDOWN ? 'Cooldown'
+          : HK_PREP_REC_SET.has(stepActType) ? 'Warmup'
+          : stepActType === HK_WALKING ? 'Walk' : '');
+    return { label, durationSec, distanceM };
+  }).filter((s) => s.durationSec >= 5);
+
+  if (segs.length === 0) return totalSec; // unstructured run → count the whole thing
+
+  // Resolve deferred/empty labels the same way the run classifier does: a SHORT first/last segment
+  // is the warmup/cooldown, the middle is work — so we don't accidentally count warmup/cooldown.
+  if (segs.some((s) => !s.label) && segs.length >= 2) {
+    const valid = segs.map((s) => s.distanceM).filter((d) => d > 0);
+    if (valid.length >= 2) {
+      const threshold = [...valid].sort((a, b) => a - b)[Math.floor(valid.length / 2)] * 0.65;
+      segs.forEach((s, i) => {
+        if (s.label) return;
+        if (i === 0 && s.distanceM > 0 && s.distanceM < threshold)                    s.label = 'Warmup';
+        else if (i === segs.length - 1 && s.distanceM > 0 && s.distanceM < threshold)  s.label = 'Cooldown';
+        else                                                                          s.label = 'Work';
+      });
+    } else {
+      segs.forEach((s) => { if (!s.label) s.label = 'Work'; }); // no distances → treat unlabeled as work
+    }
+  }
+  return segs.reduce((sum, s) => sum + (TOF_EXCLUDE_PHASE.test(s.label) ? 0 : s.durationSec), 0);
+}
+
 export async function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
   const endDate = toDate ?? new Date();
   const since   = new Date(endDate.getTime() - 31 * 86_400_000);
@@ -2771,12 +2845,10 @@ export async function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: 
   });
   const byDay: Record<string, number> = {};
   (allWorkouts as any[])
-    .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING)
+    .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
     .forEach((w: any) => {
       const day = toISOStr(w.startDate).slice(0, 10);
-      const dur = typeof w.duration === 'object' && w.duration !== null
-        ? (w.duration.quantity as number) ?? 0 : (w.duration as number) ?? 0;
-      byDay[day] = (byDay[day] ?? 0) + dur;
+      byDay[day] = (byDay[day] ?? 0) + workDrillsSeconds(w); // work + drills only, not warmup/cooldown/recovery
     });
   return Object.entries(byDay)
     .sort(([a], [b]) => a.localeCompare(b))
