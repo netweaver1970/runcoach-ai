@@ -256,7 +256,7 @@ type XMode = 'daily' | 'weekly' | 'monthly';
 function Chart({
   data, color, innerW, xMode = 'weekly', showAllValues = false, prevData,
   cumulative = false, isTime = false, valueLabelStep = 1, fmtFn, zeroBase = true,
-  hideValueLabels = false,
+  hideValueLabels = false, lineMode = false, bandData, pointColors,
 }: {
   data:            DataPoint[];
   color:           string;
@@ -270,6 +270,9 @@ function Chart({
   fmtFn?:          (v: number) => string; // override value formatter (e.g. 1-decimal for VO2max)
   zeroBase?:       boolean;     // when false: y-axis zooms in around data range (default true)
   hideValueLabels?: boolean;    // suppress all per-bar value labels
+  lineMode?:       boolean;     // force line rendering (cardio-load: line + band + status dots)
+  bandData?:       ({ lo: number; hi: number } | null)[]; // per-point optimal-load band (aligned to data)
+  pointColors?:    (string | null)[]; // per-point dot colour (cardio status), aligned to data
 }) {
   const ch = useThemedStyles(makeCh);
   const { c: theme } = useTheme();
@@ -298,8 +301,9 @@ function Chart({
   // Use the longer dataset to compute slot width so all points fit
   const allSets   = [data, ...(prevData ? [prevData] : [])];
   const maxLen    = Math.max(...allSets.map(s => s.length)) || 1;
-  // y-scale spans both datasets
-  const allValues = allSets.flatMap(s => s.map(d => d.value));
+  // y-scale spans both datasets + the optimal-load band (so the band is always visible)
+  const bandVals = bandData ? bandData.flatMap(b => (b ? [b.lo, b.hi] : [])) : [];
+  const allValues = [...allSets.flatMap(s => s.map(d => d.value)), ...bandVals];
   const rawMin = Math.min(...allValues);
   const rawMax = Math.max(...allValues);
   const padTop = (rawMax - rawMin) * 0.15 || 2;
@@ -396,9 +400,23 @@ function Chart({
           }} />
         ))}
 
-        {cumulative ? (
-          // ── LINE CHART (cumulative mode) ────────────────────────────────────
+        {(cumulative || lineMode) ? (
+          // ── LINE CHART (cumulative mode, or cardio-load with band) ──────────
           <>
+            {/* Optimal-load band (cardio-load): translucent column per point, bandLo→bandHi */}
+            {bandData && data.map((d, i) => {
+              const b = bandData[i];
+              if (!b || b.hi <= b.lo) return null;
+              const yTop = toY(b.hi), yBot = toY(b.lo);
+              return (
+                <View key={`band-${i}`} style={{
+                  position: 'absolute',
+                  left: cxOf(i) - (barW + barGap) / 2, width: barW + barGap,
+                  top: yTop, height: Math.max(1, yBot - yTop),
+                  backgroundColor: '#8e7cc333', // translucent violet — the optimal-load zone
+                }} />
+              );
+            })}
             {/* Previous period: grey line segments */}
             {prevData && prevData.length > 1 && prevData.map((d, i) => {
               if (i === 0) return null;
@@ -447,15 +465,19 @@ function Chart({
                 }} />
               );
             })}
-            {/* Current period: colored dots */}
-            {data.map((d, i) => (
-              <View key={`dot-${i}`} style={{
-                position: 'absolute',
-                width: dotR * 2, height: dotR * 2, borderRadius: dotR,
-                left: cxOf(i) - dotR, top: toY(d.value) - dotR,
-                backgroundColor: color,
-              }} />
-            ))}
+            {/* Current period: dots — coloured by status when pointColors supplied (cardio-load) */}
+            {data.map((d, i) => {
+              const r = pointColors ? dotR + 1.5 : dotR; // status dots a touch bigger
+              return (
+                <View key={`dot-${i}`} style={{
+                  position: 'absolute',
+                  width: r * 2, height: r * 2, borderRadius: r,
+                  left: cxOf(i) - r, top: toY(d.value) - r,
+                  backgroundColor: pointColors?.[i] ?? color,
+                  ...(pointColors ? { borderWidth: 1, borderColor: theme.bg } : {}),
+                }} />
+              );
+            })}
 
             {/* Value labels above each labeled point */}
             {data.map((d, i) => {
@@ -586,6 +608,7 @@ export default function HistoryScreen() {
   const [prevRawData, setPrevRawData]   = useState<DataPoint[]>([]);
   // Cardio-load only: per-day training-status breakdown over the loaded period.
   const [cardioStatus, setCardioStatus] = useState<{ label: string; color: string; days: number; pct: number }[]>([]);
+  const [cardioByDate, setCardioByDate] = useState<Record<string, { lo: number; hi: number; color: string }>>({});
   const [cumulativeMode, setCumulative] = useState(false);
   const [loading, setLoading]           = useState(true);
   const [error, setError]               = useState<string | null>(null);
@@ -664,19 +687,22 @@ export default function HistoryScreen() {
         // Cardio status breakdown (per-day ATL/CTL/TSB → status) over the loaded period.
         if (histType === 'cardio-load') {
           const counts = new Map<string, { color: string; days: number }>();
+          const byDate: Record<string, { lo: number; hi: number; color: string }> = {};
           let total = 0;
-          for (const c of Object.values(comps)) {
+          for (const [date, c] of Object.entries(comps)) {
             if (c.cardioLoad === undefined) continue;
             const st = cardioLoadStatus(c.cardioLoad, c.ctl ?? 0, c.tsb ?? 0);
+            byDate[date] = { lo: st.bandLo, hi: st.bandHi, color: st.color };
             const e = counts.get(st.label) ?? { color: st.color, days: 0 };
             e.days += 1; counts.set(st.label, e); total += 1;
           }
+          setCardioByDate(byDate);
           const ORDER = ['Building', 'Detraining', 'Maintaining', 'Productive', 'Peaking', 'Overreaching'];
           setCardioStatus(total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
             label: l, color: counts.get(l)!.color, days: counts.get(l)!.days,
             pct: Math.round((counts.get(l)!.days / total) * 100),
           })));
-        } else { setCardioStatus([]); }
+        } else { setCardioStatus([]); setCardioByDate({}); }
       } else if (histType !== 'timeline' && !SLEEP_TYPES.has(histType)) {
         const h = await fetchHRVHistory(months, endDate);
         const daily = h.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
@@ -759,6 +785,10 @@ export default function HistoryScreen() {
 
   // Apply cumulative transform when mode is active (only for km / time)
   const chartData     = (cumulativeMode && isSummable) ? toCumulative(aggData) : aggData;
+  // Cardio-load: optimal-load band + status colour per chart point (aligned by date).
+  const isCardio = histType === 'cardio-load';
+  const cardioBand   = isCardio ? chartData.map(d => { const x = cardioByDate[d.fullDate.slice(0, 10)]; return x ? { lo: x.lo, hi: x.hi } : null; }) : undefined;
+  const cardioColors = isCardio ? chartData.map(d => cardioByDate[d.fullDate.slice(0, 10)]?.color ?? null) : undefined;
   // Show previous period in BOTH abs (grey bars) and cumulative (grey line) modes
   const chartPrevData = supportsOverlay
     ? (cumulativeMode ? toCumulative(prevAggData) : prevAggData)
@@ -982,7 +1012,10 @@ export default function HistoryScreen() {
                 undefined
               }
               zeroBase={isSummable || histType === 'strain'}
-              hideValueLabels={histType === 'strain'}
+              hideValueLabels={histType === 'strain' || isCardio}
+              lineMode={isCardio}
+              bandData={cardioBand}
+              pointColors={cardioColors}
             />
 
             <Text style={s.chartUnit}>
