@@ -32,6 +32,8 @@ export interface CoachSnapshot {
   tof7d?:            number;   // trailing 7-day running minutes (completed days only)
   tofPrev7d?:        number;   // the 7 days before that
   tofBudgetTodayMin?: number;  // max running minutes TODAY under the +10% rolling cap
+  tofNextRunLabel?:  string;   // when a meaningful-length run next fits the cap, e.g. "Thu 26 Jun"
+  tofNextRunInDays?: number;   // days until that — 0 = today's budget already allows it
   yesterdayTofMin?:  number;   // yesterday's running minutes
   yesterdayStrain?:  number;   // yesterday's strain score
   weather?: {                  // current conditions — heat/humidity raise strain
@@ -77,6 +79,8 @@ export interface CoachPlan {
   rationale:  string;
   cautions?:  string;
   workout?:   WatchWorkout | null; // structured watch workout (null = rest, no push)
+  nextRunLabel?:  string;    // set ONLY when the volume cap blocks a run today — e.g. "Thu 26 Jun"
+  nextRunInDays?: number;    // days until that meaningful run (>0 implies capped today)
   generatedAt: string;
   genTempC?:  number;        // apparent temp (°C) when generated — for staleness checks
   genStrain?: number;        // the day's accumulated strain when generated
@@ -116,6 +120,11 @@ today's actual strain (strainReal) sits relative to the target band — BELOW / 
 is appropriate for your call (e.g. "strain 7% is below the 23–47% band, which is right given low recovery — \
 rest"). Use the exact strainReal figure; never invent a different number. SpO₂ note: brief overnight dips to \
 ~92–95% are normal and must NOT reduce load on their own — only treat SpO₂ as a concern if it is below ~92%. \
+VOLUME CAP: when tofBudgetTodayMin is ~0 (the +10% rolling time-on-feet cap is reached) and you therefore \
+prescribe rest/cross-train, you MUST tell the runner WHEN the next meaningful run becomes possible — state \
+the exact tofNextRunLabel in the session (it already has the weekday; assuming rest until then, tofNextRunInDays \
+days out). E.g. session "Volume cap reached — rest; next run Thu 26 Jun (~25 min), in 2 days". If tofNextRunInDays \
+is 0 the cap is not limiting, so omit this. \
 Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all the data.
 
 WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
@@ -260,6 +269,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     rationale:  String(o.rationale ?? '').slice(0, 400),
     cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
     workout,
+    // Deterministic (not LLM): only surface when the +10% cap actually blocks a run today.
+    nextRunLabel:  (snap.tofNextRunInDays ?? 0) > 0 ? snap.tofNextRunLabel : undefined,
+    nextRunInDays: snap.tofNextRunInDays,
     generatedAt: new Date().toISOString(),
     genTempC:  snap.weather?.apparentC ?? snap.weather?.tempC,
     genStrain: snap.strainReal,
@@ -273,7 +285,14 @@ export interface TofPlan {
   cap7dMin:       number;   // 1.10 × prior-7 (the rolling ceiling)
   budgetTodayMin: number;   // running minutes still allowed today
   yesterdayMin:   number;
+  nextRunInDays:  number;   // days until a meaningful-length run (≥MEANINGFUL) fits — 0 = today
+  nextRunDate:    string;   // YYYY-MM-DD of that day (assuming rest until then)
+  nextRunLabel:   string;   // human label, e.g. "Thu 26 Jun" (weekday computed in code)
+  nextRunBudgetMin: number; // running budget available on nextRunDate
 }
+
+// A run counts as "meaningful length" once the budget allows at least this many running minutes.
+const MEANINGFUL_RUN_MIN = 20;
 
 /**
  * Rolling time-on-feet model for the +10% rule: the 7-day total ending today must not
@@ -301,6 +320,24 @@ export function computeTimeOnFeetPlan(
   const series14: { date: string; min: number }[] = [];
   for (let o = 13; o >= 0; o--) series14.push({ date: dayStr(o), min: minsAt(o) });
 
+  // Forward-project the rolling cap to find the earliest day a meaningful-length run fits again,
+  // ASSUMING REST until then: each future rest day rolls an old high-volume day off the trailing
+  // window, so the budget recovers. minIdx(i): past/today carry real minutes, future days = 0.
+  const minIdx = (i: number) => (i <= 0 ? minsAt(-i) : 0);
+  let nextRunInDays = 0, nextRunBudgetMin = budget;
+  for (let k = 0; k <= 21; k++) {
+    let last6 = 0; for (let j = 1; j <= 6;  j++) last6 += minIdx(k - j);
+    let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);
+    let b = Math.max(0, Math.round(1.10 * prev7) - last6);
+    if (prev7 < 30) b = Math.max(b, 20); // re-entry / very low base
+    if (b >= MEANINGFUL_RUN_MIN) { nextRunInDays = k; nextRunBudgetMin = b; break; }
+  }
+  const nextDate = new Date(today); nextDate.setDate(nextDate.getDate() + nextRunInDays);
+  const nextRunDate = `${nextDate.getFullYear()}-${p(nextDate.getMonth() + 1)}-${p(nextDate.getDate())}`;
+  const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const nextRunLabel = `${WD[nextDate.getDay()]} ${nextDate.getDate()} ${MO[nextDate.getMonth()]}`;
+
   return {
     series14,
     tof7d: tofLast6 + minsAt(0),
@@ -308,6 +345,10 @@ export function computeTimeOnFeetPlan(
     cap7dMin: cap,
     budgetTodayMin: budget,
     yesterdayMin: minsAt(1),
+    nextRunInDays,
+    nextRunDate,
+    nextRunLabel,
+    nextRunBudgetMin,
   };
 }
 
@@ -352,6 +393,8 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     tof7d:             tof.tof7d,
     tofPrev7d:         tof.tofPrev7d,
     tofBudgetTodayMin: tof.budgetTodayMin,
+    tofNextRunLabel:   tof.nextRunLabel,
+    tofNextRunInDays:  tof.nextRunInDays,
     yesterdayTofMin:   tof.yesterdayMin,
     yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
     weather: weather ? {

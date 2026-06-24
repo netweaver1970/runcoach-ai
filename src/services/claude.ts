@@ -706,6 +706,7 @@ export interface TrainingRecommendation {
   duration: string;
   zone: string;
   reason: string;
+  nextRunLabel?: string;  // when the volume cap blocks a run today: when the next one fits, e.g. "Thu 26 Jun"
 }
 
 /**

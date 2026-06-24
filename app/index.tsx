@@ -757,7 +757,7 @@ export default function HomeScreen() {
 // (home + Strain detail) are driven by one source of truth.
 function coachPlanToRec(p: CoachPlan): TrainingRecommendation {
   if (p.intensity === 'rest' || !p.workout) {
-    return { type: 'Rest', duration: '—', zone: '—', reason: p.headline || p.rationale };
+    return { type: 'Rest', duration: '—', zone: '—', reason: p.headline || p.rationale, nextRunLabel: p.nextRunLabel };
   }
   const zones = p.workout.blocks.map(b => b.hrZone).filter((z): z is string => !!z);
   const zone  = zones.sort().pop() ?? ''; // hardest zone of the day (Z1<…<Z5 lexically)
@@ -830,6 +830,12 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
         <Text style={recStyles.topUp}>⚡ {completion.topUp}</Text>
       ) : (
         <Text style={recStyles.reason}>{runDone ? 'Prescribed session done. ✓' : rec.reason}</Text>
+      )}
+
+      {rec.nextRunLabel && (
+        <Text style={recStyles.target}>
+          🏃 Next run <Text style={{ color: SAFE_COLOR, fontWeight: '800' }}>{rec.nextRunLabel}</Text> — when volume frees up
+        </Text>
       )}
 
       {strain && (
