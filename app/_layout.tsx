@@ -54,7 +54,8 @@ function RootStack() {
             headerRight: () => (
               <TouchableOpacity
                 onPress={() => router.push('/settings')}
-                style={{ marginRight: 4 }}
+                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                style={{ paddingVertical: 6, paddingHorizontal: 10, marginRight: 2 }}
               >
                 <Text style={{ color: '#fff', fontSize: 22 }}>⚙️</Text>
               </TouchableOpacity>

@@ -289,10 +289,10 @@ export default function SettingsScreen() {
           onPress={() => { if (activeCat) setActiveCat(null); else router.back(); }}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Text style={styles.backLink}>{activeCat ? '‹ Settings' : '‹ Back'}</Text>
+          <Text style={styles.backLink} numberOfLines={1}>{activeCat ? '‹ Settings' : '‹ Back'}</Text>
         </TouchableOpacity>
         <Text style={styles.navTitle}>{activeCat ? (CATEGORIES.find(x => x.id === activeCat)?.label ?? 'Settings') : 'Settings'}</Text>
-        <View style={{ width: 70 }} />
+        <View style={{ width: 96 }} />
       </View>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         {!activeCat && (
@@ -1056,7 +1056,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
   },
   navTitle: { fontSize: 17, fontWeight: '700', color: c.text },
-  backLink: { fontSize: 16, color: c.accent, fontWeight: '600', width: 70 },
+  backLink: { fontSize: 16, color: c.accent, fontWeight: '600', width: 96 },
   catList: { gap: 10, marginBottom: 8 },
   catRow: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
