@@ -160,12 +160,12 @@ export default function RecoveryDetailScreen() {
           )}
         </Section>
 
-        {/* Overnight HR — vs 60-day baseline (z-score, lower = better) */}
-        <Section title="Overnight Heart Rate">
+        {/* Resting HR — vs 60-day baseline (z-score, lower = better) */}
+        <Section title="Resting Heart Rate">
           <Row
-            label="Overnight HR"
+            label="Resting HR"
             value={overnightHR > 0 ? `${overnightHR} bpm` : 'No data'}
-            sub="Average during actual sleep stages"
+            sub="Apple resting heart rate — Bevel's metric"
           />
           {bd && bd.rhrMean > 0 && (
             <Row

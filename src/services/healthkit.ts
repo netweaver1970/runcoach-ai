@@ -1187,7 +1187,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     safeQuery(
       () => (HealthKit.queryQuantitySamples as any)(
         HKQuantityTypeIdentifier.restingHeartRate,
-        { filter: { startDate: twoWeeksAgo, endDate: now }, unit: 'count/min', ascending: true, limit: 30 }
+        // 60-day window: Apple Resting HR is the recovery RHR baseline (Bevel's metric), ~1 sample/day.
+        { filter: { startDate: sixtyDaysAgo, endDate: now }, unit: 'count/min', ascending: true, limit: 70 }
       ),
       []
     ),
@@ -1320,6 +1321,12 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     quantity:  s.quantity as number,
   }));
   const globalQualityMap = buildHeartbeatQualityMap(allHeartbeatSeries as any[]);
+  // Apple Resting HR by date — the recovery RHR baseline (Bevel's metric; runs ~3 bpm above the
+  // avg-during-sleep HR, so using sleep HR understated the baseline → weak z). Matches the history path.
+  const restingHRByDate = new Map<string, number>();
+  for (const s of (restingHRSamples as any[])) {
+    restingHRByDate.set(toDateStr(toISOStr(s.startDate)), Math.round(s.quantity as number));
+  }
 
   const nightlyHRV: NightlyHRV[] = sleepSessions.map((session) => {
     const { weightedRMSSD: sdnnRMSSD, annotatedSamples } = computeWeightedRMSSD(session, hrvSamplesForSleep, globalQualityMap);
@@ -1327,7 +1334,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // fall back to the SDNN-weighted value on nights without a heartbeat series.
     const trueRMSSD = nightlyTrueRMSSD(session, allHeartbeatSeries as any[]);
     const weightedRMSSD = trueRMSSD > 0 ? trueRMSSD : sdnnRMSSD;
-    const overnightHR = computeOvernightHR(session, sleepHRSamples);
+    // RHR = Apple Resting HR for the night (Bevel's metric); fall back to avg-during-sleep HR.
+    const overnightHR = restingHRByDate.get(session.date) ?? computeOvernightHR(session, sleepHRSamples);
     return { date: session.date, samples: annotatedSamples, weightedRMSSD, overnightHR };
   });
 
