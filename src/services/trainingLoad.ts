@@ -401,16 +401,33 @@ export function zoneStrainLoad(
   const s = [...samples].sort((a, b) => a.t - b.t);
   const inWorkout = (t: number) => workoutWins.some((w) => t >= w.s && t <= w.e);
   const MAX_GAP_MS = 8 * 60_000;
-  let workLoad = 0, lifeTax = 0;
+  const b = zoneStrainBreakdown(samples, restHR, maxHR, workoutWins);
+  return b.workLoad + b.lifeTax;
+}
+
+// Same computation, but returns the parts + the daytime-HR stats — for calibration export / fitting.
+export function zoneStrainBreakdown(
+  samples: { t: number; hr: number }[], restHR: number, maxHR: number,
+  workoutWins: { s: number; e: number }[] = [],
+): { workLoad: number; lifeTax: number; dayHRmean: number; nonWorkoutMin: number } {
+  if (samples.length < 2 || maxHR <= restHR) return { workLoad: 0, lifeTax: 0, dayHRmean: 0, nonWorkoutMin: 0 };
+  const s = [...samples].sort((a, b) => a.t - b.t);
+  const inWorkout = (t: number) => workoutWins.some((w) => t >= w.s && t <= w.e);
+  const MAX_GAP_MS = 8 * 60_000;
+  let workLoad = 0, lifeTax = 0, hrMinSum = 0, nwMin = 0;
   for (let i = 1; i < s.length; i++) {
     const dt = Math.min(MAX_GAP_MS, s[i].t - s[i - 1].t);
     if (dt <= 0) continue;
     if (s[i].hr <= restHR) continue;   // at/below resting → nothing (sleep, deep calm)
     const dtMin = dt / 60_000;
-    if (inWorkout(s[i].t)) workLoad += dtMin * zoneWeight(s[i].hr / maxHR);       // active (zones)
-    else                   lifeTax  += dtMin * (s[i].hr - restHR) * STRAIN_LIFETAX_K; // extra beats
+    if (inWorkout(s[i].t)) {
+      workLoad += dtMin * zoneWeight(s[i].hr / maxHR);             // active (zones)
+    } else {
+      lifeTax  += dtMin * (s[i].hr - restHR) * STRAIN_LIFETAX_K;   // extra beats over resting
+      hrMinSum += dtMin * s[i].hr; nwMin += dtMin;                 // daytime (non-workout awake) HR
+    }
   }
-  return workLoad + lifeTax;
+  return { workLoad, lifeTax, dayHRmean: nwMin > 0 ? hrMinSum / nwMin : 0, nonWorkoutMin: nwMin };
 }
 
 // Logarithmic squash: RawLoad → 0-100 strain (diminishing returns near the top, Bevel-style).
