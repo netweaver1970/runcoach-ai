@@ -33,16 +33,17 @@ const BASELINE_DAYS = 14;     // HRV baseline window
 // stressed. Calibrated against Bevel via scripts/bbtune.mjs on the 23-Jun device dump:
 // our NOW 20% vs Bevel 17%, overnight charge to 40% vs Bevel "last charged 38%".
 const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
-const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.04;   // additional per-minute drain at full stress (was 0.02/0.075 — drained
-                              // to 0 every day on elevated-HR stretches, so each night recharged from
-                              // empty and capped low; gentler keeps it off the floor, closer to Bevel)
+const BASE_DRAIN    = 0.02;   // per-minute awake baseline drain (even when calm)
+const STRESS_DRAIN  = 0.075;  // additional per-minute drain at full stress. Bevel DOES drain deep
+                              // (Geert's end-of-day ≈ 9%), so keep the deep drain — the old bug was
+                              // the weak CHARGE, not the drain (see CHARGE_MAX + ceiling below).
 // Recovery-scaled overnight charge: while asleep the battery approaches a CEILING set by how
 // good HRV is vs the 14-day baseline (a slow EWMA so the WHOLE night's recovery sets it, not a
 // momentary HRV blip). CHARGE_K is the per-minute approach rate toward that ceiling.
 const CHARGE_K      = 0.045;  // per-minute approach toward the recovery ceiling while asleep
-const CHARGE_MAX    = 0.12;   // cap on the per-minute charge so it ramps LINEARLY (Bevel-like) when
-                              // far below the ceiling, instead of jumping fast then plateauing
+const CHARGE_MAX    = 0.15;   // cap on the per-minute charge so it ramps LINEARLY (Bevel-like) when far
+                              // below the ceiling. Raised 0.12→0.15: Bevel recharges HARD overnight
+                              // (Geert: 9%→67% in one night, +58); 0.12 could only claw back ~50.
 const CEIL_LO       = 22;     // charge ceiling at the low HRV-ratio anchor (poor recovery)
 const CEIL_HI       = 98;     // charge ceiling at the high HRV-ratio anchor (great recovery)
 const CEIL_RLO      = 0.58;   // hrvRatio mapped to CEIL_LO (was 0.62/1.35 — ceiling sat at ~55 even at
