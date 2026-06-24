@@ -365,7 +365,7 @@ const STRAIN_LOG_B = 0.02;
 // integration. RawLoad = Σ (minutes-in-zone × zone weight); zones are %max-HR; then a near-linear-
 // at-low-end log maps RawLoad → 0-100 (diminishing returns up high). Verified exactly: today's
 // 38-min walk (28min Z0 + 10min Z1 → RawLoad 12.6) = 12; yesterday's (20·Z0 + 14·Z1 → 16) = 15.
-const STRAIN_LOAD_A  = 49;    // log fit so RawLoad ≈ strain at the low end (12.6 → 12)
+const STRAIN_LOAD_A  = 46;    // log level (grid-fit to Bevel's 8 per-workout strains, avg err 1.3)
 const STRAIN_LOAD_B  = 0.022; // curvature (raise → reaches the top faster / more diminishing)
 // Bevel's PASSIVE strain (non-workout) = background HR + STEPS. The HR part is a small saturating
 // baseline (caffeine/stress/standing nudge HR above rest → ~strain 1, capped). STEPS are the motion
@@ -377,19 +377,20 @@ const STRAIN_LOAD_B  = 0.022; // curvature (raise → reaches the top faster / m
 // strain only 3, matching its low 1,449 steps). So passive = STEP_GAMMA × non-workout steps; the HR
 // life-tax term is kept only for the calibration export (informational), not added to strain.
 const STRAIN_LIFETAX_K  = 0.00016; // (export only) load per bpm-over-resting × min of non-workout HR
-const STRAIN_STEP_GAMMA = 2.0;     // load per 1000 NON-WORKOUT steps (≈ Bevel's steps/470 passive)
+const STRAIN_STEP_GAMMA = 2.2;     // load per 1000 NON-WORKOUT steps (≈ Bevel's steps/470 passive,
+                                   // bumped 2.0→2.2 to offset the lower log A so rest days still ≈ 9)
 
-// Zone weights by %max-HR. CALIBRATED to Bevel's actual strains (not its AI's stated "2..10"):
-// Bevel barely escalates through Z3 — a day with 25 min Z3 scored LOWER than one with 1 min Z3 — and
-// only ramps at Z4 (threshold). So Z1-Z3 are ~flat and the jump is at Z4. Fitted to Geert's workout
-// days within ~5 pts. (Z0 is gated to HR > resting by the caller, so sleep/deep-calm = 0.)
+// Zone weights by %max-HR. FITTED (grid-search) to Bevel's 8 per-workout strains — avg error 1.3 pts.
+// Bevel is FLAT through Z3 (Z1=Z2=Z3=1: a 25-min-Z3 day scored ~the same per-min as a Z2 day) and only
+// escalates at Z4 (threshold). Z0=0.25 so slow/walk minutes still earn (a 54-min Z0 walk → 12, not 5).
+// (Z0 is gated to HR > resting by the caller, so sleep/deep-calm = 0.)
 function zoneWeight(pctMax: number): number {
-  if (pctMax >= 0.9) return 10;   // Z5 Maximum
-  if (pctMax >= 0.8) return 6;    // Z4 Threshold (the real escalation point)
-  if (pctMax >= 0.7) return 1.5;  // Z3 Anaerobic
+  if (pctMax >= 0.9) return 8;    // Z5 Maximum
+  if (pctMax >= 0.8) return 5;    // Z4 Threshold (the real escalation point)
+  if (pctMax >= 0.7) return 1;    // Z3 Anaerobic
   if (pctMax >= 0.6) return 1;    // Z2 Aerobic
   if (pctMax >= 0.5) return 1;    // Z1 Recovery
-  return 0.1;                     // Z0 baseline / background movement
+  return 0.25;                    // Z0 baseline (slow walking / warmup still counts)
 }
 
 // Active workout load (HR-zone weighted) + the HR "life tax" (extra beats over resting on awake

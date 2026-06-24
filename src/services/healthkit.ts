@@ -2723,7 +2723,7 @@ export async function fetchStrainCalibration(days = 14): Promise<{ meta: any; da
   }
   const stepsByDay   = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
   const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay, stepsByDay);
-  const ZW = [0.1, 1, 1, 1.5, 6, 10]; // must match zoneWeight() in trainingLoad
+  const ZW = [0.25, 1, 1, 1, 5, 8]; // must match zoneWeight() in trainingLoad
   const zoneOf = (pct: number) => pct >= 0.9 ? 5 : pct >= 0.8 ? 4 : pct >= 0.7 ? 3 : pct >= 0.6 ? 2 : pct >= 0.5 ? 1 : 0;
   const r1 = (n: number) => Math.round(n * 10) / 10;
   const out: StrainCalibDay[] = [];
