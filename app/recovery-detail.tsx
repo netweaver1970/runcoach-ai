@@ -71,16 +71,13 @@ export default function RecoveryDetailScreen() {
   const {
     recoveryScore, color, label, trend,
     weightedRMSSD, baseline7Day,
-    overnightHR, overnightHRBaseline,
-    sleep,
+    overnightHR,
+    sleep, breakdown: bd,
   } = recovery;
 
   const trendSymbol = trend === 'rising' ? '↑ Rising' : trend === 'falling' ? '↓ Falling' : '→ Stable';
   const trendColor  = trend === 'rising' ? '#27ae60' : trend === 'falling' ? '#c0392b' : '#888';
-
-  // HRV score component (mirrors absoluteHRVScore from healthkit.ts)
-  const absHRV = weightedRMSSD > 0 ? Math.min(98, Math.max(5, 38 + weightedRMSSD * 0.95)) : 0;
-  const absRHR = overnightHR   > 0 ? Math.min(95, Math.max(5, 190 - overnightHR * 2.1))   : 0;
+  const signed = (v: number) => `${v > 0 ? '+' : ''}${v}`;
 
   return (
     <SafeAreaView style={s.container}>
@@ -137,74 +134,76 @@ export default function RecoveryDetailScreen() {
         <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <View style={{ height: 14 }} />
 
-        {/* HRV */}
+        {/* HRV — true RMSSD vs 60-day personal baseline (z-score) */}
         <Section title="Heart Rate Variability">
           <Row
-            label="RMSSD (sleep-weighted)"
-            value={weightedRMSSD > 0 ? `${weightedRMSSD} ms` : 'No data'}
-            sub="Deep×3  REM×2  Core×1  Awake×0"
+            label="RMSSD (true, R-R intervals)"
+            value={bd ? `${bd.rmssd} ms` : weightedRMSSD > 0 ? `${weightedRMSSD} ms` : 'No data'}
+            sub="Beat-to-beat — Bevel's metric (not Apple's SDNN)"
           />
           <Row
-            label="7-day baseline"
-            value={baseline7Day > 0 ? `${baseline7Day} ms` : '—'}
-            sub="Rolling mean of recent nights"
+            label="60-day baseline"
+            value={bd && bd.hrvMean > 0 ? `${bd.hrvMean} ms` : baseline7Day > 0 ? `${baseline7Day} ms` : '—'}
+            sub={bd && bd.hrvSD > 0 ? `mean ± ${bd.hrvSD} ms SD` : 'rolling mean'}
           />
-          {weightedRMSSD > 0 && baseline7Day > 0 && (
-            <Row
-              label="vs baseline"
-              value={`${weightedRMSSD > baseline7Day ? '+' : ''}${Math.round(weightedRMSSD - baseline7Day)} ms`}
-              valueColor={weightedRMSSD >= baseline7Day ? '#27ae60' : '#c0392b'}
-            />
+          {bd && (
+            <Row label="z-score" value={`${signed(bd.zHRV)} σ`} valueColor={bd.zHRV >= 0 ? '#27ae60' : '#c0392b'} />
           )}
           <Row label="Trend" value={trendSymbol} valueColor={trendColor} />
-          {absHRV > 0 && (
+          {bd && (
             <Row
-              label="HRV score component"
-              value={`${Math.round(absHRV)} / 100`}
-              sub="Population norm: 38 + RMSSD × 0.95"
+              label="HRV sub-score"
+              value={`${bd.hrvSub} / 100`}
+              sub="50 + z × 23.6 (100 ≈ +2 SD)"
               valueColor={color}
             />
           )}
         </Section>
 
-        {/* Overnight HR */}
+        {/* Overnight HR — vs 60-day baseline (z-score, lower = better) */}
         <Section title="Overnight Heart Rate">
           <Row
             label="Overnight HR"
             value={overnightHR > 0 ? `${overnightHR} bpm` : 'No data'}
             sub="Average during actual sleep stages"
           />
-          {overnightHRBaseline > 0 && (
+          {bd && bd.rhrMean > 0 && (
             <Row
-              label="Personal baseline"
-              value={`${overnightHRBaseline} bpm`}
-              sub="Rolling average of recent nights"
+              label="60-day baseline"
+              value={`${bd.rhrMean} bpm`}
+              sub={bd.rhrSD > 0 ? `mean ± ${bd.rhrSD} bpm SD` : 'rolling mean'}
             />
           )}
-          {overnightHR > 0 && overnightHRBaseline > 0 && (
-            <Row
-              label="vs baseline"
-              value={`${overnightHR > overnightHRBaseline ? '+' : ''}${overnightHR - overnightHRBaseline} bpm`}
-              valueColor={overnightHR <= overnightHRBaseline ? '#27ae60' : '#c0392b'}
-              sub="Lower overnight HR = better recovery"
-            />
+          {bd && (
+            <Row label="z-score" value={`${signed(bd.zRHR)} σ`} sub="Lower HR than baseline = positive" valueColor={bd.zRHR >= 0 ? '#27ae60' : '#c0392b'} />
           )}
-          {absRHR > 0 && (
-            <Row
-              label="HR score component"
-              value={`${Math.round(absRHR)} / 100`}
-              sub="Population norm: 190 − HR × 2.1"
-              valueColor={color}
-            />
+          {bd && (
+            <Row label="HR sub-score" value={`${bd.rhrSub} / 100`} sub="50 + z × 23.6" valueColor={color} />
           )}
         </Section>
 
-        {/* Score formula */}
+        {/* Score build-up — the real model */}
         <Section title="Score Calculation">
-          <Row label="HRV component weight"  value="65 %" />
-          <Row label="Overnight HR weight"   value={overnightHR > 0 ? '35 %' : '0 % (no data)'} />
-          <Row label="Baseline blend"        value="Day 1–7 grows from 0→40%" sub="Absolute score dominates early; personal z-score blends in over 7 days" />
-          <Row label="Final score" value={`${recoveryScore} / 100`} valueColor={color} />
+          {bd ? (
+            <>
+              <Row label="Core" value={`${bd.core} / 100`} sub={`${Math.round(bd.hrvWeight * 100)}% HRV + ${Math.round((1 - bd.hrvWeight) * 100)}% overnight HR`} />
+              <Row
+                label="Sleep adjustment"
+                value={`${signed(bd.sleepTerm)}`}
+                sub={`0.32 × (sleep ${bd.sleepScore} − 72)`}
+                valueColor={bd.sleepTerm >= 0 ? '#27ae60' : '#c0392b'}
+              />
+              <Row
+                label="Respiratory-rate penalty"
+                value={bd.rrPenalty < 0 ? `${bd.rrPenalty}` : '0'}
+                sub={bd.rrBaseline > 0 ? `−3.9 × max(0, RR ${bd.rr} − base ${bd.rrBaseline})` : 'no RR data'}
+                valueColor={bd.rrPenalty < 0 ? '#c0392b' : '#888'}
+              />
+              <Row label="Final score" value={`${recoveryScore} / 100`} valueColor={color} />
+            </>
+          ) : (
+            <Row label="Final score" value={`${recoveryScore} / 100`} valueColor={color} />
+          )}
         </Section>
 
         {/* Sleep summary if available */}

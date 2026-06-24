@@ -37,6 +37,7 @@ import {
   SleepStageLabel,
   NightlyHRV,
   DailyRecovery,
+  RecoveryBreakdown,
   PowerZones,
   WorkoutLabel,
   WorkoutConfidence,
@@ -630,60 +631,63 @@ function computeRecoveryScore(
   sleepScore = 0,
   todayRR = 0,
   rrBaseline = 0,
-): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number } {
+): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number; breakdown: RecoveryBreakdown } {
   const recent = history.slice(-60).filter((n) => n.weightedRMSSD > 0);
 
   const clamp01 = (v: number) => Math.min(100, Math.max(0, v));
   const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
   const std  = (a: number[], m: number) => Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
-  // ── HRV component: RAW RMSSD z-scored vs a 60-day personal baseline ────────────
-  // Bevel's method — raw RMSSD (NOT lnRMSSD) against a 60-day mean/SD. Score = 50 + z·SCALE,
-  // eased in from a population anchor over the first 2 weeks.
+  // ── HRV component: TRUE RMSSD z-scored vs a 60-day personal baseline ──────────
+  // Score = 50 + z·SCALE, eased in from a population anchor over the first 2 weeks.
+  let hrvMean = todayRMSSD, hrvSD = 0, zHRV = 0;
   let blendedHRV = absoluteHRVScore(todayRMSSD); // cold-start fallback
   if (recent.length >= 5) {
     const v = recent.map((n) => n.weightedRMSSD);
-    const m = mean(v); const sd = std(v, m) || 1;
-    const zHRVscore = clamp01(50 + ((todayRMSSD - m) / sd) * RECOVERY_Z_SCALE);
+    hrvMean = mean(v); hrvSD = std(v, hrvMean) || 1;
+    zHRV = (todayRMSSD - hrvMean) / hrvSD;
     const w = Math.min(1, recent.length / 14); // ease in from the anchor over 2 weeks
-    blendedHRV = (1 - w) * absoluteHRVScore(todayRMSSD) + w * zHRVscore;
+    blendedHRV = (1 - w) * absoluteHRVScore(todayRMSSD) + w * clamp01(50 + zHRV * RECOVERY_Z_SCALE);
   }
 
   // ── Overnight-HR component: z-score vs the 60-day baseline (lower HR = better) ──
   const recentWithHR = recent.filter((n) => n.overnightHR > 0);
   let overnightHRBaseline = todayOvernightHR;
+  let rhrMean = todayOvernightHR, rhrSD = 0, zRHR = 0;
   let blendedRHR = todayOvernightHR > 0 ? absoluteRHRScore(todayOvernightHR) : 50;
   if (recentWithHR.length >= 5 && todayOvernightHR > 0) {
     const hv = recentWithHR.map((n) => n.overnightHR);
-    const hrMean = mean(hv); const hrStddev = std(hv, hrMean) || 1;
-    overnightHRBaseline = Math.round(hrMean);
-    const zRHRscore = clamp01(50 - ((todayOvernightHR - hrMean) / hrStddev) * RECOVERY_Z_SCALE);
+    rhrMean = mean(hv); rhrSD = std(hv, rhrMean) || 1;
+    overnightHRBaseline = Math.round(rhrMean);
+    zRHR = (rhrMean - todayOvernightHR) / rhrSD; // lower HR than baseline → positive
     const w = Math.min(1, recentWithHR.length / 14);
-    blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * zRHRscore;
+    blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * clamp01(50 + zRHR * RECOVERY_Z_SCALE);
   }
 
-  // ── Final score: HRV-weighted core + sleep "multiplier" ───────────────────────
+  // ── Final score: HRV-weighted core + sleep "multiplier" + RR illness penalty ──
   const useRHR = todayOvernightHR > 0;
-  let rawScore = useRHR ? RECOVERY_HRV_W * blendedHRV + (1 - RECOVERY_HRV_W) * blendedRHR : blendedHRV;
-  // Sleep lifts/caps recovery (Bevel fit: +0.32/pt vs a neutral 72). Applied only when we have a
-  // sleep score for the night; this closes the high-HRV/bad-sleep gap (core R² .918 → full .985,
-  // pending the RR illness penalty). RR penalty deferred — needs respiratory rate in the snapshot.
-  if (sleepScore > 0) rawScore += 0.32 * (sleepScore - 72);
-  // Respiratory-rate illness penalty (Bevel fit: −3.9/rpm ABOVE the 60-day baseline; only bites when
-  // RR is elevated, so it's harmless on normal nights). Together with the sleep term: core .918 → .985.
-  if (todayRR > 0 && rrBaseline > 0) rawScore -= 3.9 * Math.max(0, todayRR - rrBaseline);
-  const score    = Math.round(clamp01(rawScore));
+  const core = useRHR ? RECOVERY_HRV_W * blendedHRV + (1 - RECOVERY_HRV_W) * blendedRHR : blendedHRV;
+  const sleepTerm = sleepScore > 0 ? 0.32 * (sleepScore - 72) : 0;          // good sleep lifts, poor caps
+  const rrPenalty = (todayRR > 0 && rrBaseline > 0) ? -3.9 * Math.max(0, todayRR - rrBaseline) : 0; // illness flag
+  const score = Math.round(clamp01(core + sleepTerm + rrPenalty));
 
   // ── Baseline + trend (raw RMSSD, for display) ─────────────────────────────
-  const rmssdVals = recent.map((n) => n.weightedRMSSD);
-  const rmssdMean = rmssdVals.length ? rmssdVals.reduce((a, b) => a + b, 0) / rmssdVals.length : todayRMSSD;
-  const rmssdSd   = rmssdVals.length ? Math.sqrt(rmssdVals.reduce((a, b) => a + (b - rmssdMean) ** 2, 0) / rmssdVals.length) || 1 : 1;
+  const rmssdMean = recent.length ? hrvMean : todayRMSSD;
   const last7 = recent.slice(-7);
-  const avg7  = last7.length > 0 ? last7.reduce((a, b) => a + b.weightedRMSSD, 0) / last7.length : todayRMSSD;
+  const avg7  = last7.length > 0 ? mean(last7.map((n) => n.weightedRMSSD)) : todayRMSSD;
   const delta = todayRMSSD - avg7;
   const trend: DailyRecovery['trend'] =
-    delta > rmssdSd * 0.3 ? 'rising' : delta < -rmssdSd * 0.3 ? 'falling' : 'stable';
+    delta > (hrvSD || 1) * 0.3 ? 'rising' : delta < -(hrvSD || 1) * 0.3 ? 'falling' : 'stable';
 
-  return { score, baseline: Math.round(rmssdMean * 10) / 10, trend, overnightHRBaseline };
+  const r1 = (x: number) => Math.round(x * 10) / 10;
+  const breakdown: RecoveryBreakdown = {
+    rmssd: r1(todayRMSSD), hrvMean: r1(hrvMean), hrvSD: r1(hrvSD), zHRV: Math.round(zHRV * 100) / 100, hrvSub: Math.round(blendedHRV),
+    overnightHR: todayOvernightHR, rhrMean: r1(rhrMean), rhrSD: r1(rhrSD), zRHR: Math.round(zRHR * 100) / 100, rhrSub: Math.round(blendedRHR),
+    hrvWeight: RECOVERY_HRV_W, core: Math.round(core),
+    sleepScore, sleepTerm: r1(sleepTerm),
+    rr: r1(todayRR), rrBaseline: r1(rrBaseline), rrPenalty: r1(rrPenalty),
+    final: score,
+  };
+  return { score, baseline: r1(rmssdMean), trend, overnightHRBaseline, breakdown };
 }
 
 // Bevel-aligned bands: Optimal >67 / Normal 34-67 / Poor <34.
@@ -1464,7 +1468,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     const sleepScore = recentSession
       ? computeSleepScore(recentSession, recentHRV.overnightHR, daytimeHR, sleepSessions)
       : 0;
-    const { score, baseline, trend } = computeRecoveryScore(
+    const { score, baseline, trend, breakdown } = computeRecoveryScore(
       recentHRV.weightedRMSSD,
       recentHRV.overnightHR,
       historyBefore,
@@ -1486,6 +1490,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       sleep:               recentSession ?? null,
       label:               scoreToLabel(score),
       color:               scoreToColor(score),
+      breakdown,
     };
   } else if (recentSession) {
     // Sleep session found but HRV not yet synced — show partial recovery card

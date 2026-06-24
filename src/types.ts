@@ -199,6 +199,17 @@ export interface NightlyHRV {
   overnightHR: number; // avg HR during actual sleep stages (excl awake/inBed); 0 if unavailable
 }
 
+// Transparent breakdown of how the recovery score was built (for the detail screen).
+export interface RecoveryBreakdown {
+  rmssd: number; hrvMean: number; hrvSD: number; zHRV: number; hrvSub: number;   // HRV: true RMSSD vs 60d
+  overnightHR: number; rhrMean: number; rhrSD: number; zRHR: number; rhrSub: number; // RHR: overnight HR vs 60d
+  hrvWeight: number;     // HRV share of the core (rest is RHR)
+  core: number;          // HRV/RHR-weighted core before sleep + RR
+  sleepScore: number; sleepTerm: number;       // + 0.32·(sleep − 72)
+  rr: number; rrBaseline: number; rrPenalty: number; // − 3.9·max(0, RR − baseline)
+  final: number;
+}
+
 export interface DailyRecovery {
   date: string;
   weightedRMSSD: number;
@@ -206,11 +217,12 @@ export interface DailyRecovery {
   overnightHRBaseline: number; // rolling avg overnight HR for comparison
   recoveryScore: number;
   sleepScore: number;          // 0-100 sleep quality score
-  baseline7Day: number;        // HRV 30-day rolling mean
+  baseline7Day: number;        // HRV 60-day rolling mean (field name kept for compat)
   trend: 'rising' | 'falling' | 'stable';
   sleep: SleepSession | null;
   label: 'optimal' | 'good' | 'moderate' | 'poor';
   color: string;
+  breakdown?: RecoveryBreakdown;
 }
 
 // ─── Snapshot ────────────────────────────────────────────────────────────────
