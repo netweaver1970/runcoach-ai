@@ -380,9 +380,9 @@ function zoneWeight(hrr: number): number {
   if (hrr >= 0.7) return 3;
   if (hrr >= 0.6) return 2;
   if (hrr >= 0.5) return 1;
-  if (hrr >= 0.35) return 0.5;  // brisk-but-not-zone background
-  if (hrr >= 0.2) return 0.25;  // light background elevation above rest
-  return 0;                     // at/below resting → no strain (sleep, sitting calm)
+  if (hrr >= 0.4) return 0.5;   // brisk-but-not-zone background (a walk)
+  if (hrr >= 0.3) return 0.25;  // light background elevation
+  return 0;                     // calm / desk / sleep — NO strain (Bevel keeps passive ~0 here)
 }
 
 // Active (workout, full weight) + passive (background, ×BG_FRAC) zone-weighted load over the day's HR.

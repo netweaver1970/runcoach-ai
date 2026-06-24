@@ -33,8 +33,10 @@ const BASELINE_DAYS = 14;     // HRV baseline window
 // stressed. Calibrated against Bevel via scripts/bbtune.mjs on the 23-Jun device dump:
 // our NOW 20% vs Bevel 17%, overnight charge to 40% vs Bevel "last charged 38%".
 const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
-const BASE_DRAIN    = 0.02;   // per-minute awake baseline drain (even when calm)
-const STRESS_DRAIN  = 0.075;  // additional per-minute drain at full stress
+const BASE_DRAIN    = 0.012;  // per-minute awake baseline drain (even when calm)
+const STRESS_DRAIN  = 0.04;   // additional per-minute drain at full stress (was 0.02/0.075 — drained
+                              // to 0 every day on elevated-HR stretches, so each night recharged from
+                              // empty and capped low; gentler keeps it off the floor, closer to Bevel)
 // Recovery-scaled overnight charge: while asleep the battery approaches a CEILING set by how
 // good HRV is vs the 14-day baseline (a slow EWMA so the WHOLE night's recovery sets it, not a
 // momentary HRV blip). CHARGE_K is the per-minute approach rate toward that ceiling.
@@ -43,8 +45,8 @@ const CHARGE_MAX    = 0.12;   // cap on the per-minute charge so it ramps LINEAR
                               // far below the ceiling, instead of jumping fast then plateauing
 const CEIL_LO       = 22;     // charge ceiling at the low HRV-ratio anchor (poor recovery)
 const CEIL_HI       = 98;     // charge ceiling at the high HRV-ratio anchor (great recovery)
-const CEIL_RLO      = 0.62;   // hrvRatio mapped to CEIL_LO
-const CEIL_RHI      = 1.35;   // hrvRatio mapped to CEIL_HI
+const CEIL_RLO      = 0.58;   // hrvRatio mapped to CEIL_LO (was 0.62/1.35 — ceiling sat at ~55 even at
+const CEIL_RHI      = 1.15;   // baseline HRV, capping the charge; now near-baseline → ~70)
 const CEIL_HRV_SMOOTH = 0.012;// EWMA weight on hrvRatio → whole-night recovery (slow on purpose)
 // Z-SCORE STRESS INDEX (research-aligned, replaces the old HR-reserve + HRV-suppression + gate +
 // floor): stress = STRESS_BASE + (zHR − zHRV)·STRESS_SCALE, where z is THIS reading's deviation from

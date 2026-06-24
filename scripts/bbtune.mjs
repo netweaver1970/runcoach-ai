@@ -18,9 +18,9 @@ const CFG = {
   STRESS_SMOOTH: env('STRESS_SMOOTH', 0.11), NIGHT_STAGE_SMOOTH: env('NIGHT_STAGE_SMOOTH', 0.35),
   SESSION_GAP_MIN: env('SESSION_GAP_MIN', 60), HRV_WIN: env('HRV_WIN', 65),
   // battery (recovery-capped charge + stress drain)
-  SEED: env('SEED', 42), BASE_DRAIN: env('BASE_DRAIN', 0.02), STRESS_DRAIN: env('STRESS_DRAIN', 0.075),
+  SEED: env('SEED', 42), BASE_DRAIN: env('BASE_DRAIN', 0.012), STRESS_DRAIN: env('STRESS_DRAIN', 0.04),
   CHARGE_K: env('CHARGE_K', 0.045), CHARGE_MAX: env('CHARGE_MAX', 0.12),
-  CEIL_LO: env('CEIL_LO', 22), CEIL_HI: env('CEIL_HI', 98), CEIL_RLO: env('CEIL_RLO', 0.62), CEIL_RHI: env('CEIL_RHI', 1.35),
+  CEIL_LO: env('CEIL_LO', 22), CEIL_HI: env('CEIL_HI', 98), CEIL_RLO: env('CEIL_RLO', 0.58), CEIL_RHI: env('CEIL_RHI', 1.15),
   CEIL_HRV_SMOOTH: env('CEIL_HRV_SMOOTH', 0.012),
 };
 // Additive sleep-stage bump on top of the night recovery baseline (env-overridable).

@@ -46,7 +46,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, strainFromLoad, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, strainFromLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
 import { getLocalWeather } from './weather';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
@@ -1517,23 +1517,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     ctl:        latestLoad?.ctl,
     atl:        latestLoad?.atl,
   });
-  // Daily-activity floor from today's active energy + exercise minutes (partial, intra-day).
-  const [todayActiveMap, todayExMap] = await Promise.all([
-    fetchDailyActiveEnergy(todayStart, now),
-    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', todayStart, now),
-  ]);
-  const todayActive = [...todayActiveMap.values()][0] ?? 0; // window is today only → one bucket
-  const todayExMin  = [...todayExMap.values()][0] ?? 0;
-  const todayActivityFloor = activityFloorTrimp(todayActive, todayExMin);
   // Heat inflates the day's strain (a given effort costs more in the heat) — apply the same
   // factor the coach uses to scale sessions. Best-effort + cached; no weather → factor 1.
   const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
-  // Motion/steps proxy from active energy = the rest of Bevel's "passive" term (background HR is
-  // already inside activeZoneLoad). Kept modest; the sigmoid midpoint (STRAIN_SIG_C) sets the scale.
+  // Passive strain = elevated BACKGROUND HR only (already inside activeZoneLoad). The active-energy
+  // floor is intentionally NOT added: it accumulated even on calm/desk mornings, which made strain
+  // creep up while Bevel held at 0.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable, heatFactor)
+    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, 0, advisable, heatFactor)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
@@ -2615,21 +2608,14 @@ export async function fetchStrainHistory(
     }
   }
 
-  // Daily-activity floor inputs: active energy (general movement) + Apple exercise
-  // minutes (catches exercise-heavy/low-burn days), so neither type of activity reads 0.
-  const [activeByDay, exMinByDay] = await Promise.all([
-    fetchDailyActiveEnergy(since, end),
-    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', since, end),
-  ]);
-
   // One entry per day that has HR data — including rest days — so the chart shows a
   // continuous daily series (and the clear run-day vs rest-day pattern).
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
-    // Same model as today's live strain: zone-weighted active+passive HR load + motion, sigmoid-squashed.
+    // Same model as today's live strain: zone-weighted active+passive HR load, log-squashed.
+    // No active-energy floor (it crept on calm days); strain is purely HR-zone driven.
     const zoneLoad = zoneStrainLoad(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const floor    = activityFloorTrimp(activeByDay.get(day) ?? 0, exMinByDay.get(day) ?? 0);
-    const rawLoad  = zoneLoad + floor + (muscularByDay.get(day) ?? 0);
+    const rawLoad  = zoneLoad + (muscularByDay.get(day) ?? 0);
     out.push({ date: day, value: strainFromLoad(rawLoad) }); // 0-100 (Bevel %)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
