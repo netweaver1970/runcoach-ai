@@ -46,7 +46,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, strainFromLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
 import { getLocalWeather } from './weather';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
@@ -1520,13 +1520,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // Heat inflates the day's strain (a given effort costs more in the heat) — apply the same
   // factor the coach uses to scale sessions. Best-effort + cached; no weather → factor 1.
   const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
+  // Passive strain = HR "life tax" (inside activeZoneLoad) + STEPS (motion). Bevel counts the day's
+  // total steps (workout on/off); we pass them as the passiveLoad term.
+  const todayStepsMap = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', todayStart, now);
+  const todaySteps = [...todayStepsMap.values()][0] ?? 0;
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
-  // Passive strain = elevated BACKGROUND HR only (already inside activeZoneLoad). The active-energy
-  // floor is intentionally NOT added: it accumulated even on calm/desk mornings, which made strain
-  // creep up while Bevel held at 0.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, 0, advisable, heatFactor)
+    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todaySteps), advisable, heatFactor)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
@@ -2608,14 +2609,15 @@ export async function fetchStrainHistory(
     }
   }
 
+  const stepsByDay = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
+
   // One entry per day that has HR data — including rest days — so the chart shows a
   // continuous daily series (and the clear run-day vs rest-day pattern).
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
-    // Same model as today's live strain: zone-weighted active+passive HR load, log-squashed.
-    // No active-energy floor (it crept on calm days); strain is purely HR-zone driven.
+    // Same model as today's live strain: workout zone load + HR life-tax + steps, log-squashed.
     const zoneLoad = zoneStrainLoad(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const rawLoad  = zoneLoad + (muscularByDay.get(day) ?? 0);
+    const rawLoad  = zoneLoad + stepStrainLoad(stepsByDay.get(day) ?? 0) + (muscularByDay.get(day) ?? 0);
     out.push({ date: day, value: strainFromLoad(rawLoad) }); // 0-100 (Bevel %)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
