@@ -628,6 +628,8 @@ function computeRecoveryScore(
   todayOvernightHR: number,
   history: NightlyHRV[],
   sleepScore = 0,
+  todayRR = 0,
+  rrBaseline = 0,
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number } {
   const recent = history.slice(-60).filter((n) => n.weightedRMSSD > 0);
 
@@ -666,6 +668,9 @@ function computeRecoveryScore(
   // sleep score for the night; this closes the high-HRV/bad-sleep gap (core R² .918 → full .985,
   // pending the RR illness penalty). RR penalty deferred — needs respiratory rate in the snapshot.
   if (sleepScore > 0) rawScore += 0.32 * (sleepScore - 72);
+  // Respiratory-rate illness penalty (Bevel fit: −3.9/rpm ABOVE the 60-day baseline; only bites when
+  // RR is elevated, so it's harmless on normal nights). Together with the sleep term: core .918 → .985.
+  if (todayRR > 0 && rrBaseline > 0) rawScore -= 3.9 * Math.max(0, todayRR - rrBaseline);
   const score    = Math.round(clamp01(rawScore));
 
   // ── Baseline + trend (raw RMSSD, for display) ─────────────────────────────
@@ -902,6 +907,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const now          = new Date();
   const sinceDate    = daysAgo(months * 30);
   const thirtyDaysAgo  = daysAgo(30);
+  const sixtyDaysAgo   = daysAgo(60); // recovery baselines (HRV/RHR/RR) use a 60-day window (Bevel's)
   const twoWeeksAgo    = daysAgo(14);
   const eightWeeksAgo  = daysAgo(56);
 
@@ -1149,6 +1155,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     loadWorkoutsRaw,
     runMetaMap,
     dailyKcalMap,
+    rrSamples,
   ] = await Promise.all([
     // v9 API: date range in filter.startDate/endDate
     safeQuery(
@@ -1163,12 +1170,12 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // the limit always captures the most recent nights rather than the oldest.
     (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
-      { filter: { startDate: thirtyDaysAgo, endDate: now }, unit: 'ms', ascending: false, limit: 20000 }
+      { filter: { startDate: sixtyDaysAgo, endDate: now }, unit: 'ms', ascending: false, limit: 40000 }
     ).catch(() => [] as any[]),
-    // Heartbeat series: raw R-R intervals for quality filtering (precededByGap flag)
+    // Heartbeat series: raw R-R intervals → true RMSSD (recovery) + quality filtering (precededByGap)
     safeQuery(
       () => (HealthKit as any).queryHeartbeatSeriesSamples({
-        filter: { startDate: thirtyDaysAgo, endDate: now },
+        filter: { startDate: sixtyDaysAgo, endDate: now },
         limit: 20000,
       }),
       [] as any[]
@@ -1183,7 +1190,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     safeQuery(
       () => (HealthKit.queryCategorySamples as any)(
         HKCategoryTypeIdentifier.sleepAnalysis,
-        { filter: { startDate: thirtyDaysAgo, endDate: now }, ascending: true, limit: 2000 }
+        { filter: { startDate: sixtyDaysAgo, endDate: now }, ascending: true, limit: 4000 }
       ),
       []
     ),
@@ -1209,6 +1216,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // (~8.7× the 42-day CTL time-constant) makes today's CTL/ATL/TSB fully converged;
     // a light refresh uses 180d (~1.4% residual) for speed.
     fetchDailyActiveEnergy(daysAgo(aeWarmupDays), now),
+    // Respiratory rate (60d) → recovery's illness penalty (elevated RR drags the score down).
+    safeQuery(
+      () => (HealthKit.queryQuantitySamples as any)(
+        HKQuantityTypeIdentifier.respiratoryRate,
+        { filter: { startDate: sixtyDaysAgo, endDate: now }, unit: 'count/min', ascending: false, limit: 40000 }
+      ),
+      [] as any[]
+    ),
   ]);
 
   // Classify runs AFTER we have longRunMinutes
@@ -1431,6 +1446,18 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     );
   }
 
+  // Respiratory rate for recovery's illness penalty: 60-day median baseline + the recent night's mean.
+  const rrAll = (rrSamples as any[]).map((s: any) => s.quantity as number).filter((v) => v > 0).sort((a, b) => a - b);
+  const rrBaseline = rrAll.length >= 10 ? rrAll[Math.floor(rrAll.length / 2)] : 0;
+  let recentNightRR = 0;
+  if (recentSession) {
+    const bedMs = new Date(recentSession.bedtime).getTime(), wakeMs = new Date(recentSession.wakeTime).getTime();
+    const nightRR = (rrSamples as any[])
+      .filter((s: any) => { const t = new Date(s.startDate).getTime(); return t >= bedMs && t <= wakeMs; })
+      .map((s: any) => s.quantity as number).filter((v) => v > 0);
+    if (nightRR.length > 0) recentNightRR = nightRR.reduce((a, b) => a + b, 0) / nightRR.length;
+  }
+
   if (recentHRV && recentHRV.weightedRMSSD > 0) {
     // Full recovery score available — sleep score first, so it can feed recovery's sleep term.
     const historyBefore = nightlyHRV.filter((n) => n.date < recentHRV.date);
@@ -1442,6 +1469,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       recentHRV.overnightHR,
       historyBefore,
       sleepScore,
+      recentNightRR,
+      rrBaseline,
     );
     todayRecovery = {
       date:                todayStr,
