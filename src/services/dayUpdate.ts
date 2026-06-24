@@ -32,6 +32,10 @@ export async function dayViewDoneFor(date: string): Promise<boolean> {
   try { return (await FileSystem.getInfoAsync(marker(date))).exists; } catch { return false; }
 }
 
+async function readMarker(date: string): Promise<{ recovery?: number; sleepScore?: number } | null> {
+  try { return JSON.parse(await FileSystem.readAsStringAsync(marker(date))); } catch { return null; }
+}
+
 export interface DayViewResult {
   ran: boolean; date: string; reason?: string; recovery?: number; headline?: string;
 }
@@ -52,8 +56,16 @@ export async function maybeRunDayView(opts: {
   if (!rec || !rec.sleep) return { ran: false, date: today, reason: 'night not yet determined' };
 
   const date = rec.date ?? today;
+  // Don't freeze the plan after the FIRST sleep sync. Regenerate when the night materially changes —
+  // the rest of the night syncs from the Watch, or you correct sleep by hand in Apple Health — both
+  // move recovery/sleep score. Trivial deltas are ignored so we don't re-hit the LLM needlessly.
   if (!opts.force && await dayViewDoneFor(date)) {
-    return { ran: false, date, reason: 'already prepared', recovery: rec.recoveryScore };
+    const prev   = await readMarker(date);
+    const recDiff   = Math.abs((prev?.recovery   ?? -99) - rec.recoveryScore);
+    const sleepDiff = Math.abs((prev?.sleepScore ?? -99) - (rec.sleepScore ?? 0));
+    if (recDiff < 3 && sleepDiff < 5) {
+      return { ran: false, date, reason: 'already prepared', recovery: rec.recoveryScore };
+    }
   }
 
   let headline: string | undefined;
@@ -71,7 +83,7 @@ export async function maybeRunDayView(opts: {
 
   try {
     await FileSystem.writeAsStringAsync(marker(date), JSON.stringify({
-      date, at: new Date().toISOString(), recovery: rec.recoveryScore, headline,
+      date, at: new Date().toISOString(), recovery: rec.recoveryScore, sleepScore: rec.sleepScore, headline,
     }));
   } catch { /* ignore */ }
 

@@ -484,8 +484,11 @@ export default function HomeScreen() {
           />
         )}
 
-        {/* Last run analysis — reduced; tap through to the full prescription-aware review */}
-        {isTodayView && runAnalysis && (
+        {/* Last run analysis — reduced; tap through to the full prescription-aware review.
+            Only while it's RECENT (≤18h, same window the analyzer uses) so a previous day's run
+            doesn't linger on the morning view. */}
+        {isTodayView && runAnalysis &&
+          Date.now() - new Date(runAnalysis.runDate).getTime() < 18 * 3_600_000 && (
           <TouchableOpacity
             style={styles.raCard}
             onPress={() => router.push('/run-analysis' as any)}
