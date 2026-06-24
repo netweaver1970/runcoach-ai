@@ -623,6 +623,11 @@ function absoluteRHRScore(hr: number): number {
 // (the data beats Bevel's stated 65/35: R² 0.918 vs 0.905). Baselines are 60-day mean/SD.
 const RECOVERY_Z_SCALE = 23.6;
 const RECOVERY_HRV_W   = 0.75;
+// FIXED reference SDs (Bevel's effective sensitivity from the R²=0.985 fit: 2.80/ms HRV, 2.40/bpm RHR
+// → SD 6.3 / 2.46). Bevel's quoted SDs (7.5 / 4.7) are wider than what its recovery actually responds
+// to, so we scale by these fixed refs, not our rolling SD — matches Bevel's RHR sensitivity exactly.
+const RECOVERY_HRV_SD_REF = 6.3;
+const RECOVERY_RHR_SD_REF = 2.46;
 
 function computeRecoveryScore(
   todayRMSSD: number,
@@ -632,33 +637,38 @@ function computeRecoveryScore(
   todayRR = 0,
   rrBaseline = 0,
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number; breakdown: RecoveryBreakdown } {
-  const recent = history.slice(-60).filter((n) => n.weightedRMSSD > 0);
+  // Bevel's baseline window is 60 CALENDAR days (not the last 60 data points — with missing nights
+  // that reaches further back and pulls in older outliers). Filter by date.
+  const withData = history.filter((n) => n.weightedRMSSD > 0);
+  const latest = withData.length ? withData[withData.length - 1].date : '';
+  const cutoff = latest ? new Date(new Date(latest + 'T00:00:00Z').getTime() - 59 * 86_400_000).toISOString().slice(0, 10) : '';
+  const recent = cutoff ? withData.filter((n) => n.date >= cutoff) : withData;
 
   const clamp01 = (v: number) => Math.min(100, Math.max(0, v));
   const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
   const std  = (a: number[], m: number) => Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
-  // ── HRV component: TRUE RMSSD z-scored vs a 60-day personal baseline ──────────
-  // Score = 50 + z·SCALE, eased in from a population anchor over the first 2 weeks.
+  // ── HRV component: TRUE RMSSD vs a 60-day mean, scaled by Bevel's FIXED sensitivity ──────────
+  // z = (today − mean)/SD_REF (fixed, not rolling SD); score = 50 + z·SCALE, eased in over 2 weeks.
   let hrvMean = todayRMSSD, hrvSD = 0, zHRV = 0;
   let blendedHRV = absoluteHRVScore(todayRMSSD); // cold-start fallback
   if (recent.length >= 5) {
     const v = recent.map((n) => n.weightedRMSSD);
-    hrvMean = mean(v); hrvSD = std(v, hrvMean) || 1;
-    zHRV = (todayRMSSD - hrvMean) / hrvSD;
+    hrvMean = mean(v); hrvSD = std(v, hrvMean);
+    zHRV = (todayRMSSD - hrvMean) / RECOVERY_HRV_SD_REF;
     const w = Math.min(1, recent.length / 14); // ease in from the anchor over 2 weeks
     blendedHRV = (1 - w) * absoluteHRVScore(todayRMSSD) + w * clamp01(50 + zHRV * RECOVERY_Z_SCALE);
   }
 
-  // ── Overnight-HR component: z-score vs the 60-day baseline (lower HR = better) ──
+  // ── Overnight-HR component: vs the 60-day mean, fixed sensitivity (lower HR = better) ──
   const recentWithHR = recent.filter((n) => n.overnightHR > 0);
   let overnightHRBaseline = todayOvernightHR;
   let rhrMean = todayOvernightHR, rhrSD = 0, zRHR = 0;
   let blendedRHR = todayOvernightHR > 0 ? absoluteRHRScore(todayOvernightHR) : 50;
   if (recentWithHR.length >= 5 && todayOvernightHR > 0) {
     const hv = recentWithHR.map((n) => n.overnightHR);
-    rhrMean = mean(hv); rhrSD = std(hv, rhrMean) || 1;
+    rhrMean = mean(hv); rhrSD = std(hv, rhrMean);
     overnightHRBaseline = Math.round(rhrMean);
-    zRHR = (rhrMean - todayOvernightHR) / rhrSD; // lower HR than baseline → positive
+    zRHR = (rhrMean - todayOvernightHR) / RECOVERY_RHR_SD_REF; // lower HR than baseline → positive
     const w = Math.min(1, recentWithHR.length / 14);
     blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * clamp01(50 + zRHR * RECOVERY_Z_SCALE);
   }
@@ -680,8 +690,8 @@ function computeRecoveryScore(
 
   const r1 = (x: number) => Math.round(x * 10) / 10;
   const breakdown: RecoveryBreakdown = {
-    rmssd: r1(todayRMSSD), hrvMean: r1(hrvMean), hrvSD: r1(hrvSD), zHRV: Math.round(zHRV * 100) / 100, hrvSub: Math.round(blendedHRV),
-    overnightHR: todayOvernightHR, rhrMean: r1(rhrMean), rhrSD: r1(rhrSD), zRHR: Math.round(zRHR * 100) / 100, rhrSub: Math.round(blendedRHR),
+    rmssd: r1(todayRMSSD), hrvMean: r1(hrvMean), hrvSD: RECOVERY_HRV_SD_REF, zHRV: Math.round(zHRV * 100) / 100, hrvSub: Math.round(blendedHRV),
+    overnightHR: todayOvernightHR, rhrMean: r1(rhrMean), rhrSD: RECOVERY_RHR_SD_REF, zRHR: Math.round(zRHR * 100) / 100, rhrSub: Math.round(blendedRHR),
     hrvWeight: RECOVERY_HRV_W, core: Math.round(core),
     sleepScore, sleepTerm: r1(sleepTerm),
     rr: r1(todayRR), rrBaseline: r1(rrBaseline), rrPenalty: r1(rrPenalty),
