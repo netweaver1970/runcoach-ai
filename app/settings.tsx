@@ -37,6 +37,7 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis } from '../src/services/coach';
 import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
@@ -73,6 +74,9 @@ export default function SettingsScreen() {
   const [calibMsg, setCalibMsg] = useState('');
   const [longRunMin, setLongRunMin] = useState(String(DEFAULT_LONG_RUN_MINUTES));
   const [longRunSaved, setLongRunSaved] = useState(false);
+  const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
+  const [capPctSaved, setCapPctSaved] = useState(false);
+  const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
   const [aiWeeksSaved, setAiWeeksSaved] = useState(false);
   const [coachMemory, setCoachMemory] = useState('');
@@ -98,6 +102,8 @@ export default function SettingsScreen() {
     resolveBodyMassKg().then(kg => setBodyMass(String(kg)));
     getPowerZones().then(setPowerZones);
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
+    getLoadCapPct().then(p => setCapPct(String(p)));
+    getLoadCapBasis().then(setCapBasisState);
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
     isAutoDayViewEnabled().then(setDayViewAuto);
@@ -156,6 +162,17 @@ export default function SettingsScreen() {
     await clearWorkoutCache();  // force re-classify with new threshold
     setLongRunSaved(true);
     setTimeout(() => setLongRunSaved(false), 2000);
+  };
+
+  const handleSaveCapPct = async () => {
+    const n = parseInt(capPct, 10);
+    if (isNaN(n) || n < 5 || n > 50) {
+      Alert.alert('Invalid value', 'Enter a weekly increase cap between 5 and 50 %.');
+      return;
+    }
+    await setLoadCapPct(n);
+    setCapPctSaved(true);
+    setTimeout(() => setCapPctSaved(false), 2000);
   };
 
   const handleSave = useCallback(async () => {
@@ -647,6 +664,50 @@ export default function SettingsScreen() {
             >
               <Text style={styles.btnText}>{longRunSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
+          </View>
+        </Section>
+
+        <Section title="Progression Cap" cat="zones">
+          <Text style={styles.hint}>
+            Limits how fast your weekly running load can grow. Default +10% per rolling 7 days (the
+            classic guideline). Coming back from injury you can ramp faster — e.g. 20%. Only the REAL
+            work + drills count, never warmup/cooldown/recovery or walks.
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={capPct}
+              onChangeText={setCapPct}
+              placeholder="10"
+              placeholderTextColor="#bbb"
+              keyboardType="number-pad"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>% / wk</Text>
+            <TouchableOpacity
+              style={[styles.btn, capPctSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={handleSaveCapPct}
+            >
+              <Text style={styles.btnText}>{capPctSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Cap by real-work distance</Text>
+              <Text style={styles.switchSub}>
+                Off = time-on-feet minutes (default). On = real-work kilometres.
+              </Text>
+            </View>
+            <Switch
+              value={capBasis === 'distance'}
+              onValueChange={async (v) => {
+                const b: LoadCapBasis = v ? 'distance' : 'tof';
+                setCapBasisState(b);
+                await setLoadCapBasis(b);
+              }}
+              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              thumbColor="#fff"
+            />
           </View>
         </Section>
 

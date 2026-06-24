@@ -2752,15 +2752,16 @@ export async function fetchWeeklyDurationHistory(months: number, toDate?: Date):
 const TOF_EXCLUDE_PHASE = /warm|cool|recover|rest|walk|prep/i;
 
 /**
- * "Real" running time-on-feet for one workout = WORK + DRILLS only, EXCLUDING warmup, cooldown,
- * recovery (inter-rep rest) and walk segments. Reads the structured-workout segment labels from
- * w.activities (WorkoutProxy UUID-suffix patch); a segment counts unless it's an explicit
- * warmup/cooldown/recovery/walk phase. Falls back to the workout's total duration for an
- * unstructured run (no segments). Returns SECONDS.
+ * "Real" running WORK + DRILLS for one workout — both SECONDS and METERS — EXCLUDING warmup,
+ * cooldown, recovery (inter-rep rest) and walk segments (and pauses, since segment duration/distance
+ * are net of pauses). Reads the structured-workout segment labels from w.activities (WorkoutProxy
+ * UUID-suffix patch); a segment counts unless it's an explicit warmup/cooldown/recovery/walk phase.
+ * Falls back to the workout's total duration/distance for an unstructured run (no segments).
  */
-function workDrillsSeconds(w: any): number {
+function workDrillsTotals(w: any): { seconds: number; meters: number } {
   const totalSec = typeof w.duration === 'object' && w.duration !== null
     ? (w.duration.quantity as number) ?? 0 : (w.duration as number) ?? 0;
+  const totalM = (w.totalDistance?.quantity as number) ?? 0;
   const acts: any[] = w.activities ?? [];
 
   const segs = acts.map((act: any) => {
@@ -2801,7 +2802,7 @@ function workDrillsSeconds(w: any): number {
     return { label, durationSec, distanceM };
   }).filter((s) => s.durationSec >= 5);
 
-  if (segs.length === 0) return totalSec; // unstructured run → count the whole thing
+  if (segs.length === 0) return { seconds: totalSec, meters: totalM }; // unstructured → count it all
 
   // Resolve deferred/empty labels the same way the run classifier does: a SHORT first/last segment
   // is the warmup/cooldown, the middle is work — so we don't accidentally count warmup/cooldown.
@@ -2819,10 +2820,17 @@ function workDrillsSeconds(w: any): number {
       segs.forEach((s) => { if (!s.label) s.label = 'Work'; }); // no distances → treat unlabeled as work
     }
   }
-  return segs.reduce((sum, s) => sum + (TOF_EXCLUDE_PHASE.test(s.label) ? 0 : s.durationSec), 0);
+  const inc = (s: { label: string }) => !TOF_EXCLUDE_PHASE.test(s.label);
+  return {
+    seconds: segs.reduce((sum, s) => sum + (inc(s) ? s.durationSec : 0), 0),
+    meters:  segs.reduce((sum, s) => sum + (inc(s) ? s.distanceM  : 0), 0),
+  };
 }
 
-export async function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
+// Per-day running WORK+DRILLS totals (runs only). `pick` selects minutes or km.
+async function fetchDailyWorkHistory(
+  pick: (t: { seconds: number; meters: number }) => number, toDate?: Date,
+): Promise<{ date: string; value: number }[]> {
   const endDate = toDate ?? new Date();
   const since   = new Date(endDate.getTime() - 31 * 86_400_000);
   const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
@@ -2834,11 +2842,21 @@ export async function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: 
     .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
     .forEach((w: any) => {
       const day = toISOStr(w.startDate).slice(0, 10);
-      byDay[day] = (byDay[day] ?? 0) + workDrillsSeconds(w); // work + drills only, not warmup/cooldown/recovery
+      byDay[day] = (byDay[day] ?? 0) + pick(workDrillsTotals(w));
     });
-  return Object.entries(byDay)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, secs]) => ({ date, value: Math.round(secs / 60) })); // → minutes
+  return Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, value }));
+}
+
+// Time-on-feet basis: work+drills MINUTES per day.
+export function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
+  return fetchDailyWorkHistory((t) => t.seconds, toDate).then((rows) =>
+    rows.map((r) => ({ date: r.date, value: Math.round(r.value / 60) })));
+}
+
+// Distance basis: work+drills KM per day (one decimal).
+export function fetchDailyWorkDistanceHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
+  return fetchDailyWorkHistory((t) => t.meters, toDate).then((rows) =>
+    rows.map((r) => ({ date: r.date, value: Math.round(r.value / 100) / 10 })));
 }
 
 export async function fetchVO2MaxHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {

@@ -6,9 +6,10 @@
  * JSON so the UI can render it and reconcile the advisable strain band.
  */
 import * as FileSystem from 'expo-file-system';
+import * as SecureStore from 'expo-secure-store';
 import { callLLM } from './llm';
 import { buildKnowledgePrompt } from './coachFiles';
-import { fetchOurDailyComponents, fetchDailyDurationHistory } from './healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
 import { ensureZonesFile } from './zones';
@@ -31,9 +32,13 @@ export interface CoachSnapshot {
   recentTimeOnFeet?: { date: string; min: number }[]; // last ~14 days (0 = no run)
   tof7d?:            number;   // trailing 7-day running minutes (completed days only)
   tofPrev7d?:        number;   // the 7 days before that
-  tofBudgetTodayMin?: number;  // max running minutes TODAY under the +10% rolling cap
+  tofBudgetTodayMin?: number;  // max running MINUTES today under the rolling cap (distance cap → via pace)
   tofNextRunLabel?:  string;   // when a meaningful-length run next fits the cap, e.g. "Thu 26 Jun"
   tofNextRunInDays?: number;   // days until that — 0 = today's budget already allows it
+  loadCapBasis?:     'tof' | 'distance'; // what the +X% cap is measured on
+  loadCapPct?:       number;   // the rolling increase cap % (default 10)
+  loadBudgetToday?:  number;   // remaining budget today in loadUnit
+  loadUnit?:         'min' | 'km';
   yesterdayTofMin?:  number;   // yesterday's running minutes
   yesterdayStrain?:  number;   // yesterday's strain score
   weather?: {                  // current conditions — heat/humidity raise strain
@@ -120,11 +125,14 @@ today's actual strain (strainReal) sits relative to the target band — BELOW / 
 is appropriate for your call (e.g. "strain 7% is below the 23–47% band, which is right given low recovery — \
 rest"). Use the exact strainReal figure; never invent a different number. SpO₂ note: brief overnight dips to \
 ~92–95% are normal and must NOT reduce load on their own — only treat SpO₂ as a concern if it is below ~92%. \
-VOLUME CAP: when tofBudgetTodayMin is ~0 (the +10% rolling time-on-feet cap is reached) and you therefore \
-prescribe rest/cross-train, you MUST tell the runner WHEN the next meaningful run becomes possible — state \
-the exact tofNextRunLabel in the session (it already has the weekday; assuming rest until then, tofNextRunInDays \
-days out). E.g. session "Volume cap reached — rest; next run Thu 26 Jun (~25 min), in 2 days". If tofNextRunInDays \
-is 0 the cap is not limiting, so omit this. \
+VOLUME CAP: the progression cap is +loadCapPct% per rolling 7 days, measured on loadCapBasis \
+("tof" = time-on-feet minutes, "distance" = real-work km); loadBudgetToday is what's left today in \
+loadUnit, and tofBudgetTodayMin is that same budget expressed in run-minutes (already pace-converted \
+for a distance cap) — keep the prescribed run ≤ tofBudgetTodayMin. When tofBudgetTodayMin is ~0 (cap \
+reached) and you therefore prescribe rest/cross-train, you MUST tell the runner WHEN the next meaningful \
+run becomes possible — state the exact tofNextRunLabel in the session (it has the weekday; assuming rest \
+until then, tofNextRunInDays days out). E.g. session "Volume cap reached — rest; next run Thu 26 Jun, in \
+2 days". If tofNextRunInDays is 0 the cap is not limiting, so omit this. \
 Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all the data.
 
 WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
@@ -278,31 +286,68 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   };
 }
 
+// ── Progression-cap settings (user-configurable) ──────────────────────────────
+// The rolling-7-day increase cap. Default +10%/week (the classic guideline), but a returning-from-
+// injury athlete may want to ramp faster (e.g. 20%). And the cap can be measured by TIME-ON-FEET
+// (default) or by real-work DISTANCE — some athletes prefer a distance ceiling.
+export type LoadCapBasis = 'tof' | 'distance';
+const LOAD_CAP_PCT_KEY   = 'load_cap_pct';
+const LOAD_CAP_BASIS_KEY = 'load_cap_basis';
+export const DEFAULT_LOAD_CAP_PCT = 10;
+export const DEFAULT_LOAD_CAP_BASIS: LoadCapBasis = 'tof';
+
+export async function getLoadCapPct(): Promise<number> {
+  try {
+    const raw = await SecureStore.getItemAsync(LOAD_CAP_PCT_KEY);
+    const n = raw ? parseInt(raw, 10) : DEFAULT_LOAD_CAP_PCT;
+    return Number.isFinite(n) && n >= 5 && n <= 50 ? n : DEFAULT_LOAD_CAP_PCT; // 5–50% sane bounds
+  } catch { return DEFAULT_LOAD_CAP_PCT; }
+}
+export async function setLoadCapPct(pct: number): Promise<void> {
+  try { await SecureStore.setItemAsync(LOAD_CAP_PCT_KEY, String(Math.round(pct))); } catch { /* ignore */ }
+}
+export async function getLoadCapBasis(): Promise<LoadCapBasis> {
+  try { return (await SecureStore.getItemAsync(LOAD_CAP_BASIS_KEY)) === 'distance' ? 'distance' : 'tof'; }
+  catch { return DEFAULT_LOAD_CAP_BASIS; }
+}
+export async function setLoadCapBasis(b: LoadCapBasis): Promise<void> {
+  try { await SecureStore.setItemAsync(LOAD_CAP_BASIS_KEY, b); } catch { /* ignore */ }
+}
+
 export interface TofPlan {
   series14:       { date: string; min: number }[];
   tof7d:          number;   // rolling 7-day total ending today (today so far)
   tofPrev7d:      number;   // the 7 days before that
-  cap7dMin:       number;   // 1.10 × prior-7 (the rolling ceiling)
-  budgetTodayMin: number;   // running minutes still allowed today
+  cap7dMin:       number;   // (1+pct%) × prior-7 (the rolling ceiling)
+  budgetTodayMin: number;   // load still allowed today (unit = the basis: minutes or km)
   yesterdayMin:   number;
-  nextRunInDays:  number;   // days until a meaningful-length run (≥MEANINGFUL) fits — 0 = today
+  nextRunInDays:  number;   // days until a meaningful run fits — 0 = today
   nextRunDate:    string;   // YYYY-MM-DD of that day (assuming rest until then)
   nextRunLabel:   string;   // human label, e.g. "Thu 26 Jun" (weekday computed in code)
-  nextRunBudgetMin: number; // running budget available on nextRunDate
+  nextRunBudgetMin: number; // budget available on nextRunDate
 }
 
-// A run counts as "meaningful length" once the budget allows at least this many running minutes.
-const MEANINGFUL_RUN_MIN = 20;
+export interface CapOpts {
+  capPct?:       number;  // rolling increase cap % (default 10)
+  meaningful?:   number;  // a run "counts" once the budget allows ≥ this (min or km)
+  reentryBelow?: number;  // prior-7 below this → apply the re-entry floor
+  reentryFloor?: number;  // minimum budget when returning from a near-zero base
+}
 
 /**
- * Rolling time-on-feet model for the +10% rule: the 7-day total ending today must not
- * exceed 1.10× the 7-day total ending a week ago. Returns today's remaining running
- * budget plus a 14-day series for the alternation check. A small floor keeps a short
- * easy run available when returning from a near-zero base.
+ * Rolling progression model for the +X% rule: the 7-day total ending today must not exceed
+ * (1+capPct%)× the 7-day total ending a week ago. Unit-agnostic — `daily.value` is minutes
+ * (time-on-feet basis) or km (distance basis). Returns today's remaining budget + a 14-day series
+ * for the alternation check + when a meaningful run next fits. A small floor keeps a short easy run
+ * available when returning from a near-zero base.
  */
 export function computeTimeOnFeetPlan(
-  daily: { date: string; value: number }[], today = new Date(),
+  daily: { date: string; value: number }[], today = new Date(), opts: CapOpts = {},
 ): TofPlan {
+  const capMult      = 1 + (opts.capPct ?? DEFAULT_LOAD_CAP_PCT) / 100;
+  const meaningful   = opts.meaningful   ?? 20;
+  const reentryBelow = opts.reentryBelow ?? 30;
+  const reentryFloor = opts.reentryFloor ?? 20;
   const map = new Map(daily.map(d => [d.date, d.value]));
   const p = (n: number) => String(n).padStart(2, '0');
   const dayStr = (offset: number) => {
@@ -313,9 +358,9 @@ export function computeTimeOnFeetPlan(
 
   let tofLast6 = 0; for (let o = 1; o <= 6;  o++) tofLast6 += minsAt(o);
   let tofPrev7 = 0; for (let o = 7; o <= 13; o++) tofPrev7 += minsAt(o);
-  const cap = Math.round(1.10 * tofPrev7);
+  const cap = Math.round(capMult * tofPrev7);
   let budget = Math.max(0, cap - tofLast6);
-  if (tofPrev7 < 30) budget = Math.max(budget, 20); // re-entry / very low base
+  if (tofPrev7 < reentryBelow) budget = Math.max(budget, reentryFloor); // re-entry / very low base
 
   const series14: { date: string; min: number }[] = [];
   for (let o = 13; o >= 0; o--) series14.push({ date: dayStr(o), min: minsAt(o) });
@@ -328,9 +373,9 @@ export function computeTimeOnFeetPlan(
   for (let k = 0; k <= 21; k++) {
     let last6 = 0; for (let j = 1; j <= 6;  j++) last6 += minIdx(k - j);
     let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);
-    let b = Math.max(0, Math.round(1.10 * prev7) - last6);
-    if (prev7 < 30) b = Math.max(b, 20); // re-entry / very low base
-    if (b >= MEANINGFUL_RUN_MIN) { nextRunInDays = k; nextRunBudgetMin = b; break; }
+    let b = Math.max(0, Math.round(capMult * prev7) - last6);
+    if (prev7 < reentryBelow) b = Math.max(b, reentryFloor); // re-entry / very low base
+    if (b >= meaningful) { nextRunInDays = k; nextRunBudgetMin = b; break; }
   }
   const nextDate = new Date(today); nextDate.setDate(nextDate.getDate() + nextRunInDays);
   const nextRunDate = `${nextDate.getFullYear()}-${p(nextDate.getMonth() + 1)}-${p(nextDate.getDate())}`;
@@ -352,22 +397,55 @@ export function computeTimeOnFeetPlan(
   };
 }
 
+export interface CapContext {
+  tof: TofPlan;            // time-on-feet plan — always computed (alternation + run-minutes budget)
+  cap: TofPlan;            // the ACTIVE-basis plan (=== tof when basis is 'tof')
+  budgetMin: number;       // today's budget as run-MINUTES (distance cap → pace-converted)
+  loadUnit: 'min' | 'km';
+  capBasis: LoadCapBasis;
+  capPct: number;
+}
+
+/**
+ * The rolling progression cap, honouring the user's settings. Time-on-feet is ALWAYS computed (the
+ * alternation rule + the watch-workout time budget need it); when the basis is DISTANCE the cap is
+ * recomputed on real-work km and its budget converted back to run-minutes via trailing pace.
+ * `durSeries` = work+drills minutes per day (caller already has it); `toDate` is the viewed day.
+ */
+export async function buildCapContext(
+  durSeries: { date: string; value: number }[], toDate: Date, capPct: number, capBasis: LoadCapBasis,
+): Promise<CapContext> {
+  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20 });
+  if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct };
+
+  const distKm = await fetchDailyWorkDistanceHistory(toDate);
+  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2 });
+  const p = (n: number) => String(n).padStart(2, '0');
+  const dStr = `${toDate.getFullYear()}-${p(toDate.getMonth() + 1)}-${p(toDate.getDate())}`;
+  const dist7d = distKm.filter(d => d.date <= dStr).slice(-7).reduce((s, d) => s + d.value, 0);
+  const paceMinPerKm = dist7d > 0 ? tof.tof7d / dist7d : 6; // fallback ~6 min/km
+  return { tof, cap, budgetMin: Math.round(cap.budgetTodayMin * paceMinPerKm), loadUnit: 'km', capBasis, capPct };
+}
+
 /**
  * Build the full coach snapshot from HealthKit + weather for a given day's strain.
  * Single source used by both the Strain screen and the background day-view updater, so
  * the on-demand plan and the auto-prepared plan are identical.
  */
 export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[]): Promise<CoachSnapshot> {
-  const [comps, dur, weather, powerZones] = await Promise.all([
+  const [comps, dur, weather, powerZones, capPct, capBasis] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
     getLocalWeather().catch(() => null),
     getPowerZones().catch(() => undefined),
+    getLoadCapPct(),
+    getLoadCapBasis(),
   ]);
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};
   const date   = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
-  const tof    = computeTimeOnFeetPlan(dur);
+
+  const { tof, cap, budgetMin, loadUnit } = await buildCapContext(dur, new Date(), capPct, capBasis);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
@@ -392,10 +470,14 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     recentTimeOnFeet:  tof.series14,
     tof7d:             tof.tof7d,
     tofPrev7d:         tof.tofPrev7d,
-    tofBudgetTodayMin: tof.budgetTodayMin,
-    tofNextRunLabel:   tof.nextRunLabel,
-    tofNextRunInDays:  tof.nextRunInDays,
+    tofBudgetTodayMin: budgetMin,            // run-minutes budget (distance cap → converted via pace)
+    tofNextRunLabel:   cap.nextRunLabel,     // next-run day comes from the ACTIVE cap basis
+    tofNextRunInDays:  cap.nextRunInDays,
     yesterdayTofMin:   tof.yesterdayMin,
+    loadCapBasis:      capBasis,
+    loadCapPct:        capPct,
+    loadBudgetToday:   cap.budgetTodayMin,   // in loadUnit
+    loadUnit,
     yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
     weather: weather ? {
       tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,

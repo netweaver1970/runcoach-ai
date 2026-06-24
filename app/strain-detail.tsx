@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, computeTimeOnFeetPlan, synthesizeWorkout, planNeedsRefresh, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, planNeedsRefresh, CoachPlan } from '../src/services/coach';
 import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
@@ -94,11 +94,19 @@ export default function StrainDetailScreen() {
     ? (plan.workout ?? synthesizeWorkout(plan.intensity, plan.runMinutes, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones))
     : null;
 
-  // Rolling time-on-feet budget as of the viewed day.
-  const tof = useMemo(
-    () => (dur.length ? computeTimeOnFeetPlan(dur, new Date(targetDate + 'T00:00:00')) : null),
-    [dur, targetDate],
-  );
+  // Rolling progression cap as of the viewed day, honouring the user's % + basis settings.
+  const [capCtx, setCapCtx] = useState<CapContext | null>(null);
+  useEffect(() => {
+    if (!dur.length) { setCapCtx(null); return; }
+    let cancelled = false;
+    (async () => {
+      const [pct, basis] = await Promise.all([getLoadCapPct(), getLoadCapBasis()]);
+      const ctx = await buildCapContext(dur, new Date(targetDate + 'T00:00:00'), pct, basis);
+      if (!cancelled) setCapCtx(ctx);
+    })();
+    return () => { cancelled = true; };
+  }, [dur, targetDate]);
+  const tof = capCtx?.tof ?? null;
   // Strain history up to and including the viewed day (for recent/yesterday context).
   const strainHistUpTo = dates.filter(d => d <= targetDate)
     .map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
@@ -147,8 +155,14 @@ export default function StrainDetailScreen() {
         recentTimeOnFeet:  tof?.series14,
         tof7d:             tof?.tof7d,
         tofPrev7d:         tof?.tofPrev7d,
-        tofBudgetTodayMin: tof?.budgetTodayMin,
+        tofBudgetTodayMin: capCtx?.budgetMin,
+        tofNextRunLabel:   capCtx?.cap.nextRunLabel,
+        tofNextRunInDays:  capCtx?.cap.nextRunInDays,
         yesterdayTofMin:   tof?.yesterdayMin,
+        loadCapBasis:      capCtx?.capBasis,
+        loadCapPct:        capCtx?.capPct,
+        loadBudgetToday:   capCtx?.cap.budgetTodayMin,
+        loadUnit:          capCtx?.loadUnit,
         yesterdayStrain:   strainHistUpTo.length >= 2 ? strainHistUpTo[strainHistUpTo.length - 2] : undefined,
         powerZones,
         // Live weather only makes sense for today; past days had different conditions.
@@ -262,10 +276,10 @@ export default function StrainDetailScreen() {
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
-              {tof && tof.nextRunInDays > 0 && (
+              {capCtx && capCtx.cap.nextRunInDays > 0 && (
                 <Text style={s.coachNextRun}>
-                  🏃 Next run <Text style={{ fontWeight: '800' }}>{tof.nextRunLabel}</Text>
-                  {tof.nextRunInDays === 1 ? ' (tomorrow)' : ` (in ${tof.nextRunInDays} days)`} — when the +10% volume cap frees up
+                  🏃 Next run <Text style={{ fontWeight: '800' }}>{capCtx.cap.nextRunLabel}</Text>
+                  {capCtx.cap.nextRunInDays === 1 ? ' (tomorrow)' : ` (in ${capCtx.cap.nextRunInDays} days)`} — when the +{capCtx.capPct}% {capCtx.loadUnit === 'km' ? 'distance' : 'volume'} cap frees up
                 </Text>
               )}
               {plan.strength ? (
