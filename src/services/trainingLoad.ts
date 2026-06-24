@@ -371,7 +371,9 @@ const STRAIN_LOG_B = 0.02;
 // too steep: moderate days read low, hard days slammed to ~95). A = overall level, B = curvature.
 const STRAIN_LOAD_A  = 28;    // overall level (raise → higher scores)
 const STRAIN_LOAD_B  = 0.06;  // curvature (raise → reaches the top faster)
-const STRAIN_BG_FRAC = 0.25;  // background (non-workout) HR counts at this fraction of workout weight
+const STRAIN_BG_FRAC = 0.5;   // background (non-workout) HR at this fraction of workout weight. 0.25
+                              // under-read unlogged activity (34-min walk → ours 8 vs Bevel 14); 0.5
+                              // maps it to ~14. Calm (HRR <0.3) stays 0; logged runs are full weight.
 
 // Continuous zone weight by %HR-reserve: light background (≥0.2) ramps in, zones 1..5 at ≥0.5..≥0.9.
 function zoneWeight(hrr: number): number {
