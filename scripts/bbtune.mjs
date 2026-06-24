@@ -3,7 +3,8 @@
 //   • STRESS = z-score index vs the athlete's OWN day/night baselines (mean+SD of HRV & resting HR
 //     from trusted reads, split by sleep state): stress = STRESS_BASE + (zHR − zHRV)·STRESS_SCALE,
 //     clamped 0..100. Night adds the sleep-stage bump (REM up, deep at the recovery floor).
-//   • BATTERY = recovery-capped overnight charge (HRV-ratio ceiling) + stress-driven daytime drain.
+//   • BATTERY = fitted two-regime model, NO ceiling (per hour): asleep ΔE=CHARGE_BASE−CHARGE_STRESS_K·S
+//     (REM stress capped); awake ΔE=DRAIN_BASE−DRAIN_STRESS_K·S (holds at rest, drains under stress).
 // Reads /tmp/bbdata.json (device "Copy calibration data"). Env-override any CFG, re-run:
 //   STRESS_SCALE=15 STAGE_REM=18 node scripts/bbtune.mjs   (zsh: use prefix assignments, not `env $cfg`)
 import fs from 'node:fs';
@@ -17,11 +18,11 @@ const CFG = {
   STRESS_BASE: env('STRESS_BASE', 26), STRESS_SCALE: env('STRESS_SCALE', 13), BASE_SD_MIN: env('BASE_SD_MIN', 3),
   STRESS_SMOOTH: env('STRESS_SMOOTH', 0.11), NIGHT_STAGE_SMOOTH: env('NIGHT_STAGE_SMOOTH', 0.35),
   SESSION_GAP_MIN: env('SESSION_GAP_MIN', 60), HRV_WIN: env('HRV_WIN', 65),
-  // battery (recovery-capped charge + stress drain)
-  SEED: env('SEED', 42), BASE_DRAIN: env('BASE_DRAIN', 0.02), STRESS_DRAIN: env('STRESS_DRAIN', 0.075),
-  CHARGE_K: env('CHARGE_K', 0.045), CHARGE_MAX: env('CHARGE_MAX', 0.15),
-  CEIL_LO: env('CEIL_LO', 22), CEIL_HI: env('CEIL_HI', 98), CEIL_RLO: env('CEIL_RLO', 0.58), CEIL_RHI: env('CEIL_RHI', 1.15),
-  CEIL_HRV_SMOOTH: env('CEIL_HRV_SMOOTH', 0.012),
+  // battery — fitted two-regime model (per hour, no ceiling): asleep charges, awake holds/drains.
+  SEED: env('SEED', 42),
+  CHARGE_BASE: env('CHARGE_BASE', 19), CHARGE_STRESS_K: env('CHARGE_STRESS_K', 0.6),
+  DRAIN_BASE: env('DRAIN_BASE', 1.25), DRAIN_STRESS_K: env('DRAIN_STRESS_K', 0.107),
+  REM_STRESS_CAP: env('REM_STRESS_CAP', 13),
 };
 // Additive sleep-stage bump on top of the night recovery baseline (env-overridable).
 const STAGE_BUMP = { 0: env('STAGE_BED', 6), 1: env('STAGE_SLP', 3), 2: env('STAGE_WAKE', 8), 3: env('STAGE_CORE', 2), 4: env('STAGE_DEEP', 0), 5: env('STAGE_REM', 14) };
@@ -49,7 +50,7 @@ const nightBase = mkBase(trusted.filter(r => r.night), dayBase);
 const nearestHrv = (m) => { let best = null, dt = CFG.HRV_WIN; for (const s of trusted) { const x = Math.abs(s.m - m); if (x <= dt) { dt = x; best = s.v; } } return best; };
 const zStress = (hr, vHrv, b) => { const zHR = (hr - b.hrM) / b.hrS; const zHRV = vHrv != null ? (vHrv - b.hvM) / b.hvS : 0; return clamp(CFG.STRESS_BASE + (zHR - zHRV) * CFG.STRESS_SCALE, 0, 100); };
 
-let battery = CFG.SEED, sm = null, smR = null, lastHrv = hrvBaseline;
+let battery = CFG.SEED, sm = null;
 const out = [];
 for (let i = 0; i < bins.length; i++) {
   const { m, hr, a, stg = -1 } = bins[i];
@@ -59,14 +60,11 @@ for (let i = 0; i < bins.length; i++) {
   if (night && stg >= 0) raw = clamp(raw + (STAGE_BUMP[stg] ?? 0), 0, 100);
   const alpha = sm == null ? 1 : (night ? CFG.NIGHT_STAGE_SMOOTH : (raw > sm ? 1 : CFG.STRESS_SMOOTH));
   sm = sm == null ? raw : alpha * raw + (1 - alpha) * sm;
-  if (vHrv != null) lastHrv = vHrv;
-  const ratio = lastHrv / Math.max(1, hrvBaseline);
-  smR = smR == null ? ratio : CFG.CEIL_HRV_SMOOTH * ratio + (1 - CFG.CEIL_HRV_SMOOTH) * smR;
-  const ceil = clamp(CFG.CEIL_LO + (CFG.CEIL_HI - CFG.CEIL_LO) * ((smR - CFG.CEIL_RLO) / (CFG.CEIL_RHI - CFG.CEIL_RLO)), 20, 100);
-  const rate = a // charge only during ACTUAL sleep (not micro-wakes)
-    ? Math.max(0, Math.min(CFG.CHARGE_MAX, CFG.CHARGE_K * (ceil - battery)))
-    : -(CFG.BASE_DRAIN + (sm / 100) * CFG.STRESS_DRAIN);
-  battery = clamp(battery + rate * CFG.BIN_MIN, 0, 100);
+  // Fitted model (per hour, no ceiling): asleep charges (REM stress capped), awake holds/drains.
+  const ratePerHour = a
+    ? Math.max(0, CFG.CHARGE_BASE - CFG.CHARGE_STRESS_K * (stg === 5 ? Math.min(sm, CFG.REM_STRESS_CAP) : sm))
+    : (CFG.DRAIN_BASE - CFG.DRAIN_STRESS_K * sm);
+  battery = clamp(battery + ratePerHour * (CFG.BIN_MIN / 60), 0, 100);
   out.push({ m, a, night, stg, stress: Math.round(sm), battery: Math.round(battery) });
 }
 const lastM = bins.at(-1).m, cut = lastM - 24 * 60, shown = out.filter(p => p.m >= cut);
