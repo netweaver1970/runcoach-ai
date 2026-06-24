@@ -285,9 +285,12 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.navHeader}>
-        {activeCat
-          ? <TouchableOpacity onPress={() => setActiveCat(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Text style={styles.backLink}>‹ Settings</Text></TouchableOpacity>
-          : <View style={{ width: 70 }} />}
+        <TouchableOpacity
+          onPress={() => { if (activeCat) setActiveCat(null); else router.back(); }}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={styles.backLink}>{activeCat ? '‹ Settings' : '‹ Back'}</Text>
+        </TouchableOpacity>
         <Text style={styles.navTitle}>{activeCat ? (CATEGORIES.find(x => x.id === activeCat)?.label ?? 'Settings') : 'Settings'}</Text>
         <View style={{ width: 70 }} />
       </View>
