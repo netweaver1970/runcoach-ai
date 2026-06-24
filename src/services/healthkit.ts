@@ -610,45 +610,43 @@ function absoluteRHRScore(hr: number): number {
 }
 
 // Recovery z-score scaling: a reading 1 SD above your baseline shifts the score this much.
-// HRV weighted over RHR. (No Bevel offset — the index is self-normalizing to YOUR baseline.)
-const RECOVERY_Z_SCALE = 22;
-const RECOVERY_HRV_W   = 0.65;
+// Fit to Bevel's 30-day recovery data: K=23.6 → 100 at ~+2.1 SD; HRV/RHR split 75/25
+// (the data beats Bevel's stated 65/35: R² 0.918 vs 0.905). Baselines are 60-day mean/SD.
+const RECOVERY_Z_SCALE = 23.6;
+const RECOVERY_HRV_W   = 0.75;
 
 function computeRecoveryScore(
   todayRMSSD: number,
   todayOvernightHR: number,
   history: NightlyHRV[]
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number } {
-  const recent = history.slice(-30).filter((n) => n.weightedRMSSD > 0);
+  const recent = history.slice(-60).filter((n) => n.weightedRMSSD > 0);
 
   const clamp01 = (v: number) => Math.min(100, Math.max(0, v));
-  // ── HRV component: lnRMSSD vs a 7-day personal baseline (research standard) ────
-  // RMSSD is log-normally distributed, so we z-score the NATURAL LOG (Plews et al.;
-  // HRV4Training / Kubios). Score = 50 + z·SCALE. The population anchor only eases the
-  // first week in, then it's pure personal z — no permanent blend, no Bevel offset.
-  const ln = (x: number) => Math.log(Math.max(1, x));
-  const recent7 = recent.slice(-7);
+  const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+  const std  = (a: number[], m: number) => Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
+  // ── HRV component: RAW RMSSD z-scored vs a 60-day personal baseline ────────────
+  // Bevel's method — raw RMSSD (NOT lnRMSSD) against a 60-day mean/SD. Score = 50 + z·SCALE,
+  // eased in from a population anchor over the first 2 weeks.
   let blendedHRV = absoluteHRVScore(todayRMSSD); // cold-start fallback
-  if (recent7.length >= 3) {
-    const lv = recent7.map((n) => ln(n.weightedRMSSD));
-    const m  = lv.reduce((a, b) => a + b, 0) / lv.length;
-    const sd = Math.sqrt(lv.reduce((a, b) => a + (b - m) ** 2, 0) / lv.length) || 0.1;
-    const zHRVscore = clamp01(50 + ((ln(todayRMSSD) - m) / sd) * RECOVERY_Z_SCALE);
-    const w = Math.min(1, recent7.length / 7); // ease in from the anchor over the first week
+  if (recent.length >= 5) {
+    const v = recent.map((n) => n.weightedRMSSD);
+    const m = mean(v); const sd = std(v, m) || 1;
+    const zHRVscore = clamp01(50 + ((todayRMSSD - m) / sd) * RECOVERY_Z_SCALE);
+    const w = Math.min(1, recent.length / 14); // ease in from the anchor over 2 weeks
     blendedHRV = (1 - w) * absoluteHRVScore(todayRMSSD) + w * zHRVscore;
   }
 
-  // ── Overnight-HR component: z-score vs a 7-day baseline (lower HR = better) ────
-  const recentWithHR = recent.filter((n) => n.overnightHR > 0).slice(-7);
+  // ── Overnight-HR component: z-score vs the 60-day baseline (lower HR = better) ──
+  const recentWithHR = recent.filter((n) => n.overnightHR > 0);
   let overnightHRBaseline = todayOvernightHR;
   let blendedRHR = todayOvernightHR > 0 ? absoluteRHRScore(todayOvernightHR) : 50;
-  if (recentWithHR.length >= 3 && todayOvernightHR > 0) {
+  if (recentWithHR.length >= 5 && todayOvernightHR > 0) {
     const hv = recentWithHR.map((n) => n.overnightHR);
-    const hrMean   = hv.reduce((a, b) => a + b, 0) / hv.length;
-    const hrStddev = Math.sqrt(hv.reduce((a, b) => a + (b - hrMean) ** 2, 0) / hv.length) || 1;
+    const hrMean = mean(hv); const hrStddev = std(hv, hrMean) || 1;
     overnightHRBaseline = Math.round(hrMean);
     const zRHRscore = clamp01(50 - ((todayOvernightHR - hrMean) / hrStddev) * RECOVERY_Z_SCALE);
-    const w = Math.min(1, recentWithHR.length / 7);
+    const w = Math.min(1, recentWithHR.length / 14);
     blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * zRHRscore;
   }
 
