@@ -32,7 +32,7 @@ import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep } from '../
 import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import { useRouter } from 'expo-router';
+import { useRouter, useNavigation } from 'expo-router';
 import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
 import * as Clipboard from 'expo-clipboard';
@@ -90,6 +90,19 @@ export default function SettingsScreen() {
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [watchKPI, setWatchKPIState] = useState('stress');
   useEffect(() => { getWatchKPI().then(setWatchKPIState); }, []);
+
+  // Back (swipe gesture / header / Android) inside an open category collapses to the
+  // category list instead of leaving Settings entirely.
+  const navigation = useNavigation();
+  useEffect(() => {
+    const sub = (navigation as any).addListener('beforeRemove', (e: any) => {
+      if (activeCat) {
+        e.preventDefault();
+        setActiveCat(null);
+      }
+    });
+    return sub;
+  }, [navigation, activeCat]);
 
   useEffect(() => {
     loadLLMConfig().then(cfg => {
