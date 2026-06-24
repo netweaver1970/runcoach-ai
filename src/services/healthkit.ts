@@ -46,7 +46,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, strainFromTrimp, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, strainFromLoad, activityFloorTrimp, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
 import { getLocalWeather } from './weather';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
@@ -1491,7 +1491,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       const s = new Date(toISOStr(w.startDate)).getTime();
       return { s, e: s + workoutDurationSec(w) * 1000 };
     });
-  const cardioTrimp = computeStrainTrimp(
+  // Zone-weighted active+passive strain load (workout HR full weight, background HR ×fraction).
+  const activeZoneLoad = zoneStrainLoad(
     (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number })),
     restHRForTrimp,
     maxHR,
@@ -1529,10 +1530,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const heatFactor = heatStrainFactor(await getLocalWeather().catch(() => null));
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
-  // Percentile strain + ACWR band need the daily-TRIMP distribution + chronic load (CTL).
-  const trimpHistory = [...loadByDay.values()];
+  // Motion/steps proxy from active energy = the rest of Bevel's "passive" term (background HR is
+  // already inside activeZoneLoad). Kept modest; the sigmoid midpoint (STRAIN_SIG_C) sets the scale.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(cardioTrimp, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable, heatFactor, trimpHistory, latestLoad?.ctl ?? 0)
+    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, todayActivityFloor, advisable, heatFactor)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
@@ -2625,10 +2626,11 @@ export async function fetchStrainHistory(
   // continuous daily series (and the clear run-day vs rest-day pattern).
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
-    const cardio = computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const floor  = activityFloorTrimp(activeByDay.get(day) ?? 0, exMinByDay.get(day) ?? 0);
-    const trimp  = Math.max(cardio, floor) + (muscularByDay.get(day) ?? 0);
-    out.push({ date: day, value: strainFromTrimp(trimp) }); // 0-100 (Bevel %)
+    // Same model as today's live strain: zone-weighted active+passive HR load + motion, sigmoid-squashed.
+    const zoneLoad = zoneStrainLoad(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
+    const floor    = activityFloorTrimp(activeByDay.get(day) ?? 0, exMinByDay.get(day) ?? 0);
+    const rawLoad  = zoneLoad + floor + (muscularByDay.get(day) ?? 0);
+    out.push({ date: day, value: strainFromLoad(rawLoad) }); // 0-100 (Bevel %)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }

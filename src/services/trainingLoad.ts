@@ -360,15 +360,54 @@ export function computeStrainTrimp(
 const STRAIN_LOG_A = 45;
 const STRAIN_LOG_B = 0.02;
 
-// Self-normalizing strain: today's load as a PERCENTILE of the athlete's OWN ~90-day daily-TRIMP
-// distribution (research-aligned — compare to your own history, not a fixed Bevel-fit curve). A
-// median day → ~50%, a hard session → ~85%, a rest day → low single digits. Falls back to the log
-// scale until there's enough history.
-export function strainPercentile(trimp: number, history: number[]): number {
-  const h = history.filter((x) => Number.isFinite(x) && x >= 0);
-  if (h.length < 14) return strainFromTrimp(trimp);
-  const below = h.reduce((c, x) => c + (x <= trimp ? 1 : 0), 0);
-  return Math.round((100 * below) / h.length);
+// ── Zone-weighted strain (Bevel-style, research-aligned) ──────────────────────
+// Bevel: Strain = ActiveStrain + PassiveStrain, then a squash to 0-100.
+//   • ActiveStrain  = workout HR, Edwards/eTRIMP zone-weighted (minutes-in-zone × weight 1..5).
+//   • PassiveStrain = BACKGROUND (non-workout) HR above your resting baseline + steps/motion —
+//     so elevated background HR (stress, errands, stairs) still adds load, but more gently.
+// Calm/sleep HR sits at/below rest → contributes nothing, so the score starts near zero each
+// morning. A SIGMOID squash bounds it and makes gains harder near the top. Constants are tunable.
+// Squash: Bevel says strain "increases logarithmically", so a log curve (not a sigmoid — that was
+// too steep: moderate days read low, hard days slammed to ~95). A = overall level, B = curvature.
+const STRAIN_LOAD_A  = 28;    // overall level (raise → higher scores)
+const STRAIN_LOAD_B  = 0.06;  // curvature (raise → reaches the top faster)
+const STRAIN_BG_FRAC = 0.25;  // background (non-workout) HR counts at this fraction of workout weight
+
+// Continuous zone weight by %HR-reserve: light background (≥0.2) ramps in, zones 1..5 at ≥0.5..≥0.9.
+function zoneWeight(hrr: number): number {
+  if (hrr >= 0.9) return 5;
+  if (hrr >= 0.8) return 4;
+  if (hrr >= 0.7) return 3;
+  if (hrr >= 0.6) return 2;
+  if (hrr >= 0.5) return 1;
+  if (hrr >= 0.35) return 0.5;  // brisk-but-not-zone background
+  if (hrr >= 0.2) return 0.25;  // light background elevation above rest
+  return 0;                     // at/below resting → no strain (sleep, sitting calm)
+}
+
+// Active (workout, full weight) + passive (background, ×BG_FRAC) zone-weighted load over the day's HR.
+export function zoneStrainLoad(
+  samples: { t: number; hr: number }[], restHR: number, maxHR: number,
+  workoutWins: { s: number; e: number }[] = [],
+): number {
+  if (samples.length < 2 || maxHR <= restHR) return 0;
+  const s = [...samples].sort((a, b) => a.t - b.t);
+  const inWorkout = (t: number) => workoutWins.some((w) => t >= w.s && t <= w.e);
+  const MAX_GAP_MS = 8 * 60_000;
+  let load = 0;
+  for (let i = 1; i < s.length; i++) {
+    const dt = Math.min(MAX_GAP_MS, s[i].t - s[i - 1].t);
+    if (dt <= 0) continue;
+    const w = zoneWeight((s[i].hr - restHR) / (maxHR - restHR));
+    if (w > 0) load += (dt / 60_000) * w * (inWorkout(s[i].t) ? 1 : STRAIN_BG_FRAC);
+  }
+  return load;
+}
+
+// Logarithmic squash: RawLoad → 0-100 strain (diminishing returns near the top, Bevel-style).
+export function strainFromLoad(rawLoad: number): number {
+  if (rawLoad <= 0) return 0;
+  return Math.min(100, Math.round(STRAIN_LOAD_A * Math.log(1 + STRAIN_LOAD_B * rawLoad)));
 }
 
 export function strainFromTrimp(trimp: number): number {
@@ -422,45 +461,25 @@ export function heatStrainFactor(w?: { tempC?: number; apparentC?: number; humid
 }
 
 export function computeDayStrain(
-  cardioTrimp: number,
-  muscularLoad: number,
+  activeLoad: number,    // zone-weighted active load (zoneStrainLoad) — elevated-HR exertion
+  muscularLoad: number,  // strength-training load
   recovery: number,
   tsb: number,
-  activityFloor = 0,
+  passiveLoad = 0,       // small passive-movement term (active energy / steps proxy)
   range?: AdvisableRange,
   heatFactor = 1,
-  trimpHistory: number[] = [], // ~90 days of daily TRIMP → percentile scale + ACWR band
-  ctl = 0,                     // chronic load (the maintainable daily load) → anchors the band
 ): DayStrain {
-  // Cardio (logged-workout HR) vs daily-activity floor — take the larger, then add
-  // any muscular load. The floor lifts rest/unlogged-activity days without inflating
-  // days whose logged-workout cardio already dominates. Heat inflates the effective load.
-  const base  = Math.max(Math.max(0, cardioTrimp), Math.max(0, activityFloor));
-  const trimp = base + Math.max(0, muscularLoad);
-  const effTrimp = trimp * heatFactor;
+  // Zone-weighted active load + a small passive-movement term + strength, inflated by heat, then a
+  // SIGMOID squash → bounded 0-100 (Bevel-style). Calm/sleep HR sits below zone 1, so it's excluded
+  // for free: the score starts near zero in the morning and gets harder to push near the top.
+  const rawLoad = (Math.max(0, activeLoad) + Math.max(0, passiveLoad) + Math.max(0, muscularLoad)) * heatFactor;
+  const real = strainFromLoad(rawLoad);
+
   const r = range ?? advisableStrainRange({ recovery: recovery > 0 ? recovery : undefined, tsb });
-
-  // Percentile scale (self-normalizing) + ACWR-anchored band when we have history + CTL; otherwise
-  // fall back to the calibrated log scale + the readiness-mapped band.
-  const usePct = trimpHistory.filter((x) => x >= 0).length >= 14 && ctl > 0;
-  let real: number, safeLow: number, safeHigh: number, safeMid: number;
-  if (usePct) {
-    real = strainPercentile(effTrimp, trimpHistory);
-    // Maintainable daily load ≈ CTL; scale it by readiness (poor recovery → less), then the ACWR
-    // sweet-spot 0.8–1.3 around it gives the band — all expressed as percentiles of your history.
-    const target = ctl * (0.85 + (r.readiness / 100) * 0.5); // readiness 0→0.85·CTL, 100→1.35·CTL
-    safeLow  = strainPercentile(target * 0.8, trimpHistory);
-    safeHigh = strainPercentile(target * 1.3, trimpHistory);
-    safeMid  = strainPercentile(target, trimpHistory);
-  } else {
-    real = Math.min(100, Math.round(strainFromTrimp(trimp) * heatFactor));
-    safeLow = r.safeLow; safeHigh = r.safeHigh; safeMid = r.safeMid;
-  }
-
   return {
-    real, safeLow, safeHigh, safeMid,
-    trimp: Math.round(trimp),
-    cardio: Math.round(cardioTrimp),
+    real, safeLow: r.safeLow, safeHigh: r.safeHigh, safeMid: r.safeMid,
+    trimp: Math.round(rawLoad),
+    cardio: Math.round(activeLoad),
     muscular: Math.round(muscularLoad),
     readiness: r.readiness, drivers: r.drivers, acwr: r.acwr,
   };
