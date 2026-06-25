@@ -50,6 +50,7 @@ import {
 import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates } from './trainingLoad';
 import { getLocalWeather } from './weather';
 import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
+import { getRunRegimes, regimeOf, tagRuns, AccountingMode } from './accounting';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -1660,6 +1661,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     .filter(a => new Date(a.date) >= daysAgo(35))
     .sort((a, b) => b.date.localeCompare(a.date));
 
+  // Stamp every run with the CURRENT volume-accounting regime (set-once; old runs stay as tagged),
+  // so a later switch only affects new runs and history never moves.
+  await tagRuns(runs.map(r => r.uuid)).catch(() => ({}));
+
   // Rolling, recency-weighted per-intensity TRIMP/min calibration from the runner's OWN runs
   // (day cardio-TRIMP ÷ run minutes). Recomputed every sync so it tracks changing fitness.
   const trimpLoadByDate = new Map(trainingLoad.map(d => [d.date, d.load]));
@@ -2933,10 +2938,11 @@ const TOF_EXCLUDE_PHASE = /warm|cool|recover|rest|walk|prep/i;
  * UUID-suffix patch); a segment counts unless it's an explicit warmup/cooldown/recovery/walk phase.
  * Falls back to the workout's total duration/distance for an unstructured run (no segments).
  */
-function workDrillsTotals(w: any): { seconds: number; meters: number } {
+function workDrillsTotals(w: any, regime: AccountingMode = 'work'): { seconds: number; meters: number } {
   const totalSec = typeof w.duration === 'object' && w.duration !== null
     ? (w.duration.quantity as number) ?? 0 : (w.duration as number) ?? 0;
   const totalM = (w.totalDistance?.quantity as number) ?? 0;
+  if (regime === 'full') return { seconds: totalSec, meters: totalM }; // count the WHOLE run
   const acts: any[] = w.activities ?? [];
 
   const segs = acts.map((act: any) => {
@@ -3012,12 +3018,13 @@ async function fetchDailyWorkHistory(
     filter: { startDate: since, endDate: endDate },
     limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
   });
+  const regimes = await getRunRegimes(); // each run counts under the regime it was recorded in
   const byDay: Record<string, number> = {};
   (allWorkouts as any[])
     .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
     .forEach((w: any) => {
       const day = toISOStr(w.startDate).slice(0, 10);
-      byDay[day] = (byDay[day] ?? 0) + pick(workDrillsTotals(w));
+      byDay[day] = (byDay[day] ?? 0) + pick(workDrillsTotals(w, regimeOf(regimes, w.uuid)));
     });
   return Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, value }));
 }

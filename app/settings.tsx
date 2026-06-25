@@ -39,6 +39,7 @@ import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
 import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis } from '../src/services/coach';
+import { getAccountingMode, setAccountingMode, AccountingMode } from '../src/services/accounting';
 import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
@@ -78,6 +79,7 @@ export default function SettingsScreen() {
   const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
   const [capPctSaved, setCapPctSaved] = useState(false);
   const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
+  const [accMode, setAccModeState] = useState<AccountingMode>('work');
   const [maxHr, setMaxHr] = useState('');
   const [maxHrSaved, setMaxHrSaved] = useState(false);
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
@@ -120,6 +122,7 @@ export default function SettingsScreen() {
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
     getLoadCapPct().then(p => setCapPct(String(p)));
     getLoadCapBasis().then(setCapBasisState);
+    getAccountingMode().then(setAccModeState);
     getUserMaxHr().then(h => setMaxHr(h > 0 ? String(h) : ''));
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
@@ -761,6 +764,26 @@ export default function SettingsScreen() {
                 const b: LoadCapBasis = v ? 'distance' : 'tof';
                 setCapBasisState(b);
                 await setLoadCapBasis(b);
+              }}
+              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              thumbColor="#fff"
+            />
+          </View>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Count the full workout as volume</Text>
+              <Text style={styles.switchSub}>
+                Off = work + drills only (default). On = the whole run — warm-up &amp; cool-down included —
+                for when those become real running. Only affects NEW runs; past runs keep how they were
+                counted. (Strain &amp; CTL/ATL are unaffected — already HR-based over the full workout.)
+              </Text>
+            </View>
+            <Switch
+              value={accMode === 'full'}
+              onValueChange={async (v) => {
+                const m: AccountingMode = v ? 'full' : 'work';
+                setAccModeState(m);
+                await setAccountingMode(m);
               }}
               trackColor={{ true: '#FF6B35', false: '#ccc' }}
               thumbColor="#fff"
