@@ -182,6 +182,32 @@ export function computeTrainingLoadSeries(
   return out;
 }
 
+// ─── Forward projection (7-day plan) ─────────────────────────────────────────
+// Rough per-MINUTE Banister TRIMP by session intensity, so a planned run → a daily
+// cardio-TRIMP estimate we can roll CTL/ATL forward with. + ~8 easy min for warm-up/
+// cool-down. Rest = a daily-living baseline (steps), so CTL/ATL don't crash on rest days.
+const TRIMP_PER_MIN: Record<string, number> = { easy: 1.3, moderate: 2.0, hard: 2.8 };
+const REST_DAY_TRIMP = 12;
+
+export function estimateDayTrimp(intensity: string, runMinutes: number): number {
+  if (intensity === 'rest' || runMinutes <= 0) return REST_DAY_TRIMP;
+  const perMin = TRIMP_PER_MIN[intensity] ?? TRIMP_PER_MIN.easy;
+  return Math.round(runMinutes * perMin + 8 * TRIMP_PER_MIN.easy);
+}
+
+// Roll CTL/ATL/TSB forward day-by-day from today's values using each day's planned TRIMP,
+// reusing the same EWMA time-constants as computeTrainingLoadSeries.
+export function rollLoadForward(
+  ctl0: number, atl0: number, dailyTrimp: number[],
+): { ctl: number; atl: number; tsb: number }[] {
+  let ctl = ctl0, atl = atl0;
+  return dailyTrimp.map((load) => {
+    atl += LAMBDA_ATL * (load - atl);
+    ctl += LAMBDA_CTL * (load - ctl);
+    return { ctl: Math.round(ctl * 10) / 10, atl: Math.round(atl * 10) / 10, tsb: Math.round((ctl - atl) * 10) / 10 };
+  });
+}
+
 // ─── Interpretation ─────────────────────────────────────────────────────────
 
 export interface TsbStatus { label: string; color: string; hint: string }
