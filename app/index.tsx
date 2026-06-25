@@ -102,17 +102,6 @@ export default function HomeScreen() {
   // Guard against concurrent loads (AppState + subscription can both fire at startup)
   const isLoadingRef   = useRef(false);
 
-  // ── Build local-time + city context string for the coach ──────────────────
-  const buildLocalContext = useCallback(() => {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const city = tz.split('/').pop()?.replace(/_/g, ' ') ?? '';
-    const when = new Date().toLocaleString('en-GB', {
-      weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', timeZone: tz,
-    });
-    return city ? `Location: ${city} · ${when}` : when;
-  }, []);
-
   // ── Today's recommendation = the SAME coach plan the Strain screen shows ───
   // Reads the cached coach plan (pre-generated each morning by the day-view) so the home
   // card and the Strain-detail plan never disagree; only generates if none is cached yet.

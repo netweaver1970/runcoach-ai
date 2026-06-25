@@ -39,6 +39,12 @@ export function weatherDescription(code: number): string {
 let lastFetch: { at: number; data: WeatherNow } | null = null;
 const CACHE_MS = 30 * 60_000; // 30 min — conditions don't change minute-to-minute
 
+// The last GPS-geocoded place (e.g. "Merelbeke"), or undefined until weather is fetched.
+// Use this for location context — NOT the IANA timezone, which is "Brussels" for all of Belgium.
+export function getCachedPlace(): string | undefined {
+  return lastFetch?.data.place;
+}
+
 /**
  * Get current weather at the device location.
  * Returns null if permission is denied or anything fails (never throws).

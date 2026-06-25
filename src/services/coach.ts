@@ -45,6 +45,7 @@ export interface CoachSnapshot {
     tempC: number; apparentC: number; humidity: number; windKmh: number;
     description: string; place?: string;
   };
+  localContext?: string;       // real GPS place + local time, e.g. "Location: Merelbeke · Thu 25 Jun, 18:42"
   // Running-power zones (watts) so the watch workout can target POWER, not pace.
   powerZones?: { recoveryMax: number; z2Max: number; tempoMin: number; tempoMax: number; intervalsMin: number };
   // Recent NON-run training (dance/walk/cardio/strength) — no zones/structure, but real
@@ -510,6 +511,9 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
       tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
       windKmh: weather.windKmh, description: weather.description, place: weather.place,
     } : undefined,
+    localContext: `${weather?.place ? `Location: ${weather.place} · ` : ''}${new Date().toLocaleString('en-GB', {
+      weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    })}`,
     powerZones,
     recentActivities: buildRecentActivities(activities),
   };

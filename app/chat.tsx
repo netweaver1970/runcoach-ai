@@ -19,6 +19,7 @@ import { useLocalSearchParams, Stack } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadRunMeta } from '../src/services/runMeta';
+import { getCachedPlace } from '../src/services/weather';
 import {
   getChatResponse,
   updateMemoryNote,
@@ -43,14 +44,16 @@ import { useThemedStyles, Palette } from '../src/theme';
 // Derive city name from IANA timezone — no location permissions needed.
 
 function getLocalContext(): string {
-  const tz   = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const city = tz.split('/').pop()?.replace(/_/g, ' ') ?? '';
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // Real GPS-geocoded place (e.g. "Merelbeke"); the timezone city ("Brussels" for all of
+  // Belgium) is only a last-resort fallback before the first weather fetch lands.
+  const place = getCachedPlace() || tz.split('/').pop()?.replace(/_/g, ' ') || '';
   const time = new Date().toLocaleString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
     timeZone: tz,
   });
-  return city ? `Location: ${city} · ${time}` : time;
+  return place ? `Location: ${place} · ${time}` : time;
 }
 
 // ─── Quick-action chips ───────────────────────────────────────────────────────
