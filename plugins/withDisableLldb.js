@@ -60,6 +60,15 @@ function patchScheme(xml) {
 }
 
 module.exports = function withDisableLldb(config) {
+  // This is a LOCAL-ONLY workaround for building on an iOS 26 beta device: it hardcodes a
+  // Homebrew node@18 path into .xcode.env.local and locks the scheme read-only. On EAS that
+  // node path doesn't exist (→ the "Bundle React Native code" phase can't find node and the
+  // build fails fast), and the scheme lock can trip fastlane. EAS uses its own node + signing,
+  // so skip this plugin entirely on EAS / CI.
+  if (process.env.EAS_BUILD || process.env.CI) {
+    console.log('[withDisableLldb] EAS/CI build — skipping local-only LLDB/node workaround');
+    return config;
+  }
   return withDangerousMod(config, [
     'ios',
     async (cfg) => {
