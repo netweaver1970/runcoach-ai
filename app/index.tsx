@@ -358,6 +358,17 @@ export default function HomeScreen() {
     },
   })).current;
 
+  // Flip today's prescription-history entry to ✅ once a run is logged for today.
+  // Must stay ABOVE the early returns below so the hook order is stable every render.
+  useEffect(() => {
+    const today = toDateKey(new Date());
+    if (toDateKey(viewDate) !== today) return;
+    if (!recommendation || recommendation.type === 'Rest') return;
+    if ((snapshot?.runs ?? []).some(r => toDateKey(new Date(r.date)) === today)) {
+      markPrescriptionExecuted(today).catch(() => {});
+    }
+  }, [viewDate, snapshot, recommendation]);
+
   // ── Render ──────────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -433,12 +444,6 @@ export default function HomeScreen() {
       : null;
     return { runDone: todaysRuns.length > 0, runMin, runKm, xMin, xLabel, topUp, atCeiling, strainReal: str?.real ?? null };
   })();
-
-  // Flip today's prescription-history entry to ✅ once a run is logged for today.
-  const ranToday = isTodayView && !!completion?.runDone;
-  useEffect(() => {
-    if (ranToday) markPrescriptionExecuted(todayKey).catch(() => {});
-  }, [ranToday, todayKey]);
 
   return (
     <SafeAreaView style={styles.container}>
