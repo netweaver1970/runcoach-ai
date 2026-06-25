@@ -274,8 +274,12 @@ export interface WeekPlanDay {
 }
 
 // Forward 7-day plan (tomorrow → +7), following the preferred weekly schedule but adjusted
-// for the rolling volume cap, recovery and alternation. The app computes strain + CTL/ATL.
-export async function getWeekPlan(snap: CoachSnapshot): Promise<WeekPlanDay[]> {
+// for the rolling volume cap, recovery, alternation and the morning weather forecast. The app
+// computes strain + CTL/ATL.
+export async function getWeekPlan(
+  snap: CoachSnapshot,
+  forecast?: { date: string; apparentC: number; humidity: number; description: string }[],
+): Promise<WeekPlanDay[]> {
   const knowledge = await buildKnowledgePrompt();
   const today = new Date(snap.date + 'T00:00:00');
   const days = Array.from({ length: 7 }, (_, i) => {
@@ -283,14 +287,23 @@ export async function getWeekPlan(snap: CoachSnapshot): Promise<WeekPlanDay[]> {
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     return { date: key, weekday: weekdayName(key) };
   });
+  const capPct  = snap.loadCapPct ?? 10;
+  const weekCap = Math.round((snap.tof7d ?? 0) * (1 + capPct / 100));
+  const fxBy = new Map((forecast ?? []).map(f => [f.date, f]));
+  const dayLines = days.map(d => {
+    const f = fxBy.get(d.date);
+    return `${d.weekday} ${d.date}${f ? ` — AM ~${f.apparentC}°C feels, ${f.humidity}% RH, ${f.description}` : ''}`;
+  }).join('\n');
   const system = `You are a running coach. The COACHING KNOWLEDGE below is AUTHORITATIVE — especially the \
-Weekly Schedule. Plan the NEXT 7 DAYS (${days[0].weekday} ${days[0].date} → ${days[6].weekday} ${days[6].date}). \
-STICK to the preferred weekly schedule, ADJUSTING only where needed for: the rolling +${snap.loadCapPct ?? 10}% volume \
-cap (don't let trailing 7-day running minutes grow faster than that; current 7-day total = ${snap.tof7d ?? 0} min), \
-recovery/readiness, easy/hard ALTERNATION, and never two hard days back-to-back. Keep every session CONCISE. For a \
-real run set runMinutes and a short structure ("40min @ Z2", "4× 6min @ Z4 + 2min jog"); for a rest day set intensity \
-"rest", runMinutes 0, structure "Rest".\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n\
-Return ONLY minified JSON, EXACTLY 7 entries in chronological order: \
+Weekly Schedule. Plan the NEXT 7 DAYS, one entry per line below (the runner runs ~07:00, so weather shown is the \
+morning forecast):\n${dayLines}\n\nSTICK to the preferred weekly schedule, ADJUSTING only where needed for: \
+VOLUME CAP — total running minutes across these 7 days must stay roughly ≤ ${weekCap} min (current trailing 7-day = \
+${snap.tof7d ?? 0} min, +${capPct}%); recovery/readiness; easy/hard ALTERNATION (never two hard days back-to-back); \
+and the MORNING WEATHER — on a hot/humid morning (≥ ~24°C feels) shorten the run and/or ease intensity, and prefer \
+the hardest sessions on the coolest mornings. Keep every session CONCISE. For a real run set runMinutes (the base, \
+cool-morning duration — the app applies the heat cut) and a short structure ("40min @ Z2", "4× 6min @ Z4 + 2min jog"); \
+for a rest day set intensity "rest", runMinutes 0, structure "Rest".\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n\
+===== END COACHING KNOWLEDGE =====\n\nReturn ONLY minified JSON, EXACTLY 7 entries in chronological order: \
 {"days":[{"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"structure":string,"note":string}]}`;
   const txt = await callLLM({
     system,

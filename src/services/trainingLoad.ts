@@ -186,13 +186,33 @@ export function computeTrainingLoadSeries(
 // Rough per-MINUTE Banister TRIMP by session intensity, so a planned run → a daily
 // cardio-TRIMP estimate we can roll CTL/ATL forward with. + ~8 easy min for warm-up/
 // cool-down. Rest = a daily-living baseline (steps), so CTL/ATL don't crash on rest days.
-const TRIMP_PER_MIN: Record<string, number> = { easy: 1.3, moderate: 2.0, hard: 2.8 };
+export interface TrimpRates { easy: number; moderate: number; hard: number }
+const DEFAULT_TRIMP_RATES: TrimpRates = { easy: 1.3, moderate: 2.0, hard: 2.8 };
 const REST_DAY_TRIMP = 12;
 
-export function estimateDayTrimp(intensity: string, runMinutes: number): number {
+export function estimateDayTrimp(intensity: string, runMinutes: number, rates: TrimpRates = DEFAULT_TRIMP_RATES): number {
   if (intensity === 'rest' || runMinutes <= 0) return REST_DAY_TRIMP;
-  const perMin = TRIMP_PER_MIN[intensity] ?? TRIMP_PER_MIN.easy;
-  return Math.round(runMinutes * perMin + 8 * TRIMP_PER_MIN.easy);
+  const perMin = intensity === 'hard' ? rates.hard : intensity === 'moderate' ? rates.moderate : rates.easy;
+  return Math.round(runMinutes * perMin + 8 * rates.easy);
+}
+
+// Calibrate per-intensity TRIMP/min from the runner's OWN runs: for each run-day, the day's
+// cardio TRIMP (load) ÷ the run's minutes ≈ that run's TRIMP/min. Average by intensity, keep
+// the default where there isn't enough data, clamp out noise, and keep the curve monotonic.
+export function calibrateTrimpRates(
+  samples: { intensity: 'easy' | 'moderate' | 'hard'; minutes: number; dayLoad: number }[],
+): TrimpRates {
+  const out: TrimpRates = { ...DEFAULT_TRIMP_RATES };
+  for (const k of ['easy', 'moderate', 'hard'] as const) {
+    const vals = samples
+      .filter(s => s.intensity === k && s.minutes >= 8 && s.dayLoad > 0)
+      .map(s => s.dayLoad / s.minutes)
+      .filter(r => r >= 0.4 && r <= 5);   // drop multi-activity/bad-data outliers
+    if (vals.length >= 2) out[k] = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
+  }
+  out.moderate = Math.max(out.moderate, out.easy);
+  out.hard = Math.max(out.hard, out.moderate);
+  return out;
 }
 
 // Roll CTL/ATL/TSB forward day-by-day from today's values using each day's planned TRIMP,

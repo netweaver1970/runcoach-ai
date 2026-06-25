@@ -104,3 +104,58 @@ export async function getLocalWeather(): Promise<WeatherNow | null> {
 export function weatherSummary(w: WeatherNow): string {
   return `${w.tempC}°C (feels ${w.apparentC}°C), ${w.description}, wind ${w.windKmh}km/h, ${w.humidity}% RH`;
 }
+
+export interface DayForecast {
+  date: string;        // YYYY-MM-DD (local)
+  tempC: number; apparentC: number; humidity: number;
+  code: number; description: string;
+}
+
+let lastForecast: { at: number; data: DayForecast[] } | null = null;
+
+// Next-N-days EARLY-MORNING (≈ `hour`:00 local) forecast. Geert runs early, so heat scaling
+// should use the morning conditions, not the midday peak. Future days only. Never throws.
+export async function getMorningForecast(days = 7, hour = 7): Promise<DayForecast[]> {
+  if (lastForecast && Date.now() - lastForecast.at < CACHE_MS) return lastForecast.data;
+  try {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return [];
+    let pos = await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 });
+    if (!pos) pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    if (!pos) return [];
+    const { latitude, longitude } = pos.coords;
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${latitude.toFixed(3)}` +
+      `&longitude=${longitude.toFixed(3)}` +
+      `&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code` +
+      `&forecast_days=${Math.min(16, days + 1)}&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const h = (await res.json()).hourly;
+    if (!h?.time) return [];
+    // For each local date keep the hourly index nearest `hour`:00.
+    const pick = new Map<string, { idx: number; diff: number }>();
+    (h.time as string[]).forEach((t, i) => {
+      const date = t.slice(0, 10), hh = Number(t.slice(11, 13));
+      const diff = Math.abs(hh - hour);
+      const cur = pick.get(date);
+      if (!cur || diff < cur.diff) pick.set(date, { idx: i, diff });
+    });
+    const todayKey = new Date().toLocaleDateString('en-CA'); // local YYYY-MM-DD
+    const out: DayForecast[] = [];
+    for (const [date, { idx }] of [...pick.entries()].sort()) {
+      if (date <= todayKey) continue;
+      out.push({
+        date,
+        tempC: Math.round(h.temperature_2m[idx]),
+        apparentC: Math.round(h.apparent_temperature[idx]),
+        humidity: Math.round(h.relative_humidity_2m[idx]),
+        code: h.weather_code[idx],
+        description: weatherDescription(h.weather_code[idx]),
+      });
+      if (out.length >= days) break;
+    }
+    lastForecast = { at: Date.now(), data: out };
+    return out;
+  } catch { return []; }
+}
