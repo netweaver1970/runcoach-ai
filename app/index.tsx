@@ -1088,10 +1088,29 @@ const SAFE_COLOR = '#16a085';
 function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }) {
   const real = strain ? strain.real : 0;
   const st   = strain ? strainStatus(strain) : { label: '', color: '#888' };
-  // Just the real-effort ring now — the target range lives on the Today's Plan card.
+
+  // Floor/ceiling markers on the ring circumference (clockwise from 12 o'clock). Kept —
+  // they cost no screen space; only the verbose "Target x–y%" caption was dropped.
+  const half = size / 2;
+  const rad  = half - 4; // centreline of the 8px stroke
+  const marker = (pct: number, key: string) => {
+    const th = (Math.min(100, Math.max(0, pct)) / 100) * 2 * Math.PI;
+    const x = half + rad * Math.sin(th);
+    const y = half - rad * Math.cos(th);
+    return (
+      <View key={key} style={{
+        position: 'absolute', left: x - 3.5, top: y - 3.5,
+        width: 7, height: 7, borderRadius: 3.5, backgroundColor: SAFE_COLOR,
+        borderWidth: 1, borderColor: '#fff',
+      }} />
+    );
+  };
+
   return (
     <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
       <ArcRing size={size} strokeWidth={8} progress={real / 100} color={st.color} />
+      {strain && marker(strain.safeLow, 'lo')}
+      {strain && marker(strain.safeHigh, 'hi')}
       <View style={{ position: 'absolute', alignItems: 'center' }}>
         <Text style={{ fontSize: size * 0.3, fontWeight: '800', color: st.color, lineHeight: size * 0.34 }}>
           {strain ? `${real}%` : '--'}
