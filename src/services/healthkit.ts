@@ -50,7 +50,7 @@ import {
 import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates } from './trainingLoad';
 import { getLocalWeather } from './weather';
 import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
-import { getRunRegimes, regimeOf, tagRuns, AccountingMode } from './accounting';
+import { getSwitchList, regimeForDate, AccountingMode } from './accounting';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -1661,10 +1661,6 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     .filter(a => new Date(a.date) >= daysAgo(35))
     .sort((a, b) => b.date.localeCompare(a.date));
 
-  // Stamp every run with the CURRENT volume-accounting regime (set-once; old runs stay as tagged),
-  // so a later switch only affects new runs and history never moves.
-  await tagRuns(runs.map(r => ({ uuid: r.uuid, date: r.date }))).catch(() => {});
-
   // Rolling, recency-weighted per-intensity TRIMP/min calibration from the runner's OWN runs
   // (day cardio-TRIMP ÷ run minutes). Recomputed every sync so it tracks changing fitness.
   const trimpLoadByDate = new Map(trainingLoad.map(d => [d.date, d.load]));
@@ -3018,13 +3014,13 @@ async function fetchDailyWorkHistory(
     filter: { startDate: since, endDate: endDate },
     limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
   });
-  const regimes = await getRunRegimes(); // each run counts under the regime it was recorded in
+  const switches = await getSwitchList(); // each run counts under the regime in force on its date
   const byDay: Record<string, number> = {};
   (allWorkouts as any[])
     .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
     .forEach((w: any) => {
       const day = toISOStr(w.startDate).slice(0, 10);
-      byDay[day] = (byDay[day] ?? 0) + pick(workDrillsTotals(w, regimeOf(regimes, w.uuid)));
+      byDay[day] = (byDay[day] ?? 0) + pick(workDrillsTotals(w, regimeForDate(toISOStr(w.startDate), switches)));
     });
   return Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, value }));
 }

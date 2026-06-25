@@ -9,63 +9,89 @@
  * This ONLY governs volume (minutes/distance). Strain and CTL/ATL are HR-based over the full
  * workout already, so they're unaffected.
  *
- * GUARDRAIL: every run is tagged with the regime it was recorded under, set ONCE and never
- * changed. Switching the mode only affects runs seen afterwards; history never moves. The tag
- * lives in a durable FileSystem file (SecureStore is too small for a big map, and the workout
- * cache is wiped on re-scans — which would lose the tags and break the guarantee).
+ * STORAGE = a date-keyed SWITCH LIST, not per-run tags. The list ALWAYS starts with a default
+ * { since: 1970, mode: 'work' } entry and gains one entry each time the mode is changed
+ * (effective from that day). A run's regime = the mode in force on the run's DATE. Because run
+ * dates come back from HealthKit, this is fully reconstructible after a wipe + reinstall — only
+ * the (tiny) switch list itself needs to be in the backup. Switching only affects runs dated on/
+ * after the switch day; history never moves.
  */
 import * as SecureStore from 'expo-secure-store';
-import * as FileSystem from 'expo-file-system';
 
 export type AccountingMode = 'work' | 'full';
 export const DEFAULT_ACCOUNTING: AccountingMode = 'work';
 
-const MODE_KEY     = 'accounting_mode';
-const REGIME_FILE  = `${FileSystem.documentDirectory}run-regimes.json`;
+export interface SwitchPoint { since: string; mode: AccountingMode } // since = YYYY-MM-DD, inclusive
 
-export async function getAccountingMode(): Promise<AccountingMode> {
-  try { return (await SecureStore.getItemAsync(MODE_KEY)) === 'full' ? 'full' : 'work'; }
-  catch { return DEFAULT_ACCOUNTING; }
-}
-export async function setAccountingMode(m: AccountingMode): Promise<void> {
-  try { await SecureStore.setItemAsync(MODE_KEY, m); } catch { /* ignore */ }
-}
+const SWITCHES_KEY = 'accounting_switches';
+const EPOCH = '1970-01-01';
+const DEFAULT_SWITCHES: SwitchPoint[] = [{ since: EPOCH, mode: 'work' }];
 
-// Each tag carries the run's date too, so the work→full boundary is self-contained (graphs don't
-// need to re-join against run data).
-type RegimeEntry = { r: AccountingMode; d: string };
-export type RegimeMap = Record<string, RegimeEntry>;
+const todayKey = (): string => {
+  const d = new Date(); const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 
-let regimeCache: RegimeMap | null = null;
-async function loadRegimes(): Promise<RegimeMap> {
-  if (regimeCache) return regimeCache;
+let switchCache: SwitchPoint[] | null = null;
+async function loadSwitches(): Promise<SwitchPoint[]> {
+  if (switchCache) return switchCache;
   try {
-    const info = await FileSystem.getInfoAsync(REGIME_FILE);
-    regimeCache = info.exists ? JSON.parse(await FileSystem.readAsStringAsync(REGIME_FILE)) : {};
-  } catch { regimeCache = {}; }
-  return regimeCache!;
+    const raw = await SecureStore.getItemAsync(SWITCHES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      switchCache = Array.isArray(arr) && arr.length ? arr : [...DEFAULT_SWITCHES];
+      return switchCache;
+    }
+    // Migrate the previous single-mode key: if it was 'full', start a switch from today.
+    const legacy = await SecureStore.getItemAsync('accounting_mode');
+    if (legacy === 'full') {
+      switchCache = [{ since: EPOCH, mode: 'work' }, { since: todayKey(), mode: 'full' }];
+      await saveSwitches(switchCache);
+    } else {
+      switchCache = [...DEFAULT_SWITCHES];
+    }
+  } catch { switchCache = [...DEFAULT_SWITCHES]; }
+  return switchCache!;
+}
+async function saveSwitches(list: SwitchPoint[]): Promise<void> {
+  switchCache = list;
+  try { await SecureStore.setItemAsync(SWITCHES_KEY, JSON.stringify(list)); } catch { /* ignore */ }
 }
 
-/** The full uuid→{regime,date} map (a copy). Untagged runs are treated as 'work' via regimeOf(). */
-export async function getRunRegimes(): Promise<RegimeMap> {
-  return { ...(await loadRegimes()) };
+/** The full switch-point list (always starts with the 1970 'work' default). For the backup. */
+export async function getSwitchList(): Promise<SwitchPoint[]> { return [...(await loadSwitches())]; }
+/** Invalidate the in-memory cache (call after a restore writes a new switch list). */
+export function clearAccountingCache(): void { switchCache = null; }
+
+/** The CURRENT mode = the last switch entry's mode. */
+export async function getAccountingMode(): Promise<AccountingMode> {
+  const list = await loadSwitches();
+  return list[list.length - 1]?.mode ?? 'work';
 }
 
-/** Tag any UNTAGGED runs with the CURRENT mode + their date (set-once; never overwrites). */
-export async function tagRuns(runs: { uuid: string; date: string }[]): Promise<void> {
-  const map = await loadRegimes();
-  const mode = await getAccountingMode();
-  let changed = false;
-  for (const { uuid, date } of runs) if (uuid && !map[uuid]) { map[uuid] = { r: mode, d: date.slice(0, 10) }; changed = true; }
-  if (changed) {
-    try { await FileSystem.writeAsStringAsync(REGIME_FILE, JSON.stringify(map)); } catch { /* ignore */ }
-  }
+/** Change the mode, effective TODAY. No-op if unchanged. Keeps the list minimal + work-anchored. */
+export async function setAccountingMode(mode: AccountingMode): Promise<void> {
+  const list = await loadSwitches();
+  if ((list[list.length - 1]?.mode ?? 'work') === mode) return;
+  const today = todayKey();
+  let next = list.filter(sp => sp.since !== today);          // drop a same-day flip-flop
+  next.push({ since: today, mode });
+  next.sort((a, b) => a.since.localeCompare(b.since));
+  if (next[0].since !== EPOCH) next.unshift({ since: EPOCH, mode: 'work' });
+  next = next.filter((sp, i) => i === 0 || sp.mode !== next[i - 1].mode); // collapse same-mode runs
+  await saveSwitches(next);
 }
 
-export const regimeOf = (map: RegimeMap, uuid: string): AccountingMode => map[uuid]?.r ?? 'work';
+/** The regime in force on a given run date (latest switch with since ≤ date). */
+export function regimeForDate(date: string, list: SwitchPoint[]): AccountingMode {
+  const d = date.slice(0, 10);
+  let mode: AccountingMode = 'work';
+  for (const sp of list) { if (sp.since <= d) mode = sp.mode; else break; }
+  return mode;
+}
 
-/** Date (YYYY-MM-DD) of the earliest run tagged 'full' — the work→full boundary for graphs, or null. */
+/** Date the regime first became 'full' — the work→full boundary for graphs, or null. */
 export async function getFullBoundary(): Promise<string | null> {
-  const fulls = Object.values(await loadRegimes()).filter(e => e.r === 'full').map(e => e.d).sort();
-  return fulls.length ? fulls[0] : null;
+  const f = (await loadSwitches()).find(sp => sp.mode === 'full');
+  return f && f.since !== EPOCH ? f.since : null;
 }

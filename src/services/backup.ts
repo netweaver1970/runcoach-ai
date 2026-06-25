@@ -9,10 +9,12 @@
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { exportKnowledgeBundle, importKnowledgeBundle, KnowledgeBundle } from './coachFiles';
+import { clearAccountingCache } from './accounting';
 
 const PROVIDERS = ['anthropic', 'openai', 'custom'] as const;
 
-// Meaningful settings only — caches like `training_rec_v1` are deliberately omitted.
+// Meaningful settings only — caches like `training_rec_v1` and the internal `scan_marker_v1`
+// are deliberately omitted (they're rebuilt from HealthKit on the next scan).
 const STATIC_SECURE_KEYS = [
   'theme_mode_v1', 'font_scale_v1',
   'anthropic_api_key',            // legacy key, still read on migration
@@ -20,6 +22,11 @@ const STATIC_SECURE_KEYS = [
   'power_zones', 'run_overrides', 'hr_unreliable_runs',
   'sleep_weights_custom_v1', 'recovery_weights_v1', 'personal_sleep_goal_min_v1',
   'llm_provider_v1', 'llm_baseurl_custom_v1',
+  // added so a wipe + restore rebuilds EXACTLY:
+  'accounting_switches',          // volume-accounting regime switch list (work↔full by date)
+  'load_cap_pct', 'load_cap_basis', // progression cap settings
+  'user_max_hr', 'body_mass_kg',  // physiology that drives zones/strain/power
+  'dayview_auto_v1', 'watch_kpi_v1', // auto day-view toggle, watch complication choice
 ];
 
 function providerKeys(): string[] {
@@ -30,12 +37,20 @@ function providerKeys(): string[] {
 const ALL_SECURE = [...STATIC_SECURE_KEYS, ...providerKeys()];
 const isApiKeyKey = (k: string) => k.includes('apikey') || k === 'anthropic_api_key';
 
-// File-backed stores (relative to documentDirectory).
+// Fixed file-backed stores (relative to documentDirectory). User-entered data that can't be
+// rebuilt from HealthKit. Caches (snapshot, workout, cardio-trimp, dayview, run-analysis, the
+// regenerable coach-plan-*) are excluded — they recompute from HK on the next scan.
 const FILES = [
   'runcoach-chat-history.json',     // coach memory + chat
   'runcoach-bevel-data.json',       // Bevel daily values
   'runcoach-bevel-averages.json',   // Bevel 30-day averages
+  'bevel-calibration.json',         // Bevel calibration data
+  'runcoach-run-meta.json',         // per-run notes + manual temps (user-entered)
+  'runcoach-timeline.json',         // timeline events (injuries / races / notes)
 ];
+// Per-date files captured by prefix — the prescription plan-logs that drive deterministic
+// run-detail phase labels (HealthKit has no record of the prescribed structure).
+const FILE_PREFIXES = ['coach-plan-log-'];
 
 export interface SettingsBackup {
   app: 'RunCoachAI';
@@ -55,13 +70,19 @@ export async function exportAllSettings(includeApiKeys = true): Promise<string> 
     try { const v = await SecureStore.getItemAsync(k); if (v != null) secure[k] = v; } catch { /* skip */ }
   }
   const files: Record<string, string> = {};
-  for (const f of FILES) {
+  const captureFile = async (f: string) => {
     try {
       const uri = FileSystem.documentDirectory + f;
       const info = await FileSystem.getInfoAsync(uri);
       if (info.exists) files[f] = await FileSystem.readAsStringAsync(uri);
     } catch { /* skip */ }
-  }
+  };
+  for (const f of FILES) await captureFile(f);
+  // Per-date prefix files (plan-logs).
+  try {
+    const dir = await FileSystem.readDirectoryAsync(FileSystem.documentDirectory!);
+    for (const f of dir) if (FILE_PREFIXES.some(p => f.startsWith(p))) await captureFile(f);
+  } catch { /* skip */ }
   const knowledge = await exportKnowledgeBundle();
   const backup: SettingsBackup = {
     app: 'RunCoachAI', kind: 'settings-backup', version: 1,
@@ -86,9 +107,11 @@ export async function restoreAllSettings(json: string): Promise<RestoreResult> {
     try { await SecureStore.setItemAsync(k, String(v)); res.secure++; } catch { /* skip */ }
   }
   for (const [f, content] of Object.entries(b.files ?? {})) {
-    if (!FILES.includes(f)) continue;
+    const ok = FILES.includes(f) || FILE_PREFIXES.some(p => f.startsWith(p));
+    if (!ok || f.includes('/') || f.includes('..')) continue; // allowlist + path-traversal guard
     try { await FileSystem.writeAsStringAsync(FileSystem.documentDirectory + f, String(content)); res.files++; } catch { /* skip */ }
   }
   if (b.knowledge) res.knowledge = await importKnowledgeBundle(b.knowledge);
+  clearAccountingCache(); // re-read the restored switch list
   return res;
 }
