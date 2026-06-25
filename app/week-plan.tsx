@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
-import Svg, { Polyline, Rect, Line, Circle, Text as SvgText } from 'react-native-svg';
+import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, WeekPlanDay } from '../src/services/coach';
@@ -12,8 +12,9 @@ import { getMorningForecast, DayForecast } from '../src/services/weather';
 
 type Row = WeekPlanDay & {
   strain: number; trimp: number; ctl: number; atl: number; tsb: number;
-  adjMin: number; heat: number; fc?: DayForecast;
+  adjMin: number; heat: number; capped: boolean; fc?: DayForecast;
 };
+type Hist = { ctl: number; atl: number };
 
 const INTENSITY: Record<string, { label: string; color: string }> = {
   rest:     { label: 'Rest',     color: '#7f8c8d' },
@@ -32,6 +33,7 @@ export default function WeekPlan() {
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
   const [rows, setRows]   = useState<Row[] | null>(null);
+  const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number } | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
   const [weekCap, setWeekCap] = useState<{ used: number; cap: number } | null>(null);
@@ -67,24 +69,43 @@ export default function WeekPlan() {
 
       const days = await getWeekPlan(coach, forecast);
 
-      // Per-day: heat-cut the displayed minutes; strain + TRIMP track the (maintained) target.
+      // Backward-looking ROLLING cap: each future run's trailing-7-day time-on-feet must not
+      // exceed the 7-day window a week earlier by more than the cap %. Seed with the last 14 days
+      // of ACTUAL time-on-feet and append each planned day, so the cap compounds across the week
+      // and accounts for runs already done.
+      const capPct = coach.loadCapPct ?? 10;
+      const capMul = 1 + capPct / 100;
+      const tof = (coach.recentTimeOnFeet ?? []).map(d => d.min);
+      while (tof.length < 14) tof.unshift(0);                 // pad if short
+      tof.splice(0, tof.length - 14);                          // keep the last 14 (offsets today-13…today)
+
+      // Heat-cut the minutes, then clamp to the rolling cap. strain + TRIMP track the final minutes.
       const prelim = days.map((d) => {
         const fc = fxBy.get(d.date);
         const heat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
-        const adjMin = d.intensity === 'rest' ? 0 : Math.max(8, Math.round(d.runMinutes / heat));
+        const heatMin = d.intensity === 'rest' ? 0 : Math.max(8, Math.round(d.runMinutes / heat));
+        const j = tof.length;
+        const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0); // 7 days ending a week ago
+        const prior6 = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
+        const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * capMul - prior6)) : heatMin;
+        const finalMin = d.intensity === 'rest' ? 0 : Math.min(heatMin, allowance);
+        tof.push(finalMin);
+
         const strain = d.intensity === 'rest'
           ? 20
           : Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(
-              synthesizeWorkout(d.intensity, d.runMinutes, d.weekday, coach.powerZones)))));
-        const trimp = estimateDayTrimp(d.intensity, d.runMinutes, cal);
-        return { ...d, fc, heat, adjMin, strain, trimp };
+              synthesizeWorkout(d.intensity, finalMin, d.weekday, coach.powerZones)) * heat)));
+        const trimp = estimateDayTrimp(d.intensity, finalMin, cal);
+        return { ...d, fc, heat, adjMin: finalMin, capped: finalMin < heatMin, strain, trimp };
       });
 
       const proj = rollLoadForward(ctl0, atl0, prelim.map(p => p.trimp));
       setRows(prelim.map((p, i) => ({ ...p, ...proj[i] })));
+      // Chart context: actual CTL/ATL for the last ~21 days (today is the last point → the seed).
+      setHist(tl.slice(-21).map(d => ({ ctl: d.ctl, atl: d.atl })));
 
       const used = prelim.reduce((a, p) => a + p.adjMin, 0);
-      setWeekCap({ used, cap: Math.round((coach.tof7d ?? 0) * (1 + (coach.loadCapPct ?? 10) / 100)) });
+      setWeekCap({ used, cap: Math.round((coach.tof7d ?? 0) * capMul) });
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to build the week plan.');
     } finally {
@@ -108,7 +129,7 @@ export default function WeekPlan() {
 
       {seed && (
         <Text style={s.startLine}>
-          Seeded from today: CTL {seed.ctl.toFixed(0)} · ATL {seed.atl.toFixed(0)} · TSB {(seed.ctl - seed.atl).toFixed(0)}
+          From today's history: CTL {seed.ctl.toFixed(0)} · ATL {seed.atl.toFixed(0)} · TSB {(seed.ctl - seed.atl).toFixed(0)}
           {rates ? `   ·   TRIMP/min E${rates.easy} M${rates.moderate} H${rates.hard}` : ''}
         </Text>
       )}
@@ -126,7 +147,7 @@ export default function WeekPlan() {
 
       {rows && seed && (
         <>
-          <ProjChart rows={rows} ctl0={seed.ctl} atl0={seed.atl} c={c} />
+          <ProjChart hist={hist} rows={rows} c={c} />
 
           <View style={s.legend}>
             <Legend color="#3498db" label="CTL (fitness)" />
@@ -137,7 +158,7 @@ export default function WeekPlan() {
           {rows.map((r) => {
             const day = Number(r.date.slice(8, 10));
             const it  = INTENSITY[r.intensity] ?? INTENSITY.rest;
-            const cut = r.intensity !== 'rest' && r.adjMin < r.runMinutes;
+            const reduced = r.intensity !== 'rest' && r.adjMin < r.runMinutes;
             return (
               <View key={r.date} style={s.row}>
                 <View style={{ flex: 1, paddingRight: 8 }}>
@@ -147,7 +168,7 @@ export default function WeekPlan() {
                   </Text>
                   <Text style={s.struct} numberOfLines={1}>
                     {r.intensity === 'rest' ? 'Rest' : r.structure}
-                    {cut ? `  · ${r.adjMin}min in heat` : ''}
+                    {reduced ? `  → ${r.adjMin}min ${r.capped ? '(cap)' : '(heat)'}` : ''}
                   </Text>
                   {!!r.fc && (
                     <Text style={s.note} numberOfLines={1}>
@@ -195,18 +216,22 @@ function Legend({ color, label, square }: { color: string; label: string; square
   );
 }
 
-// CTL/ATL trajectory (today seed → +7 days) as lines, strain as faint bars. Same y-scale —
-// CTL/ATL (TRIMP) and per-day strain sit in a similar 20–60 range.
-function ProjChart({ rows, ctl0, atl0, c }: { rows: Row[]; ctl0: number; atl0: number; c: Palette }) {
-  const W = 320, H = 170, L = 28, R = 8, T = 8, B = 22;
-  const n = rows.length;                       // 7
-  const ctl = [ctl0, ...rows.map(r => r.ctl)]; // 8 points incl. today
-  const atl = [atl0, ...rows.map(r => r.atl)];
+// Actual CTL/ATL history (solid, ~21 days) flowing into the 7-day forecast (dashed), with
+// per-day strain bars. The full history sits behind the projection so it's in context, not
+// seeded from a bare number. Same y-scale — CTL/ATL (TRIMP) and strain share a similar range.
+function ProjChart({ hist, rows, c }: { hist: Hist[]; rows: Row[]; c: Palette }) {
+  if (!hist.length) return null;
+  const W = 320, H = 175, L = 26, R = 8, T = 8, B = 20;
+  const ctl = [...hist.map(h => h.ctl), ...rows.map(r => r.ctl)];
+  const atl = [...hist.map(h => h.atl), ...rows.map(r => r.atl)];
+  const N = ctl.length, hN = hist.length;          // join (today) = index hN-1
   const yMax = Math.max(10, ...ctl, ...atl, ...rows.map(r => r.strain)) * 1.1;
-  const xAt = (i: number) => L + ((W - L - R) / n) * i;             // i = 0 (today) … n
+  const xAt = (i: number) => L + ((W - L - R) / (N - 1)) * i;
   const yAt = (v: number) => H - B - (v / yMax) * (H - B - T);
-  const pts = (arr: number[]) => arr.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(' ');
-  const barW = Math.min(22, (W - L - R) / n * 0.5);
+  const poly = (arr: number[], from: number, to: number) =>
+    arr.slice(from, to).map((v, k) => `${xAt(from + k).toFixed(1)},${yAt(v).toFixed(1)}`).join(' ');
+  const barW = Math.min(15, (W - L - R) / N * 0.6);
+  const todayX = xAt(hN - 1);
 
   return (
     <Svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`}>
@@ -216,18 +241,18 @@ function ProjChart({ rows, ctl0, atl0, c }: { rows: Row[]; ctl0: number; atl0: n
       })}
       <SvgText x={2} y={yAt(yMax) + 4} fontSize={9} fill={c.textFaint}>{Math.round(yMax)}</SvgText>
       <SvgText x={2} y={yAt(0)} fontSize={9} fill={c.textFaint}>0</SvgText>
-      {/* strain bars for the 7 future days (x index 1…n) */}
+      <Line x1={todayX} y1={T} x2={todayX} y2={H - B} stroke={c.textFaint} strokeWidth={1} strokeDasharray="2 3" />
+      <SvgText x={todayX} y={H - 6} fontSize={9} fill={c.textFaint} textAnchor="middle">today</SvgText>
+      {/* strain bars for the forecast days */}
       {rows.map((r, i) => {
-        const x = xAt(i + 1) - barW / 2, y = yAt(r.strain);
-        return <Rect key={r.date} x={x} y={y} width={barW} height={H - B - y} fill="#e67e2233" rx={2} />;
+        const x = xAt(hN + i) - barW / 2, y = yAt(r.strain);
+        return <Rect key={r.date} x={x} y={y} width={barW} height={H - B - y} fill="#e67e2233" rx={1.5} />;
       })}
-      <Polyline points={pts(ctl)} fill="none" stroke="#3498db" strokeWidth={2} />
-      <Polyline points={pts(atl)} fill="none" stroke="#e84393" strokeWidth={2} />
-      {ctl.map((v, i) => <Circle key={'c' + i} cx={xAt(i)} cy={yAt(v)} r={1.8} fill="#3498db" />)}
-      {atl.map((v, i) => <Circle key={'a' + i} cx={xAt(i)} cy={yAt(v)} r={1.8} fill="#e84393" />)}
-      {['', ...rows.map(r => r.weekday[0])].map((lbl, i) => (
-        <SvgText key={i} x={xAt(i)} y={H - 6} fontSize={9} fill={c.textFaint} textAnchor="middle">{i === 0 ? 'now' : lbl}</SvgText>
-      ))}
+      {/* history (solid) → forecast (dashed) for CTL + ATL */}
+      <Polyline points={poly(ctl, 0, hN)} fill="none" stroke="#3498db" strokeWidth={2} />
+      <Polyline points={poly(atl, 0, hN)} fill="none" stroke="#e84393" strokeWidth={2} />
+      <Polyline points={poly(ctl, hN - 1, N)} fill="none" stroke="#3498db" strokeWidth={2} strokeDasharray="3 3" />
+      <Polyline points={poly(atl, hN - 1, N)} fill="none" stroke="#e84393" strokeWidth={2} strokeDasharray="3 3" />
     </Svg>
   );
 }
