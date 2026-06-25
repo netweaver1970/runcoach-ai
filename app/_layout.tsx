@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme } from '../src/theme';
+import { ErrorBoundary } from '../src/components/ErrorBoundary';
 
 // Route a tapped notification to the right screen based on its `data.screen`.
 function routeNotification(router: ReturnType<typeof useRouter>, data: any) {
@@ -91,7 +92,9 @@ function RootStack() {
 export default function RootLayout() {
   return (
     <ThemeProvider>
-      <RootStack />
+      <ErrorBoundary>
+        <RootStack />
+      </ErrorBoundary>
     </ThemeProvider>
   );
 }
