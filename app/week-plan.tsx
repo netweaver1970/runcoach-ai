@@ -50,12 +50,14 @@ export default function WeekPlan() {
       const ctl0 = todayLoad?.ctl ?? 0, atl0 = todayLoad?.atl ?? 0;
       setSeed({ ctl: ctl0, atl: atl0 });
 
-      // Calibrate per-intensity TRIMP/min from the runner's OWN runs vs their daily load.
+      // Rolling per-intensity TRIMP/min calibration — computed continuously by the app during
+      // every health sync (snap.trimpRates). Fall back to computing it here for older caches.
       const loadByDate = new Map(tl.map(d => [d.date, d.load]));
-      const cal = calibrateTrimpRates((snap.runs ?? []).map(r => ({
+      const cal: TrimpRates = snap.trimpRates ?? calibrateTrimpRates((snap.runs ?? []).map(r => ({
         intensity: labelToIntensity(r.label),
-        minutes: (r.workDuration ?? r.duration) / 60,
+        minutes: ((r as any).workDuration ?? r.duration) / 60,
         dayLoad: loadByDate.get(r.date.slice(0, 10)) ?? 0,
+        daysAgo: (Date.now() - new Date(r.date).getTime()) / 86_400_000,
       })));
       setRates(cal);
 

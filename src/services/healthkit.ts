@@ -47,7 +47,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates } from './trainingLoad';
 import { getLocalWeather } from './weather';
 import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
 
@@ -1660,12 +1660,25 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     .filter(a => new Date(a.date) >= daysAgo(35))
     .sort((a, b) => b.date.localeCompare(a.date));
 
+  // Rolling, recency-weighted per-intensity TRIMP/min calibration from the runner's OWN runs
+  // (day cardio-TRIMP ÷ run minutes). Recomputed every sync so it tracks changing fitness.
+  const trimpLoadByDate = new Map(trainingLoad.map(d => [d.date, d.load]));
+  const runIntensity = (label?: string): 'easy' | 'moderate' | 'hard' =>
+    label === 'Intervals' ? 'hard' : (label === 'Tempo' || label === 'LongRun') ? 'moderate' : 'easy';
+  const trimpRates = calibrateTrimpRates(runs.map(r => ({
+    intensity: runIntensity(r.label),
+    minutes:   ((r as any).workDuration ?? r.duration) / 60,
+    dayLoad:   trimpLoadByDate.get(r.date.slice(0, 10)) ?? 0,
+    daysAgo:   (now.getTime() - new Date(r.date).getTime()) / 86_400_000,
+  })));
+
   progress('Done', 100);
 
   return {
     runs,
     activities:    recentActivities,
     trainingLoad,
+    trimpRates,
     strain,
     vo2max: (vo2maxSamples as any[]).map((s: any) => ({
       // v9: startDate is a Date object; normalise to ISO string

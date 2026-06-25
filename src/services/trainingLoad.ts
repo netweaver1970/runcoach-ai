@@ -196,21 +196,44 @@ export function estimateDayTrimp(intensity: string, runMinutes: number, rates: T
   return Math.round(runMinutes * perMin + 8 * rates.easy);
 }
 
-// Calibrate per-intensity TRIMP/min from the runner's OWN runs: for each run-day, the day's
-// cardio TRIMP (load) ÷ the run's minutes ≈ that run's TRIMP/min. Average by intensity, keep
-// the default where there isn't enough data, clamp out noise, and keep the curve monotonic.
+// Continuous ROLLING calibration of per-intensity TRIMP/min from the runner's OWN runs: for each
+// run-day, the day's cardio TRIMP (load) ÷ the run's minutes ≈ that run's TRIMP/min. Recent runs
+// are weighted exponentially (28-day half-life) so the rates track changing fitness/conditions
+// (faster, more power, fitter). Intensities without their own data are derived from a present one
+// via standard Z2:Z3:Z4 ratios — the fixed defaults are only used when there is NO run data at all.
+const TRIMP_CALIB_HALF_LIFE = 28;                 // days
+const TRIMP_RATIO = { easy: 1, moderate: 2.0 / 1.3, hard: 2.8 / 1.3 };
 export function calibrateTrimpRates(
-  samples: { intensity: 'easy' | 'moderate' | 'hard'; minutes: number; dayLoad: number }[],
+  samples: { intensity: 'easy' | 'moderate' | 'hard'; minutes: number; dayLoad: number; daysAgo: number }[],
 ): TrimpRates {
-  const out: TrimpRates = { ...DEFAULT_TRIMP_RATES };
-  for (const k of ['easy', 'moderate', 'hard'] as const) {
-    const vals = samples
-      .filter(s => s.intensity === k && s.minutes >= 8 && s.dayLoad > 0)
-      .map(s => s.dayLoad / s.minutes)
-      .filter(r => r >= 0.4 && r <= 5);   // drop multi-activity/bad-data outliers
-    if (vals.length >= 2) out[k] = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
+  const acc: Record<string, { num: number; den: number }> =
+    { easy: { num: 0, den: 0 }, moderate: { num: 0, den: 0 }, hard: { num: 0, den: 0 } };
+  for (const s of samples) {
+    if (s.minutes < 8 || s.dayLoad <= 0) continue;
+    const rate = s.dayLoad / s.minutes;
+    if (rate < 0.4 || rate > 5) continue;                          // drop multi-activity / bad data
+    const w = Math.pow(0.5, Math.max(0, s.daysAgo) / TRIMP_CALIB_HALF_LIFE);
+    acc[s.intensity].num += rate * w;
+    acc[s.intensity].den += w;
   }
-  out.moderate = Math.max(out.moderate, out.easy);
+  const wmean = (k: string): number | null => acc[k].den > 0 ? acc[k].num / acc[k].den : null;
+  let easy = wmean('easy'), moderate = wmean('moderate'), hard = wmean('hard');
+
+  // Anchor on whichever intensity HAS real data; fill the rest from it via the standard ratios.
+  const anchor = easy != null ? { k: 'easy' as const, v: easy }
+               : moderate != null ? { k: 'moderate' as const, v: moderate }
+               : hard != null ? { k: 'hard' as const, v: hard } : null;
+  if (anchor) {
+    const base = anchor.v / TRIMP_RATIO[anchor.k];                 // implied easy-rate from the anchor
+    easy = easy ?? base * TRIMP_RATIO.easy;
+    moderate = moderate ?? base * TRIMP_RATIO.moderate;
+    hard = hard ?? base * TRIMP_RATIO.hard;
+  } else {
+    ({ easy, moderate, hard } = DEFAULT_TRIMP_RATES);              // no run data at all
+  }
+  const r = (v: number) => Math.round(v * 100) / 100;
+  const out: TrimpRates = { easy: r(easy!), moderate: r(moderate!), hard: r(hard!) };
+  out.moderate = Math.max(out.moderate, out.easy);                 // keep the curve monotonic
   out.hard = Math.max(out.hard, out.moderate);
   return out;
 }

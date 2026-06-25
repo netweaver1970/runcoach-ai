@@ -258,6 +258,7 @@ export interface HealthSnapshot {
   activities: ActivitySummary[];   // ALL HealthKit workouts in window (not just runs)
   trainingLoad: DailyLoad[];       // daily CTL/ATL/TSB series (recent ~90 days)
   strain: DayStrain | null;        // today's strain (real effort vs safe range)
+  trimpRates?: { easy: number; moderate: number; hard: number }; // rolling TRIMP/min calibration (per intensity)
 }
 
 export interface CoachingReport {
