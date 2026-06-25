@@ -14,6 +14,21 @@ import type { CoachPlan, WatchWorkout } from './coach';
 const planLogFile = (date: string) => `${FileSystem.documentDirectory}coach-plan-log-${date}.json`;
 interface PlanLogEntry { at: string; plan: CoachPlan }
 
+// Local YYYY-MM-DD — same key saveCachedPlan/toDateKey use (replicated here so healthkit
+// can import this module without the dayView→healthkit import cycle).
+export const dateKeyLocal = (d: Date): string => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
+// Relabel an already-chronological list of segments/activities IN PLACE from the
+// prescribed phase sequence. Applied only when the counts match within ±2 (otherwise the
+// run doesn't match the plan and we leave the labels alone); trailing extras → "Open".
+export function relabelByPhases<T extends { label: string }>(ordered: T[], phases: string[]): void {
+  if (Math.abs(ordered.length - phases.length) > 2) return;
+  ordered.forEach((it, i) => { it.label = i < phases.length ? phases[i] : 'Open'; });
+}
+
 export async function readPlanLog(date: string): Promise<PlanLogEntry[]> {
   try {
     const f = planLogFile(date);

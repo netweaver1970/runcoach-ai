@@ -49,6 +49,7 @@ import {
 } from '../types';
 import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor } from './trainingLoad';
 import { getLocalWeather } from './weather';
+import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -1002,7 +1003,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   progress('Processing run data…', 62);
 
   // ── Step 4: Build rawRuns ─────────────────────────────────────────────────
-  const rawRuns: RunWorkout[] = runWorkouts.map((w: any) => {
+  const rawRuns: RunWorkout[] = await Promise.all(runWorkouts.map(async (w: any) => {
     const data = perRunData.get(w.uuid);
     const hrValues = data?.hrValues ?? [];
 
@@ -1164,6 +1165,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       }
     }
 
+    // Deterministic override: when the app pushed this workout, label the segments straight
+    // from the saved prescription that was live at run start — no heuristics. Order-matched
+    // within ±2; trailing free running → "Open". The heuristics above only stand when no
+    // plan is found (a workout the app didn't push).
+    if (segments.length > 0) {
+      const startISO = toISOStr(w.startDate);
+      const phases = await prescribedPhasesAt(dateKeyLocal(new Date(startISO)), startISO);
+      if (phases) relabelByPhases(segments, phases);
+    }
+
     return {
       uuid:          w.uuid,
       date:          toISOStr(w.startDate),
@@ -1174,7 +1185,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       pace:          distanceM > 0 ? durationS / (distanceM / METERS_PER_KM) : 0,
       ...(segments.length > 0 && { segments }),
     };
-  });
+  }));
 
   // ── Step 5: Wellness data + workout classification (parallel) ─────────────
   progress('Fetching wellness data…', 65);

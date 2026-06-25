@@ -22,7 +22,7 @@ import {
 } from '../../src/services/healthkit';
 import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
 import { getRunMeta, saveRunNote, saveRunTemp, TempSource } from '../../src/services/runMeta';
-import { prescribedPhasesAt } from '../../src/services/planLog';
+import { prescribedPhasesAt, relabelByPhases } from '../../src/services/planLog';
 import { toDateKey } from '../../src/services/dayView';
 import { getLocalWeather } from '../../src/services/weather';
 import { useTheme, useThemedStyles, Palette } from '../../src/theme';
@@ -632,11 +632,7 @@ export default function WorkoutDetailScreen() {
       // extras (free running past the cooldown) become "Open", as Apple shows them.
       try {
         const phases = await prescribedPhasesAt(toDateKey(new Date(params.startDate)), params.startDate);
-        if (phases && d.activities.length && Math.abs(d.activities.length - phases.length) <= 2) {
-          [...d.activities]
-            .sort((a, b) => a.startMs - b.startMs)
-            .forEach((a, i) => { a.label = i < phases.length ? phases[i] : 'Open'; });
-        }
+        if (phases) relabelByPhases([...d.activities].sort((a, b) => a.startMs - b.startMs), phases);
       } catch { /* fall back to HealthKit's own labels */ }
 
       setDetail(d);

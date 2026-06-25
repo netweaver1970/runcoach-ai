@@ -195,7 +195,11 @@ export default function HomeScreen() {
         if (on) maybeRunDayView({ months, snap, notify: false }).catch(() => {});
       });
     } catch (err: any) {
-      if (!silent) Alert.alert('Error loading health data', err.message);
+      // "Protected health data is inaccessible" (HealthKit error 6) just means the device
+      // was locked mid-query — transient; the next refresh succeeds. Don't alarm the user.
+      const msg = String(err?.message ?? '');
+      const transient = /Protected health data|Code=6|inaccessible/i.test(msg);
+      if (!silent && !transient) Alert.alert('Error loading health data', err.message);
     } finally {
       isLoadingRef.current = false;
       setLoading(false);
@@ -440,7 +444,7 @@ export default function HomeScreen() {
     const str = snapshot?.strain ?? null;
     const atCeiling = !!str && str.real >= str.safeHigh;
     const topUp = (str && !atCeiling)
-      ? `At ${str.real}% — room to your ${str.safeHigh}% ceiling. Add an easy walk or indoor cycle to push toward the top of the band.`
+      ? `At ${str.real}% — easy walk/cycle to reach your ${str.safeHigh}% ceiling.`
       : null;
     return { runDone: todaysRuns.length > 0, runMin, runKm, xMin, xLabel, topUp, atCeiling, strainReal: str?.real ?? null };
   })();
@@ -537,16 +541,6 @@ export default function HomeScreen() {
             onPress={() => router.push('/training-load' as any)}
           />
         )}
-
-        {/* Bevel calibration shortcut */}
-        <TouchableOpacity
-          style={styles.calibrateBtn}
-          onPress={() => router.push('/bevel-analysis' as any)}
-          activeOpacity={0.75}
-        >
-          <Text style={styles.calibrateBtnText}>⚖️  Overall Bevel Calibration</Text>
-          <Text style={styles.calibrateBtnSub}>Compare every KPI &amp; component vs Bevel</Text>
-        </TouchableOpacity>
 
         {/* Coach buttons */}
         {!hasApiKey ? (
@@ -839,7 +833,7 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
           ✓ Strain target reached — you're at {completion!.strainReal}%, top of your {strain!.safeLow}–{strain!.safeHigh}% band.
         </Text>
       ) : completion?.topUp ? (
-        <Text style={recStyles.topUp}>⚡ {completion.topUp}</Text>
+        <Text style={recStyles.topUp} numberOfLines={1}>⚡ {completion.topUp}</Text>
       ) : (
         <Text style={recStyles.reason}>{runDone ? 'Prescribed session done. ✓' : rec.reason}</Text>
       )}
@@ -1433,16 +1427,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   refreshBtnText: { color: '#FF6B35', fontSize: 14, fontWeight: '700' },
   sleepText: { fontSize: 12, color: c.textSub, marginBottom: 6 },
-
-  calibrateBtn: {
-    marginHorizontal: 12, marginBottom: 8, marginTop: 0,
-    backgroundColor: c.surface, borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 10,
-    borderWidth: 1, borderColor: '#8e44ad55',
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-  },
-  calibrateBtnText: { fontSize: 13, fontWeight: '700', color: '#9b59b6' },
-  calibrateBtnSub:  { fontSize: 11, color: c.textSub },
 
   btnRow: { flexDirection: 'row', marginHorizontal: 12, marginBottom: 8, gap: 8 },
   btnFlex: { flex: 1, marginHorizontal: 0 },

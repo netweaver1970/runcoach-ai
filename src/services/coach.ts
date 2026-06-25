@@ -138,6 +138,13 @@ reached) and you therefore prescribe rest/cross-train, you MUST tell the runner 
 run becomes possible — state the exact tofNextRunLabel in the session (it has the weekday; assuming rest \
 until then, tofNextRunInDays days out). E.g. session "Volume cap reached — rest; next run Thu 26 Jun, in \
 2 days". If tofNextRunInDays is 0 the cap is not limiting, so omit this. \
+SECOND SESSION SAME DAY: if a run is ALREADY done today (recentActivities/strainReal reflect a session) \
+and strainReal merely sits below the band, a second run is rarely worth it. Cumulative autonomic stress \
+ADDS across sessions and an extra session — especially late in the day (read localContext for the local \
+time) — pushes stress that tails into the night and degrades sleep + overnight recovery. So when a session \
+is already logged: prefer a SHORT easy walk / cross-train top-up or rest over a second real run; only \
+prescribe a second genuine run when recovery is good AND it is still early; and NEVER prescribe a hard or \
+long second run in the evening. Say so explicitly in the rationale when you hold back. \
 Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all the data.
 
 WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
