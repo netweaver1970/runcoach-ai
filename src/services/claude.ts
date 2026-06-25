@@ -718,6 +718,7 @@ export interface TrainingRecommendation {
   type: 'Rest' | 'Easy' | 'Z2' | 'Tempo' | 'LongRun' | 'Intervals';
   duration: string;
   zone: string;
+  structure?: string;     // concise run structure, e.g. "3× 10min @ 180–205W" or "60min @ 205W"
   reason: string;
   nextRunLabel?: string;  // when the volume cap blocks a run today: when the next one fits, e.g. "Thu 26 Jun"
 }

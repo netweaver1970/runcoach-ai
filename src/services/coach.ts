@@ -241,6 +241,21 @@ export function synthesizeWorkout(
   return ensureBlockPower({ name, warmupMeters: 600, drillsMinutes: 4, blocks, cooldownMeters: 600 }, pz)!;
 }
 
+// Concise one-line structure for the daily plan, e.g. "3× 10min @ 180–205W" or "60min @ 205W".
+// Work blocks only (warm-up/cool-down are implied); power range if present, else HR zone.
+export function formatWorkoutStructure(w?: WatchWorkout | null): string {
+  if (!w?.blocks?.length) return '';
+  const fmtMin = (m: number) => (m % 1 === 0 ? `${m}` : m.toFixed(1));
+  const parts = w.blocks.map((b) => {
+    const lo = b.powerLowWatts, hi = b.powerHighWatts;
+    const pwr = lo && hi ? (lo === hi ? ` @ ${lo}W` : ` @ ${lo}–${hi}W`)
+              : b.hrZone ? ` @ ${b.hrZone}` : '';
+    const rep = b.repeats > 1 ? `${b.repeats}× ${fmtMin(b.workMinutes)}min` : `${fmtMin(b.workMinutes)}min`;
+    return `${rep}${pwr}`;
+  });
+  return parts.join(' + ');
+}
+
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
   const knowledge = await buildKnowledgePrompt();

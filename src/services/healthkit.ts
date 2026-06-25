@@ -1144,6 +1144,26 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       }
     }
 
+    // ── Recovery rescue ───────────────────────────────────────────────────────
+    // Between-rep recoveries (short easy jogs) frequently arrive labelled "Work":
+    // HK metadata doesn't always carry the .recovery purpose, and the heuristics
+    // above only split off the first/last segment. Relabel a "Work" as "Recovery"
+    // when it's far shorter than the typical rep, sits AFTER a Work, and still has a
+    // later Work — i.e. it's a between-reps jog, not the drills, cooldown, or a rep.
+    {
+      const workDurs = segments.filter(s => s.label === 'Work').map(s => s.durationSec)
+        .filter(d => d > 0).sort((a, b) => a - b);
+      const medWorkDur = workDurs.length ? workDurs[Math.floor(workDurs.length / 2)] : 0;
+      if (medWorkDur > 0) {
+        segments.forEach((s, i) => {
+          if (s.label !== 'Work' || s.durationSec >= medWorkDur * 0.5) return;
+          const afterWork = segments[i - 1]?.label === 'Work';
+          const laterWork = segments.slice(i + 1).some(n => n.label === 'Work');
+          if (afterWork && laterWork) s.label = 'Recovery';
+        });
+      }
+    }
+
     return {
       uuid:          w.uuid,
       date:          toISOStr(w.startDate),
@@ -2751,95 +2771,6 @@ export async function fetchStrainHistory(
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export interface StrainCalibDay {
-  date: string;
-  ourStrain: number; ourActive: number;          // our totals
-  activeLoad: number; stepLoad: number; lifeTaxLoad: number; // our raw-load parts (lifeTax = info only)
-  steps: number; nwSteps: number; daytimeHR: number; restHR: number; hrDelta: number; // passive inputs
-  workouts: { type: number; durMin: number; zMin: number[]; load: number }[]; // per-workout zone minutes
-  bevelStrain: number | null; bevelActive: number | null; bevelPassive: number | null; bevelStress: number | null;
-}
-
-/**
- * Strain CALIBRATION export: per-day breakdown of our strain (active / life-tax / steps) + the
- * inputs (daytime HR, HR delta, steps), with empty Bevel slots to fill in. Lets us fit the life-tax
- * power-law: pair hrDelta + steps with Bevel's total/passive strain across many days.
- */
-export async function fetchStrainCalibration(days = 14): Promise<{ meta: any; days: StrainCalibDay[] }> {
-  const end   = new Date();
-  const since = new Date(end.getTime() - days * 86_400_000);
-  since.setHours(0, 0, 0, 0); // snap to midnight so the boundary day is WHOLE — else a morning
-                              // workout on day -N (e.g. Jun 10's 10:58 run) is sliced off → strain ~1
-  const [hrRaw, restingRaw, workouts] = await Promise.all([
-    safeQuery(() => (HealthKit.queryQuantitySamples as any)(HKQuantityTypeIdentifier.heartRate,
-      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 200_000 }), [] as any[]),
-    safeQuery(() => (HealthKit.queryQuantitySamples as any)(HKQuantityTypeIdentifier.restingHeartRate,
-      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 400 }), [] as any[]),
-    safeQuery(() => (HealthKit.queryWorkoutSamples as any)({
-      filter: { startDate: since, endDate: end }, limit: 1500, ascending: true, energyUnit: 'kcal', distanceUnit: 'm' }), [] as any[]),
-  ]);
-  const hr = (hrRaw as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number, day: toDateStr(toISOStr(s.startDate)) }));
-  if (hr.length === 0) return { meta: { note: 'no HR data' }, days: [] };
-  const restVals = (restingRaw as any[]).map((s: any) => s.quantity as number).filter(v => v > 0).sort((a, b) => a - b);
-  const restHR = restVals.length > 0 ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 50;
-  let peak = 0; for (const sm of hr) if (sm.hr > peak) peak = sm.hr;
-  const userMaxHr = await getUserMaxHr();
-  const maxHR = userMaxHr > 0 ? userMaxHr : Math.max(190, Math.min(205, Math.round(peak)));
-
-  const byDay = new Map<string, { t: number; hr: number }[]>();
-  for (const s of hr) { if (!byDay.has(s.day)) byDay.set(s.day, []); byDay.get(s.day)!.push({ t: s.t, hr: s.hr }); }
-  const STRENGTH = new Set([20, 50]);
-  const muscularByDay = new Map<string, number>();
-  const windowsByDay  = new Map<string, { s: number; e: number }[]>();
-  const woByDay       = new Map<string, { s: number; e: number; type: number }[]>();
-  for (const w of (workouts as any[])) {
-    const day = toDateStr(toISOStr(w.startDate)); const ws = new Date(toISOStr(w.startDate)).getTime();
-    const win = { s: ws, e: ws + workoutDurationSec(w) * 1000, type: w.workoutActivityType as number };
-    if (!windowsByDay.has(day)) windowsByDay.set(day, []);
-    windowsByDay.get(day)!.push({ s: win.s, e: win.e });
-    if (!woByDay.has(day)) woByDay.set(day, []);
-    woByDay.get(day)!.push(win);
-    if (STRENGTH.has(w.workoutActivityType)) muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
-  }
-  const stepsByDay   = await dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end);
-  const nwStepsByDay = dailyNonWorkoutSteps(await fetchStepSamples(since, end), windowsByDay, stepsByDay);
-  const ZW = [0.25, 1, 1, 1, 5, 8]; // must match zoneWeight() in trainingLoad
-  const zoneOf = (pct: number) => pct >= 0.9 ? 5 : pct >= 0.8 ? 4 : pct >= 0.7 ? 3 : pct >= 0.6 ? 2 : pct >= 0.5 ? 1 : 0;
-  const r1 = (n: number) => Math.round(n * 10) / 10;
-  const out: StrainCalibDay[] = [];
-  for (const [day, samples] of byDay) {
-    const b = zoneStrainBreakdown(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
-    const nwSteps = Math.round(nwStepsByDay.get(day) ?? 0);
-    const stepLd = stepStrainLoad(nwSteps); const muscular = muscularByDay.get(day) ?? 0;
-    const sorted = [...samples].sort((a, b) => a.t - b.t);
-    const wos = (woByDay.get(day) ?? []).map((w) => {
-      const zMin = [0, 0, 0, 0, 0, 0]; let load = 0, dur = 0;
-      for (let i = 1; i < sorted.length; i++) {
-        const t = sorted[i].t; if (t < w.s || t > w.e) continue;
-        const dt = Math.min(8 * 60_000, sorted[i].t - sorted[i - 1].t); if (dt <= 0) continue;
-        const dtMin = dt / 60_000; const z = zoneOf(sorted[i].hr / maxHR);
-        zMin[z] += dtMin; load += dtMin * ZW[z]; dur += dtMin;
-      }
-      return { type: w.type, durMin: Math.round(dur), zMin: zMin.map((m) => Math.round(m)), load: r1(load) };
-    });
-    out.push({
-      date: day,
-      ourStrain: strainFromLoad(b.workLoad + stepLd + muscular),
-      ourActive: strainFromLoad(b.workLoad),
-      activeLoad: r1(b.workLoad), stepLoad: r1(stepLd), lifeTaxLoad: r1(b.lifeTax),
-      steps: Math.round(stepsByDay.get(day) ?? 0), nwSteps,
-      daytimeHR: Math.round(b.dayHRmean), restHR, hrDelta: Math.round(b.dayHRmean - restHR),
-      workouts: wos,
-      bevelStrain: null, bevelActive: null, bevelPassive: null, bevelStress: null,
-    });
-  }
-  out.sort((a, b) => a.date.localeCompare(b.date));
-  return {
-    meta: { restHR, maxHR, stepGamma: 2.0, zoneWeights: ZW,
-      note: 'PASSIVE now = nwSteps (non-workout steps) × 2.0/1000 (Bevel ≈ steps/470); life tax dropped. ACTIVE = per-workout zone load. Fill bevelStrain (+active/passive) per day. workouts[].zMin = minutes in Z0..Z5 — use to diagnose why active over-counts vs Bevel.' },
-    days: out,
-  };
-}
 
 /**
  * Daily Recovery-score history (0-100). Recomputes the recovery score per night

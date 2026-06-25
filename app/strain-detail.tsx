@@ -7,8 +7,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
-import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchStrainCalibration } from '../src/services/healthkit';
-import * as Clipboard from 'expo-clipboard';
+import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
 import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, planNeedsRefresh, CoachPlan } from '../src/services/coach';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -41,7 +40,6 @@ export default function StrainDetailScreen() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [watchSending, setWatchSending] = useState(false);
   const [watchMsg, setWatchMsg] = useState<string | null>(null);
-  const [calibCopied, setCalibCopied] = useState(false);
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
   const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
@@ -433,21 +431,6 @@ export default function StrainDetailScreen() {
           <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
         </View>
 
-        <TouchableOpacity
-          style={s.calibBtn}
-          onPress={async () => {
-            try {
-              const data = await fetchStrainCalibration(14);
-              await Clipboard.setStringAsync(JSON.stringify(data));
-              setCalibCopied(true); setTimeout(() => setCalibCopied(false), 2500);
-            } catch { /* ignore */ }
-          }}
-        >
-          <Text style={s.calibBtnText}>
-            {calibCopied ? '✓ Copied — paste it to the coach' : '⧉ Copy strain calibration (14 days)'}
-          </Text>
-        </TouchableOpacity>
-
       </ScrollView>
       </View>
     </SafeAreaView>
@@ -518,8 +501,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   readyAcwr:  { fontSize: 11, color: c.textSub, marginLeft: 'auto', fontWeight: '600' },
   readyDrivers: { fontSize: 12, color: c.textSub, marginTop: 4 },
   readyRange: { fontSize: 12, color: '#16a085', fontWeight: '600', marginTop: 4 },
-  calibBtn: { backgroundColor: c.bg, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 4, marginBottom: 20, borderWidth: 1, borderColor: c.border },
-  calibBtnText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
   readyTof:   { fontSize: 12, color: c.textSub, marginTop: 4 },
 
   coachCard: {

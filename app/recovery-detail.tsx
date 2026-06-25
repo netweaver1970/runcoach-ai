@@ -9,7 +9,6 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
-import * as Clipboard from 'expo-clipboard';
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
@@ -47,7 +46,6 @@ export default function RecoveryDetailScreen() {
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [loadingH, setLoadingH] = useState(true);
-  const [calibCopied, setCalibCopied] = useState(false);
   useEffect(() => {
     fetchOurDailyComponents(1).then(setComps).catch(() => {}).finally(() => setLoadingH(false));
   }, []);
@@ -220,43 +218,6 @@ export default function RecoveryDetailScreen() {
           </Section>
         )}
 
-        {/* Calibration export — compare our daily HRV/RHR/recovery to Bevel's */}
-        <TouchableOpacity
-          style={s.calibBtn}
-          onPress={async () => {
-            // Always fetch fresh 3 months so we can see how far back HealthKit actually goes.
-            const c = (await fetchOurDailyComponents(3).catch(() => ({}))) as Record<string, Record<string, number>>;
-            const stat = (key: string) => {
-              const vals = Object.keys(c).map((d) => c[d][key]).filter((v): v is number => v != null);
-              if (!vals.length) return null;
-              const m = vals.reduce((a, b) => a + b, 0) / vals.length;
-              const sd = Math.sqrt(vals.reduce((a, b) => a + (b - m) ** 2, 0) / vals.length);
-              return { mean: Math.round(m * 10) / 10, sd: Math.round(sd * 10) / 10, n: vals.length };
-            };
-            const rows = Object.keys(c).sort().slice(-90).map((d) => ({
-              date: d,
-              rmssd:    c[d].restingHrv ?? null,        // our TRUE RMSSD (R-R)
-              appleRHR: c[d].restingHr ?? null,          // our Apple Resting HR
-              rr:       c[d].respiratoryRate ?? null,
-              hrDip:    c[d].heartRateDip ?? null,
-              recovery: c[d].recoveryScore ?? null,
-              sleep:    c[d].sleepScore ?? null,
-            }));
-            const payload = {
-              note: 'compare to Bevel: rmssd→RMSSD, appleRHR→RHR, recovery→Recovery',
-              baselines: { rmssd: stat('restingHrv'), appleRHR: stat('restingHr'), rr: stat('respiratoryRate') },
-              days: rows,
-            };
-            await Clipboard.setStringAsync(JSON.stringify(payload));
-            setCalibCopied(rows.length > 0);
-            setTimeout(() => setCalibCopied(false), 2500);
-          }}
-        >
-          <Text style={s.calibBtnText}>
-            {calibCopied ? '✓ Copied — paste it here' : '⧉ Copy recovery calibration (30 days)'}
-          </Text>
-        </TouchableOpacity>
-
       </ScrollView>
       </View>
     </SafeAreaView>
@@ -310,7 +271,5 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   rowLabel: { fontSize: 13, color: c.text, fontWeight: '500' },
   rowSub:   { fontSize: 11, color: c.textFaint, marginTop: 2 },
-  calibBtn: { backgroundColor: c.bg, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 8, marginBottom: 24, borderWidth: 1, borderColor: c.border },
-  calibBtnText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
   rowValue: { fontSize: 13, fontWeight: '700', color: c.text },
 });

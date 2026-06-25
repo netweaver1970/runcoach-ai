@@ -29,7 +29,7 @@ import {
 } from '../src/services/healthkit';
 import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
-import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, CoachPlan } from '../src/services/coach';
+import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, formatWorkoutStructure, CoachPlan } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
@@ -767,7 +767,7 @@ function coachPlanToRec(p: CoachPlan): TrainingRecommendation {
     zone === 'Z3' ? 'Tempo' :
     (zone === 'Z4' || zone === 'Z5') ? 'Intervals' :
     (p.intensity === 'easy' ? 'Z2' : p.intensity === 'hard' ? 'Intervals' : 'Tempo');
-  return { type, duration: `${p.runMinutes} min`, zone: zone || '—', reason: p.headline || p.rationale };
+  return { type, duration: `${p.runMinutes} min`, zone: zone || '—', structure: formatWorkoutStructure(p.workout), reason: p.headline || p.rationale };
 }
 
 // ─── Training Recommendation Card ────────────────────────────────────────────
@@ -813,7 +813,7 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
             <Text style={recStyles.meta}>
               {runDone
                 ? `Completed ${completion!.runMin} min${completion!.runKm >= 0.1 ? ` · ${completion!.runKm.toFixed(1)} km` : ''}${xMin > 0 ? `  ·  +${xMin}min ${completion!.xLabel}` : ''}`
-                : `${rec.duration}${rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}${xMin > 0 ? `  ·  +${xMin}min ${completion!.xLabel} logged` : ''}`}
+                : `${rec.structure || `${rec.duration}${rec.zone && rec.zone !== '—' ? ` · ${rec.zone}` : ''}`}${xMin > 0 ? `  ·  +${xMin}min ${completion!.xLabel} logged` : ''}`}
             </Text>
           )}
         </View>
