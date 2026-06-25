@@ -1049,26 +1049,21 @@ function ArcSvg({ size, strokeWidth, progress, color, trackColor }: {
 }
 
 function Ring({
-  size, strokeWidth, progress, color, label, value,
+  size, strokeWidth, progress, color, value,
 }: {
   size: number; strokeWidth: number; progress: number;
-  color: string; label: string; value: string;
+  color: string; value: string;
 }) {
   return (
-    <View style={{ alignItems: 'center', gap: 6 }}>
-      <View style={{ width: size, height: size }}>
-        <ArcSvg size={size} strokeWidth={strokeWidth} progress={progress} color={color} trackColor={color + '28'} />
-        <View style={{
-          position: 'absolute', width: size, height: size,
-          alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Text style={{ fontSize: size * 0.24, fontWeight: '800', color, lineHeight: size * 0.28 }}>
-            {value}
-          </Text>
-          <Text style={{ fontSize: size * 0.11, color: '#aaa', letterSpacing: 0.3 }}>
-            {label}
-          </Text>
-        </View>
+    <View style={{ width: size, height: size }}>
+      <ArcSvg size={size} strokeWidth={strokeWidth} progress={progress} color={color} trackColor={color + '28'} />
+      <View style={{
+        position: 'absolute', width: size, height: size,
+        alignItems: 'center', justifyContent: 'center',
+      }}>
+        <Text style={{ fontSize: size * 0.3, fontWeight: '800', color, lineHeight: size * 0.34 }}>
+          {value}
+        </Text>
       </View>
     </View>
   );
@@ -1091,44 +1086,17 @@ function ArcRing({ size, strokeWidth, progress, color, trackColor }: {
 const SAFE_COLOR = '#16a085';
 
 function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }) {
-  const styles = useThemedStyles(makeStyles);
   const real = strain ? strain.real : 0;
   const st   = strain ? strainStatus(strain) : { label: '', color: '#888' };
-
-  // Marker on the ring circumference at a given % (clockwise from 12 o'clock)
-  const half = size / 2;
-  const rad  = half - 4; // centreline of the 8px stroke
-  const marker = (pct: number, key: string) => {
-    const th = (Math.min(100, Math.max(0, pct)) / 100) * 2 * Math.PI;
-    const x = half + rad * Math.sin(th);
-    const y = half - rad * Math.cos(th);
-    return (
-      <View key={key} style={{
-        position: 'absolute', left: x - 3.5, top: y - 3.5,
-        width: 7, height: 7, borderRadius: 3.5, backgroundColor: SAFE_COLOR,
-        borderWidth: 1, borderColor: '#fff',
-      }} />
-    );
-  };
-
+  // Just the real-effort ring now — the target range lives on the Today's Plan card.
   return (
-    <View style={{ alignItems: 'center', gap: 5 }}>
-      <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
-        {/* Real effort — single ring, same size as recovery/sleep */}
-        <ArcRing size={size} strokeWidth={8} progress={real / 100} color={st.color} />
-        {/* Suggested-range markers (floor + ceiling) */}
-        {strain && marker(strain.safeLow, 'lo')}
-        {strain && marker(strain.safeHigh, 'hi')}
-        <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <Text style={{ fontSize: size * 0.24, fontWeight: '800', color: st.color, lineHeight: size * 0.28 }}>
-            {strain ? `${real}%` : '--'}
-          </Text>
-          <Text style={{ fontSize: size * 0.11, color: '#aaa', letterSpacing: 0.3 }}>STRAIN</Text>
-        </View>
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      <ArcRing size={size} strokeWidth={8} progress={real / 100} color={st.color} />
+      <View style={{ position: 'absolute', alignItems: 'center' }}>
+        <Text style={{ fontSize: size * 0.3, fontWeight: '800', color: st.color, lineHeight: size * 0.34 }}>
+          {strain ? `${real}%` : '--'}
+        </Text>
       </View>
-      <Text style={[styles.strainCaption, { color: SAFE_COLOR }]}>
-        {strain ? `Target ${strain.safeLow}–${strain.safeHigh}%` : ''}
-      </Text>
     </View>
   );
 }
@@ -1217,23 +1185,23 @@ function WellnessRings({
       {DateNav}
 
       <View style={styles.ringsRow}>
-        {/* Strain — double ring (real effort + safe range), tap → detail */}
-        <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} activeOpacity={0.75}
-          onPress={navToStrain} disabled={!strain}>
-          <StrainRing size={RING} strain={strain} />
-          <Text style={styles.ringHint}>{strain ? 'tap ›' : 'syncing'}</Text>
+        {/* Sleep — tappable */}
+        <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToSleep} activeOpacity={0.75} disabled={!recovery}>
+          <Ring size={RING} strokeWidth={8} progress={sleepScore / 100} color="#8e44ad" value={sleepScore > 0 ? String(sleepScore) : '--'} />
+          <Text style={styles.ringLabel}>SLEEP</Text>
         </TouchableOpacity>
 
         {/* Recovery — tappable */}
         <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToRecovery} activeOpacity={0.75} disabled={!recovery}>
-          <Ring size={RING} strokeWidth={8} progress={noHRV ? 0 : recScore / 100} color={noHRV ? '#bbb' : recColor} label="RECOVERY" value={noHRV ? '--' : String(recScore)} />
-          <Text style={styles.ringHint}>{recovery ? 'tap ›' : 'syncing'}</Text>
+          <Ring size={RING} strokeWidth={8} progress={noHRV ? 0 : recScore / 100} color={noHRV ? '#bbb' : recColor} value={noHRV ? '--' : String(recScore)} />
+          <Text style={styles.ringLabel}>RECOVERY</Text>
         </TouchableOpacity>
 
-        {/* Sleep — tappable */}
-        <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={navToSleep} activeOpacity={0.75} disabled={!recovery}>
-          <Ring size={RING} strokeWidth={8} progress={sleepScore / 100} color="#8e44ad" label="SLEEP" value={sleepScore > 0 ? String(sleepScore) : '--'} />
-          <Text style={styles.ringHint}>{recovery ? 'tap ›' : ''}</Text>
+        {/* Strain — real-effort ring, tap → detail */}
+        <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} activeOpacity={0.75}
+          onPress={navToStrain} disabled={!strain}>
+          <StrainRing size={RING} strain={strain} />
+          <Text style={styles.ringLabel}>STRAIN</Text>
         </TouchableOpacity>
       </View>
 
@@ -1419,7 +1387,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   wellnessHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   wellnessTitle: { fontSize: 15, fontWeight: '700', color: c.text },
-  wellnessSubtitle: { fontSize: 12, color: c.textFaint },
+  wellnessSubtitle: { fontSize: 13, color: c.text, fontWeight: '600' },
   dateNav: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   dateArrow: { fontSize: 22, color: '#FF6B35', fontWeight: '700', lineHeight: 24 },
   pickerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
@@ -1431,8 +1399,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   pickerRowMeta: { fontSize: 12, color: c.textFaint },
   pickerEmpty: { fontSize: 13, color: c.textFaint, paddingVertical: 16, textAlign: 'center' },
   ringsRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', marginBottom: 2 },
-  ringHint: { fontSize: 9, color: c.textFaint, marginTop: 3 },
-  strainCaption: { fontSize: 9, fontWeight: '700' },
+  ringLabel: { fontSize: 11, color: c.text, fontWeight: '700', letterSpacing: 0.8, marginTop: 7 },
   wellnessUnavailable: { fontSize: 15, color: c.textSub, marginBottom: 4, fontWeight: '500' },
   wellnessPending: { fontSize: 11, color: c.textFaint, lineHeight: 15, marginTop: 10, textAlign: 'center' },
   recoveryUnavailableHint: { fontSize: 12, color: c.textFaint, marginBottom: 12, lineHeight: 18 },
