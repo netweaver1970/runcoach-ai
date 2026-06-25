@@ -36,7 +36,7 @@ export default function WeekPlan() {
   const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number } | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
-  const [weekCap, setWeekCap] = useState<{ used: number; cap: number } | null>(null);
+  const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number } | null>(null);
   const [err, setErr]     = useState<string | null>(null);
   const [busy, setBusy]   = useState(false);
 
@@ -104,8 +104,7 @@ export default function WeekPlan() {
       // Chart context: actual CTL/ATL for the last ~21 days (today is the last point → the seed).
       setHist(tl.slice(-21).map(d => ({ ctl: d.ctl, atl: d.atl })));
 
-      const used = prelim.reduce((a, p) => a + p.adjMin, 0);
-      setWeekCap({ used, cap: Math.round((coach.tof7d ?? 0) * capMul) });
+      setWeekCap({ capPct, cappedDays: prelim.filter(p => p.capped).length });
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to build the week plan.');
     } finally {
@@ -117,7 +116,6 @@ export default function WeekPlan() {
 
   const totalRunMin = rows?.reduce((a, r) => a + r.adjMin, 0) ?? 0;
   const runDays     = rows?.filter(r => r.intensity !== 'rest').length ?? 0;
-  const overCap     = !!weekCap && weekCap.cap > 0 && weekCap.used > weekCap.cap * 1.05;
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: 14, paddingBottom: 40 }}>
@@ -192,9 +190,11 @@ export default function WeekPlan() {
             <Text style={[s.h, s.num]}>ATL</Text><Text style={[s.h, s.num]}>TSB</Text>
           </View>
 
-          <Text style={[s.footer, overCap && { color: '#e74c3c' }]}>
-            {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min this week
-            {weekCap && weekCap.cap > 0 ? `  ·  cap ≈ ${weekCap.cap}min${overCap ? ' ⚠ over' : ' ✓'}` : ''}
+          <Text style={[s.footer, !!weekCap && weekCap.cappedDays > 0 && { color: '#e67e22' }]}>
+            {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min (work) this week
+            {weekCap ? (weekCap.cappedDays > 0
+              ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the +${weekCap.capPct}%/wk work cap`
+              : `  ·  within the +${weekCap.capPct}%/wk work cap ✓`) : ''}
           </Text>
 
           <TouchableOpacity style={[s.btn, busy && { opacity: 0.5 }]} onPress={build} disabled={busy}>
