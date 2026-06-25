@@ -31,8 +31,13 @@ export async function setAccountingMode(m: AccountingMode): Promise<void> {
   try { await SecureStore.setItemAsync(MODE_KEY, m); } catch { /* ignore */ }
 }
 
-let regimeCache: Record<string, AccountingMode> | null = null;
-async function loadRegimes(): Promise<Record<string, AccountingMode>> {
+// Each tag carries the run's date too, so the work→full boundary is self-contained (graphs don't
+// need to re-join against run data).
+type RegimeEntry = { r: AccountingMode; d: string };
+export type RegimeMap = Record<string, RegimeEntry>;
+
+let regimeCache: RegimeMap | null = null;
+async function loadRegimes(): Promise<RegimeMap> {
   if (regimeCache) return regimeCache;
   try {
     const info = await FileSystem.getInfoAsync(REGIME_FILE);
@@ -41,29 +46,26 @@ async function loadRegimes(): Promise<Record<string, AccountingMode>> {
   return regimeCache!;
 }
 
-/** The full uuid→regime map (a copy). Untagged runs are treated as 'work' via regimeOf(). */
-export async function getRunRegimes(): Promise<Record<string, AccountingMode>> {
+/** The full uuid→{regime,date} map (a copy). Untagged runs are treated as 'work' via regimeOf(). */
+export async function getRunRegimes(): Promise<RegimeMap> {
   return { ...(await loadRegimes()) };
 }
 
-/** Tag any UNTAGGED uuids with the CURRENT mode (set-once; never overwrites). Returns the map. */
-export async function tagRuns(uuids: string[]): Promise<Record<string, AccountingMode>> {
+/** Tag any UNTAGGED runs with the CURRENT mode + their date (set-once; never overwrites). */
+export async function tagRuns(runs: { uuid: string; date: string }[]): Promise<void> {
   const map = await loadRegimes();
   const mode = await getAccountingMode();
   let changed = false;
-  for (const u of uuids) if (u && !map[u]) { map[u] = mode; changed = true; }
+  for (const { uuid, date } of runs) if (uuid && !map[uuid]) { map[uuid] = { r: mode, d: date.slice(0, 10) }; changed = true; }
   if (changed) {
     try { await FileSystem.writeAsStringAsync(REGIME_FILE, JSON.stringify(map)); } catch { /* ignore */ }
   }
-  return { ...map };
 }
 
-export const regimeOf = (map: Record<string, AccountingMode>, uuid: string): AccountingMode =>
-  map[uuid] ?? 'work';
+export const regimeOf = (map: RegimeMap, uuid: string): AccountingMode => map[uuid]?.r ?? 'work';
 
 /** Date (YYYY-MM-DD) of the earliest run tagged 'full' — the work→full boundary for graphs, or null. */
-export async function fullRegimeSince(runDates: { uuid: string; date: string }[]): Promise<string | null> {
-  const map = await loadRegimes();
-  const fulls = runDates.filter(r => map[r.uuid] === 'full').map(r => r.date.slice(0, 10)).sort();
+export async function getFullBoundary(): Promise<string | null> {
+  const fulls = Object.values(await loadRegimes()).filter(e => e.r === 'full').map(e => e.d).sort();
   return fulls.length ? fulls[0] : null;
 }

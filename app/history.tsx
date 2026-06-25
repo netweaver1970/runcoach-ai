@@ -4,6 +4,7 @@ import {
   StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent, Alert, PanResponder,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { getFullBoundary } from '../src/services/accounting';
 import {
   fetchWeeklyMileageHistory,
   fetchDailyMileageHistory,
@@ -256,7 +257,7 @@ type XMode = 'daily' | 'weekly' | 'monthly';
 function Chart({
   data, color, innerW, xMode = 'weekly', showAllValues = false, prevData,
   cumulative = false, isTime = false, valueLabelStep = 1, fmtFn, zeroBase = true,
-  hideValueLabels = false, lineMode = false, bandData, pointColors,
+  hideValueLabels = false, lineMode = false, bandData, pointColors, boundaryDate,
 }: {
   data:            DataPoint[];
   color:           string;
@@ -273,6 +274,7 @@ function Chart({
   lineMode?:       boolean;     // force line rendering (cardio-load: line + band + status dots)
   bandData?:       ({ lo: number; hi: number } | null)[]; // per-point optimal-load band (aligned to data)
   pointColors?:    (string | null)[]; // per-point dot colour (cardio status), aligned to data
+  boundaryDate?:   string;            // work→full accounting boundary (YYYY-MM-DD) → vertical marker
 }) {
   const ch = useThemedStyles(makeCh);
   const { c: theme } = useTheme();
@@ -320,6 +322,9 @@ function Chart({
 
   const toY = (v: number) =>
     CHART_H * (1 - Math.max(0, Math.min(1, (v - scale.niceMin) / yRange)));
+
+  // Volume accounting work→full boundary: first slot at/after the switch date.
+  const boundaryIdx = boundaryDate ? data.findIndex(d => d.fullDate >= boundaryDate) : -1;
 
   // Decide which indices get x-axis labels.
   const xLabelIdxs = new Set<number>();
@@ -399,6 +404,20 @@ function Chart({
             backgroundColor: tick === 0 ? theme.textFaint : theme.gridline,
           }} />
         ))}
+
+        {/* Volume accounting regime boundary: vertical divider + "full →" label */}
+        {boundaryIdx >= 0 && (
+          <>
+            <View pointerEvents="none" style={{
+              position: 'absolute', top: 0, height: CHART_H, left: cxOf(boundaryIdx),
+              borderLeftWidth: 1, borderColor: '#FF6B35', borderStyle: 'dashed', opacity: 0.8,
+            }} />
+            <Text style={{
+              position: 'absolute', top: 1, left: cxOf(boundaryIdx) + 3,
+              fontSize: 8, fontWeight: '700', color: '#FF6B35',
+            }}>full →</Text>
+          </>
+        )}
 
         {(cumulative || lineMode) ? (
           // ── LINE CHART (cumulative mode, or cardio-load with band) ──────────
@@ -609,12 +628,17 @@ export default function HistoryScreen() {
   // Cardio-load only: per-day training-status breakdown over the loaded period.
   const [cardioStatus, setCardioStatus] = useState<{ label: string; color: string; days: number; pct: number }[]>([]);
   const [cardioByDate, setCardioByDate] = useState<Record<string, { lo: number; hi: number; color: string }>>({});
+  const [fullBoundary, setFullBoundary] = useState<string | null>(null);
   const [cumulativeMode, setCumulative] = useState(false);
   const [loading, setLoading]           = useState(true);
   const [error, setError]               = useState<string | null>(null);
   const [innerW, setInnerW]             = useState(0);
 
   const histType = (type ?? 'km') as HistoryType;
+  // Volume-accounting work→full boundary, marked on the time-on-feet (exercise duration) chart.
+  useEffect(() => {
+    if (histType === 'exercise-duration') getFullBoundary().then(setFullBoundary).catch(() => {});
+  }, [histType]);
   const cfg      = (histType !== 'timeline' && histType in CONFIGS)
     ? (CONFIGS[histType as Exclude<HistoryType,'timeline'>] ?? CONFIGS.km)
     : CONFIGS.km;
@@ -1016,6 +1040,7 @@ export default function HistoryScreen() {
               lineMode={isCardio}
               bandData={cardioBand}
               pointColors={cardioColors}
+              boundaryDate={histType === 'exercise-duration' ? (fullBoundary ?? undefined) : undefined}
             />
 
             <Text style={s.chartUnit}>

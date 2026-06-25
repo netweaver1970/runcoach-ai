@@ -1663,7 +1663,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
   // Stamp every run with the CURRENT volume-accounting regime (set-once; old runs stay as tagged),
   // so a later switch only affects new runs and history never moves.
-  await tagRuns(runs.map(r => r.uuid)).catch(() => ({}));
+  await tagRuns(runs.map(r => ({ uuid: r.uuid, date: r.date }))).catch(() => {});
 
   // Rolling, recency-weighted per-intensity TRIMP/min calibration from the runner's OWN runs
   // (day cardio-TRIMP ÷ run minutes). Recomputed every sync so it tracks changing fitness.
