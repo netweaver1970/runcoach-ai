@@ -14,6 +14,7 @@
  * Figures are our estimate; calibration vs Bevel is a separate follow-up.
  */
 import HealthKit from '@kingstinct/react-native-healthkit';
+import * as FileSystem from 'expo-file-system';
 import { buildHeartbeatQualityMap, isGoodHRVSample, loadSnapshotCache } from './healthkit';
 
 const HR_ID    = 'HKQuantityTypeIdentifierHeartRate';
@@ -59,8 +60,19 @@ const SESSION_GAP_MS = 60 * 60_000; // merge sleep segments < 1h apart into one 
 // Research-aligned: night HRV is a recovery-quality signal, shaped by sleep stage. The square wave
 // is only crisp on a well-rested (low-baseline) night; on a poor night the bumps drown in the high
 // baseline. Stage bump: 0 inBed,1 asleepUnspecified,2 awake-in-bed,3 core,4 deep,5 REM.
-const STAGE_BUMP: Record<number, number> = { 0: 6, 1: 3, 2: 8, 3: 2, 4: 0, 5: 14 };
+const STAGE_BUMP: Record<number, number> = { 0: 6, 1: 3, 2: 8, 3: 2, 4: 0, 5: 6 };
 const NIGHT_STAGE_SMOOTH = 0.35; // stress EWMA at night — fast enough that REM bumps form (not smeared)
+// NIGHT STRESS (Bevel reads a flat <25% all night). The z-score-vs-night-HR model over-read calm
+// sleep: the night HR baseline SD is tiny (~3 bpm), so a normal +5 bpm settling HR looked like a big
+// arousal, and the HRV term spiked on physiological REM dips — together pushing NREM stress to 45-65.
+// Asleep charging hits 0 at stress ~32, so that phantom stress STARVED the overnight charge → barely
+// charged → battery hit 0 by afternoon. Fix: night stress = low anchor + ONLY genuine HR arousal
+// (beyond a margin) + a softened HRV term, hard-capped. Day stress is unchanged.
+const NIGHT_STRESS_BASE = 16;   // calm-sleep anchor
+const NIGHT_HR_MARGIN   = 6;    // bpm above the night HR mean before it counts as arousal
+const NIGHT_HR_SD_MIN   = 8;    // floor the (too-tight) night HR SD so normal sleep HR isn't "stress"
+const NIGHT_HRV_K       = 0.4;  // soften the HRV term at night (REM / transient dips aren't real stress)
+const NIGHT_STRESS_CAP  = 30;   // hard cap so artifacts / REM can't paint a spiky night
 const SEED          = 42;     // starting level at the window edge
 // HRV trust thresholds. The watch R-R "gap" flag over-rejects an AFib-app user's stable
 // stress reads, so it is NOT a hard reject — a stable, near-resting HR is the arbiter.
@@ -87,6 +99,28 @@ export interface BodyBattery {
   computedAt: number;
   debug: any;             // raw trace for off-device calibration (Copy debug)
   correlation: any;       // last-night stage timeline + per-bin series (Copy correlation data)
+}
+
+// ── Instant cache ────────────────────────────────────────────────────────────
+// computeBodyBattery() runs ~6 heavy HealthKit queries (slow on launch). We persist the
+// last result so the home card can show it INSTANTLY, then recompute in the background.
+// The bulky debug/correlation traces are stripped — the home card never reads them and the
+// detail screen recomputes fresh.
+const BB_CACHE_FILE = `${FileSystem.documentDirectory}runcoach-bodybattery.json`;
+
+export async function loadBodyBatteryCache(): Promise<BodyBattery | null> {
+  try {
+    const info = await FileSystem.getInfoAsync(BB_CACHE_FILE);
+    if (!info.exists) return null;
+    return JSON.parse(await FileSystem.readAsStringAsync(BB_CACHE_FILE)) as BodyBattery;
+  } catch { return null; }
+}
+
+export async function saveBodyBatteryCache(bb: BodyBattery): Promise<void> {
+  try {
+    const slim = { ...bb, debug: undefined, correlation: undefined };
+    await FileSystem.writeAsStringAsync(BB_CACHE_FILE, JSON.stringify(slim));
+  } catch { /* ignore */ }
 }
 
 interface Sample { t: number; v: number; }
@@ -239,6 +273,13 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const zHRV = vHrv != null ? (vHrv - b.hvM) / b.hvS : 0;
     return clamp(STRESS_BASE + (zHR - zHRV) * STRESS_SCALE, 0, 100);
   };
+  // Night variant: anchor low and count ONLY HR arousal beyond a margin (normal settling HR ≈ 0),
+  // soften the HRV term, hard-cap. Keeps a calm night flat & low (Bevel-like) without starving charge.
+  const zStressNight = (avgHR: number, vHrv: number | null, b: { hvM: number; hvS: number; hrM: number; hrS: number }): number => {
+    const zHR  = Math.max(0, (avgHR - (b.hrM + NIGHT_HR_MARGIN)) / Math.max(b.hrS, NIGHT_HR_SD_MIN));
+    const zHRV = vHrv != null ? (vHrv - b.hvM) / b.hvS : 0;
+    return NIGHT_STRESS_BASE + (zHR - NIGHT_HRV_K * zHRV) * STRESS_SCALE;
+  };
 
   let battery = SEED; // washed out by the two nights inside the 60h window
   let smStress: number | null = null; // EWMA-smoothed stress (momentum)
@@ -263,7 +304,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // so the REM bumps drown; a rested night → low baseline, crisp square wave.
     const base = night ? nightBase : dayBase;
     const rawStress = night
-      ? clamp(zStress(avgHR, vHrv, base) + (stage >= 0 ? STAGE_BUMP[stage] : 0), 0, 100)
+      ? clamp(zStressNight(avgHR, vHrv, base) + (stage >= 0 ? STAGE_BUMP[stage] : 0), 0, NIGHT_STRESS_CAP)
       : zStress(avgHR, vHrv, base);
     // EWMA momentum: fast attack only AWAKE-DAY (a real stressor). At night use a faster weight so
     // REM/stage transitions actually show (a slow weight smears the square wave flat). Workout +

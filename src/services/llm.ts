@@ -201,6 +201,7 @@ export interface LLMCallOptions {
   system?:   string;
   messages:  { role: 'user' | 'assistant'; content: string }[];
   maxTokens: number;
+  temperature?: number; // omit for the provider default; low (~0.2) for stable, repeatable plans
 }
 
 /**
@@ -212,7 +213,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
   const cfg = await loadLLMConfig();
   if (!cfg.apiKey) throw new Error('No API key configured — add one in Settings.');
 
-  const { system, messages, maxTokens } = options;
+  const { system, messages, maxTokens, temperature } = options;
 
   // ── Anthropic ──────────────────────────────────────────────────────────────
   if (cfg.provider === 'anthropic') {
@@ -226,6 +227,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
+        ...(temperature != null ? { temperature } : {}),
         // Prompt caching: send the (large, mostly-static) system prompt as a cached
         // block so repeated calls within the 5-min TTL — e.g. regenerating the coach
         // plan or back-to-back coaching-file enhancements — bill cached input tokens
@@ -258,6 +260,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: maxTokens,
+      ...(temperature != null ? { temperature } : {}),
       messages: allMessages,
     }),
   });

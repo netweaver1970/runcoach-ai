@@ -309,6 +309,7 @@ for a rest day set intensity "rest", runMinutes 0, structure "Rest".\n\n===== CO
     system,
     messages: [{ role: 'user', content: JSON.stringify(snap) }],
     maxTokens: 1100,
+    temperature: 0.2, // low → the same inputs give a stable, repeatable week (not a fresh roll each open)
   });
   const match = txt.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Week-plan response was not JSON.');
@@ -337,6 +338,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     system,
     messages: [{ role: 'user', content: JSON.stringify({ ...snap, heatStrainFactor: heatFactor, tofBudgetTodayMin: heatBudget ?? snap.tofBudgetTodayMin }) }],
     maxTokens: 1200,
+    temperature: 0.2, // low → a stable daily plan that only shifts when the inputs actually change
   });
   const match = txt.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Coach response was not JSON.');
@@ -656,4 +658,32 @@ export async function loadPrescriptionAt(date: string, atMs: number): Promise<Co
     return chosen ?? sorted[0].plan; // before any logged plan → earliest on record
   }
   return loadCachedPlan(date);
+}
+
+// ── 7-day plan cache ───────────────────────────────────────────────────────────
+// The week plan is an LLM prescription — it should be STABLE, not re-rolled on every open.
+// Cache it per generation-day; reuse until a new day, a newly-completed run, or a manual
+// regenerate. The strain/CTL-ATL projection downstream is still recomputed on each open, so the
+// numbers track today's real fitness — only the prescribed sessions are frozen.
+const weekPlanFile = (date: string) => `${FileSystem.documentDirectory}coach-week-plan-${date}.json`;
+
+export interface WeekPlanCache {
+  date:        string;        // the day it was generated for (YYYY-MM-DD)
+  generatedAt: string;        // ISO
+  lastRunDate: string;        // most recent run date at generation — the staleness signature
+  days:        WeekPlanDay[];
+}
+
+export async function loadWeekPlanCache(date: string): Promise<WeekPlanCache | null> {
+  try {
+    const f = weekPlanFile(date);
+    const info = await FileSystem.getInfoAsync(f);
+    if (!info.exists) return null;
+    const cache = JSON.parse(await FileSystem.readAsStringAsync(f));
+    return cache && Array.isArray(cache.days) ? (cache as WeekPlanCache) : null;
+  } catch { return null; }
+}
+
+export async function saveWeekPlanCache(cache: WeekPlanCache): Promise<void> {
+  try { await FileSystem.writeAsStringAsync(weekPlanFile(cache.date), JSON.stringify(cache)); } catch { /* ignore */ }
 }

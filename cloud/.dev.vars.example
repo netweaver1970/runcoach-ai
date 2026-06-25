@@ -1,0 +1,3 @@
+# Copy to `.dev.vars` for `wrangler dev` (local). The real secret in production is set
+# with `npm run secret:jwt`. Use a long random string (e.g. `openssl rand -base64 48`).
+JWT_SECRET="dev-only-change-me-to-a-long-random-string"

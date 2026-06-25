@@ -85,6 +85,7 @@ function RootStack() {
         <Stack.Screen name="training-load" options={{ headerShown: false }} />
         <Stack.Screen name="coach-knowledge" options={{ headerShown: false }} />
         <Stack.Screen name="coach-knowledge-edit" options={{ headerShown: false }} />
+        <Stack.Screen name="account" options={{ headerShown: false }} />
       </Stack>
     </>
   );

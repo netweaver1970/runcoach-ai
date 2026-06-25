@@ -32,7 +32,7 @@ import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, T
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, formatWorkoutStructure, CoachPlan } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
-import { computeBodyBattery, BodyBattery } from '../src/services/bodyBattery';
+import { computeBodyBattery, BodyBattery, loadBodyBatteryCache, saveBodyBatteryCache } from '../src/services/bodyBattery';
 import { syncWatch } from '../src/services/watchSync';
 
 const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
@@ -43,6 +43,7 @@ const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus, activityCategory } from '../src/services/trainingLoad';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
+import { trySyncSnapshot } from '../src/services/cloudSync';
 import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
 import { maybeAutoRecalibrate } from '../src/services/zones';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
@@ -85,6 +86,7 @@ export default function HomeScreen() {
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
   const [sportFilter, setSportFilter]   = useState<SportFilter>('Run');
   const [bodyBattery, setBodyBattery]   = useState<BodyBattery | null>(null);
+  const [bbLoading, setBbLoading]       = useState(false);
   const [syncMonths, setSyncMonthsState] = useState<SyncMonths>(3);
   const [loadingStep, setLoadingStep]   = useState<{ step: string; pct: number } | null>(null);
   const [recommendation, setRecommendation] = useState<TrainingRecommendation | null>(null);
@@ -101,6 +103,9 @@ export default function HomeScreen() {
   const syncMonthsRef  = useRef<SyncMonths>(3);
   // Guard against concurrent loads (AppState + subscription can both fire at startup)
   const isLoadingRef   = useRef(false);
+  // Guard against concurrent recommendation builds (instant-path + bg refresh can overlap →
+  // would double-generate the plan via the LLM). One in-flight build at a time.
+  const recBusyRef     = useRef(false);
 
   // ── Today's recommendation = the SAME coach plan the Strain screen shows ───
   // Reads the cached coach plan (pre-generated each morning by the day-view) so the home
@@ -108,6 +113,8 @@ export default function HomeScreen() {
   const refreshRecommendation = useCallback(async (snap: HealthSnapshot) => {
     const key = await getApiKey();
     if (!key) return;
+    if (recBusyRef.current) return; // a build is already in flight — don't double-generate
+    recBusyRef.current = true;
     setLoadingRec(true);
     try {
       // Use the SAME key the Strain screen + morning day-view use (the latest component
@@ -123,6 +130,7 @@ export default function HomeScreen() {
       // silently ignore — card simply won't appear/update
     } finally {
       setLoadingRec(false);
+      recBusyRef.current = false;
     }
   }, []);
 
@@ -163,8 +171,15 @@ export default function HomeScreen() {
       ]);
       setSnapshot(snap);
       saveSnapshotCache(snap).catch(() => {});
-      // Body Battery (non-blocking) → also push KPIs to the watch with what we just computed.
-      computeBodyBattery().then(bb => { setBodyBattery(bb); syncWatch(bb, snap).catch(() => {}); }).catch(() => {});
+      // Cloud sync (opt-in): push derived data to the coach cloud if signed in. Fire-and-forget.
+      trySyncSnapshot(snap).catch(() => {});
+      // Body Battery (non-blocking) → cache it for an instant next-launch render, and push
+      // KPIs to the watch with what we just computed.
+      setBbLoading(true);
+      computeBodyBattery()
+        .then(bb => { setBodyBattery(bb); if (bb) saveBodyBatteryCache(bb).catch(() => {}); syncWatch(bb, snap).catch(() => {}); })
+        .catch(() => {})
+        .finally(() => setBbLoading(false));
       // Only a FULL scan marks this version as fully scanned (so light starts stay light).
       if (!light) SecureStore.setItemAsync(SCAN_MARKER_KEY, SCAN_MARKER).catch(() => {});
       setHasApiKey(!!key);
@@ -233,6 +248,10 @@ export default function HomeScreen() {
       if (cached && prevMarker === SCAN_MARKER) {
         setSnapshot(cached);
         setLoading(false);
+        // Instant blocks: show the last body battery + the cached coach plan right away, so the
+        // home card isn't blank while the light refresh (and the heavy battery recompute) run.
+        loadBodyBatteryCache().then(bb => { if (bb && !cancelled) setBodyBattery(bb); }).catch(() => {});
+        refreshRecommendation(cached); // reads the cached coach-plan file → near-instant card
         load(false, undefined, true, true);  // light + silent background refresh
       } else {
         load(false, undefined, false, false); // full scan with spinner
@@ -521,6 +540,18 @@ export default function HomeScreen() {
             <Text style={[styles.bbVal, { color: batteryColor(bodyBattery.current) }]}>{bodyBattery.current}%</Text>
             <Text style={styles.bbChevron}>›</Text>
           </TouchableOpacity>
+        )}
+
+        {/* Body Battery skeleton — first launch (no cached value yet) while it computes */}
+        {isTodayView && !bodyBattery && bbLoading && (
+          <View style={styles.bbCard}>
+            <Text style={styles.bbEmoji}>🔋</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bbTitle}>Body Battery</Text>
+              <Text style={styles.bbSub}>Calculating…</Text>
+            </View>
+            <ActivityIndicator size="small" color="#22C55E" />
+          </View>
         )}
 
         {/* Training load (CTL/ATL/TSB) — as of the viewed day */}

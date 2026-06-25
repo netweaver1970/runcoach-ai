@@ -3,7 +3,10 @@ import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet
 import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
-import { assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, WeekPlanDay } from '../src/services/coach';
+import {
+  assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, WeekPlanDay,
+  loadWeekPlanCache, saveWeekPlanCache,
+} from '../src/services/coach';
 import {
   estimateWorkoutLoad, strainFromLoad, estimateDayTrimp, rollLoadForward,
   calibrateTrimpRates, heatStrainFactor, TrimpRates,
@@ -37,10 +40,11 @@ export default function WeekPlan() {
   const [seed, setSeed]   = useState<{ ctl: number; atl: number } | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
   const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number } | null>(null);
+  const [genAt, setGenAt] = useState<string | null>(null);
   const [err, setErr]     = useState<string | null>(null);
   const [busy, setBusy]   = useState(false);
 
-  const build = useCallback(async () => {
+  const build = useCallback(async (forceRegen = false) => {
     setBusy(true); setErr(null); setRows(null);
     try {
       const snap = await loadSnapshotCache();
@@ -67,7 +71,22 @@ export default function WeekPlan() {
       const forecast = await getMorningForecast(7);
       const fxBy = new Map(forecast.map(f => [f.date, f]));
 
-      const days = await getWeekPlan(coach, forecast);
+      // Stable prescription: reuse today's cached week plan unless a new run finished since it
+      // was made or the user forces a regenerate. Only the LLM-chosen sessions are frozen — the
+      // strain/CTL-ATL projection below is always recomputed from today's real fitness.
+      const todayKey = coach.date;
+      const lastRunDate = (snap.runs ?? []).reduce((m, r) => (r.date > m ? r.date : m), '');
+      let days: WeekPlanDay[];
+      const cached = forceRegen ? null : await loadWeekPlanCache(todayKey);
+      if (cached && cached.lastRunDate === lastRunDate) {
+        days = cached.days;
+        setGenAt(cached.generatedAt);
+      } else {
+        days = await getWeekPlan(coach, forecast);
+        const generatedAt = new Date().toISOString();
+        await saveWeekPlanCache({ date: todayKey, generatedAt, lastRunDate, days });
+        setGenAt(generatedAt);
+      }
 
       // Backward-looking ROLLING cap: each future run's trailing-7-day time-on-feet must not
       // exceed the 7-day window a week earlier by more than the cap %. Seed with the last 14 days
@@ -139,7 +158,7 @@ export default function WeekPlan() {
       {err && (
         <View style={s.center}>
           <Text style={s.errText}>{err}</Text>
-          <TouchableOpacity style={s.btn} onPress={build}><Text style={s.btnText}>Retry</Text></TouchableOpacity>
+          <TouchableOpacity style={s.btn} onPress={() => build()}><Text style={s.btnText}>Retry</Text></TouchableOpacity>
         </View>
       )}
 
@@ -197,7 +216,14 @@ export default function WeekPlan() {
               : `  ·  within the +${weekCap.capPct}%/wk work cap ✓`) : ''}
           </Text>
 
-          <TouchableOpacity style={[s.btn, busy && { opacity: 0.5 }]} onPress={build} disabled={busy}>
+          {genAt && (
+            <Text style={s.genLine}>
+              Planned {new Date(genAt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+              {' '}· stays fixed until a new run or ↻
+            </Text>
+          )}
+
+          <TouchableOpacity style={[s.btn, busy && { opacity: 0.5 }]} onPress={() => build(true)} disabled={busy}>
             <Text style={s.btnText}>{busy ? 'Re-planning…' : '↻ Regenerate'}</Text>
           </TouchableOpacity>
         </>
@@ -281,6 +307,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   strain:   { fontSize: 16, fontWeight: '800' },
   val:      { fontSize: 14, fontWeight: '600', color: c.textSub },
   footer:   { fontSize: 12.5, color: c.textSub, marginTop: 12, fontWeight: '600' },
+  genLine:  { fontSize: 11.5, color: c.textFaint, marginTop: 14, textAlign: 'center' },
   btn:      { backgroundColor: '#FF6B35', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
   btnText:  { color: '#fff', fontWeight: '700', fontSize: 14 },
 });

@@ -882,6 +882,17 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Section>
 
+        <Section title="Cloud Account & Sync" cat="cloud">
+          <Text style={styles.hint}>
+            Sign in to sync your training to the cloud so an external coach can view your data and (soon) prescribe
+            workouts. The app works fully without this — cloud is optional. Only derived data is uploaded (runs and
+            daily readiness/strain/CTL-ATL), never your raw HealthKit caches.
+          </Text>
+          <TouchableOpacity style={styles.btn} onPress={() => router.push('/account' as any)}>
+            <Text style={styles.btnText}>Open Cloud Account</Text>
+          </TouchableOpacity>
+        </Section>
+
         <Section title="Backup & Restore" cat="data">
           <Text style={styles.hint}>
             Save all your settings — theme, AI provider/keys, training thresholds, coaching memory, Bevel
@@ -1058,6 +1069,7 @@ const CATEGORIES: { id: string; label: string; icon: string; desc: string }[] = 
   { id: 'profile',    label: 'Profile',                    icon: '👤', desc: 'Body weight' },
   { id: 'appearance', label: 'Appearance',                 icon: '🎨', desc: 'Theme & text size' },
   { id: 'data',       label: 'Data & Backup',              icon: '💾', desc: 'Backup/restore, export, privacy' },
+  { id: 'cloud',      label: 'Cloud & Coach',              icon: '☁️', desc: 'Account, sync, external coach' },
 ];
 
 function Section({ title, cat, children }: { title: string; cat?: string; children: React.ReactNode }) {

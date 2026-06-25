@@ -1,0 +1,21 @@
+# RunCoachAI cloud API ??? Cloudflare Worker + D1.
+#
+# Setup (you run these once; see README.md):
+#   1. wrangler login
+#   2. npm run db:create        ??? copy the returned database_id below
+#   3. npm run db:migrate       ??? applies migrations/0001_init.sql
+#   4. npm run secret:jwt       ??? paste a long random string (the JWT signing secret)
+#   5. npm run deploy           ??? prints your https://runcoach-api.<subdomain>.workers.dev URL
+#
+# JWT_SECRET is NOT stored here ??? it's a Worker secret (step 4), never in the repo.
+
+name = "runcoach-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "runcoach"
+database_id = "fc4dbcdc-485b-47c3-b8fe-555101d05794"
+migrations_dir = "migrations"
+
