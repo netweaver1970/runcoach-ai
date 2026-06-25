@@ -47,6 +47,7 @@ import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../sr
 import { maybeAutoRecalibrate } from '../src/services/zones';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { buildDayView, toDateKey } from '../src/services/dayView';
+import { markPrescriptionExecuted } from '../src/services/coachFiles';
 import { loadRunMeta } from '../src/services/runMeta';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain, ActivitySummary } from '../src/types';
@@ -432,6 +433,12 @@ export default function HomeScreen() {
       : null;
     return { runDone: todaysRuns.length > 0, runMin, runKm, xMin, xLabel, topUp, atCeiling, strainReal: str?.real ?? null };
   })();
+
+  // Flip today's prescription-history entry to ✅ once a run is logged for today.
+  const ranToday = isTodayView && !!completion?.runDone;
+  useEffect(() => {
+    if (ranToday) markPrescriptionExecuted(todayKey).catch(() => {});
+  }, [ranToday, todayKey]);
 
   return (
     <SafeAreaView style={styles.container}>

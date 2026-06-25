@@ -8,7 +8,7 @@
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { callLLM } from './llm';
-import { buildKnowledgePrompt } from './coachFiles';
+import { buildKnowledgePrompt, recordPrescription } from './coachFiles';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
@@ -561,6 +561,8 @@ export async function saveCachedPlan(date: string, plan: CoachPlan): Promise<voi
     const trimmed = log.slice(-PLAN_LOG_CAP);
     await FileSystem.writeAsStringAsync(planLogFile(date), JSON.stringify(trimmed));
   } catch { /* ignore */ }
+  // Concise, human-readable prescription history in the coaching notes (newest first).
+  recordPrescription(date, plan.intensity === 'rest' ? '' : formatWorkoutStructure(plan.workout)).catch(() => {});
 }
 
 /**

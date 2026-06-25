@@ -138,6 +138,12 @@ Personal context for tailoring sessions (edit freely):
 - ELEVATED RESTING AUTONOMIC LOAD: resting HR runs high and HRV-based "stress" reads high even at rest (e.g. ~83% sitting indoors with AC). So a high HR at a given effort partly reflects this baseline — not only fitness or fatigue. Don't over-restrict on a single high HR/stress reading; judge by trends.
 - GOALS: build durable aerobic fitness while gradually reducing central weight. Favour sustainable, mostly-easy aerobic volume + leg strength; keep hard days genuinely hard but infrequent; avoid sessions that needlessly spike strain.`;
 
+const DEFAULT_PRESCRIPTION_HISTORY = `# Prescription History
+
+A running log of prescribed runs, newest first. \`✅ executed\` once the run is logged that
+day, \`⬜ planned\` until then. Prune old entries freely — this is just a training record.
+`;
+
 interface DefaultDef { id: string; title: string; description: string; content: string; }
 const DEFAULTS: DefaultDef[] = [
   { id: 'athlete-profile',   title: 'Athlete Profile',       description: 'Personal physiology + goals the coach should tailor to', content: DEFAULT_PROFILE },
@@ -145,7 +151,48 @@ const DEFAULTS: DefaultDef[] = [
   { id: 'strength-exercises', title: 'Strength Exercises',   description: 'Preferred leg/hip/foot strength work',         content: DEFAULT_STRENGTH },
   { id: 'pre-run-drills',    title: 'Pre-Run Drills',        description: 'Dynamic warm-up drills before every run',      content: DEFAULT_DRILLS },
   { id: 'running-schedule',  title: 'Weekly Schedule',       description: 'Preferred structured running week',            content: DEFAULT_SCHEDULE },
+  { id: 'prescription-history', title: 'Prescription History', description: 'Log of prescribed runs + whether they were executed', content: DEFAULT_PRESCRIPTION_HISTORY },
 ];
+
+const HISTORY_ID  = 'prescription-history';
+const HISTORY_CAP = 90;                                 // keep the last N entries (user prunes too)
+const isEntry = (l: string) => l.startsWith('- 2');     // entry lines start with "- YYYY-…"
+
+// Upsert today's prescription into the history log (newest first). Preserves an existing
+// ✅ executed mark, so re-generating a plan the same day doesn't wipe the "done" status.
+export async function recordPrescription(date: string, structure: string): Promise<void> {
+  try {
+    await seed();
+    const raw    = (await readKnowledgeContent(HISTORY_ID)) || DEFAULT_PRESCRIPTION_HISTORY;
+    const lines  = raw.split('\n');
+    const detail = structure?.trim() || 'rest';
+    const at     = lines.findIndex(l => l.startsWith(`- ${date} `));
+    const done   = at >= 0 && lines[at].includes('✅');
+    const line   = `- ${date} · ${detail} · ${done ? '✅ executed' : '⬜ planned'}`;
+    if (at >= 0) {
+      lines[at] = line;
+    } else {
+      const first = lines.findIndex(isEntry);
+      lines.splice(first >= 0 ? first : lines.length, 0, line);
+    }
+    let n = 0;
+    const capped = lines.filter(l => !isEntry(l) || ++n <= HISTORY_CAP);
+    await writeKnowledgeContent(HISTORY_ID, capped.join('\n'));
+  } catch { /* ignore */ }
+}
+
+// Flip a day's entry to ✅ once the prescribed run is logged.
+export async function markPrescriptionExecuted(date: string): Promise<void> {
+  try {
+    const raw = await readKnowledgeContent(HISTORY_ID);
+    if (!raw) return;
+    const lines = raw.split('\n');
+    const at = lines.findIndex(l => l.startsWith(`- ${date} `));
+    if (at < 0 || lines[at].includes('✅')) return;
+    lines[at] = lines[at].replace('⬜ planned', '✅ executed');
+    await writeKnowledgeContent(HISTORY_ID, lines.join('\n'));
+  } catch { /* ignore */ }
+}
 
 const defaultContent = (id: string) => DEFAULTS.find(d => d.id === id)?.content ?? '';
 export const isBuiltinId = (id: string) => DEFAULTS.some(d => d.id === id);
