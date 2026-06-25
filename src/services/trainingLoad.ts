@@ -445,6 +445,23 @@ export function strainFromLoad(rawLoad: number): number {
   return Math.min(100, Math.round(STRAIN_LOAD_A * Math.log(1 + STRAIN_LOAD_B * rawLoad)));
 }
 
+// Estimate a watch workout's strain LOAD (pre-heat) from its blocks + warmup/drills/cooldown,
+// using the same zone weights as the strain model (warmup/cooldown ≈ easy Z1, drills ≈ Z2).
+// Pair with strainFromLoad((existingRawLoad + load·heatFactor)) to project today's total strain.
+const SESSION_ZONE_W: Record<string, number> = { Z0: 0.25, Z1: 1, Z2: 1, Z3: 1.5, Z4: 6, Z5: 8 };
+export function estimateWorkoutLoad(w: {
+  warmupMeters?: number; drillsMinutes?: number; cooldownMeters?: number;
+  blocks?: { repeats?: number; workMinutes?: number; restMinutes?: number; hrZone?: string }[];
+}): number {
+  let load = (((w.warmupMeters ?? 0) + (w.cooldownMeters ?? 0)) / 170) * SESSION_ZONE_W.Z1; // ~170 m/min easy
+  load += (w.drillsMinutes ?? 0) * SESSION_ZONE_W.Z2;
+  for (const b of w.blocks ?? []) {
+    const zw = SESSION_ZONE_W[b.hrZone ?? 'Z2'] ?? 1;
+    load += (b.repeats ?? 1) * ((b.workMinutes ?? 0) * zw + (b.restMinutes ?? 0) * SESSION_ZONE_W.Z1);
+  }
+  return load;
+}
+
 // Passive strain = NON-WORKOUT steps (workout steps are "active" via HR). Linear, ≈ Bevel's steps/470.
 export function stepStrainLoad(nonWorkoutSteps: number): number {
   return STRAIN_STEP_GAMMA * Math.max(0, nonWorkoutSteps) / 1000;

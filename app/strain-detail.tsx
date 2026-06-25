@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchStrainCalibration } from '../src/services/healthkit';
 import * as Clipboard from 'expo-clipboard';
-import { strainStatus } from '../src/services/trainingLoad';
+import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
 import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, planNeedsRefresh, CoachPlan } from '../src/services/coach';
 import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
@@ -101,6 +101,13 @@ export default function StrainDetailScreen() {
         ? synthesizeWorkout(plan.intensity, effRunMin, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones)
         : plan.workout)
     : null;
+
+  // Projected strain the prescribed (or adjusted) run will add → today's resulting total vs the band.
+  const planHeatFactor = heatStrainFactor(targetIsToday && weather
+    ? { tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity } : null);
+  const runLoad         = watchWorkout ? estimateWorkoutLoad(watchWorkout) : 0;
+  const projectedStrain = watchWorkout ? strainFromLoad((strain?.trimp ?? 0) + runLoad * planHeatFactor) : real;
+  const runStrain       = Math.max(0, projectedStrain - real);
 
   // Rolling progression cap as of the viewed day, honouring the user's % + basis settings.
   const [capCtx, setCapCtx] = useState<CapContext | null>(null);
@@ -348,6 +355,18 @@ export default function StrainDetailScreen() {
                   ))}
                   <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters} m</Text>
 
+                  {/* Projected strain this session adds + today's resulting total vs the target band */}
+                  {strain && (
+                    <Text style={[s.projStrain, {
+                      color: projectedStrain > strain.safeHigh ? '#f39c12'
+                           : projectedStrain < strain.safeLow ? '#3498db' : '#27ae60',
+                    }]}>
+                      📊 Adds ~{runStrain}% strain → today ≈ {projectedStrain}%
+                      {'  '}(target {strain.safeLow}–{strain.safeHigh}%
+                      {projectedStrain > strain.safeHigh ? ' · above' : projectedStrain < strain.safeLow ? ' · below' : ' · in band'})
+                    </Text>
+                  )}
+
                   {/* Adjust the prescribed run time, then push the edited session to the watch */}
                   <View style={s.adjustRow}>
                     <Text style={s.adjustLabel}>Adjust run</Text>
@@ -531,6 +550,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
   adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center' },
   adjustReset: { fontSize: 12, color: '#FF6B35', fontWeight: '600' },
+  projStrain:  { fontSize: 13, fontWeight: '700', marginTop: 8 },
   watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },
   coachCaution: { fontSize: 12, color: '#e67e22', marginTop: 8, lineHeight: 18 },
