@@ -199,6 +199,148 @@ function safeParse(s: unknown) {
   try { return JSON.parse(String(s)); } catch { return null; }
 }
 
+// ── coach <-> athlete linking (Milestone 2) ───────────────────────────────────
+// Athletes generate a short invite code; a coach redeems it. The coach can then read
+// (only) that athlete's recent runs + daily metrics. Either party can unlink.
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O/1/I
+function inviteCode(len = 6): string {
+  const r = crypto.getRandomValues(new Uint8Array(len));
+  let s = '';
+  for (let i = 0; i < len; i++) s += INVITE_ALPHABET[r[i] % INVITE_ALPHABET.length];
+  return s;
+}
+async function hasAcceptedLink(c: Context<AppEnv>, coachId: string, athleteId: string): Promise<boolean> {
+  const row = await c.env.DB
+    .prepare("SELECT id FROM coach_links WHERE coach_id = ? AND athlete_id = ? AND status = 'accepted'")
+    .bind(coachId, athleteId).first();
+  return !!row;
+}
+
+// Athlete generates (or re-fetches) a pending invite code to hand to a coach.
+app.post('/links/invite', requireAuth, async (c) => {
+  const athleteId = c.get('userId');
+  const existing = await c.env.DB
+    .prepare("SELECT invite_code FROM coach_links WHERE athlete_id = ? AND coach_id IS NULL AND status = 'pending' ORDER BY created_at DESC LIMIT 1")
+    .bind(athleteId).first<any>();
+  if (existing?.invite_code) return c.json({ code: existing.invite_code });
+  const now = Math.floor(Date.now() / 1000);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = inviteCode();
+    try {
+      await c.env.DB.prepare(
+        "INSERT INTO coach_links (id, coach_id, athlete_id, status, invite_code, created_at) VALUES (?, NULL, ?, 'pending', ?, ?)",
+      ).bind(newId(), athleteId, code, now).run();
+      return c.json({ code });
+    } catch { /* unique collision — retry */ }
+  }
+  return c.json({ error: 'could not generate code' }, 500);
+});
+
+// Coach redeems an athlete's invite code.
+app.post('/links/accept', requireAuth, async (c) => {
+  const coachId = c.get('userId');
+  const body = (await c.req.json().catch(() => null)) as any;
+  const code = String(body?.code || '').trim().toUpperCase();
+  if (!code) return c.json({ error: 'missing code' }, 400);
+  const row = await c.env.DB
+    .prepare("SELECT id, athlete_id FROM coach_links WHERE invite_code = ? AND status = 'pending' AND coach_id IS NULL")
+    .bind(code).first<any>();
+  if (!row) return c.json({ error: 'invalid or already-used code' }, 404);
+  if (row.athlete_id === coachId) return c.json({ error: "you can't coach your own account" }, 400);
+  await c.env.DB.prepare("UPDATE coach_links SET coach_id = ?, status = 'accepted' WHERE id = ?")
+    .bind(coachId, row.id).run();
+  const athlete = await c.env.DB.prepare('SELECT id, name, email FROM users WHERE id = ?').bind(row.athlete_id).first();
+  return c.json({ ok: true, athlete });
+});
+
+// All links involving the caller (as athlete: my coaches + pending code; as coach: my athletes).
+app.get('/links', requireAuth, async (c) => {
+  const uid = c.get('userId');
+  const { results } = await c.env.DB.prepare(
+    `SELECT l.id, l.status, l.invite_code, l.coach_id, l.athlete_id,
+            ca.name AS coach_name, ca.email AS coach_email,
+            au.name AS athlete_name, au.email AS athlete_email
+     FROM coach_links l
+     LEFT JOIN users ca ON ca.id = l.coach_id
+     LEFT JOIN users au ON au.id = l.athlete_id
+     WHERE l.coach_id = ? OR l.athlete_id = ?
+     ORDER BY l.created_at DESC`,
+  ).bind(uid, uid).all<any>();
+  const links = (results || []).map((r) => ({
+    id: r.id, status: r.status, inviteCode: r.invite_code,
+    role: r.athlete_id === uid ? 'athlete' : 'coach',
+    coach: r.coach_id ? { id: r.coach_id, name: r.coach_name, email: r.coach_email } : null,
+    athlete: { id: r.athlete_id, name: r.athlete_name, email: r.athlete_email },
+  }));
+  return c.json({ links });
+});
+
+// Coach: accepted athletes.
+app.get('/coach/athletes', requireAuth, async (c) => {
+  const coachId = c.get('userId');
+  const { results } = await c.env.DB.prepare(
+    `SELECT l.id AS link_id, u.id, u.name, u.email
+     FROM coach_links l JOIN users u ON u.id = l.athlete_id
+     WHERE l.coach_id = ? AND l.status = 'accepted'
+     ORDER BY COALESCE(u.name, u.email)`,
+  ).bind(coachId).all<any>();
+  return c.json({ athletes: (results || []).map((r) => ({ linkId: r.link_id, id: r.id, name: r.name, email: r.email })) });
+});
+
+// Coach: one athlete's recent data (read-only; requires an accepted link).
+app.get('/coach/athlete/:id', requireAuth, async (c) => {
+  const coachId = c.get('userId');
+  const athleteId = c.req.param('id');
+  if (!(await hasAcceptedLink(c, coachId, athleteId))) return c.json({ error: 'not linked to this athlete' }, 403);
+  const athlete = await c.env.DB.prepare('SELECT id, name, email FROM users WHERE id = ?').bind(athleteId).first();
+  const runs = await c.env.DB.prepare('SELECT id, date, json FROM runs WHERE athlete_id = ? ORDER BY date DESC LIMIT 20').bind(athleteId).all<any>();
+  const days = await c.env.DB.prepare('SELECT date, recovery, strain, ctl, atl, tsb, sleep_min, hrv, rhr FROM athlete_days WHERE athlete_id = ? ORDER BY date DESC LIMIT 30').bind(athleteId).all<any>();
+  const plans = await c.env.DB.prepare('SELECT date, source, author_id, json, updated_at FROM plans WHERE athlete_id = ? ORDER BY date DESC LIMIT 21').bind(athleteId).all<any>();
+  return c.json({
+    athlete,
+    runs: (runs.results || []).map((r) => ({ id: r.id, date: r.date, ...safeParse(r.json) })),
+    days: (days.results || []).map((d) => ({ date: d.date, recovery: d.recovery, strain: d.strain, ctl: d.ctl, atl: d.atl, tsb: d.tsb, sleepMin: d.sleep_min, hrv: d.hrv, rhr: d.rhr })),
+    plans: (plans.results || []).map((p) => ({ date: p.date, source: p.source, authorId: p.author_id, plan: safeParse(p.json), updatedAt: p.updated_at })),
+  });
+});
+
+// Coach writes / updates a prescription for an athlete on a date (Milestone 3).
+app.post('/coach/athlete/:id/plan', requireAuth, async (c) => {
+  const coachId = c.get('userId');
+  const athleteId = c.req.param('id');
+  if (!(await hasAcceptedLink(c, coachId, athleteId))) return c.json({ error: 'not linked to this athlete' }, 403);
+  const body = (await c.req.json().catch(() => null)) as any;
+  const date = String(body?.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: 'invalid date (YYYY-MM-DD)' }, 400);
+  if (body?.plan == null || typeof body.plan !== 'object') return c.json({ error: 'missing plan' }, 400);
+  await c.env.DB.prepare(
+    `INSERT INTO plans (athlete_id, date, source, author_id, json, updated_at)
+     VALUES (?, ?, 'coach', ?, ?, ?)
+     ON CONFLICT(athlete_id, date) DO UPDATE SET
+       source='coach', author_id=excluded.author_id, json=excluded.json, updated_at=excluded.updated_at`,
+  ).bind(athleteId, date, coachId, JSON.stringify(body.plan), Date.now()).run();
+  return c.json({ ok: true });
+});
+
+// Coach removes a prescription for a date.
+app.delete('/coach/athlete/:id/plan', requireAuth, async (c) => {
+  const coachId = c.get('userId');
+  const athleteId = c.req.param('id');
+  if (!(await hasAcceptedLink(c, coachId, athleteId))) return c.json({ error: 'not linked to this athlete' }, 403);
+  const date = (c.req.query('date') || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: 'invalid date' }, 400);
+  await c.env.DB.prepare("DELETE FROM plans WHERE athlete_id = ? AND date = ? AND source = 'coach'").bind(athleteId, date).run();
+  return c.json({ ok: true });
+});
+
+// Either party unlinks.
+app.delete('/links/:id', requireAuth, async (c) => {
+  const uid = c.get('userId');
+  const id = c.req.param('id');
+  await c.env.DB.prepare('DELETE FROM coach_links WHERE id = ? AND (coach_id = ? OR athlete_id = ?)').bind(id, uid, uid).run();
+  return c.json({ ok: true });
+});
+
 app.notFound((c) => c.json({ error: 'not found' }, 404));
 app.onError((err, c) => {
   console.error('worker error', err);

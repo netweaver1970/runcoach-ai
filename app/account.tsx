@@ -24,6 +24,7 @@ export default function AccountScreen() {
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState<CloudRole>('athlete');
   const [busy, setBusy] = useState(false);
@@ -43,6 +44,7 @@ export default function AccountScreen() {
     if (!/^https?:\/\//i.test(url)) { Alert.alert('Invalid URL', 'The server URL should start with https://'); return; }
     if (!email.trim() || !password) { Alert.alert('Missing details', 'Enter your email and password.'); return; }
     if (mode === 'signup' && password.length < 8) { Alert.alert('Weak password', 'Use at least 8 characters.'); return; }
+    if (mode === 'signup' && password !== confirm) { Alert.alert("Passwords don't match", 'Re-enter the same password in both fields.'); return; }
     setBusy(true);
     try {
       await setBaseUrl(url);
@@ -51,6 +53,7 @@ export default function AccountScreen() {
         : await login(email.trim(), password);
       setUser(u);
       setPassword('');
+      setConfirm('');
     } catch (e: any) {
       Alert.alert(mode === 'signup' ? 'Sign-up failed' : 'Sign-in failed', e?.message ?? String(e));
     } finally {
@@ -122,6 +125,16 @@ export default function AccountScreen() {
                 </TouchableOpacity>
               </View>
 
+              <TouchableOpacity style={s.card} activeOpacity={0.7} onPress={() => router.push('/coach' as any)}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.label}>Coaching</Text>
+                    <Text style={s.sub}>Invite a coach, or coach other athletes</Text>
+                  </View>
+                  <Text style={s.chev}>›</Text>
+                </View>
+              </TouchableOpacity>
+
               <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={doLogout}>
                 <Text style={[s.btnText, { color: '#E2553B' }]}>Sign out</Text>
               </TouchableOpacity>
@@ -191,6 +204,21 @@ export default function AccountScreen() {
 
               {mode === 'signup' && (
                 <>
+                  <Text style={s.fieldLabel}>Confirm password</Text>
+                  <TextInput
+                    style={s.input}
+                    value={confirm}
+                    onChangeText={setConfirm}
+                    placeholder="re-enter password"
+                    placeholderTextColor="#999"
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {confirm.length > 0 && password !== confirm && (
+                    <Text style={s.mismatch}>Passwords don't match</Text>
+                  )}
+
                   <Text style={s.fieldLabel}>Name (optional)</Text>
                   <TextInput
                     style={s.input}
@@ -217,11 +245,16 @@ export default function AccountScreen() {
                 </>
               )}
 
-              <TouchableOpacity style={[s.btn, busy && { opacity: 0.6 }]} disabled={busy} onPress={submit}>
-                <Text style={s.btnText}>
-                  {busy ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}
-                </Text>
-              </TouchableOpacity>
+              {(() => {
+                const blocked = busy || (mode === 'signup' && (password.length < 8 || password !== confirm));
+                return (
+                  <TouchableOpacity style={[s.btn, blocked && { opacity: 0.6 }]} disabled={blocked} onPress={submit}>
+                    <Text style={s.btnText}>
+                      {busy ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })()}
 
               <Text style={s.privacy}>
                 Your password is hashed on the server (PBKDF2) and never stored in plain text. Health data is sent
@@ -255,6 +288,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   email: { fontSize: 18, fontWeight: '700', color: c.text },
   sub: { fontSize: 13, color: c.textSub, marginTop: 4 },
   hint: { fontSize: 12, color: c.textFaint, lineHeight: 17, marginTop: 8 },
+  mismatch: { fontSize: 12, color: '#E2553B', marginTop: -6, marginBottom: 10, fontWeight: '600' },
+  chev: { fontSize: 22, color: c.textFaint, marginLeft: 8 },
   roleBadge: {
     alignSelf: 'flex-start', marginTop: 6, backgroundColor: '#FF6B3522',
     paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,

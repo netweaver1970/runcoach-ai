@@ -38,7 +38,7 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getCoachingMode, setCoachingMode, CoachingMode } from '../src/services/coach';
 import { getAccountingMode, setAccountingMode, AccountingMode } from '../src/services/accounting';
 import {
   scheduleWeeklyCoachReminder,
@@ -80,6 +80,7 @@ export default function SettingsScreen() {
   const [capPctSaved, setCapPctSaved] = useState(false);
   const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
   const [accMode, setAccModeState] = useState<AccountingMode>('work');
+  const [coachMode, setCoachModeState] = useState<CoachingMode>('self');
   const [maxHr, setMaxHr] = useState('');
   const [maxHrSaved, setMaxHrSaved] = useState(false);
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
@@ -123,6 +124,7 @@ export default function SettingsScreen() {
     getLoadCapPct().then(p => setCapPct(String(p)));
     getLoadCapBasis().then(setCapBasisState);
     getAccountingMode().then(setAccModeState);
+    getCoachingMode().then(setCoachModeState);
     getUserMaxHr().then(h => setMaxHr(h > 0 ? String(h) : ''));
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
@@ -891,6 +893,26 @@ export default function SettingsScreen() {
           <TouchableOpacity style={styles.btn} onPress={() => router.push('/account' as any)}>
             <Text style={styles.btnText}>Open Cloud Account</Text>
           </TouchableOpacity>
+
+          <View style={[styles.switchRow, { marginTop: 16 }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Follow my coach's plan</Text>
+              <Text style={styles.switchSub}>
+                On: today's session comes from the prescription your coach wrote in the cloud (no AI key needed).
+                Off: the app's own AI generates your plan. Your metrics sync either way.
+              </Text>
+            </View>
+            <Switch
+              value={coachMode === 'coach'}
+              onValueChange={async (v) => {
+                const m: CoachingMode = v ? 'coach' : 'self';
+                setCoachModeState(m);
+                await setCoachingMode(m);
+              }}
+              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              thumbColor="#fff"
+            />
+          </View>
         </Section>
 
         <Section title="Backup & Restore" cat="data">

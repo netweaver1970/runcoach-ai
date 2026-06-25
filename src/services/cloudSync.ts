@@ -81,6 +81,18 @@ export async function syncSnapshot(snap: HealthSnapshot): Promise<SyncResult> {
   return { runs, days, at };
 }
 
+/** Athlete: the coach-authored plan (CoachPlan blob) for a given date, or null. */
+export async function fetchCoachPlanForDate(date: string): Promise<any | null> {
+  if (!(await isLoggedIn())) return null;
+  try {
+    const r = await api<{ plans: { date: string; source: string; plan: any }[] }>(`/sync/plans?from=${encodeURIComponent(date)}`);
+    const hit = (r.plans || []).find((p) => p.date === date && p.source === 'coach' && p.plan);
+    return hit?.plan ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fire-and-forget variant for post-scan hooks — never throws, returns null on any failure. */
 export async function trySyncSnapshot(snap: HealthSnapshot): Promise<SyncResult | null> {
   try {

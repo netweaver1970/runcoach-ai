@@ -29,7 +29,7 @@ import {
 } from '../src/services/healthkit';
 import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
-import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, formatWorkoutStructure, CoachPlan } from '../src/services/coach';
+import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { computeBodyBattery, BodyBattery, loadBodyBatteryCache, saveBodyBatteryCache } from '../src/services/bodyBattery';
@@ -43,7 +43,7 @@ const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
 import { tsbStatus, strainStatus, cardioLoadStatus, activityCategory } from '../src/services/trainingLoad';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
-import { trySyncSnapshot } from '../src/services/cloudSync';
+import { trySyncSnapshot, fetchCoachPlanForDate } from '../src/services/cloudSync';
 import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
 import { maybeAutoRecalibrate } from '../src/services/zones';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
@@ -111,15 +111,41 @@ export default function HomeScreen() {
   // Reads the cached coach plan (pre-generated each morning by the day-view) so the home
   // card and the Strain-detail plan never disagree; only generates if none is cached yet.
   const refreshRecommendation = useCallback(async (snap: HealthSnapshot) => {
-    const key = await getApiKey();
-    if (!key) return;
     if (recBusyRef.current) return; // a build is already in flight — don't double-generate
     recBusyRef.current = true;
     setLoadingRec(true);
     try {
-      // Use the SAME key the Strain screen + morning day-view use (the latest component
-      // date = cs.date), so the home and detail always read the exact same cached plan.
+      const mode = await getCoachingMode();
       const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
+
+      // ── Coach mode: use the prescription the coach wrote in the cloud ─────────
+      if (mode === 'coach') {
+        const raw = await fetchCoachPlanForDate(cs.date);
+        if (raw) {
+          let plan = raw as CoachPlan;
+          // The coach prescribes intensity + HR-zone structure; localize the watch workout
+          // to THIS athlete's power zones (power is per-athlete).
+          if (plan.intensity !== 'rest') {
+            plan = {
+              ...plan,
+              workout: plan.workout
+                ? ensureBlockPower(plan.workout, cs.powerZones)
+                : synthesizeWorkout(plan.intensity, plan.runMinutes, weekdayName(cs.date), cs.powerZones),
+            };
+          }
+          await saveCachedPlan(cs.date, plan); // same cache the home + Strain + watch read
+          setRecommendation(coachPlanToRec(plan));
+        } else {
+          setRecommendation({ type: 'Rest', duration: '—', zone: '—', reason: "Waiting for your coach to set today's session." });
+        }
+        return;
+      }
+
+      // ── Self mode: the app's LLM generates the plan (needs an API key) ────────
+      const key = await getApiKey();
+      if (!key) return;
+      // Use the SAME cached plan the Strain screen + morning day-view use (keyed on cs.date),
+      // so the home and detail always read the exact same plan.
       let plan = await loadCachedPlan(cs.date);
       if (!plan || planNeedsRefresh(plan, cs)) {     // regen if heat/strain drifted
         plan = await getCoachPlan(cs);
@@ -184,8 +210,9 @@ export default function HomeScreen() {
       if (!light) SecureStore.setItemAsync(SCAN_MARKER_KEY, SCAN_MARKER).catch(() => {});
       setHasApiKey(!!key);
 
-      // Today's recommendation = the cached coach plan (same source as the Strain screen).
-      if (key) refreshRecommendation(snap);
+      // Today's recommendation: self mode → LLM (needs key); coach mode → cloud prescription
+      // (no key needed). refreshRecommendation decides internally, so call it unconditionally.
+      refreshRecommendation(snap);
 
       // Auto-analyse the latest run (prescription-aware) when one just finished, then
       // surface the reduced result on the home card. Idempotent + bounded to fresh runs.

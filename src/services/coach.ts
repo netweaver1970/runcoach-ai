@@ -174,7 +174,7 @@ function clampScore(n: any, fallback: number): number {
 const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
 
 // Short weekday slot name for the day (e.g. "Mon") — workouts are grouped/overwritten by it.
-function weekdayName(dateKey?: string): string {
+export function weekdayName(dateKey?: string): string {
   const d = dateKey ? new Date(dateKey + 'T00:00:00') : new Date();
   return d.toLocaleDateString('en-US', { weekday: 'short' });
 }
@@ -218,7 +218,7 @@ function zoneToWatts(zone: string | undefined, pz?: CoachSnapshot['powerZones'])
 
 // Guarantee every work block carries a power window so the watch can give in-band cues.
 // Fills missing watts from the block's HR zone (defaulting to Z2) using the power zones.
-function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['powerZones']): WatchWorkout | null {
+export function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['powerZones']): WatchWorkout | null {
   if (!w) return w;
   w.blocks = w.blocks.map(b => {
     if (b.powerLowWatts && b.powerHighWatts) return b;
@@ -382,6 +382,19 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
 // The rolling-7-day increase cap. Default +10%/week (the classic guideline), but a returning-from-
 // injury athlete may want to ramp faster (e.g. 20%). And the cap can be measured by TIME-ON-FEET
 // (default) or by real-work DISTANCE — some athletes prefer a distance ceiling.
+// ── Coaching mode (Milestone 3) ────────────────────────────────────────────────
+// 'self' = the app's own LLM generates the daily plan. 'coach' = use the prescription an
+// external coach wrote in the cloud for that day (a "waiting for coach" state when none yet).
+export type CoachingMode = 'self' | 'coach';
+const COACHING_MODE_KEY = 'coaching_mode_v1';
+export async function getCoachingMode(): Promise<CoachingMode> {
+  try { return (await SecureStore.getItemAsync(COACHING_MODE_KEY)) === 'coach' ? 'coach' : 'self'; }
+  catch { return 'self'; }
+}
+export async function setCoachingMode(m: CoachingMode): Promise<void> {
+  try { await SecureStore.setItemAsync(COACHING_MODE_KEY, m); } catch { /* ignore */ }
+}
+
 export type LoadCapBasis = 'tof' | 'distance';
 const LOAD_CAP_PCT_KEY   = 'load_cap_pct';
 const LOAD_CAP_BASIS_KEY = 'load_cap_basis';
