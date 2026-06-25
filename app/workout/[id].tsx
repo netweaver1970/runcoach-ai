@@ -22,6 +22,8 @@ import {
 } from '../../src/services/healthkit';
 import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
 import { getRunMeta, saveRunNote, saveRunTemp, TempSource } from '../../src/services/runMeta';
+import { prescribedPhasesAt } from '../../src/services/planLog';
+import { toDateKey } from '../../src/services/dayView';
 import { getLocalWeather } from '../../src/services/weather';
 import { useTheme, useThemedStyles, Palette } from '../../src/theme';
 import { WorkoutLabel, KmSplit } from '../../src/types';
@@ -209,6 +211,7 @@ function buildActivitiesSessionRegions(activities: WorkoutActivity[]): SessionRe
       case 'warm-up': return 'warmup';
       case 'recovery': return 'recovery';
       case 'cooldown': return 'cooldown';
+      case 'open':     return 'cooldown';  // free running past the planned cooldown
       case 'walk':     return 'walk';
       default:         return 'work';  // 'Work' and anything else
     }
@@ -621,6 +624,21 @@ export default function WorkoutDetailScreen() {
     setError(null);
     try {
       const d = await fetchWorkoutDetail(params.startDate, duration);
+
+      // Deterministic phase labels from the prescribed structure that was live when the
+      // run started — matches the Apple Workout app exactly, no distance heuristics. The
+      // app pushed this workout, so the saved plan IS the executed step sequence. Applied
+      // only when the run plausibly matches the plan (≈ same number of steps); trailing
+      // extras (free running past the cooldown) become "Open", as Apple shows them.
+      try {
+        const phases = await prescribedPhasesAt(toDateKey(new Date(params.startDate)), params.startDate);
+        if (phases && d.activities.length && Math.abs(d.activities.length - phases.length) <= 2) {
+          [...d.activities]
+            .sort((a, b) => a.startMs - b.startMs)
+            .forEach((a, i) => { a.label = i < phases.length ? phases[i] : 'Open'; });
+        }
+      } catch { /* fall back to HealthKit's own labels */ }
+
       setDetail(d);
 
       const hrVals = d.hr.map(p => p.v);
