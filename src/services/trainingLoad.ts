@@ -487,16 +487,16 @@ export function activityFloorTrimp(activeEnergyKcal: number, exerciseMin: number
  * @param recovery     recovery score 0-100 (0 = unknown)
  * @param tsb          training-stress balance (form)
  */
-// Heat inflates the cardiovascular cost of any effort: ~+2%/°C of apparent temp above 18°C,
-// plus a humidity penalty above 60% RH (capped at 1.6×). Bevel applies this to strain; we now
-// do too (the coach already used it to scale sessions down). Calibrated to a 32°C day where
-// our 36% × 1.28 = 46% ≈ Bevel's 47%.
+// Heat inflates the cardiovascular cost of any effort. Tuned for a HEAT-SENSITIVE, heavy-sweating
+// runner (Geert): ~+2.6%/°C of apparent temp above 18°C, an extra ramp above 24°C (where it turns
+// genuinely hard for him), and a humidity penalty from 55% RH. Capped at 1.6×. Used both to inflate
+// strain and to scale the coach's prescribed run down (runMinutes ÷ factor). e.g. 24°C/77% → ~1.24.
 export function heatStrainFactor(w?: { tempC?: number; apparentC?: number; humidity?: number } | null): number {
   if (!w) return 1;
   const t = w.apparentC ?? w.tempC;
   if (t == null) return 1;
-  let f = 1 + Math.max(0, t - 18) * 0.02;
-  if ((w.humidity ?? 0) > 60) f += ((w.humidity ?? 0) - 60) * 0.003;
+  let f = 1 + Math.max(0, t - 18) * 0.025;                           // ~+2.5%/°C (was 2%)
+  if ((w.humidity ?? 0) > 55) f += ((w.humidity ?? 0) - 55) * 0.004; // humidity bites earlier + harder
   return Math.min(1.6, Math.round(f * 100) / 100);
 }
 

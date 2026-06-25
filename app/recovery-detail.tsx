@@ -90,7 +90,7 @@ export default function RecoveryDetailScreen() {
         </TouchableOpacity>
         <View style={{ alignItems: 'center' }}>
           <Text style={s.title}>Recovery Detail</Text>
-          {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+          <Text style={s.headerDate}>{dayLabel}</Text>
         </View>
         <TouchableOpacity onPress={() => router.push({ pathname: '/history' as any, params: { type: 'recovery' } })} style={{ paddingHorizontal: 4 }}>
           <Text style={s.historyLink}>History ›</Text>
@@ -124,7 +124,6 @@ export default function RecoveryDetailScreen() {
             <Text style={s.rowSub}>Loading 30-day history…</Text>
           </View>
         )}
-        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <Text style={s.sectionTitle}>RECOVERY METRICS</Text>
         <View style={s.card}>
           <SubKPICard label="Recovery Score" value={`${recoveryScore}`} unit="/100" history={[...(hist.recoveryScore ?? []), recoveryScore]} higherIsBetter color={color} onPress={() => navTo('recovery')} />
@@ -134,7 +133,6 @@ export default function RecoveryDetailScreen() {
           <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
           <SubKPICard label="Heart Rate Dip" value={last('heartRateDip') !== null ? `${last('heartRateDip')}` : '—'} unit="%" history={hist.heartRateDip ?? []} higherIsBetter color="#16a085" onPress={() => navTo('sleep-hrdip')} />
         </View>
-        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <View style={{ height: 14 }} />
 
         {/* HRV — true RMSSD vs 60-day personal baseline (z-score) */}

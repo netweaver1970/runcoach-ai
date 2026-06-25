@@ -232,7 +232,7 @@ export default function SleepDetailScreen() {
           </TouchableOpacity>
           <View style={{ alignItems: 'center' }}>
             <Text style={s.title}>Sleep Detail</Text>
-            {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+            <Text style={s.headerDate}>{dayLabel}</Text>
           </View>
           <View style={{ width: 60 }} />
         </View>
@@ -301,7 +301,7 @@ export default function SleepDetailScreen() {
         </TouchableOpacity>
         <View style={{ alignItems: 'center' }}>
           <Text style={s.title}>Sleep Detail</Text>
-          {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+          <Text style={s.headerDate}>{dayLabel}</Text>
         </View>
         <View style={{ width: 60 }} />
       </View>
@@ -358,7 +358,6 @@ export default function SleepDetailScreen() {
         )}
 
         {/* Sub-KPI section */}
-        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <Text style={s.sectionTitle}>SLEEP METRICS</Text>
         <View style={s.kpiList}>
 
@@ -450,7 +449,6 @@ export default function SleepDetailScreen() {
             onPress={() => navTo('sleep-bank')}
           />
         </View>
-        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
 
         {/* Score Breakdown */}
         <Text style={[s.sectionTitle, { marginTop: 16 }]}>SCORE BREAKDOWN</Text>

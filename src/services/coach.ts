@@ -115,7 +115,12 @@ follow every rule in it. You receive a JSON snapshot of today's physiology, trai
 and weather. OTHER TRAINING: recentActivities lists recent NON-run sessions (dance, walk, cardio/HIIT, \
 strength). They carry no running structure or power zones, but they add real fatigue and already count in \
 today's strain — factor them in (e.g. tired legs after a long dance session → ease the run). Today's strain TARGET is fixed and provided as advisableLow–advisableHigh — treat that as THE \
-target; do NOT invent a different band. HEAT: heatStrainFactor says a given effort costs that MULTIPLE of its \
+target; do NOT invent a different band. RUN LENGTH: when readiness is decent (≥55) and there is budget \
+(tofBudgetTodayMin not near 0), prescribe runMinutes so the day's TOTAL strain (existing strainReal + the \
+run + drills) reaches the MIDDLE-to-UPPER of the band — do NOT prescribe a token short run that only clears \
+the floor while leaving most of tofBudgetTodayMin unused. EASY minutes add little strain each, so an easy \
+session that reaches the band usually means a LONGER run (e.g. 35–50 min), not a 20–25 min one. Only go short \
+when recovery is poor, ACWR is high, or the budget is genuinely small. HEAT: heatStrainFactor says a given effort costs that MULTIPLE of its \
 normal strain today (heat + humidity). The target band is temperature-independent, so to keep run+drills within \
 it you MUST scale the session DOWN by heatStrainFactor — cut running minutes to roughly runMinutes ÷ \
 heatStrainFactor (and/or drop a notch in intensity). Make the cut explicit in the rationale (e.g. "28°C, \

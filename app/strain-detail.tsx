@@ -44,6 +44,7 @@ export default function StrainDetailScreen() {
   const [calibCopied, setCalibCopied] = useState(false);
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
+  const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
   useEffect(() => { getPowerZones().then(setPowerZones).catch(() => {}); }, []);
 
   const sendToWatch = async () => {
@@ -92,8 +93,13 @@ export default function StrainDetailScreen() {
 
   // The workout to show/push: the coach's, or a synthesized one on any run-day plan
   // (covers stale cached plans + LLM omissions, so the watch box always appears on run days).
+  // runAdj lets the user nudge the prescribed run minutes ± before pushing to the watch.
+  const baseRunMin   = plan?.runMinutes ?? 0;
+  const effRunMin    = Math.max(0, runAdj ?? baseRunMin);
   const watchWorkout = plan && plan.intensity !== 'rest'
-    ? (plan.workout ?? synthesizeWorkout(plan.intensity, plan.runMinutes, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones))
+    ? ((runAdj != null || !plan.workout)
+        ? synthesizeWorkout(plan.intensity, effRunMin, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones)
+        : plan.workout)
     : null;
 
   // Rolling progression cap as of the viewed day, honouring the user's % + basis settings.
@@ -128,6 +134,7 @@ export default function StrainDetailScreen() {
   useEffect(() => {
     staleRegenRef.current = false;
     setPlan(null);
+    setRunAdj(null);
     loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); });
   }, [targetDate]);
 
@@ -207,7 +214,7 @@ export default function StrainDetailScreen() {
         </TouchableOpacity>
         <View style={{ alignItems: 'center' }}>
           <Text style={s.title}>Strain Detail</Text>
-          {!!dateLbl && <Text style={s.headerDate}>{dateLbl}</Text>}
+          <Text style={s.headerDate}>{dayLabel}</Text>
         </View>
         <TouchableOpacity onPress={() => navTo('strain')} style={{ paddingHorizontal: 4 }}>
           <Text style={s.historyLink}>History ›</Text>
@@ -283,7 +290,7 @@ export default function StrainDetailScreen() {
             <Text style={s.readyRange}>Target {strain?.safeLow ?? readiness.safeLow}–{strain?.safeHigh ?? readiness.safeHigh}% strain</Text>
             {tof && (
               <Text style={s.readyTof}>
-                7-day time on feet {tof.tof7d}m · +10% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
+                7-day time on feet {tof.tof7d}m · +{capCtx?.capPct ?? 10}% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
               </Text>
             )}
             {weather && targetIsToday && (
@@ -340,8 +347,26 @@ export default function StrainDetailScreen() {
                     </Text>
                   ))}
                   <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters} m</Text>
+
+                  {/* Adjust the prescribed run time, then push the edited session to the watch */}
+                  <View style={s.adjustRow}>
+                    <Text style={s.adjustLabel}>Adjust run</Text>
+                    <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(Math.max(5, effRunMin - 5))}>
+                      <Text style={s.adjustBtnText}>−5</Text>
+                    </TouchableOpacity>
+                    <Text style={s.adjustVal}>{effRunMin}m{runAdj != null ? ` · was ${baseRunMin}m` : ''}</Text>
+                    <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(effRunMin + 5)}>
+                      <Text style={s.adjustBtnText}>+5</Text>
+                    </TouchableOpacity>
+                    {runAdj != null && (
+                      <TouchableOpacity onPress={() => setRunAdj(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <Text style={s.adjustReset}>reset</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
                   <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
-                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : '⌚ Send to Watch'}</Text>
+                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : runAdj != null ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
@@ -379,7 +404,6 @@ export default function StrainDetailScreen() {
         )}
 
         {/* Sub-KPI metrics (sleep-detail pattern: sparkline + tap → history) */}
-        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
         <Text style={s.sectionTitle}>STRAIN METRICS</Text>
         <View style={s.card}>
           <SubKPICard label="Strain Score"      value={last('strainScore') !== null ? `${last('strainScore')}` : `${real}`} unit="%" history={hist.strainScore ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('strain')} />
@@ -389,7 +413,6 @@ export default function StrainDetailScreen() {
           <SubKPICard label="Total Energy"       value={last('totalEnergy') !== null ? `${last('totalEnergy')}` : '—'} unit="kcal" history={hist.totalEnergy ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('total-energy')} />
           <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
         </View>
-        <Text style={s.metricsDate}>📅 {dayLabel}</Text>
 
         <TouchableOpacity
           style={s.calibBtn}
@@ -502,6 +525,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: '#FF6B35', borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' },
+  adjustLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
+  adjustBtn:   { backgroundColor: c.surface, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: c.border },
+  adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
+  adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center' },
+  adjustReset: { fontSize: 12, color: '#FF6B35', fontWeight: '600' },
   watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },
   coachCaution: { fontSize: 12, color: '#e67e22', marginTop: 8, lineHeight: 18 },
