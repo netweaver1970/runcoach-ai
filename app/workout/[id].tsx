@@ -21,11 +21,19 @@ import {
   WorkoutActivity,
 } from '../../src/services/healthkit';
 import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
+// Reclassifying a run ripples through every type-derived cache — clear them all on a type change.
+import { clearWorkoutCache } from '../../src/services/workoutClassifier';
+import { clearSnapshotCache, clearTrimpCache } from '../../src/services/healthkit';
+import { clearTodayPlanCache } from '../../src/services/coach';
+import { clearRunAnalysisCache } from '../../src/services/runAnalysis';
+import { clearBodyBatteryCache } from '../../src/services/bodyBattery';
+import { clearAccountingCache } from '../../src/services/accounting';
 import { getRunMeta, saveRunNote, saveRunTemp, TempSource } from '../../src/services/runMeta';
 import { prescribedPhasesAt, relabelByPhases } from '../../src/services/planLog';
 import { toDateKey } from '../../src/services/dayView';
 import { getLocalWeather } from '../../src/services/weather';
 import { useTheme, useThemedStyles, Palette } from '../../src/theme';
+import { useLLMReady } from '../../src/hooks/useLLMReady';
 import { WorkoutLabel, KmSplit } from '../../src/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -593,6 +601,7 @@ export default function WorkoutDetailScreen() {
   const router = useRouter();
   const st = useThemedStyles(makeSt);
   const { c: pal } = useTheme();
+  const llm = useLLMReady();
   const params = useLocalSearchParams<{
     id:        string;
     startDate: string;
@@ -764,13 +773,21 @@ export default function WorkoutDetailScreen() {
 
       try {
         await saveRunOverride(params.id, isRemove ? null : OVERRIDE_LABELS[buttonIndex - 1]);
+        // A type change ripples through TRIMP → strain → CTL/ATL/TSB → bands → daily/week plan →
+        // run analysis, so drop EVERY type-derived cache. The home screen then does a full recompute
+        // on focus (it detects the label change) so nothing stays tied to the old type.
+        await Promise.all([
+          clearWorkoutCache(), clearSnapshotCache(), clearTrimpCache(),
+          clearTodayPlanCache(), clearRunAnalysisCache(), clearBodyBatteryCache(),
+        ]);
+        clearAccountingCache();
         const newLabel = isRemove ? '' : OVERRIDE_LABELS[buttonIndex - 1];
         setCurrentLabel(newLabel);
         Alert.alert(
           isRemove ? 'Override removed' : 'Type updated',
           isRemove
-            ? 'The auto-detected type will show on the next reload.'
-            : `Set to ${LABEL_DISPLAY[OVERRIDE_LABELS[buttonIndex - 1]]}.`,
+            ? 'Reverted to the auto-detected type — load, strain and plan are recalculating.'
+            : `Set to ${LABEL_DISPLAY[OVERRIDE_LABELS[buttonIndex - 1]]} — load, strain and plan are recalculating.`,
         );
       } catch (err: any) {
         Alert.alert('Override failed', err.message);
@@ -916,7 +933,7 @@ export default function WorkoutDetailScreen() {
             {avgPower != null && <SummaryBox label="Avg power" value={`${avgPower} W`}  color="#8e44ad" />}
             {calories > 0 && <SummaryBox label="Calories" value={`${calories} kcal`} />}
             {/* Analyze button — compact tile next to calories */}
-            <TouchableOpacity style={[st.summaryBox, st.analyzeBox]} onPress={handleAnalyze}>
+            <TouchableOpacity style={[st.summaryBox, st.analyzeBox, !llm.ready && st.analyzeBoxDisabled]} onPress={handleAnalyze} disabled={!llm.ready}>
               <Text style={st.analyzeText}>Analyze</Text>
             </TouchableOpacity>
           </View>
@@ -1250,5 +1267,6 @@ const makeSt = (c: Palette) => StyleSheet.create({
   hrFlagText:      { fontSize: 11, color: c.textSub, fontWeight: '600' },
 
   analyzeBox:   { backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center', paddingVertical: 0, minHeight: 44 },
+  analyzeBoxDisabled: { opacity: 0.4 },
   analyzeText:  { fontSize: 13, fontWeight: '700', color: '#fff' },
 });

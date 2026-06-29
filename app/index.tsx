@@ -27,7 +27,6 @@ import {
   saveSnapshotCache,
   loadSnapshotCache,
 } from '../src/services/healthkit';
-import { computeWorkoutTypeStats } from '../src/services/workoutClassifier';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
@@ -51,6 +50,7 @@ import { buildDayView, toDateKey } from '../src/services/dayView';
 import { markPrescriptionExecuted } from '../src/services/coachFiles';
 import { loadRunMeta } from '../src/services/runMeta';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import { useLLMReady } from '../src/hooks/useLLMReady';
 import { HealthSnapshot, RunWorkout, DailyRecovery, WorkoutLabel, DailyLoad, DayStrain, ActivitySummary } from '../src/types';
 // WorkoutLabel is used by the RunFilter type and RUN_FILTERS array
 
@@ -84,6 +84,7 @@ export default function HomeScreen() {
   const [loading, setLoading]           = useState(true);
   const [refreshing, setRefreshing]     = useState(false);
   const [hasApiKey, setHasApiKey]       = useState(false);
+  const llm = useLLMReady();
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
   const [sportFilter, setSportFilter]   = useState<SportFilter>('Run');
   const [bodyBattery, setBodyBattery]   = useState<BodyBattery | null>(null);
@@ -142,9 +143,8 @@ export default function HomeScreen() {
         return;
       }
 
-      // ── Self mode: the app's LLM generates the plan (needs an API key) ────────
-      const key = await getApiKey();
-      if (!key) return;
+      // ── Self mode: generate the plan. Keyless → getCoachPlan returns the deterministic plan;
+      // with a working key it adds LLM prose. Either way the home card always resolves. ──────────
       // Use the SAME cached plan the Strain screen + morning day-view use (keyed on cs.date),
       // so the home and detail always read the exact same plan.
       let plan = await loadCachedPlan(cs.date);
@@ -316,37 +316,26 @@ export default function HomeScreen() {
     Promise.all([getRunOverrides(), loadRunMeta()]).then(([overrides, runMeta]) => {
       setSnapshot((prev) => {
         if (!prev) return prev;
-        let labelsChanged = false;
-        let metaChanged   = false;
+        // A run's TYPE changed on the detail screen → it can't be patched in place: the new type
+        // ripples through TRIMP → strain → CTL/ATL/TSB → bands → plan. The detail screen already
+        // cleared every type-derived cache, so trigger a FULL recompute (load guards re-entry) and
+        // leave the stale snapshot untouched until the fresh one lands.
+        const labelsChanged = prev.runs.some((r) => { const ov = overrides[r.uuid]; return ov && r.label !== ov; });
+        if (labelsChanged) { setTimeout(() => load(true), 0); return prev; }
+        // Notes / manual temperature only — those don't affect derived stats, so patch in place.
+        let metaChanged = false;
         const newRuns = prev.runs.map((r) => {
-          let nr = r;
-          const ov = overrides[r.uuid];
-          if (ov && r.label !== ov) { labelsChanged = true; nr = { ...nr, label: ov, confidence: 'high' as const }; }
-          // Merge note + manual temperature edited on the detail screen
           const m = runMeta[r.uuid];
-          if (m) {
-            const newNote = m.note ?? undefined;
-            const newTemp = m.tempSource === 'manual' && m.tempC != null ? m.tempC : nr.tempC;
-            if (newNote !== nr.note || newTemp !== nr.tempC) {
-              metaChanged = true; nr = { ...nr, note: newNote, tempC: newTemp };
-            }
-          }
-          return nr;
+          if (!m) return r;
+          const newNote = m.note ?? undefined;
+          const newTemp = m.tempSource === 'manual' && m.tempC != null ? m.tempC : r.tempC;
+          if (newNote !== r.note || newTemp !== r.tempC) { metaChanged = true; return { ...r, note: newNote, tempC: newTemp }; }
+          return r;
         });
-        if (!labelsChanged && !metaChanged) return prev;
-        // Reclassification cascade: only re-derive type stats + recommendation when
-        // a run's TYPE changed (notes/temp don't affect those). The rec cache is
-        // keyed on the label signature, so a label change yields a fresh rec.
-        const updated = {
-          ...prev,
-          runs: newRuns,
-          ...(labelsChanged ? { workoutTypeStats: computeWorkoutTypeStats(newRuns) } : {}),
-        };
-        if (labelsChanged) refreshRecommendation(updated);
-        return updated;
+        return metaChanged ? { ...prev, runs: newRuns } : prev;
       });
     }).catch(() => {});
-  }, [refreshRecommendation])); // functional updates handle stale state
+  }, [load])); // functional updates handle stale state
 
   // ── AppState: refresh when app comes back to foreground ─────────────────
   // This catches the common case: user finishes a run → opens app.
@@ -454,11 +443,17 @@ export default function HomeScreen() {
     d.setDate(d.getDate() - diff); d.setHours(0, 0, 0, 0); return d;
   })();
   const thisWeekRuns = allRuns.filter(r => new Date(r.date) >= thisWeekStart);
-  const totalKmThisWeek = Math.round(
-    thisWeekRuns.reduce((s, r) => s + r.distance / 1000, 0) * 10
-  ) / 10;
+  // Count ALL training this week — runs PLUS non-run sessions (walks, dance, cardio) — so the boxes
+  // reflect total weekly time-on-feet / distance (what the cap & plan use). Run-only left them empty
+  // on cross-training weeks, or when a session auto-classified as a walk rather than a run.
+  const thisWeekActs = allActivities.filter(a => new Date(a.date) >= thisWeekStart);
+  const totalKmThisWeek = Math.round((
+    thisWeekRuns.reduce((s, r) => s + r.distance / 1000, 0) +
+    thisWeekActs.reduce((s, a) => s + (a.distanceKm ?? 0), 0)
+  ) * 10) / 10;
   const totalMinThisWeek = Math.round(
-    thisWeekRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60
+    thisWeekRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60 +
+    thisWeekActs.reduce((s, a) => s + (a.durationMin ?? 0), 0)
   );
 
   // Non-hook derived values for the time-travel render (the hooks live above the
@@ -594,13 +589,16 @@ export default function HomeScreen() {
           />
         )}
 
-        {/* Coach buttons */}
-        {!hasApiKey ? (
+        {/* Coach buttons — greyed when the LLM isn't usable (no key, or key present but broken). The
+            daily plan + week plan still work keyless; only these LLM-only actions need a working key. */}
+        {!llm.ready ? (
           <TouchableOpacity
             style={[styles.coachBtn, styles.coachBtnWarning]}
             onPress={() => router.push('/settings')}
           >
-            <Text style={styles.coachBtnText}>⚙️  Add API key to unlock coaching</Text>
+            <Text style={styles.coachBtnText}>
+              {llm.reason === 'unreachable' ? '⚠️  API key not working — open Settings' : '⚙️  Add API key to unlock coaching'}
+            </Text>
           </TouchableOpacity>
         ) : (
           <>

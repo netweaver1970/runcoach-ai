@@ -43,6 +43,9 @@ export async function loadLatestRunAnalysis(): Promise<RunAnalysis | null> {
 export async function saveLatestRunAnalysis(a: RunAnalysis): Promise<void> {
   try { await FileSystem.writeAsStringAsync(ANALYSIS_FILE, JSON.stringify(a)); } catch { /* ignore */ }
 }
+export async function clearRunAnalysisCache(): Promise<void> {
+  try { await FileSystem.deleteAsync(ANALYSIS_FILE, { idempotent: true }); } catch { /* ignore */ }
+}
 
 // ─── Prescription formatting (shared with the chat-based analyze) ──────────────
 

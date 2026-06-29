@@ -7,12 +7,14 @@ import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-rou
 import Markdown from 'react-native-markdown-display';
 import { loadLatestRunAnalysis, maybeAnalyzeLatestRun, RunAnalysis } from '../src/services/runAnalysis';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import { useLLMReady } from '../src/hooks/useLLMReady';
 
 export default function RunAnalysisScreen() {
   const router = useRouter();
   const { runUUID } = useLocalSearchParams<{ runUUID?: string }>();
   const styles = useThemedStyles(makeStyles);
   const { c } = useTheme();
+  const llm = useLLMReady();
   const md = useThemedStyles(makeMarkdownStyles);
 
   const [analysis, setAnalysis] = useState<RunAnalysis | null>(null);
@@ -95,7 +97,8 @@ export default function RunAnalysisScreen() {
               <Text style={styles.actionBtnText}>↑ Share</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.actionBtn}
+              style={[styles.actionBtn, !llm.ready && { opacity: 0.4 }]}
+              disabled={!llm.ready}
               onPress={() => router.push({ pathname: '/chat', params: { focusRunUUID: analysis.runUUID } } as any)}
             >
               <Text style={styles.actionBtnText}>💬 Discuss</Text>

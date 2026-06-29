@@ -124,6 +124,31 @@ export async function getActiveApiKey(): Promise<string | null> {
   return cfg.apiKey || null;
 }
 
+// ─── LLM reachability (keyless mode + greying LLM-only buttons) ────────────────
+// '1' = the last real call/validation succeeded, '0' = it failed (bad key, auth, quota),
+// unset = untested. The daily-plan path probes the LLM and updates this, so the UI can grey
+// out LLM-only actions (chat, report, run analysis, enhance) when the key is missing OR broken.
+const SK_REACHABLE = 'llm_reachable_v1';
+
+export async function recordLLMReachable(ok: boolean): Promise<void> {
+  try { await SecureStore.setItemAsync(SK_REACHABLE, ok ? '1' : '0'); } catch {}
+}
+
+export interface LLMStatus {
+  hasKey:    boolean;  // a usable key (and base URL for custom) is configured
+  reachable: boolean;  // the LLM actually works (optimistic until a call proves otherwise)
+}
+
+/** Whether the LLM can be used right now: a key is set AND the last call/validation didn't fail. */
+export async function getLLMStatus(): Promise<LLMStatus> {
+  const cfg = await loadLLMConfig();
+  const hasKey = !!cfg.apiKey && (cfg.provider !== 'custom' || !!cfg.baseUrl);
+  if (!hasKey) return { hasKey: false, reachable: false };
+  let flag: string | null = null;
+  try { flag = await SecureStore.getItemAsync(SK_REACHABLE); } catch {}
+  return { hasKey: true, reachable: flag !== '0' }; // unset/'1' → reachable; '0' → known-broken
+}
+
 // ─── Model history ────────────────────────────────────────────────────────────
 
 export async function loadModelHistory(provider: LLMProvider): Promise<string[]> {
@@ -143,6 +168,15 @@ export async function addToModelHistory(provider: LLMProvider, model: string): P
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 export async function validateLLMKey(
+  provider: LLMProvider, apiKey: string, baseUrl?: string,
+): Promise<LLMValidationResult> {
+  const result = await validateLLMKeyImpl(provider, apiKey, baseUrl);
+  // Record reachability so LLM-only buttons grey out the moment a key is saved-but-broken.
+  await recordLLMReachable(result.valid).catch(() => {});
+  return result;
+}
+
+async function validateLLMKeyImpl(
   provider: LLMProvider,
   apiKey:   string,
   baseUrl?: string,
@@ -209,9 +243,21 @@ export interface LLMCallOptions {
  * Returns the assistant's text response.
  * Throws on network errors, auth failures, or rate limits.
  */
+// Wrap a provider response so success/failure updates the reachability flag the UI reads.
+async function recordingReturn(p: Promise<string>): Promise<string> {
+  try {
+    const text = await p;
+    await recordLLMReachable(true);
+    return text;
+  } catch (e: any) {
+    if (/invalid api key|no api key|401|403/i.test(e?.message ?? '')) await recordLLMReachable(false);
+    throw e;
+  }
+}
+
 export async function callLLM(options: LLMCallOptions): Promise<string> {
   const cfg = await loadLLMConfig();
-  if (!cfg.apiKey) throw new Error('No API key configured — add one in Settings.');
+  if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
 
   const { system, messages, maxTokens, temperature } = options;
 
@@ -236,7 +282,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
         messages,
       }),
     });
-    return handleAnthropicResponse(res);
+    return recordingReturn(handleAnthropicResponse(res));
   }
 
   // ── OpenAI / Custom (OpenAI-compatible) ────────────────────────────────────
@@ -264,7 +310,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
       messages: allMessages,
     }),
   });
-  return handleOpenAIResponse(res);
+  return recordingReturn(handleOpenAIResponse(res));
 }
 
 // ─── Vision call (single image + prompt) ──────────────────────────────────────
@@ -283,8 +329,7 @@ export interface LLMVisionOptions {
  */
 export async function callLLMWithImage(options: LLMVisionOptions): Promise<string> {
   const cfg = await loadLLMConfig();
-  if (!cfg.apiKey) throw new Error('No API key configured — add one in Settings.');
-
+  if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
   const { prompt, imageBase64, maxTokens } = options;
   const mediaType = options.mediaType ?? 'image/png';
 
@@ -308,7 +353,7 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
         }],
       }),
     });
-    return handleAnthropicResponse(res);
+    return recordingReturn(handleAnthropicResponse(res));
   }
 
   // OpenAI / Custom (OpenAI-compatible vision)
@@ -335,7 +380,7 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
       }],
     }),
   });
-  return handleOpenAIResponse(res);
+  return recordingReturn(handleOpenAIResponse(res));
 }
 
 // ─── Response helpers ─────────────────────────────────────────────────────────

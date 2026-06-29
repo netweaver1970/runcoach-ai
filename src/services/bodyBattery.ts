@@ -147,6 +147,9 @@ export async function saveBodyBatteryCache(bb: BodyBattery): Promise<void> {
     await FileSystem.writeAsStringAsync(BB_CACHE_FILE, JSON.stringify(slim));
   } catch { /* ignore */ }
 }
+export async function clearBodyBatteryCache(): Promise<void> {
+  try { await FileSystem.deleteAsync(BB_CACHE_FILE, { idempotent: true }); } catch { /* ignore */ }
+}
 
 // ── Manual calibration anchor (dev) ────────────────────────────────────────────
 // Force the battery to a known value (e.g. a Bevel reading) at a chosen MOMENT; the model

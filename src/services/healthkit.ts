@@ -70,6 +70,9 @@ const SNAPSHOT_CACHE_FILE = `${FileSystem.documentDirectory}runcoach-snapshot-ca
 export async function saveSnapshotCache(snap: HealthSnapshot): Promise<void> {
   try { await FileSystem.writeAsStringAsync(SNAPSHOT_CACHE_FILE, JSON.stringify(snap)); } catch {}
 }
+export async function clearSnapshotCache(): Promise<void> {
+  try { await FileSystem.deleteAsync(SNAPSHOT_CACHE_FILE, { idempotent: true }); } catch {}
+}
 export async function loadSnapshotCache(): Promise<HealthSnapshot | null> {
   try {
     const info = await FileSystem.getInfoAsync(SNAPSHOT_CACHE_FILE);
@@ -2614,6 +2617,11 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date): Promise<M
 const TRIMP_CACHE_FILE      = `${FileSystem.documentDirectory}cardio-trimp-cache.json`;
 const TRIMP_CHUNK_DAYS      = 45;
 const TRIMP_RECOMPUTE_TAIL  = 2;
+
+// TRIMP-per-day depends on each session's classified intensity, so a reclassification must drop this.
+export async function clearTrimpCache(): Promise<void> {
+  try { await FileSystem.deleteAsync(TRIMP_CACHE_FILE, { idempotent: true }); } catch {}
+}
 
 async function loadTrimpCache(): Promise<Record<string, number>> {
   try {

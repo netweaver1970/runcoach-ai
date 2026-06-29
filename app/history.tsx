@@ -62,7 +62,7 @@ const PERIOD_BUCKETS: Record<Period, number> = {
   '1Y': 999,   // not used directly; groupByMonth() handles 1Y
 };
 
-interface DataPoint { label: string; value: number; fullDate: string; }
+interface DataPoint { label: string; value: number; fullDate: string; missing?: boolean; }
 
 const SLEEP_TYPES = new Set(['sleep-total', 'sleep-deep', 'sleep-rem', 'sleep-score', 'sleep-efficiency', 'sleep-hrdip', 'sleep-bank', 'sleep-awake']);
 
@@ -240,7 +240,25 @@ function groupByMonth(data: DataPoint[], mode: 'sum' | 'avg'): DataPoint[] {
 /** Running total of data points — used for cumulative mode. */
 function toCumulative(data: DataPoint[]): DataPoint[] {
   let acc = 0;
-  return data.map(d => { acc += d.value; return { ...d, value: acc }; });
+  // Cumulative is a continuous running total — carry through no-data days (flat), so clear `missing`.
+  return data.map(d => { acc += d.value; return { ...d, value: acc, missing: false }; });
+}
+
+// Fill a sorted daily series with EVERY calendar day in [from, to]; days with no datapoint become
+// `missing` placeholders. The chart then spans the whole window (gaps where there's no data) instead
+// of collapsing the x-axis to only the days that have values. Used for the 1-month (daily) view.
+function fillDailyGaps(data: DataPoint[], from: Date, to: Date): DataPoint[] {
+  const byDate = new Map(data.map(d => [d.fullDate.slice(0, 10), d]));
+  const out: DataPoint[] = [];
+  const p = (n: number) => String(n).padStart(2, '0');
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  while (d <= end) {
+    const key = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    out.push(byDate.get(key) ?? { label: key, fullDate: key, value: 0, missing: true });
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
 }
 
 // ─── Chart ────────────────────────────────────────────────────────────────────
@@ -305,9 +323,10 @@ function Chart({
   const maxLen    = Math.max(...allSets.map(s => s.length)) || 1;
   // y-scale spans both datasets + the optimal-load band (so the band is always visible)
   const bandVals = bandData ? bandData.flatMap(b => (b ? [b.lo, b.hi] : [])) : [];
-  const allValues = [...allSets.flatMap(s => s.map(d => d.value)), ...bandVals];
-  const rawMin = Math.min(...allValues);
-  const rawMax = Math.max(...allValues);
+  // Exclude `missing` (no-data) days so a padded 0 can't drag the y-scale down to zero.
+  const allValues = [...allSets.flatMap(s => s.filter(d => !d.missing).map(d => d.value)), ...bandVals];
+  const rawMin = allValues.length ? Math.min(...allValues) : 0;
+  const rawMax = allValues.length ? Math.max(...allValues) : 1;
   const padTop = (rawMax - rawMin) * 0.15 || 2;
   // zeroBase=true: axis starts at 0 (good for km/time); zeroBase=false: zoom in around data
   const lowerBound = zeroBase ? Math.max(0, rawMin * 0.9 - 1) : rawMin - padTop * 1.5;
@@ -438,7 +457,7 @@ function Chart({
             })}
             {/* Previous period: grey line segments */}
             {prevData && prevData.length > 1 && prevData.map((d, i) => {
-              if (i === 0) return null;
+              if (i === 0 || d.missing || prevData[i - 1].missing) return null;
               const x1 = cxOf(i - 1), y1 = toY(prevData[i - 1].value);
               const x2 = cxOf(i),     y2 = toY(d.value);
               const dx = x2 - x1,     dy = y2 - y1;
@@ -456,7 +475,7 @@ function Chart({
               );
             })}
             {/* Previous period: grey dots */}
-            {prevData && prevData.map((d, i) => (
+            {prevData && prevData.map((d, i) => d.missing ? null : (
               <View key={`prev-dot-${i}`} style={{
                 position: 'absolute',
                 width: 4, height: 4, borderRadius: 2,
@@ -467,7 +486,7 @@ function Chart({
 
             {/* Current period: colored line segments */}
             {data.length > 1 && data.map((d, i) => {
-              if (i === 0) return null;
+              if (i === 0 || d.missing || data[i - 1].missing) return null;
               const x1 = cxOf(i - 1), y1 = toY(data[i - 1].value);
               const x2 = cxOf(i),     y2 = toY(d.value);
               const dx = x2 - x1,     dy = y2 - y1;
@@ -486,6 +505,7 @@ function Chart({
             })}
             {/* Current period: dots — coloured by status when pointColors supplied (cardio-load) */}
             {data.map((d, i) => {
+              if (d.missing) return null;
               const r = pointColors ? dotR + 1.5 : dotR; // status dots a touch bigger
               return (
                 <View key={`dot-${i}`} style={{
@@ -500,7 +520,7 @@ function Chart({
 
             {/* Value labels above each labeled point */}
             {data.map((d, i) => {
-              if (!valueLabelIdxs.has(i)) return null;
+              if (!valueLabelIdxs.has(i) || d.missing) return null;
               const cx = cxOf(i), cy = toY(d.value);
               return (
                 <Text key={`vl-${i}`} style={{
@@ -556,15 +576,17 @@ function Chart({
 
               return (
                 <View key={i}>
-                  {/* Bar */}
+                  {/* Bar — skip no-data days so the slot stays empty but the day keeps its axis position */}
+                  {!d.missing && (
                   <View style={{
                     position: 'absolute', left: x, top: CHART_H - barH,
                     width: barW, height: barH,
                     backgroundColor: color, borderRadius: 3, opacity: 0.88,
                   }} />
+                  )}
 
                   {/* Value label above bar */}
-                  {showV && (
+                  {showV && !d.missing && (
                     <Text style={{
                       position: 'absolute',
                       top: CHART_H - barH - valueOffset,
@@ -596,13 +618,15 @@ function Chart({
         {cur && (
           <>
             <View style={{ position: 'absolute', left: curCx, top: 0, width: 1, height: CHART_H, backgroundColor: '#999' }} />
+            {!cur.missing && (
             <View style={{
               position: 'absolute', left: curCx - 4, top: toY(cur.value) - 4,
               width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1, borderColor: '#fff',
             }} />
+            )}
             <View style={[ch.tip, { left: tipLeft, width: tipW }]}>
               <Text style={ch.tipDate}>{cur.fullDate.slice(0, 10)}</Text>
-              <Text style={ch.tipVal}>{fmt(cur.value)}</Text>
+              <Text style={ch.tipVal}>{cur.missing ? '—' : fmt(cur.value)}</Text>
             </View>
           </>
         )}
@@ -774,6 +798,15 @@ export default function HistoryScreen() {
         });
         // sleep-bank: keep daily for 1M, weekly avg otherwise
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+      }
+
+      // 1-MONTH view: show every calendar day, not just days with data → pad the daily series across
+      // the window. (3M/6M/1Y aggregate to continuous weeks/months already.)
+      if (period === '1M') {
+        const winMs    = months * 30 * 86_400_000;
+        const curStart = new Date(endDate.getTime() - winMs);
+        raw = fillDailyGaps(raw, curStart, endDate);
+        if (prevRaw.length) prevRaw = fillDailyGaps(prevRaw, new Date(curStart.getTime() - winMs), curStart);
       }
 
       setRawData(raw);

@@ -7,7 +7,7 @@
  */
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
-import { callLLM } from './llm';
+import { callLLM, getLLMStatus } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
@@ -437,7 +437,130 @@ export async function getWeekPlan(
   return out;
 }
 
+// ── Deterministic daily plan (NO LLM) ──────────────────────────────────────────
+// Mirrors the deterministic week planner for TODAY: the editable weekly template + readiness gate +
+// rolling volume cap + heat budget pick the session, synthesizeWorkout builds the structured watch
+// workout, and the prose is templated from signals the engine already computes. Used when there's no
+// API key (keyless mode) or the key is broken, and as the fallback when an LLM call fails — so the
+// core daily loop never depends on the model.
+const STRENGTH_DEFAULT = 'Calf raises 3×15, single-leg squats 3×8/leg, hip bridges 3×15, side plank 3×30s/side.';
+const STALE_CAUTION = "⚠️ Watch not worn overnight — recovery unknown; plan carried from your schedule. If you don't feel fully rested, run this easy in Z2 (keep HR in Z2).";
+
+function bandPhrase(real: number | null | undefined, low: number, high: number, driver: string): string {
+  if (real == null) return driver.charAt(0).toUpperCase() + driver.slice(1) + '.';
+  const where = real < low ? 'below' : real > high ? 'above' : 'within';
+  return `Strain ${Math.round(real)}% is ${where} the ${low}–${high}% band — ${driver}.`;
+}
+
+export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
+  await ensureZonesFile().catch(() => {});
+  const capPct      = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
+  const cappedToday = (snap.tofNextRunInDays ?? 0) > 0;
+  const wkName      = weekdayName(snap.date);
+  const strainLow   = clampScore(snap.advisableLow, 30);
+  const strainHigh  = clampScore(snap.advisableHigh, 60);
+  const strainReal  = snap.strainReal ?? null;
+  const recoveryStale = snap.recoveryStale === true;
+  const heatFactor  = heatStrainFactor(snap.weather);
+  const apparentC   = snap.weather?.apparentC ?? snap.weather?.tempC;
+  const stamp = {
+    strainLow, strainHigh,
+    nextRunLabel:  cappedToday ? snap.tofNextRunLabel : undefined,
+    nextRunInDays: snap.tofNextRunInDays,
+    generatedAt: new Date().toISOString(),
+    genTempC:  apparentC,
+    genStrain: snap.strainReal,
+  };
+
+  // Cap reached → mandatory recovery day.
+  if (cappedToday) {
+    return {
+      headline: 'At your volume cap — recovery day',
+      session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${snap.tofNextRunLabel ?? 'in a couple of days'}.`,
+      strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
+      rationale: bandPhrase(strainReal, strainLow, strainHigh, 'cap reached, so banking volume for the next quality day'),
+      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, ...stamp,
+    };
+  }
+
+  // Pick today's session from the editable weekly template, gated by readiness / re-entry / heat / budget.
+  const template = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
+  const dow      = new Date(snap.date + 'T00:00:00').getDay();
+  const kind     = template[dow];
+  const green    = (snap.readiness ?? 60) >= 60;
+  const reentry  = (snap.tof7d ?? 0) < 30;
+  const heatBudget = snap.tofBudgetTodayMin != null ? Math.round(snap.tofBudgetTodayMin / heatFactor) : undefined;
+  const budget   = heatBudget ?? snap.tofBudgetTodayMin ?? 45;
+
+  type SK = 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery';
+  let intensity: CoachIntensity; let sk: SK; let base: number; let eased = '';
+  if (reentry) {
+    intensity = 'easy'; sk = 'easy'; base = 28; eased = 'rebuilding after a light week — easy Z2 only';
+  } else if (kind === 'intervals') {
+    if (green) { intensity = 'hard'; sk = 'intervals'; base = 45; }
+    else { intensity = 'easy'; sk = 'easy'; base = 35; eased = 'readiness low, so intervals dropped to easy Z2'; }
+  } else if (kind === 'tempo') {
+    if (green) { intensity = 'moderate'; sk = 'tempo'; base = 50; }
+    else { intensity = 'easy'; sk = 'easy'; base = 35; eased = 'readiness low, so tempo dropped to easy Z2'; }
+  } else if (kind === 'long') {
+    if (green) { intensity = 'moderate'; sk = 'long'; base = 65; }
+    else { intensity = 'easy'; sk = 'easy'; base = 40; eased = 'readiness low, so the long run is just easy Z2'; }
+  } else if (kind === 'easy') {
+    intensity = 'easy'; sk = 'easy'; base = 35;
+  } else if (kind === 'rest') {
+    intensity = 'rest'; sk = 'recovery'; base = 0;
+  } else { // flex
+    intensity = 'easy'; sk = 'recovery'; base = 32;
+  }
+  let heatCut = false;
+  if (intensity === 'hard' && (apparentC ?? 0) >= 24) { intensity = 'moderate'; sk = 'tempo'; heatCut = true; }
+  if (intensity !== 'rest' && budget < 12) { intensity = 'rest'; sk = 'recovery'; base = 0; }
+
+  // Rest day (scheduled or out of budget).
+  if (intensity === 'rest') {
+    return {
+      headline: 'Recovery day',
+      session: kind === 'rest'
+        ? 'Scheduled recovery — rest or an easy walk; optional mobility & strength.'
+        : 'Volume’s used up for now — rest or cross-train; mobility & strength.',
+      strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
+      rationale: bandPhrase(strainReal, strainLow, strainHigh, kind === 'rest' ? 'a scheduled recovery day' : 'no running budget left today'),
+      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, ...stamp,
+    };
+  }
+
+  // Build the structured session.
+  const runMinutes = Math.max(8, Math.min(budget, base));
+  const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk), snap.powerZones);
+  const structure  = formatWorkoutStructure(workout);
+  const label = sk === 'intervals' ? 'Intervals' : sk === 'tempo' ? 'Tempo' : sk === 'long' ? 'Long run' : base <= 30 ? 'Recovery run' : 'Easy Z2';
+  const headline =
+    sk === 'intervals' ? 'Good to go — intervals day' :
+    sk === 'tempo'     ? 'Solid day — tempo' :
+    sk === 'long'      ? 'Endurance day — long run' :
+    green              ? 'Easy aerobic day' : 'Keep it easy today';
+  const driver = eased ? eased
+    : heatCut ? `${Math.round(apparentC ?? 0)}°C — eased off the intervals`
+    : (sk === 'intervals' || sk === 'tempo' || sk === 'long') ? 'on-schedule for the week’s quality'
+    : 'easy aerobic to keep ticking over';
+  const heatNote = heatFactor > 1.08 && heatBudget != null && heatBudget < (snap.tofBudgetTodayMin ?? 999)
+    ? ` Heat ×${heatFactor.toFixed(2)} → trimmed to ${runMinutes} min.` : '';
+
+  return {
+    headline,
+    session: `${label} — ${runMinutes} min${structure ? `, ${structure}` : ''}.`,
+    strength: STRENGTH_DEFAULT, intensity, runMinutes,
+    rationale: bandPhrase(strainReal, strainLow, strainHigh, driver) + heatNote,
+    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, ...stamp,
+  };
+}
+
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
+  // Keyless or broken-key → run fully deterministic (no LLM). With a working key the LLM writes the
+  // nicer prose; if that call fails for any reason, fall back so the daily card always resolves.
+  const status = await getLLMStatus();
+  if (!status.hasKey || !status.reachable) return deterministicCoachPlan(snap);
+  try {
   await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
   const knowledge = await buildKnowledgePrompt();
   // DETERMINISTIC volume gate: when the rolling +X% cap leaves no meaningful run budget today, today
@@ -512,6 +635,11 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     genTempC:  snap.weather?.apparentC ?? snap.weather?.tempC,
     genStrain: snap.strainReal,
   };
+  } catch {
+    // bad key / network / quota — keep the app usable with the deterministic plan
+    // (callLLM has already flipped the reachability flag, so the LLM buttons grey out too).
+    return deterministicCoachPlan(snap);
+  }
 }
 
 // ── Progression-cap settings (user-configurable) ──────────────────────────────
@@ -861,4 +989,19 @@ export async function loadWeekPlanCache(date: string): Promise<WeekPlanCache | n
 
 export async function saveWeekPlanCache(cache: WeekPlanCache): Promise<void> {
   try { await FileSystem.writeAsStringAsync(weekPlanFile(cache.date), JSON.stringify(cache)); } catch { /* ignore */ }
+}
+
+function localTodayKey(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// Invalidate TODAY's cached daily + week plan so they regenerate from freshly-recomputed load/strain
+// (e.g. after a run is reclassified). The prescription LOG is left intact — it's the historical record
+// run-analysis judges past runs against.
+export async function clearTodayPlanCache(): Promise<void> {
+  const k = localTodayKey();
+  try { await FileSystem.deleteAsync(planFile(k), { idempotent: true }); } catch { /* ignore */ }
+  try { await FileSystem.deleteAsync(weekPlanFile(k), { idempotent: true }); } catch { /* ignore */ }
 }

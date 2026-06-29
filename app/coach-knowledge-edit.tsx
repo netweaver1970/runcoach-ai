@@ -8,6 +8,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import { useLLMReady } from '../src/hooks/useLLMReady';
 import {
   listKnowledge, readKnowledgeContent, writeKnowledgeContent, renameKnowledge,
   deleteKnowledge, resetKnowledge, enhanceKnowledge, isBuiltinId, KnowledgeMeta,
@@ -18,6 +19,7 @@ export default function CoachKnowledgeEditScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
+  const llm = useLLMReady();
   const [meta, setMeta] = useState<KnowledgeMeta | null>(null);
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
@@ -176,8 +178,13 @@ export default function CoachKnowledgeEditScreen() {
             placeholderTextColor="#999"
           />
 
-          <TouchableOpacity style={[s.btn, { backgroundColor: '#7c5cf0' }]} onPress={enhance} disabled={enhancing}>
-            {enhancing ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.btnText}>✨ Enhance with AI</Text>}
+          <TouchableOpacity
+            style={[s.btn, { backgroundColor: '#7c5cf0' }, !llm.ready && { opacity: 0.4 }]}
+            onPress={enhance}
+            disabled={enhancing || !llm.ready}
+          >
+            {enhancing ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={s.btnText}>{llm.ready ? '✨ Enhance with AI' : '✨ Enhance with AI (needs API key)'}</Text>}
           </TouchableOpacity>
 
           <View style={s.btnRow}>
