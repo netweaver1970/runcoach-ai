@@ -136,6 +136,12 @@ export default function CoachAthleteScreen() {
         <View style={{ width: 44 }} />
       </View>
 
+      <View style={s.coachBanner}>
+        <Text style={s.coachBannerText} numberOfLines={1}>
+          👁  COACH VIEW · {data?.athlete?.name || name || 'athlete'}’s data · read-only
+        </Text>
+      </View>
+
       <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
         {loading ? (
           <ActivityIndicator size="large" color="#FF6B35" style={{ marginTop: 28 }} />
@@ -297,6 +303,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
   title: { fontSize: 17, fontWeight: '700', color: c.text, flex: 1, textAlign: 'center' },
+  coachBanner: { backgroundColor: '#8e44ad', paddingVertical: 7, paddingHorizontal: 12, alignItems: 'center' },
+  coachBannerText: { color: '#fff', fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
   scroll: { padding: 16, paddingBottom: 48 },
   bigSection: { fontSize: 18, fontWeight: '800', color: c.text, marginBottom: 10, marginLeft: 2 },
   read: { fontSize: 11.5, color: c.textFaint, marginBottom: 12, marginLeft: 2 },

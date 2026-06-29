@@ -203,7 +203,7 @@ export default function HomeScreen() {
       // KPIs to the watch with what we just computed.
       setBbLoading(true);
       computeBodyBattery()
-        .then(bb => { setBodyBattery(bb); if (bb) saveBodyBatteryCache(bb).catch(() => {}); syncWatch(bb, snap).catch(() => {}); })
+        .then(bb => { if (bb) { setBodyBattery(bb); saveBodyBatteryCache(bb).catch(() => {}); } syncWatch(bb, snap).catch(() => {}); })
         .catch(() => {})
         .finally(() => setBbLoading(false));
       // Only a FULL scan marks this version as fully scanned (so light starts stay light).
@@ -307,6 +307,10 @@ export default function HomeScreen() {
 
     // Pick up a freshly-generated run analysis (e.g. regenerated on its own screen).
     loadLatestRunAnalysis().then(setRunAnalysis).catch(() => {});
+
+    // Pick up a fresh body battery the detail screen just computed (e.g. after setting a
+    // calibration anchor) — a cheap cache read, freshness-guarded (no stale value shown).
+    loadBodyBatteryCache().then(bb => { if (bb) setBodyBattery(bb); }).catch(() => {});
 
     Promise.all([getRunOverrides(), loadRunMeta()]).then(([overrides, runMeta]) => {
       setSnapshot((prev) => {

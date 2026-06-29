@@ -38,7 +38,7 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getCoachingMode, setCoachingMode, CoachingMode } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode } from '../src/services/coach';
 import { getAccountingMode, setAccountingMode, AccountingMode } from '../src/services/accounting';
 import {
   scheduleWeeklyCoachReminder,
@@ -78,6 +78,8 @@ export default function SettingsScreen() {
   const [longRunSaved, setLongRunSaved] = useState(false);
   const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
   const [capPctSaved, setCapPctSaved] = useState(false);
+  const [minTsb, setMinTsb] = useState(String(DEFAULT_MIN_TSB));
+  const [minTsbSaved, setMinTsbSaved] = useState(false);
   const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
   const [accMode, setAccModeState] = useState<AccountingMode>('work');
   const [coachMode, setCoachModeState] = useState<CoachingMode>('self');
@@ -122,6 +124,7 @@ export default function SettingsScreen() {
     getPowerZones().then(setPowerZones);
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
     getLoadCapPct().then(p => setCapPct(String(p)));
+    getMinTSB().then(v => setMinTsb(String(v)));
     getLoadCapBasis().then(setCapBasisState);
     getAccountingMode().then(setAccModeState);
     getCoachingMode().then(setCoachModeState);
@@ -195,6 +198,17 @@ export default function SettingsScreen() {
     await setLoadCapPct(n);
     setCapPctSaved(true);
     setTimeout(() => setCapPctSaved(false), 2000);
+  };
+
+  const handleSaveMinTsb = async () => {
+    const n = parseInt(minTsb, 10);
+    if (isNaN(n) || n < -40 || n > 0) {
+      Alert.alert('Invalid value', 'Enter a minimum TSB between −40 and 0 (e.g. −10).');
+      return;
+    }
+    await setMinTSB(n);
+    setMinTsbSaved(true);
+    setTimeout(() => setMinTsbSaved(false), 2000);
   };
 
   const handleSaveMaxHr = async () => {
@@ -751,6 +765,28 @@ export default function SettingsScreen() {
               onPress={handleSaveCapPct}
             >
               <Text style={styles.btnText}>{capPctSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.hint}>
+            Minimum form (TSB): the 7-day forecast trims any session that would push your projected TSB
+            below this. Default −10; more negative allows deeper fatigue.
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={minTsb}
+              onChangeText={setMinTsb}
+              placeholder="-10"
+              placeholderTextColor="#bbb"
+              keyboardType="numbers-and-punctuation"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>min TSB</Text>
+            <TouchableOpacity
+              style={[styles.btn, minTsbSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={handleSaveMinTsb}
+            >
+              <Text style={styles.btnText}>{minTsbSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.switchRow}>

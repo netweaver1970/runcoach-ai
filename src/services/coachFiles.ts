@@ -119,16 +119,18 @@ Cold conditions → extend the warm-up; hot conditions → shorten and hydrate f
 
 const DEFAULT_SCHEDULE = `# Preferred Weekly Structure
 
-A flexible template — the daily readiness + rules always override this:
-- Mon: Recovery (short easy) + strength
-- Tue: Quality (intervals / tempo) — only if readiness green
-- Wed: Recovery (short easy) + strength
-- Thu: Quality (hills or tempo) — only if readiness green
-- Fri: Rest or mobility
-- Sat: Long-ish easy (still within +10% rolling cap)
-- Sun: Recovery (short easy) or rest
+A flexible template — the daily readiness, the rolling volume cap, and re-entry after a break
+always override this:
+- Mon: Intervals (harder quality) — only if readiness allows
+- Tue: Recovery run or rest
+- Wed: Tempo run — only if readiness allows
+- Thu: Recovery run or rest
+- Fri: Long run
+- Sat: Recovery run or rest
+- Sun: Recovery run or rest
 
-Never two quality/long days back-to-back. Keep ≥48h between hard sessions.`;
+Never two quality/long days back-to-back. Keep ≥48h between hard sessions. After a week off
+(holiday or illness) ignore the quality days and rebuild with easy Z2 runs gated by recovery.`;
 
 const DEFAULT_PROFILE = `# Athlete Profile
 

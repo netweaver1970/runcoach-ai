@@ -88,6 +88,12 @@ export default function StrainDetailScreen() {
   const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === toDateKey(new Date());
+  // "est." readiness: viewing today but there's no overnight recovery for last night (watch not worn)
+  // → the recovery/readiness shown is the last-known estimate, not today's. (History days have data.)
+  const realTodayKey = toDateKey(new Date());
+  const wantToday = !date || date === realTodayKey;
+  const todayRec = comps[realTodayKey];
+  const recoveryStale = wantToday && dates.length > 0 && (!todayRec || (!todayRec.timeAsleep && todayRec.restingHrv == null));
 
   // The workout to show/push: the coach's, or a synthesized one on any run-day plan
   // (covers stale cached plans + LLM omissions, so the watch box always appears on run days).
@@ -285,12 +291,12 @@ export default function StrainDetailScreen() {
         {!loadingH && dates.length > 0 && (
           <View style={s.readyCard}>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-              <Text style={s.readyNum}>{readiness.readiness}</Text>
-              <Text style={s.readyUnit}>/100 readiness</Text>
+              <Text style={s.readyNum}>{recoveryStale ? '≈' : ''}{readiness.readiness}</Text>
+              <Text style={s.readyUnit}>/100 readiness{recoveryStale ? ' · est.' : ''}</Text>
               {readiness.acwr > 0 && <Text style={s.readyAcwr}>ACWR {readiness.acwr.toFixed(2)}</Text>}
             </View>
             <Text style={s.readyDrivers}>
-              {readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range'}
+              {recoveryStale ? '⚠️ Estimate — watch not worn overnight' : (readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range')}
             </Text>
             <Text style={s.readyRange}>Target {strain?.safeLow ?? readiness.safeLow}–{strain?.safeHigh ?? readiness.safeHigh}% strain</Text>
             {tof && (

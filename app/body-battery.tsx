@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Dimensions } from 'react-native';
+import { View, Text, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Dimensions, TextInput, Alert } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as Clipboard from 'expo-clipboard';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
-import { computeBodyBattery, BodyBattery, BatteryPoint } from '../src/services/bodyBattery';
+import {
+  computeBodyBattery, BodyBattery, BatteryPoint, saveBodyBatteryCache,
+  getBatteryAnchor, setBatteryAnchor, clearBatteryAnchor, BatteryAnchor,
+} from '../src/services/bodyBattery';
 
 const levelColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' : '#EF4444');
 const stressColor = (v: number) => (v >= 70 ? '#EF4444' : v >= 40 ? '#F59E0B' : '#22C55E');
@@ -38,20 +42,27 @@ function smoothPath(cs: { x: number; y: number }[]): string {
 export default function BodyBatteryScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const [data, setData] = useState<BodyBattery | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedCorr, setCopiedCorr] = useState(false);
+  const [anchorVal, setAnchorVal] = useState('');
+  const [anchorDate, setAnchorDate] = useState<Date>(() => new Date());
+  const [anchorInfo, setAnchorInfo] = useState<BatteryAnchor | null>(null);
 
   const load = useCallback((isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoading(true);
+    getBatteryAnchor().then(setAnchorInfo).catch(() => {});
     computeBodyBattery()
-      .then(setData)
+      .then(bb => { setData(bb); if (bb) saveBodyBatteryCache(bb).catch(() => {}); }) // share with the home card
       .catch(() => {})
       .finally(() => { setLoading(false); setRefreshing(false); });
   }, []);
   useEffect(() => { load(); }, [load]);
+  // Keep the picker showing the active anchor's moment when one exists.
+  useEffect(() => { if (anchorInfo) setAnchorDate(new Date(anchorInfo.at)); }, [anchorInfo]);
 
   return (
     <SafeAreaView style={s.container}>
@@ -132,6 +143,53 @@ export default function BodyBatteryScreen() {
                 </Text>
               </TouchableOpacity>
             )}
+
+            {/* Calibration anchor (dev): force the level to a known value and re-integrate. */}
+            <View style={s.anchorCard}>
+              <Text style={s.anchorTitle}>Calibration anchor (dev)</Text>
+              <Text style={s.note}>
+                Force the battery to a known value (e.g. a Bevel reading) at a chosen time. The model
+                integrates forward from there — anchor a PAST time to re-align the whole curve through last night.
+              </Text>
+              {anchorInfo && (
+                <Text style={[s.note, { color: '#FF6B35', fontWeight: '700' }]}>
+                  Active: {anchorInfo.value}% at {new Date(anchorInfo.at).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              )}
+              <Text style={[s.anchorLabel, { marginTop: 6 }]}>Battery %</Text>
+              <TextInput
+                style={[s.anchorInput, { alignSelf: 'flex-start', minWidth: 120 }]} value={anchorVal}
+                onChangeText={(t) => setAnchorVal(t.replace(/[^0-9]/g, ''))}
+                keyboardType="number-pad" placeholder="e.g. 38" placeholderTextColor="#999" maxLength={3}
+              />
+              <View style={s.anchorWhen}>
+                <Text style={s.anchorLabel}>When</Text>
+                <DateTimePicker
+                  value={anchorDate}
+                  mode="datetime"
+                  display="compact"
+                  maximumDate={new Date()}
+                  themeVariant={c.mode === 'dark' ? 'dark' : 'light'}
+                  onChange={(_, d) => { if (d) setAnchorDate(d); }}
+                />
+              </View>
+              <TouchableOpacity
+                style={s.debugBtn}
+                onPress={async () => {
+                  const v = parseInt(anchorVal, 10);
+                  if (!Number.isFinite(v) || v < 0 || v > 100) { Alert.alert('Enter a battery % (0–100)'); return; }
+                  await setBatteryAnchor(v, anchorDate.getTime());
+                  load();
+                }}
+              >
+                <Text style={s.debugBtnText}>Set anchor</Text>
+              </TouchableOpacity>
+              {anchorInfo && (
+                <TouchableOpacity style={s.debugBtn} onPress={async () => { await clearBatteryAnchor(); setAnchorVal(''); setAnchorDate(new Date()); load(); }}>
+                  <Text style={s.debugBtnText}>Clear anchor</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </>
         )}
       </ScrollView>
@@ -329,4 +387,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   note: { fontSize: 12.5, color: c.textSub, lineHeight: 18, marginBottom: 8 },
   debugBtn: { marginTop: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center' },
   debugBtnText: { fontSize: 14, fontWeight: '600', color: c.textSub },
+  anchorCard: { marginTop: 16, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt },
+  anchorTitle: { fontSize: 14, fontWeight: '800', color: c.text, marginBottom: 6 },
+  anchorRow: { flexDirection: 'row', gap: 10, marginTop: 6 },
+  anchorWhen: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' },
+  anchorLabel: { fontSize: 12, fontWeight: '600', color: c.textSub, marginBottom: 4 },
+  anchorInput: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16, color: c.text, textAlign: 'center' },
 });

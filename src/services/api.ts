@@ -1,8 +1,9 @@
 /**
  * Thin HTTP client for the RunCoachAI cloud API (Cloudflare Worker).
  *
- * - Base URL is user-configured (Settings → Cloud) and stored in SecureStore, so the app
- *   ships without a hardcoded server and works fully offline / logged-out.
+ * - Base URL defaults to the deployed Worker (DEFAULT_BASE_URL) so the app works out of the box
+ *   (incl. fresh TestFlight installs); a user-entered URL (Settings → Cloud) overrides it. Stored
+ *   in SecureStore. The token gates access, so the app still works fully offline / logged-out.
  * - Attaches the access token, and on a 401 transparently refreshes once and retries.
  * - Tokens live in the iOS Keychain via expo-secure-store.
  */
@@ -12,9 +13,12 @@ const K_BASE = 'cloud_base_url';
 const K_ACCESS = 'cloud_access_token';
 const K_REFRESH = 'cloud_refresh_token';
 
-export async function getBaseUrl(): Promise<string | null> {
+// Geert's deployed Cloudflare Worker — the built-in default so the app + TestFlight builds work
+// without anyone hand-typing it. A URL entered in Settings → Cloud is stored and overrides this.
+export const DEFAULT_BASE_URL = 'https://runcoach-api.runcoach-1970.workers.dev';
+export async function getBaseUrl(): Promise<string> {
   const v = await SecureStore.getItemAsync(K_BASE);
-  return v && v.trim() ? v.trim().replace(/\/+$/, '') : null;
+  return v && v.trim() ? v.trim().replace(/\/+$/, '') : DEFAULT_BASE_URL;
 }
 export async function setBaseUrl(url: string): Promise<void> {
   const clean = url.trim().replace(/\/+$/, '');

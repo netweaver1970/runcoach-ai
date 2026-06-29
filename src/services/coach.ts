@@ -8,7 +8,7 @@
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { callLLM } from './llm';
-import { buildKnowledgePrompt, recordPrescription } from './coachFiles';
+import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
@@ -26,6 +26,8 @@ export interface CoachSnapshot {
   ctl?:          number;   atl?:           number;   tsb?: number;   acwr?: number;
   strainReal?:   number;   advisableLow?:  number;   advisableHigh?: number;
   readiness?:    number;   drivers?:       string[];
+  recoveryStale?: boolean;  // true = no overnight recovery data for last night (watch not worn) → the
+                            // recovery/hrv/sleep/readiness fields are the last KNOWN values, not today's
   recentStrain?: number[];                 // last ~10 days, oldest→newest
   recentRuns?:   { date: string; km: number; type: string }[];
   // Time-on-feet (running minutes) — drives the alternation + rolling-volume rules.
@@ -104,6 +106,11 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   if (nowTemp != null && plan.genTempC == null) return true;
   if (plan.genTempC != null && nowTemp != null && Math.abs(nowTemp - plan.genTempC) >= TEMP_DRIFT_C) return true;
   if (plan.genStrain != null && snap.strainReal != null && Math.abs(snap.strainReal - plan.genStrain) >= STRAIN_DRIFT) return true;
+  // The deterministic volume gate disagrees with the cached plan → the run/rest decision is stale
+  // (a run got counted so the cap now blocks today, or a rest day rolled the cap free again).
+  const cappedNow = (snap.tofNextRunInDays ?? 0) > 0;
+  if (cappedNow && plan.intensity !== 'rest') return true;
+  if (!cappedNow && (plan.nextRunInDays ?? 0) > 0) return true;
   return false;
 }
 
@@ -206,14 +213,18 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
 // Map an HR zone (Z1–Z5) to its watt window from the athlete's power zones.
 function zoneToWatts(zone: string | undefined, pz?: CoachSnapshot['powerZones']): [number?, number?] {
   if (!pz || !zone) return [undefined, undefined];
+  let lo: number | undefined, hi: number | undefined;
   switch (zone) {
-    case 'Z1': return [Math.round(pz.recoveryMax * 0.7), pz.recoveryMax];
-    case 'Z2': return [pz.recoveryMax, pz.z2Max];
-    case 'Z3': return [pz.tempoMin, pz.tempoMax];
-    case 'Z4': return [pz.tempoMax, pz.intervalsMin];
-    case 'Z5': return [pz.intervalsMin, pz.intervalsMin + 60];
+    case 'Z1': lo = Math.round(pz.recoveryMax * 0.7); hi = pz.recoveryMax;     break;
+    case 'Z2': lo = pz.recoveryMax;                   hi = pz.z2Max;           break;
+    case 'Z3': lo = pz.tempoMin;                      hi = pz.tempoMax;        break;
+    case 'Z4': lo = pz.tempoMax;                      hi = pz.intervalsMin;    break;
+    case 'Z5': lo = pz.intervalsMin;                  hi = pz.intervalsMin + 60; break;
     default:   return [undefined, undefined];
   }
+  // Prescribe a NARROWER band in the UPPER half of the zone (the lower end felt too easy).
+  if (lo != null && hi != null && hi > lo) lo = Math.round(lo + 0.5 * (hi - lo));
+  return [lo, hi];
 }
 
 // Guarantee every work block carries a power window so the watch can give in-band cues.
@@ -233,20 +244,25 @@ export function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['pow
 export function synthesizeWorkout(
   intensity: CoachIntensity, runMinutes: number, name: string,
   pz?: CoachSnapshot['powerZones'],
+  kind?: 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery',
 ): WatchWorkout {
   // Reserve ~6 min for the 600m warm-up + 600m cool-down; the rest is work.
   const workBudget = Math.max(8, (runMinutes || 35) - 6);
+  // TYPE-aware structure — the session TYPE, not just the effort tier, decides the shape (so a Long
+  // run is a long Z2 run, a Tempo is sustained Z3, only Intervals are short Z4 reps). Falls back to
+  // the intensity when no kind is given (legacy callers like the daily plan's fallback).
+  const t = kind ?? (intensity === 'hard' ? 'intervals' : intensity === 'moderate' ? 'tempo' : 'easy');
   let blocks: WatchWorkoutBlock[];
-  if (intensity === 'easy') {
-    blocks = [{ repeats: 1, workMinutes: Math.min(90, workBudget), restMinutes: 0, hrZone: 'Z2', label: 'aerobic' }];
-  } else if (intensity === 'hard') {
+  if (t === 'intervals') {
     const reps = Math.max(4, Math.min(8, Math.round(workBudget / 5)));
-    blocks = [{ repeats: reps, workMinutes: 3, restMinutes: 2, hrZone: 'Z4', label: 'threshold' }];
-  } else { // moderate
-    const reps = Math.max(3, Math.min(6, Math.round(workBudget / 7)));
-    blocks = [{ repeats: reps, workMinutes: 5, restMinutes: 2, hrZone: 'Z3', label: 'tempo' }];
+    blocks = [{ repeats: reps, workMinutes: 3, restMinutes: 2, hrZone: 'Z4', label: 'intervals' }];
+  } else if (t === 'tempo') {
+    blocks = [{ repeats: 1, workMinutes: workBudget, restMinutes: 0, hrZone: 'Z3', label: 'tempo' }]; // ONE continuous threshold block — no jog gaps
+  } else { // long / easy / recovery → ONE continuous aerobic block at Z2
+    blocks = [{ repeats: 1, workMinutes: Math.min(150, workBudget), restMinutes: 0, hrZone: 'Z2', label: t === 'long' ? 'long' : 'aerobic' }];
   }
-  return ensureBlockPower({ name, warmupMeters: 600, drillsMinutes: 4, blocks, cooldownMeters: 600 }, pz)!;
+  const drills = (t === 'intervals' || t === 'tempo') ? 4 : 0;         // dynamic prep only before quality
+  return ensureBlockPower({ name, warmupMeters: 600, drillsMinutes: drills, blocks, cooldownMeters: 600 }, pz)!;
 }
 
 // Concise one-line structure for the daily plan, e.g. "3× 10min @ 180–205W" or "60min @ 205W".
@@ -271,95 +287,213 @@ export interface WeekPlanDay {
   runMinutes: number;
   structure: string;   // concise, e.g. "40min @ Z2" or "4× 6min @ Z4 + 2min jog"
   note: string;        // ≤ ~8 words
+  kind?: string;       // resolved session kind: intervals|tempo|long|easy|rest — drives the synthesized structure + the UI label
 }
 
 // Forward 7-day plan (tomorrow → +7), following the preferred weekly schedule but adjusted
 // for the rolling volume cap, recovery, alternation and the morning weather forecast. The app
 // computes strain + CTL/ATL.
+// DETERMINISTIC 7-day scheduler — NO LLM. Same inputs → same week, every open (the old LLM version
+// rolled a fresh, cap-ignoring answer each time → "3 opens, 3 plans", and contradicted the daily cap).
+// The preferred week is PARSED from the editable "Weekly Schedule" knowledge file (so the runner's own
+// structure drives it). Decision order per day: parsed KIND → re-entry override → readiness gate
+// (quality only when green) → no-two-quality-back-to-back → ease a hard hot morning → resolve flex
+// (easy-or-rest by cap) → HARD volume-cap gate (forward-rolled time-on-feet) forces rest when there's
+// no budget. The screen still heat-cuts, cap-clamps the minutes and projects CTL/ATL/strain. (Kept
+// async + same signature so the week screen needs no change. The DAILY plan still uses the LLM for prose.)
+type WeekKind = 'intervals' | 'tempo' | 'long' | 'easy' | 'flex' | 'rest';
+const DOW_IX: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+const FALLBACK_TEMPLATE: Record<number, WeekKind> = { // Geert's week (used if the file can't be read)
+  1: 'intervals', 2: 'flex', 3: 'tempo', 4: 'flex', 5: 'long', 6: 'flex', 0: 'flex',
+};
+// Parse "- Mon: Intervals …" lines → weekday→kind. "recovery/easy … or rest" = flex (easy-or-rest);
+// "recovery/easy" alone = easy (always a jog); bare "rest" = rest.
+export function parseWeeklyTemplate(text: string): Record<number, WeekKind> {
+  const out: Record<number, WeekKind> = {};
+  for (const line of text.split('\n')) {
+    const m = line.match(/\b(mon|tue|wed|thu|fri|sat|sun)\b/i);
+    if (!m) continue;
+    const dow = DOW_IX[m[1].toLowerCase()];
+    if (out[dow] !== undefined) continue; // first line per weekday wins
+    const l = line.toLowerCase();
+    const recover = /recover|\beasy\b/.test(l), rest = /\brest\b/.test(l);
+    out[dow] =
+      /interval/.test(l)        ? 'intervals' :
+      /tempo|threshold/.test(l) ? 'tempo' :
+      /\blong\b/.test(l)        ? 'long' :
+      (recover && rest)         ? 'flex' :
+      recover                   ? 'easy' :
+      rest                      ? 'rest' : 'flex';
+  }
+  for (let d = 0; d < 7; d++) if (out[d] === undefined) out[d] = FALLBACK_TEMPLATE[d];
+  return out;
+}
+
 export async function getWeekPlan(
   snap: CoachSnapshot,
   forecast?: { date: string; apparentC: number; humidity: number; description: string }[],
 ): Promise<WeekPlanDay[]> {
-  const knowledge = await buildKnowledgePrompt();
   const today = new Date(snap.date + 'T00:00:00');
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(today); d.setDate(d.getDate() + 1 + i);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    return { date: key, weekday: weekdayName(key) };
-  });
-  const capPct  = snap.loadCapPct ?? 10;
-  const weekCap = Math.round((snap.tof7d ?? 0) * (1 + capPct / 100));
+  const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
+  const capMul = 1 + capPct / 100;
+  const MEANINGFUL = 20;
+  const green = (snap.readiness ?? 60) >= 60; // quality only on a decent-readiness day
+  // Re-entry: ~no running in the last week (holiday/illness) → rebuild gently with EASY Z2 ONLY, never
+  // quality. The daily plan refines each morning by that day's actual recovery; here we lay out the
+  // intended easy-run days so the forecast doesn't either slam intervals or show an empty week.
+  const reentry = (snap.tof7d ?? 0) < 30;
+  const template = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
   const fxBy = new Map((forecast ?? []).map(f => [f.date, f]));
-  const dayLines = days.map(d => {
-    const f = fxBy.get(d.date);
-    return `${d.weekday} ${d.date}${f ? ` — AM ~${f.apparentC}°C feels, ${f.humidity}% RH, ${f.description}` : ''}`;
-  }).join('\n');
-  const system = `You are a running coach. The COACHING KNOWLEDGE below is AUTHORITATIVE — especially the \
-Weekly Schedule. Plan the NEXT 7 DAYS, one entry per line below (the runner runs ~07:00, so weather shown is the \
-morning forecast):\n${dayLines}\n\nSTICK to the preferred weekly schedule, ADJUSTING only where needed for: \
-VOLUME CAP — total running minutes across these 7 days must stay roughly ≤ ${weekCap} min (current trailing 7-day = \
-${snap.tof7d ?? 0} min, +${capPct}%); recovery/readiness; easy/hard ALTERNATION (never two hard days back-to-back); \
-and the MORNING WEATHER — on a hot/humid morning (≥ ~24°C feels) shorten the run and/or ease intensity, and prefer \
-the hardest sessions on the coolest mornings. Keep every session CONCISE. For a real run set runMinutes (the base, \
-cool-morning duration — the app applies the heat cut) and a short structure ("40min @ Z2", "4× 6min @ Z4 + 2min jog"); \
-for a rest day set intensity "rest", runMinutes 0, structure "Rest".\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n\
-===== END COACHING KNOWLEDGE =====\n\nReturn ONLY minified JSON, EXACTLY 7 entries in chronological order: \
-{"days":[{"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"structure":string,"note":string}]}`;
-  const txt = await callLLM({
-    system,
-    messages: [{ role: 'user', content: JSON.stringify(snap) }],
-    maxTokens: 1100,
-    temperature: 0.2, // low → the same inputs give a stable, repeatable week (not a fresh roll each open)
-  });
-  const match = txt.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Week-plan response was not JSON.');
-  const arr: any[] = Array.isArray(JSON.parse(match[0]).days) ? JSON.parse(match[0]).days : [];
-  return days.map((d, i) => {
-    const o = arr[i] ?? {};
-    const intensity: CoachIntensity = ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : 'rest';
-    const runMinutes = intensity === 'rest' ? 0 : Math.max(0, Math.round(Number(o.runMinutes)) || 0);
-    return {
-      date: d.date, weekday: d.weekday, intensity, runMinutes,
-      structure: (typeof o.structure === 'string' && o.structure.trim()) ? o.structure.trim()
-        : (intensity === 'rest' ? 'Rest' : `${runMinutes}min`),
-      note: typeof o.note === 'string' ? o.note : '',
-    };
-  });
+  const p = (n: number) => String(n).padStart(2, '0');
+
+  const tof = (snap.recentTimeOnFeet ?? []).map(d => d.min);
+  while (tof.length < 14) tof.unshift(0);
+  tof.splice(0, tof.length - 14);
+
+  // Shuffle state: a quality session the cap blocks on its template day is DEFERRED (FIFO) and
+  // rescheduled onto the next budgeted, well-spaced flex day — so the runner's key sessions shift
+  // FORWARD instead of vanishing, and the normal structure resumes as the rolling cap frees up.
+  // Anything still deferred at week's end simply reappears in next week's recompute.
+  const QMIN = 25;          // a quality session needs ≥ this much budget to run; below it → defer
+  const EASY_RESERVE = 35;  // headroom kept on a flex day before spending budget on an easy jog
+  const isQuality = (k: WeekKind) => k === 'intervals' || k === 'tempo' || k === 'long';
+  const resolveQuality = (k: WeekKind): [CoachIntensity, number] =>
+    k === 'intervals' ? ['hard', 45] : k === 'long' ? ['moderate', 65] : ['moderate', 50];
+  const qName = (k: WeekKind) => k === 'intervals' ? 'Intervals' : k === 'tempo' ? 'Tempo' : k === 'long' ? 'Long run' : 'Run';
+  // Goal: fit ALL the week's quality TYPES (intervals + tempo + long) inside the rolling cap. Count
+  // them; while any are still pending, recovery/flex days REST to BANK budget rather than burn it on an
+  // easy jog — and a deferred quality may land on ANY later flex day, including the WEEKEND. Easy jogs
+  // only fill once the quality is placed or the budget is plentiful.
+  let Qtotal = 0;
+  for (let i = 0; i < 7; i++) if (isQuality(template[(today.getDay() + 1 + i) % 7])) Qtotal++;
+  let qPlaced = 0;
+  let lastQ = -99;                 // index of the last quality session placed (≥2 apart = spacing)
+  const deferred: WeekKind[] = []; // quality kinds bumped by the cap, awaiting a later slot
+  const out: WeekPlanDay[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today); d.setDate(d.getDate() + 1 + i);
+    const key = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const weekday = weekdayName(key);
+    const fc = fxBy.get(key);
+    const heat = fc ? heatStrainFactor({ apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
+
+    const j = tof.length;
+    const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0);
+    const prior6 = tof.slice(j - 6,  j).reduce((a, b) => a + b, 0);
+    let allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * capMul - prior6)) : 45;
+    if (ref7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
+
+    const kind = template[d.getDay()];
+    const spaced = (i - lastQ) >= 2; // ≥1 non-quality day since the last quality session
+    let intensity: CoachIntensity = 'rest'; let base = 0; let placed: WeekKind = 'rest';
+    let shifted = false, deferredHere = false, banked = false;
+    if (reentry) {
+      // easy Z2 on the anchor (quality/easy) days, rest on the recovery/flex days → ~3 gentle runs/wk
+      if (kind !== 'rest' && kind !== 'flex') { intensity = 'easy'; base = 28; placed = 'easy'; }
+    } else if (isQuality(kind)) {
+      if (!green) { intensity = 'easy'; base = 35; placed = 'easy'; }                  // readiness too low → easy
+      else if (allowance >= QMIN && spaced) {                                          // run it on its template day
+        [intensity, base] = resolveQuality(kind); placed = kind; lastQ = i; qPlaced++;
+      } else {                                                                         // cap/spacing-blocked → DEFER
+        deferred.push(kind); deferredHere = true;
+        if (allowance >= MEANINGFUL) { intensity = 'easy'; base = 30; placed = 'easy'; } // light jog instead of the quality
+      }
+    } else if (deferred.length && green && allowance >= QMIN && spaced) {              // SHUFFLE: reschedule a deferred quality here (incl. the weekend)
+      const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
+    } else if (kind === 'easy') { intensity = 'easy'; base = 35; placed = 'easy'; }
+    else if (kind === 'rest')   { intensity = 'rest'; base = 0; }
+    else { // flex (recovery run or rest): rest to BANK budget while quality is still pending, else easy jog
+      const bank = green && qPlaced < Qtotal && allowance < QMIN + EASY_RESERVE;
+      if (bank || allowance < MEANINGFUL) { intensity = 'rest'; banked = bank; }
+      else { intensity = 'easy'; base = 32; placed = 'easy'; }
+    }
+    if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
+
+    let capRest = false;
+    if (intensity !== 'rest' && allowance < MEANINGFUL) { intensity = 'rest'; capRest = true; } // HARD cap gate (safety)
+    if (intensity === 'rest') placed = 'rest';
+    const runMinutes = intensity === 'rest' ? 0 : base;
+    const heatMin = intensity === 'rest' ? 0 : Math.max(8, Math.round(runMinutes / heat));
+    tof.push(intensity === 'rest' ? 0 : Math.min(heatMin, Math.max(MEANINGFUL, allowance)));
+
+    const isLong = placed === 'long';
+    const structure = intensity === 'rest' ? 'Rest'
+      : intensity === 'hard'     ? `${runMinutes}min incl. intervals`
+      : intensity === 'moderate' ? `${runMinutes}min ${isLong ? 'long-ish aerobic' : 'tempo'}`
+      :                            `${runMinutes}min easy @ Z2`;
+    const note =
+      reentry && intensity === 'easy' ? 'Easy Z2 — rebuilding after the break (recovery-gated)' :
+      reentry                         ? 'Recovery day — rebuilding' :
+      shifted                         ? `${qName(placed)} — rescheduled here as the cap freed up` :
+      deferredHere                    ? `${qName(kind)} deferred past the +${capPct}% cap${intensity === 'rest' ? '' : ' — easy jog instead'}` :
+      banked                          ? 'Recovery — banking volume for the week’s quality' :
+      capRest                         ? `Cap rest — 7-day volume at the +${capPct}% ceiling` :
+      intensity === 'rest'            ? 'Recovery run or rest' :
+      intensity === 'hard'            ? 'Intervals — keep it genuinely hard' :
+      intensity === 'moderate'        ? (isLong ? 'Long-ish aerobic run' : 'Tempo / threshold') :
+      kind === 'flex'                 ? 'Easy recovery jog' : 'Easy aerobic Z2';
+    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed });
+  }
+  return out;
 }
 
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
   const knowledge = await buildKnowledgePrompt();
-  const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}`;
+  // DETERMINISTIC volume gate: when the rolling +X% cap leaves no meaningful run budget today, today
+  // is a mandatory REST/strength day. The LLM only writes the prose — it cannot conjure a run (that
+  // was the bug: the cap said "next run tomorrow" while the card still prescribed a run today).
+  const cappedToday = (snap.tofNextRunInDays ?? 0) > 0;
+  const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
+  const restGuidance = cappedToday
+    ? `\n\nMANDATORY OVERRIDE: the +${capPct}% rolling volume cap leaves NO running budget today (next run ${snap.tofNextRunLabel ?? 'in a few days'}). You MUST return intensity "rest", runMinutes 0, NO run workout, and a recovery/strength-focused headline + session. Do NOT prescribe any run today.`
+    : '';
+  // Watch not worn overnight → recovery unknown. Don't read the gap as poor recovery; keep the normal
+  // scheduled session and warn the runner to self-regulate to Z2 if they don't feel rested.
+  const recoveryStale = snap.recoveryStale === true;
+  const staleGuidance = recoveryStale
+    ? `\n\nNO OVERNIGHT RECOVERY DATA today (the watch wasn't worn last night; the recovery/HRV/sleep/readiness values shown are the LAST-KNOWN ones, not today's). Do NOT treat the gap as poor recovery — keep the normal scheduled session. Set "cautions" to flag that overnight recovery is unknown and to drop the run to easy Z2 if the runner doesn't feel fully rested.`
+    : '';
+  const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${restGuidance}${staleGuidance}`;
   const heatFactor = heatStrainFactor(snap.weather);
   // Heat shrinks the achievable running time for the same strain — cap the budget by it.
   const heatBudget = snap.tofBudgetTodayMin != null ? Math.round(snap.tofBudgetTodayMin / heatFactor) : undefined;
   const txt = await callLLM({
     system,
-    messages: [{ role: 'user', content: JSON.stringify({ ...snap, heatStrainFactor: heatFactor, tofBudgetTodayMin: heatBudget ?? snap.tofBudgetTodayMin }) }],
+    messages: [{ role: 'user', content: JSON.stringify({ ...snap, mustRestToday: cappedToday, heatStrainFactor: heatFactor, tofBudgetTodayMin: heatBudget ?? snap.tofBudgetTodayMin }) }],
     maxTokens: 1200,
     temperature: 0.2, // low → a stable daily plan that only shifts when the inputs actually change
   });
   const match = txt.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Coach response was not JSON.');
   const o = JSON.parse(match[0]);
-  const intensity: CoachIntensity =
+  const llmIntensity: CoachIntensity =
     ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : 'easy';
-  const runMinutes = Math.max(0, Math.min(
+  const llmRunMinutes = Math.max(0, Math.min(
     heatBudget ?? snap.tofBudgetTodayMin ?? 999,    // heat-adjusted running cap
     Math.round(Number(o.runMinutes)) || 0,
   ));
-  // The LLM should design the workout; if it omitted one on a run day, synthesize a
-  // sensible structured session from the intensity + zones so the watch always has one.
+  // Hard-enforce the volume gate: on a capped day it's rest, no run minutes, no run workout —
+  // whatever the LLM returned. Otherwise the LLM designs the workout; if it omitted one on a run
+  // day, synthesize a sensible structured session from the intensity + zones for the watch.
+  const intensity: CoachIntensity = cappedToday ? 'rest' : llmIntensity;
+  const runMinutes = cappedToday ? 0 : llmRunMinutes;
   const wkName = weekdayName(snap.date);
-  const workout = ensureBlockPower(
+  const workout = cappedToday ? null : ensureBlockPower(
     parseWorkout(o.workout, intensity, wkName)
       ?? (intensity !== 'rest' ? synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones) : null),
     snap.powerZones,
   );
+  // If the LLM ignored the rest mandate, swap in deterministic rest copy so the prose can't
+  // contradict the gate; if it complied (intensity rest), keep its nicer wording.
+  const restCopy = cappedToday && o.intensity !== 'rest';
+  const headline = restCopy ? 'At your volume cap — recovery day' : String(o.headline ?? 'Plan ready').slice(0, 120);
+  const session = restCopy
+    ? `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${snap.tofNextRunLabel ?? 'in a couple of days'}.`
+    : String(o.session ?? '').slice(0, 280);
   return {
-    headline:   String(o.headline ?? 'Plan ready').slice(0, 120),
-    session:    String(o.session ?? '').slice(0, 280),
+    headline,
+    session,
     strength:   String(o.strength ?? '').slice(0, 240),
     intensity,
     runMinutes,
@@ -367,7 +501,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     strainLow:  clampScore(snap.advisableLow, 30),
     strainHigh: clampScore(snap.advisableHigh, 60),
     rationale:  String(o.rationale ?? '').slice(0, 400),
-    cautions:   o.cautions ? String(o.cautions).slice(0, 200) : undefined,
+    cautions:   recoveryStale
+      ? "⚠️ Watch not worn overnight — recovery unknown; plan carried from your schedule. If you don't feel fully rested, run this easy in Z2 (keep HR in Z2)."
+      : (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
     workout,
     // Deterministic (not LLM): only surface when the +10% cap actually blocks a run today.
     nextRunLabel:  (snap.tofNextRunInDays ?? 0) > 0 ? snap.tofNextRunLabel : undefined,
@@ -400,6 +536,21 @@ const LOAD_CAP_PCT_KEY   = 'load_cap_pct';
 const LOAD_CAP_BASIS_KEY = 'load_cap_basis';
 export const DEFAULT_LOAD_CAP_PCT = 10;
 export const DEFAULT_LOAD_CAP_BASIS: LoadCapBasis = 'tof';
+
+// Minimum allowed TSB (form): the 7-day forecast won't let a session push projected TSB below this,
+// trimming the run so fatigue stays "real". Default −10 (a sane training-stress floor).
+const MIN_TSB_KEY = 'min_tsb';
+export const DEFAULT_MIN_TSB = -10;
+export async function getMinTSB(): Promise<number> {
+  try {
+    const raw = await SecureStore.getItemAsync(MIN_TSB_KEY);
+    const n = raw != null && raw !== '' ? parseInt(raw, 10) : DEFAULT_MIN_TSB;
+    return Number.isFinite(n) && n >= -40 && n <= 0 ? n : DEFAULT_MIN_TSB; // −40…0 sane bounds
+  } catch { return DEFAULT_MIN_TSB; }
+}
+export async function setMinTSB(v: number): Promise<void> {
+  try { await SecureStore.setItemAsync(MIN_TSB_KEY, String(Math.round(v))); } catch { /* ignore */ }
+}
 
 export async function getLoadCapPct(): Promise<number> {
   try {
@@ -548,7 +699,17 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   ]);
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};
-  const date   = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
+  const dataDate = dates.length ? dates[dates.length - 1] : '';
+  const now = new Date();
+  const realToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  // Watch not worn overnight → no overnight recovery for last night. Either there's NO record for today
+  // (so `latest` is the last day WITH data, e.g. Saturday), or today's record lacks sleep + overnight
+  // HRV. Either way don't get stuck / read it as poor recovery: plan for TODAY and flag recovery as
+  // stale (the recovery / hrv / sleep / readiness fields below are then the last-known estimate).
+  const recoveryStale =
+    (!!dataDate && dataDate < realToday) ||
+    (dataDate === realToday && !latest.timeAsleep && latest.restingHrv == null);
+  const date = (dataDate && dataDate > realToday) ? dataDate : realToday;
 
   const { tof, cap, budgetMin, loadUnit } = await buildCapContext(dur, new Date(), capPct, capBasis);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
@@ -570,6 +731,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     advisableLow:  strain?.safeLow,
     advisableHigh: strain?.safeHigh,
     readiness:    strain?.readiness,
+    recoveryStale,
     drivers:      strain?.drivers,
     recentStrain: strainHist.slice(-10),
     recentTimeOnFeet:  tof.series14,

@@ -574,15 +574,20 @@ export function activityFloorTrimp(activeEnergyKcal: number, exerciseMin: number
  * @param tsb          training-stress balance (form)
  */
 // Heat inflates the cardiovascular cost of any effort. Tuned for a HEAT-SENSITIVE, heavy-sweating
-// runner (Geert): ~+2.6%/°C of apparent temp above 18°C, an extra ramp above 24°C (where it turns
-// genuinely hard for him), and a humidity penalty from 55% RH. Capped at 1.6×. Used both to inflate
-// strain and to scale the coach's prescribed run down (runMinutes ÷ factor). e.g. 24°C/77% → ~1.24.
+// runner (Geert): ~+2.5%/°C of apparent temp above 18°C, plus a humidity penalty from 55% RH —
+// but humidity only bites once it's WARM enough that evaporative cooling is the bottleneck (at cool
+// temps you barely sweat, so high RH does ~nothing). So the humidity term is GATED by temperature:
+// 0 at ≤18°C, ramping to full by ≥24°C. Factor is ≥1 (cool/ideal weather = 1.0 = run the full planned
+// duration; we never EXTEND past the plan — the volume cap governs length). Capped at 1.6×. Used to
+// inflate strain and to scale the prescribed run down (runMinutes ÷ factor). e.g. 24°C/77% → ~1.24,
+// but 14°C/85% → 1.0 (perfect — no toning down).
 export function heatStrainFactor(w?: { tempC?: number; apparentC?: number; humidity?: number } | null): number {
   if (!w) return 1;
   const t = w.apparentC ?? w.tempC;
   if (t == null) return 1;
-  let f = 1 + Math.max(0, t - 18) * 0.025;                           // ~+2.5%/°C (was 2%)
-  if ((w.humidity ?? 0) > 55) f += ((w.humidity ?? 0) - 55) * 0.004; // humidity bites earlier + harder
+  let f = 1 + Math.max(0, t - 18) * 0.025;                           // temperature: ~+2.5%/°C above 18°C
+  const humidGate = Math.max(0, Math.min(1, (t - 18) / 6));          // humidity matters only when warm: 0 ≤18°C → full ≥24°C
+  if ((w.humidity ?? 0) > 55) f += ((w.humidity ?? 0) - 55) * 0.004 * humidGate;
   return Math.min(1.6, Math.round(f * 100) / 100);
 }
 

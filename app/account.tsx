@@ -156,7 +156,7 @@ export default function AccountScreen() {
                 style={s.input}
                 value={baseUrl}
                 onChangeText={setUrl}
-                placeholder="https://runcoach-api.you.workers.dev"
+                placeholder="https://runcoach-api.runcoach-1970.workers.dev"
                 placeholderTextColor="#999"
                 autoCapitalize="none"
                 autoCorrect={false}

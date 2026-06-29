@@ -41,10 +41,25 @@ const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
 //   awake:  ΔE/h = DRAIN_BASE  − DRAIN_STRESS_K·S        (holds at rest ~S12, drains above)
 // Stage barely matters on its own (deep = core — energy ran straight through the deep block); the one
 // real stage effect is REM's autonomic stress SPIKE, which isn't real strain → cap S during REM.
-const CHARGE_BASE     = 19;    // /h charge intercept while asleep
-const CHARGE_STRESS_K = 0.6;   // /h charge lost per stress unit (asleep)
-const DRAIN_BASE      = 1.25;  // /h awake intercept (≈0 net near S12 → holds at rest)
-const DRAIN_STRESS_K  = 0.107; // /h drain per stress unit (awake) — softest number, 2 intervals
+const CHARGE_BASE     = 16;    // /h charge intercept while asleep (joint-fit 27 Jun 2026)
+const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
+// Drain = circadian "cortisol-awakening" model. A SINGLE drain rate can't be both steep in the morning
+// (~−8/h, fresh + workout) and gentle in the afternoon (~−2.5/h) — Bevel's energy decays LOGARITHMICALLY
+// in time-since-wake. So the stress drain is scaled by a time-multiplier M(h) that starts high at wake
+// and tapers to a floor. Joint-fit to Bevel's full-day Energy-Bank export (27 Jun 2026): RMSE 0.86 vs a
+// single-rate's 2.52 — and it nails the afternoon plateau the flat model always under-shot.
+//   drain/h = (DRAIN_BASE − DRAIN_STRESS_K·S) · M(h),  M(h)=clamp(MMAX − DECAY·ln(1+h), MMIN, MMAX)
+const DRAIN_BASE      = 1.4;   // /h awake intercept (net ≈0 near S10 at the morning peak)
+const DRAIN_STRESS_K  = 0.14;  // /h drain per stress unit (awake), before the time-multiplier
+const DRAIN_TIME_MMAX = 1.6;   // M at wake (h=0): steepest drain, fresh out of bed
+const DRAIN_TIME_DECAY= 0.6;   // logarithmic taper of the drain through the waking day
+const DRAIN_TIME_MMIN = 0.3;   // afternoon/evening floor — gentle drain even at high stress
+// Near-empty asymptote: Bevel's energy bank NEVER crashes to a flat 0 — it approaches a small floor and
+// drain throttles hard once low (Geert: 8% → 3h dancing → still 2%). Below the knee we taper the drain
+// linearly toward 0 at the floor, so the battery approaches but never slams into it. Charge is unaffected.
+const BATTERY_FLOOR     = 2;   // displayed minimum — you can't spend energy you don't have
+const DRAIN_FLOOR_KNEE  = 15;  // below this, drain scales down toward 0 at BATTERY_FLOOR
+const WORKOUT_STRESS_CAP = 65; // cap drain-stress during a workout — Bevel's energy bank doesn't crater on exercise (~−7.7/h)
 const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the spike doesn't starve charge
 // Z-SCORE STRESS INDEX (research-aligned, replaces the old HR-reserve + HRV-suppression + gate +
 // floor): stress = STRESS_BASE + (zHR − zHRV)·STRESS_SCALE, where z is THIS reading's deviation from
@@ -53,6 +68,11 @@ const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the 
 // baseline (so a low-HRV night reads as poor recovery) plus a sleep-stage bump.
 const STRESS_BASE   = 26;     // stress at "typical" (z = 0)
 const STRESS_SCALE  = 13;     // stress points per unit of (zHR − zHRV)
+// (B) DAYTIME stress correction. vs Bevel's stress export our DAY stress correlates r=0.93 but reads
+// ~12 BELOW it (a near-constant offset). Lift it so the stress METRIC — and the drain it drives — match
+// Bevel. NIGHT is untouched (zStressNight + its own base already matches). Tunable; the raw (pre-offset)
+// smoothed value is emitted as `s0` in the debug dump so we can A/B against clean data.
+const DAY_STRESS_OFFSET = 12;
 const BASE_SD_MIN   = 3;      // floor on a baseline's SD so a tight baseline can't explode z-scores
 const STRESS_SMOOTH = 0.11;   // awake-day EWMA decay weight (smooth on the way down; rise is instant)
 const SESSION_GAP_MS = 60 * 60_000; // merge sleep segments < 1h apart into one night session
@@ -107,12 +127,17 @@ export interface BodyBattery {
 // The bulky debug/correlation traces are stripped — the home card never reads them and the
 // detail screen recomputes fresh.
 const BB_CACHE_FILE = `${FileSystem.documentDirectory}runcoach-bodybattery.json`;
+const BB_CACHE_MAX_AGE_MS = 2 * 60 * 60_000; // show a RECENT cache instantly, but never a stale (e.g. yesterday's) one
 
 export async function loadBodyBatteryCache(): Promise<BodyBattery | null> {
   try {
     const info = await FileSystem.getInfoAsync(BB_CACHE_FILE);
     if (!info.exists) return null;
-    return JSON.parse(await FileSystem.readAsStringAsync(BB_CACHE_FILE)) as BodyBattery;
+    const bb = JSON.parse(await FileSystem.readAsStringAsync(BB_CACHE_FILE)) as BodyBattery;
+    // Freshness guard: a value older than the window is stale → return null so the UI shows a
+    // spinner and recomputes, instead of freezing on yesterday's reading.
+    if (!bb || typeof bb.computedAt !== 'number' || Date.now() - bb.computedAt > BB_CACHE_MAX_AGE_MS) return null;
+    return bb;
   } catch { return null; }
 }
 
@@ -121,6 +146,31 @@ export async function saveBodyBatteryCache(bb: BodyBattery): Promise<void> {
     const slim = { ...bb, debug: undefined, correlation: undefined };
     await FileSystem.writeAsStringAsync(BB_CACHE_FILE, JSON.stringify(slim));
   } catch { /* ignore */ }
+}
+
+// ── Manual calibration anchor (dev) ────────────────────────────────────────────
+// Force the battery to a known value (e.g. a Bevel reading) at a chosen MOMENT; the model
+// then integrates the charge/discharge curve FORWARD from there. Anchoring at a past point
+// (e.g. yesterday morning's Bevel %) re-seeds the curve so last night's sleeptime aligns —
+// fixing the SEED-at-window-edge weakness. Clear it when done.
+const BB_ANCHOR_FILE = `${FileSystem.documentDirectory}runcoach-bb-anchor.json`;
+export interface BatteryAnchor { at: number; value: number }
+
+export async function getBatteryAnchor(): Promise<BatteryAnchor | null> {
+  try {
+    const info = await FileSystem.getInfoAsync(BB_ANCHOR_FILE);
+    if (!info.exists) return null;
+    const a = JSON.parse(await FileSystem.readAsStringAsync(BB_ANCHOR_FILE));
+    return typeof a?.at === 'number' && typeof a?.value === 'number' ? a : null;
+  } catch { return null; }
+}
+export async function setBatteryAnchor(value: number, at: number = Date.now()): Promise<void> {
+  try {
+    await FileSystem.writeAsStringAsync(BB_ANCHOR_FILE, JSON.stringify({ at, value: Math.max(0, Math.min(100, value)) }));
+  } catch { /* ignore */ }
+}
+export async function clearBatteryAnchor(): Promise<void> {
+  try { await FileSystem.deleteAsync(BB_ANCHOR_FILE, { idempotent: true }); } catch { /* ignore */ }
 }
 
 interface Sample { t: number; v: number; }
@@ -281,8 +331,12 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     return NIGHT_STRESS_BASE + (zHR - NIGHT_HRV_K * zHRV) * STRESS_SCALE;
   };
 
+  const anchor = await getBatteryAnchor(); // dev calibration: force the level at a chosen moment
+  let anchored = false;
   let battery = SEED; // washed out by the two nights inside the 60h window
   let smStress: number | null = null; // EWMA-smoothed stress (momentum)
+  let wakeAt = start;       // timestamp of the most recent morning get-up (resets the circadian drain clock)
+  let prevNight = true;     // window opens mid-sleep, so we start "in the night"
   const series: BatteryPoint[] = [];
   const binDebug: any[] = [];
   const corrBins: { t: number; s: number; hr: number; hrv: number; stg: number; a: number; b: number }[] = [];
@@ -296,6 +350,11 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const night = asleep || inSleepSession(mid); // asleep OR a micro-wake inside the night
     const stage = stageAt(mid);                  // HK stage 0..5 (-1 none)
     const workout = inWorkout(mid);
+    // Circadian clock: the night→day transition (getting up) restarts time-since-wake; micro-wakes
+    // inside the sleep session keep `night` true and don't reset it.
+    if (!night && prevNight) wakeAt = mid;
+    prevNight = night;
+    const hoursAwake = night ? 0 : Math.max(0, (mid - wakeAt) / 3_600_000);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
     const avgHR = n > 0 ? sum / n : restHR;
     const vHrv = nearestHrv(t);
@@ -303,9 +362,10 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // bump on top (REM bumps; deep sits at the recovery baseline). A low-HRV night → high baseline,
     // so the REM bumps drown; a rested night → low baseline, crisp square wave.
     const base = night ? nightBase : dayBase;
+    const dayZ = night ? 0 : zStress(avgHR, vHrv, base); // (B) pre-offset day z-score (recoverable as s0)
     const rawStress = night
       ? clamp(zStressNight(avgHR, vHrv, base) + (stage >= 0 ? STAGE_BUMP[stage] : 0), 0, NIGHT_STRESS_CAP)
-      : zStress(avgHR, vHrv, base);
+      : clamp(dayZ + DAY_STRESS_OFFSET, 0, 100); // (B) lift daytime stress to Bevel's level
     // EWMA momentum: fast attack only AWAKE-DAY (a real stressor). At night use a faster weight so
     // REM/stage transitions actually show (a slow weight smears the square wave flat). Workout +
     // settle FREEZES the EWMA (bin → gap).
@@ -323,13 +383,23 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // Fitted two-regime model (Bevel-calibrated, NO ceiling): ASLEEP charges, AWAKE holds at rest /
     // drains under stress. REM's autonomic stress spike isn't real strain → cap it; NREM (core & deep)
     // share one curve. A workout's real effort drains via its higher stress. Rates are per-HOUR.
-    const drainStress = workout ? Math.max(rawStress, stress) : stress;
-    const ratePerHour = asleep
+    const drainStress = workout ? Math.min(WORKOUT_STRESS_CAP, Math.max(rawStress, stress)) : stress;
+    // Time-multiplier: drain is steep right after waking (M≈MMAX) and tapers logarithmically to MMIN
+    // through the day. Neutral (1) for any awake bin inside the night (micro-wakes) so they don't spike.
+    const timeMult = night ? 1 : clamp(DRAIN_TIME_MMAX - DRAIN_TIME_DECAY * Math.log(1 + hoursAwake), DRAIN_TIME_MMIN, DRAIN_TIME_MMAX);
+    let ratePerHour = asleep
       ? Math.max(0, CHARGE_BASE - CHARGE_STRESS_K * (stage === 5 ? Math.min(stress, REM_STRESS_CAP) : stress))
-      : (DRAIN_BASE - DRAIN_STRESS_K * drainStress);
-    battery = clamp(battery + ratePerHour * (BIN_MIN / 60), 0, 100);
+      : (DRAIN_BASE - DRAIN_STRESS_K * drainStress) * timeMult;
+    // Near-empty throttle: as the battery approaches the floor, suppress DRAIN toward 0 (asymptote, no
+    // flat-line crash). Charge (positive rate) is untouched so it always recovers off the floor.
+    if (ratePerHour < 0 && battery < DRAIN_FLOOR_KNEE)
+      ratePerHour *= clamp((battery - BATTERY_FLOOR) / (DRAIN_FLOOR_KNEE - BATTERY_FLOOR), 0, 1);
+    battery = clamp(battery + ratePerHour * (BIN_MIN / 60), BATTERY_FLOOR, 100);
+    // Dev anchor: at the chosen moment, override the integrated level, then keep integrating
+    // forward from there (so the curve passes through the known value).
+    if (anchor && !anchored && mid >= anchor.at) { battery = clamp(anchor.value, 0, 100); anchored = true; }
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
-    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), b: Math.round(battery) });
+    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), s0: night ? Math.round(stress) : Math.max(0, Math.round(stress - DAY_STRESS_OFFSET)), h: Math.round(hoursAwake * 10) / 10, tm: Math.round(timeMult * 100) / 100, b: Math.round(battery) });
     corrBins.push({ t, s: Math.round(stress), hr: Math.round(avgHR), hrv: vHrv ? Math.round(vHrv) : 0, stg: stage, a: night ? 1 : 0, b: Math.round(battery) });
   }
   if (!series.length) return null;
@@ -401,7 +471,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
+        constants: { BIN_MIN, REST_STRESS, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, DRAIN_TIME_MMAX, DRAIN_TIME_DECAY, DRAIN_TIME_MMIN, WORKOUT_STRESS_CAP, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, DAY_STRESS_OFFSET, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
         baselines: { dayBase, nightBase } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
