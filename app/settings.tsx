@@ -28,7 +28,7 @@ import {
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
-import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep } from '../src/theme';
+import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep, ACCENT_OPTIONS } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -52,7 +52,7 @@ import {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { mode, setMode, c, fontStep, setFontStep } = useTheme();
+  const { mode, setMode, c, accent, setAccent, fontStep, setFontStep } = useTheme();
   const styles = useThemedStyles(makeStyles);
 
   // ── LLM config ──────────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ export default function SettingsScreen() {
         <Text style={styles.navTitle}>{activeCat ? (CATEGORIES.find(x => x.id === activeCat)?.label ?? 'Settings') : 'Settings'}</Text>
         <View style={{ width: 96 }} />
       </View>
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
         {!activeCat && (
           <View style={styles.catList}>
             {CATEGORIES.map(cat => (
@@ -367,6 +367,21 @@ export default function SettingsScreen() {
             ))}
           </View>
           <Text style={styles.hint}>Enlarges text throughout the app.</Text>
+
+          <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Accent Colour</Text>
+          <View style={styles.swatchRow}>
+            {ACCENT_OPTIONS.map(col => (
+              <TouchableOpacity
+                key={col}
+                style={[styles.swatch, { backgroundColor: col }, accent === col && styles.swatchActive]}
+                onPress={() => setAccent(col)}
+                accessibilityLabel={`Accent ${col}`}
+              >
+                {accent === col && <Text style={styles.swatchCheck}>✓</Text>}
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.hint}>Recolours buttons, links and highlights across the whole app.</Text>
         </Section>
 
         {/* AI Provider & Model */}
@@ -508,7 +523,7 @@ export default function SettingsScreen() {
                   setDailyActive(false);
                 }
               }}
-              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
               thumbColor="#fff"
             />
           </View>
@@ -531,7 +546,7 @@ export default function SettingsScreen() {
                 await setAutoDayViewEnabled(v);
                 if (v) await requestNotificationPermissions();
               }}
-              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
               thumbColor="#fff"
             />
           </View>
@@ -591,7 +606,7 @@ export default function SettingsScreen() {
             <Switch
               value={weeklyActive}
               onValueChange={toggleWeekly}
-              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
               thumbColor="#fff"
             />
           </View>
@@ -803,7 +818,7 @@ export default function SettingsScreen() {
                 setCapBasisState(b);
                 await setLoadCapBasis(b);
               }}
-              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
               thumbColor="#fff"
             />
           </View>
@@ -823,7 +838,7 @@ export default function SettingsScreen() {
                 setAccModeState(m);
                 await setAccountingMode(m);
               }}
-              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
               thumbColor="#fff"
             />
           </View>
@@ -945,7 +960,7 @@ export default function SettingsScreen() {
                 setCoachModeState(m);
                 await setCoachingMode(m);
               }}
-              trackColor={{ true: '#FF6B35', false: '#ccc' }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
               thumbColor="#fff"
             />
           </View>
@@ -1023,7 +1038,7 @@ export default function SettingsScreen() {
             <Text style={{ fontStyle: 'italic' }}>"Summarise my running context and goals in 150 words"</Text>, then paste the result below.
           </Text>
           <TextInput
-            style={[styles.input, { minHeight: 100, textAlignVertical: 'top', marginBottom: 10 }]}
+            style={[styles.input, { minHeight: 100, maxHeight: 160, textAlignVertical: 'top', marginBottom: 10 }]}
             value={coachMemory}
             onChangeText={setCoachMemory}
             placeholder="Paste coaching context here, or leave blank to let it build automatically…"
@@ -1121,13 +1136,13 @@ export default function SettingsScreen() {
 const ActiveCat = React.createContext<string | null>(null);
 
 const CATEGORIES: { id: string; label: string; icon: string; desc: string }[] = [
-  { id: 'coaching',   label: 'Coaching & AI',              icon: '🧠', desc: 'Provider, knowledge, memory, reports, history depth' },
+  { id: 'coaching',   label: 'Self-coaching & AI',         icon: '🧠', desc: 'Provider, knowledge, memory, reports, history depth' },
   { id: 'zones',      label: 'Zones & Training',           icon: '🏃', desc: 'Power zones, long-run threshold, Bevel calibration' },
   { id: 'automation', label: 'Notifications & Automation', icon: '🔔', desc: 'Daily recovery alert, auto day view' },
   { id: 'profile',    label: 'Profile',                    icon: '👤', desc: 'Body weight' },
   { id: 'appearance', label: 'Appearance',                 icon: '🎨', desc: 'Theme & text size' },
   { id: 'data',       label: 'Data & Backup',              icon: '💾', desc: 'Backup/restore, export, privacy' },
-  { id: 'cloud',      label: 'Cloud & Coach',              icon: '☁️', desc: 'Account, sync, external coach' },
+  { id: 'cloud',      label: 'Cloud & Human Coach',        icon: '☁️', desc: 'Account, sync, external human coach' },
 ];
 
 function Section({ title, cat, children }: { title: string; cat?: string; children: React.ReactNode }) {
@@ -1160,6 +1175,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   catDesc: { fontSize: 12, color: c.textSub, marginTop: 2 },
   catChevron: { fontSize: 22, color: c.textSub, fontWeight: '300' },
   themeRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  swatchRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 8 },
+  swatch: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
+  swatchActive: { borderColor: c.text },
+  swatchCheck: { color: '#fff', fontSize: 18, fontWeight: '900' },
   themeBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, alignItems: 'center', backgroundColor: c.surfaceAlt },
   themeBtnActive: { backgroundColor: c.accent, borderColor: c.accent },
   themeBtnText: { fontSize: 13, fontWeight: '600', color: c.textSub },
@@ -1249,7 +1268,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     backgroundColor: c.surfaceAlt, marginRight: 6,
     borderWidth: 1, borderColor: c.border,
   },
-  chipActive: { backgroundColor: '#FF6B3522', borderColor: '#FF6B35' },
+  chipActive: { backgroundColor: c.accent + '22', borderColor: c.accent },
   chipText: { fontSize: 11, color: c.textSub, fontWeight: '600' },
-  chipTextActive: { color: '#FF6B35' },
+  chipTextActive: { color: c.accent },
 });

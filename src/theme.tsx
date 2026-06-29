@@ -3,9 +3,9 @@
  *
  * Screens build their StyleSheet from a `Palette` (semantic colour tokens) via
  * `useThemedStyles(makeStyles)`, so a single toggle re-themes the whole app.
- * Accent (#FF6B35) and status colours (green/red/etc.) are intentionally constant
- * across themes — only the structural greyscale (backgrounds, surfaces, text,
- * borders) flips.
+ * The accent is user-selectable (ACCENT_OPTIONS, persisted) and stays the same in
+ * light and dark; status colours (green/red/etc.) are also constant — only the
+ * structural greyscale (backgrounds, surfaces, text, borders) flips with the theme.
  */
 
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
@@ -61,6 +61,12 @@ const DARK: Palette = {
 
 const STORE_KEY = 'theme_mode_v1';
 const FONT_KEY  = 'font_scale_v1';
+const ACCENT_KEY = 'accent_color_v1';
+
+// User-selectable brand accent. All saturated + dark enough that white text on them (onAccent) stays
+// readable, and legible on both the light and dark structural palettes. First entry is the default.
+export const ACCENT_OPTIONS = ['#FF6B35', '#E5484D', '#D6409F', '#8E4EC6', '#3E63DD', '#0B7285', '#2F9E44', '#B45309'];
+export const DEFAULT_ACCENT = ACCENT_OPTIONS[0];
 
 // Two larger steps above the default — modest enough to avoid layout breakage.
 export type FontSizeStep = 0 | 1 | 2;
@@ -70,6 +76,8 @@ interface ThemeCtx {
   mode:    ThemeMode;        // user choice
   setMode: (m: ThemeMode) => void;
   c:       Palette;          // resolved palette
+  accent:    string;         // selected brand accent
+  setAccent: (col: string) => void;
   fontStep:    FontSizeStep; // 0 = default, 1 / 2 = larger
   setFontStep: (s: FontSizeStep) => void;
   fontScale:   number;       // resolved multiplier
@@ -77,6 +85,7 @@ interface ThemeCtx {
 
 const Ctx = createContext<ThemeCtx>({
   mode: 'system', setMode: () => {}, c: LIGHT,
+  accent: DEFAULT_ACCENT, setAccent: () => {},
   fontStep: 0, setFontStep: () => {}, fontScale: 1,
 });
 
@@ -84,6 +93,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>('system');
   const [system, setSystem]  = useState<ColorSchemeName>(Appearance.getColorScheme());
   const [fontStep, setFontStepState] = useState<FontSizeStep>(0);
+  const [accent, setAccentState] = useState<string>(DEFAULT_ACCENT);
 
   // Load persisted choices once
   useEffect(() => {
@@ -92,6 +102,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {});
     SecureStore.getItemAsync(FONT_KEY)
       .then(v => { const n = Number(v); if (n === 0 || n === 1 || n === 2) setFontStepState(n as FontSizeStep); })
+      .catch(() => {});
+    SecureStore.getItemAsync(ACCENT_KEY)
+      .then(v => { if (v && /^#[0-9A-Fa-f]{6}$/.test(v)) setAccentState(v); })
       .catch(() => {});
   }, []);
 
@@ -111,14 +124,20 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     SecureStore.setItemAsync(FONT_KEY, String(s)).catch(() => {});
   };
 
+  const setAccent = (col: string) => {
+    setAccentState(col);
+    SecureStore.setItemAsync(ACCENT_KEY, col).catch(() => {});
+  };
+
   const resolved: 'light' | 'dark' =
     mode === 'system' ? (system === 'dark' ? 'dark' : 'light') : mode;
-  const c = resolved === 'dark' ? DARK : LIGHT;
+  const base = resolved === 'dark' ? DARK : LIGHT;
+  const c = useMemo(() => ({ ...base, accent }), [base, accent]); // brand accent overrides the palette default
   const fontScale = FONT_SCALES[fontStep];
 
   const value = useMemo(
-    () => ({ mode, setMode, c, fontStep, setFontStep, fontScale }),
-    [mode, c, fontStep, fontScale],
+    () => ({ mode, setMode, c, accent, setAccent, fontStep, setFontStep, fontScale }),
+    [mode, c, accent, fontStep, fontScale],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

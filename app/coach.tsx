@@ -4,7 +4,7 @@ import {
   TextInput, ActivityIndicator, Alert, Share,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getCurrentUser, CloudUser } from '../src/services/auth';
 import {
   createInvite, acceptInvite, listLinks, listAthletes, removeLink, CoachLink, AthleteRef,
@@ -15,7 +15,7 @@ import {
 export default function CoachScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
-
+  const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<CloudUser | null>(null);
   const [links, setLinks] = useState<CoachLink[]>([]);
@@ -82,13 +82,13 @@ export default function CoachScreen() {
         <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={s.title}>Coaching</Text>
+        <Text style={s.title}>Human Coach</Text>
         <View style={{ width: 44 }} />
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
         {loading ? (
-          <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 24 }} />
+          <ActivityIndicator size="small" color={c.accent} style={{ marginTop: 24 }} />
         ) : !user ? (
           <View style={s.card}>
             <Text style={s.hint}>Sign in to your cloud account first.</Text>
@@ -113,7 +113,7 @@ export default function CoachScreen() {
                     <Text style={s.btnText}>Share code</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={genInvite} disabled={busyInvite}>
-                    <Text style={[s.btnText, { color: '#FF6B35' }]}>New code</Text>
+                    <Text style={[s.btnText, { color: c.accent }]}>New code</Text>
                   </TouchableOpacity>
                 </>
               ) : (
@@ -193,7 +193,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title: { fontSize: 17, fontWeight: '700', color: c.text },
   scroll: { padding: 16, paddingBottom: 48 },
 
@@ -227,7 +227,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   chev: { fontSize: 20, color: c.textFaint },
   unlink: { fontSize: 13, color: '#E2553B', fontWeight: '700' },
 
-  btn: { backgroundColor: '#FF6B35', borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginTop: 4 },
-  btnGhost: { backgroundColor: c.surface, borderWidth: 1, borderColor: '#FF6B35', marginTop: 8 },
+  btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginTop: 4 },
+  btnGhost: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.accent, marginTop: 8 },
   btnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

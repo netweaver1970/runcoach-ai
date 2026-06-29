@@ -410,11 +410,11 @@ function Chart({
           <>
             <View pointerEvents="none" style={{
               position: 'absolute', top: 0, height: CHART_H, left: cxOf(boundaryIdx),
-              borderLeftWidth: 1, borderColor: '#FF6B35', borderStyle: 'dashed', opacity: 0.8,
+              borderLeftWidth: 1, borderColor: theme.accent, borderStyle: 'dashed', opacity: 0.8,
             }} />
             <Text style={{
               position: 'absolute', top: 1, left: cxOf(boundaryIdx) + 3,
-              fontSize: 8, fontWeight: '700', color: '#FF6B35',
+              fontSize: 8, fontWeight: '700', color: theme.accent,
             }}>full →</Text>
           </>
         )}
@@ -617,6 +617,7 @@ export default function HistoryScreen() {
   const { type } = useLocalSearchParams<{ type: string }>();
   const router   = useRouter();
   const s = useThemedStyles(makeS);
+  const { c } = useTheme();
 
   // Default to the 1-month view for strain/sleep/recovery + their sub-components;
   // keep 3M for running mileage/time/VO₂ where a longer trend reads better.
@@ -639,9 +640,13 @@ export default function HistoryScreen() {
   useEffect(() => {
     if (histType === 'exercise-duration') getFullBoundary().then(setFullBoundary).catch(() => {});
   }, [histType]);
-  const cfg      = (histType !== 'timeline' && histType in CONFIGS)
+  const rawCfg   = (histType !== 'timeline' && histType in CONFIGS)
     ? (CONFIGS[histType as Exclude<HistoryType,'timeline'>] ?? CONFIGS.km)
     : CONFIGS.km;
+  // The km/distance KPI used the brand orange as its colour — resolve it to the live accent so its
+  // period tabs, chart line, totals and spinner follow the user's chosen accent. Other KPIs keep
+  // their intentional semantic colours (strain orange, VO₂ green, RHR red, …).
+  const cfg      = rawCfg.color === '#FF6B35' ? { ...rawCfg, color: c.accent } : rawCfg;
   const supportsOverlay = histType === 'km' || histType === 'time';
   const isSleepType = SLEEP_TYPES.has(histType);
 
@@ -1119,7 +1124,7 @@ const makeS = (c: Palette) => StyleSheet.create({
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backBtn:  { paddingHorizontal: 4 },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
   periodRow: {
     flexDirection: 'row', gap: 8, padding: 12,

@@ -12,6 +12,7 @@ import HealthKit from '@kingstinct/react-native-healthkit';
 import { HealthSnapshot } from '../types';
 import { fetchHealthSnapshot, saveSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot, getCoachPlan, saveCachedPlan } from './coach';
+import { trySyncSnapshot } from './cloudSync';
 import { pushWorkoutToWatch, clearWatchWorkout } from './watchWorkout';
 import { maybeAutoRecalibrate } from './zones';
 import { maybeAnalyzeLatestRun } from './runAnalysis';
@@ -80,6 +81,10 @@ export async function maybeRunDayView(opts: {
     if (plan.workout) pushWorkoutToWatch(plan.workout).catch(() => {});
     else clearWatchWorkout().catch(() => {});
   } catch { /* e.g. no API key — KPIs still refreshed; the plan stays on-demand */ }
+
+  // Background, non-blocking: push the fresh recovery/strain/load up to the cloud so a coach sees the
+  // new numbers as soon as they're known (the morning HealthKit-observer wake also triggers this).
+  trySyncSnapshot(snap).catch(() => {});
 
   try {
     await FileSystem.writeAsStringAsync(marker(date), JSON.stringify({

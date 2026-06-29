@@ -13,7 +13,7 @@ import {
 import { useLocalSearchParams } from 'expo-router';
 import Markdown from 'react-native-markdown-display';
 import { generateCoachingReport } from '../src/services/claude';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
@@ -25,6 +25,7 @@ import { HealthSnapshot, CoachingReport } from '../src/types';
 export default function AnalysisScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const markdownStyles = useThemedStyles(makeMarkdownStyles);
   const [report, setReport] = useState<CoachingReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -88,7 +89,7 @@ export default function AnalysisScreen() {
     <SafeAreaView style={styles.container}>
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#FF6B35" />
+          <ActivityIndicator size="large" color={c.accent} />
           <Text style={styles.loadingText}>Analysing your running data…</Text>
           <Text style={styles.loadingSubtext}>This takes 5–10 seconds</Text>
         </View>
@@ -153,7 +154,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   errorIcon: { fontSize: 40, marginBottom: 12 },
   errorText: { fontSize: 15, color: '#c0392b', textAlign: 'center', marginBottom: 20, lineHeight: 22 },
   btn: {
-    backgroundColor: '#FF6B35',
+    backgroundColor: c.accent,
     paddingHorizontal: 28,
     paddingVertical: 12,
     borderRadius: 10,
@@ -170,7 +171,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     borderWidth: 1,
     borderColor: c.border,
   },
-  actionBtnActive: { backgroundColor: '#FF6B35', borderColor: '#FF6B35' },
+  actionBtnActive: { backgroundColor: c.accent, borderColor: c.accent },
   actionBtnText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
   actionBtnActiveText: { color: '#fff' },
   meta: { fontSize: 12, color: c.textFaint, marginBottom: 10, textAlign: 'center' },
@@ -198,7 +199,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
 
 const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
   body: { color: c.text, fontSize: 15, lineHeight: 22 },
-  heading2: { fontSize: 16, fontWeight: '700', color: '#FF6B35', marginTop: 16, marginBottom: 4 },
+  heading2: { fontSize: 16, fontWeight: '700', color: c.accent, marginTop: 16, marginBottom: 4 },
   strong: { fontWeight: '700', color: c.text },
   em: { fontStyle: 'italic', color: c.text },
   paragraph: { marginBottom: 8 },

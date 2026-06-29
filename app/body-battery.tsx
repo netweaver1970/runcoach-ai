@@ -152,7 +152,7 @@ export default function BodyBatteryScreen() {
                 integrates forward from there — anchor a PAST time to re-align the whole curve through last night.
               </Text>
               {anchorInfo && (
-                <Text style={[s.note, { color: '#FF6B35', fontWeight: '700' }]}>
+                <Text style={[s.note, { color: c.accent, fontWeight: '700' }]}>
                   Active: {anchorInfo.value}% at {new Date(anchorInfo.at).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
                 </Text>
               )}

@@ -207,15 +207,22 @@ export default function StrainDetailScreen() {
     }
   };
 
-  // Auto-refresh today's plan if it was written under materially different heat/strain.
+  // Auto-refresh today's plan if it went stale: materially different heat/strain, OR the volume cap
+  // flipped since it was written (a walk/run pushed you over → no run today, or a rest day freed it).
+  // Must pass tofNextRunInDays so planNeedsRefresh can see the cap, else a stale "run" plan lingers
+  // (and was even auto-sent to the watch) while the accounting already says "next run tomorrow".
   useEffect(() => {
     if (!plan || !weather || !targetIsToday || planLoading || staleRegenRef.current) return;
-    const snapLike = { weather: { apparentC: weather.apparentC, tempC: weather.tempC }, strainReal: real } as any;
+    const snapLike = {
+      weather: { apparentC: weather.apparentC, tempC: weather.tempC },
+      strainReal: real,
+      tofNextRunInDays: capCtx?.cap.nextRunInDays,
+    } as any;
     if (planNeedsRefresh(plan, snapLike)) {
       staleRegenRef.current = true;
       requestPlan();
     }
-  }, [plan, weather, targetIsToday, planLoading, real]);
+  }, [plan, weather, targetIsToday, planLoading, real, capCtx]);
 
   return (
     <SafeAreaView style={s.container}>
@@ -450,11 +457,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
-  historyLink: { fontSize: 15, color: '#FF6B35', fontWeight: '600' },
+  historyLink: { fontSize: 15, color: c.accent, fontWeight: '600' },
   headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
-  metricsDate: { fontSize: 13, fontWeight: '800', color: '#FF6B35', textAlign: 'center', paddingVertical: 8 },
+  metricsDate: { fontSize: 13, fontWeight: '800', color: c.accent, textAlign: 'center', paddingVertical: 8 },
   scroll:   { padding: 12, paddingBottom: 40 },
 
   hero: {
@@ -527,20 +534,20 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   strengthLabel: { fontSize: 10, fontWeight: '800', color: '#16a085', letterSpacing: 0.4, marginBottom: 3 },
   strengthText: { fontSize: 13, color: c.text, lineHeight: 19 },
   workoutBox: { backgroundColor: c.bg, borderRadius: 8, padding: 12, marginTop: 4, marginBottom: 8 },
-  workoutTitle: { fontSize: 10, fontWeight: '800', color: '#FF6B35', letterSpacing: 0.4, marginBottom: 6 },
+  workoutTitle: { fontSize: 10, fontWeight: '800', color: c.accent, letterSpacing: 0.4, marginBottom: 6 },
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
-  watchBtn: { backgroundColor: '#FF6B35', borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
+  watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' },
   adjustLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   adjustBtn:   { backgroundColor: c.surface, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: c.border },
   adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
   adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center' },
-  adjustReset: { fontSize: 12, color: '#FF6B35', fontWeight: '600' },
+  adjustReset: { fontSize: 12, color: c.accent, fontWeight: '600' },
   projStrain:  { fontSize: 13, fontWeight: '700', marginTop: 8 },
   watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },
   coachCaution: { fontSize: 12, color: '#e67e22', marginTop: 8, lineHeight: 18 },
-  coachRefresh: { fontSize: 12, color: '#FF6B35', fontWeight: '600', marginTop: 12 },
+  coachRefresh: { fontSize: 12, color: c.accent, fontWeight: '600', marginTop: 12 },
   coachError: { fontSize: 12, color: '#e74c3c', marginTop: 10 },
 });

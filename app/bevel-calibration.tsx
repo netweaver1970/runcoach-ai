@@ -438,7 +438,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: t.surface, borderBottomWidth: 1, borderBottomColor: t.border,
   },
-  backText:  { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText:  { fontSize: 17, color: t.accent, fontWeight: '600' },
   title:     { fontSize: 17, fontWeight: '700', color: t.text },
   resetText: { fontSize: 13, color: '#e74c3c', fontWeight: '600' },
   scroll:    { padding: 12, paddingBottom: 60 },

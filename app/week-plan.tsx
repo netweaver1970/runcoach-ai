@@ -208,7 +208,7 @@ export default function WeekPlan() {
       )}
 
       {busy && !rows && (
-        <View style={s.center}><ActivityIndicator size="large" color="#FF6B35" /><Text style={s.dim}>Planning your week…</Text></View>
+        <View style={s.center}><ActivityIndicator size="large" color={c.accent} /><Text style={s.dim}>Planning your week…</Text></View>
       )}
 
       {err && (
@@ -363,6 +363,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   val:      { fontSize: 13, fontWeight: '600', color: c.textSub },
   footer:   { fontSize: 12.5, color: c.textSub, marginTop: 12, fontWeight: '600' },
   genLine:  { fontSize: 11.5, color: c.textFaint, marginTop: 14, textAlign: 'center' },
-  btn:      { backgroundColor: '#FF6B35', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
+  btn:      { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
   btnText:  { color: '#fff', fontWeight: '700', fontSize: 14 },
 });

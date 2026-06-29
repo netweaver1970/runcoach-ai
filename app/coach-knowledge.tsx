@@ -3,7 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView, Switch, ActivityIndicator,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   listKnowledge, setKnowledgeEnabled, createKnowledge, KnowledgeMeta,
 } from '../src/services/coachFiles';
@@ -11,6 +11,7 @@ import {
 export default function CoachKnowledgeScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const [files, setFiles] = useState<KnowledgeMeta[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -50,7 +51,7 @@ export default function CoachKnowledgeScreen() {
         </Text>
 
         {loading ? (
-          <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 24 }} />
+          <ActivityIndicator size="small" color={c.accent} style={{ marginTop: 24 }} />
         ) : (
           files.map(m => (
             <TouchableOpacity
@@ -69,7 +70,7 @@ export default function CoachKnowledgeScreen() {
               <Switch
                 value={m.enabled}
                 onValueChange={v => toggle(m.id, v)}
-                trackColor={{ true: '#FF6B35' }}
+                trackColor={{ true: c.accent }}
               />
               <Text style={s.chev}>›</Text>
             </TouchableOpacity>
@@ -87,9 +88,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text },
-  addText:  { fontSize: 15, color: '#FF6B35', fontWeight: '700' },
+  addText:  { fontSize: 15, color: c.accent, fontWeight: '700' },
   scroll:   { padding: 12, paddingBottom: 40 },
   intro:    { fontSize: 13, color: c.textSub, lineHeight: 19, marginBottom: 14 },
   card: {

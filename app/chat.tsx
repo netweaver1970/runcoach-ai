@@ -38,7 +38,7 @@ import {
 import { loadPrescriptionAt } from '../src/services/coach';
 import { buildPrescriptionContext } from '../src/services/runAnalysis';
 import { HealthSnapshot } from '../src/types';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 // ─── Local context (location + time) ─────────────────────────────────────────
 // Derive city name from IANA timezone — no location permissions needed.
@@ -95,6 +95,7 @@ const SELECTABLE_RULES = {
 
 export default function ChatScreen() {
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const mdAssistant = useThemedStyles(makeMdAssistant);
   const { data, focusRunUUID, runDetailJson } = useLocalSearchParams<{ data?: string; focusRunUUID?: string; runDetailJson?: string }>();
   const [snapshot, setSnapshot]       = useState<HealthSnapshot | null>(data ? JSON.parse(data) : null);
@@ -470,7 +471,7 @@ export default function ChatScreen() {
           title: 'Coach',
           headerRight: () => (
             <TouchableOpacity onPress={handleNewChat} style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
-              <Text style={{ color: '#FF6B35', fontSize: 14, fontWeight: '600' }}>New chat</Text>
+              <Text style={{ color: c.accent, fontSize: 14, fontWeight: '600' }}>New chat</Text>
             </TouchableOpacity>
           ),
         }}
@@ -633,7 +634,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingVertical: 10,
   },
   bubbleUser: {
-    backgroundColor: '#FF6B35',
+    backgroundColor: c.accent,
     borderBottomRightRadius: 4,
     maxWidth: '82%',
   },
@@ -658,12 +659,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   chip: {
     backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE',
     borderWidth: 1,
-    borderColor: '#FF6B35',
+    borderColor: c.accent,
     borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
-  chipText: { color: '#FF6B35', fontSize: 13, fontWeight: '500' },
+  chipText: { color: c.accent, fontSize: 13, fontWeight: '500' },
 
   inputBar: {
     flexDirection: 'row',
@@ -690,7 +691,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#FF6B35',
+    backgroundColor: c.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },

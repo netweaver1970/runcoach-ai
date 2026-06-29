@@ -8,6 +8,7 @@
 import * as SecureStore from 'expo-secure-store';
 import { api } from './api';
 import { isLoggedIn } from './auth';
+import { fetchOurDailyComponents } from './healthkit';
 import type { HealthSnapshot, RunWorkout, DailyLoad } from '../types';
 
 const K_LAST_SYNC = 'cloud_last_sync_at';
@@ -50,15 +51,23 @@ export async function syncSnapshot(snap: HealthSnapshot): Promise<SyncResult> {
   }
 
   // ── daily metrics ────────────────────────────────────────────────────────────
-  // CTL/ATL/TSB history from the training-load series; today's row enriched with the
-  // live recovery / strain / sleep readings (history only carries those for today).
+  // CTL/ATL/TSB from the training-load series, EACH day enriched with its recovery / strain /
+  // sleep / HRV / RHR from the daily components — so a coach sees the FULL history, not just today
+  // (the cloud schema already stores these per day). Today's row prefers the live readings.
   const today = dayKey(new Date().toISOString());
   const rec = snap.todayRecovery;
+  const comps = await fetchOurDailyComponents(1).catch(() => ({} as Record<string, any>));
   const dayRows = (snap.trainingLoad || []).map((d: DailyLoad) => {
+    const c: any = (comps as any)[d.date] || {};
     const row: Record<string, number | string> = {
       date: d.date, ctl: d.ctl, atl: d.atl, tsb: d.tsb, updatedAt: now,
     };
-    if (d.date === today) {
+    if (c.recoveryScore != null) row.recovery = c.recoveryScore;  // per-day history (watch-less days stay blank)
+    if (c.strainScore != null)   row.strain   = c.strainScore;
+    if (c.restingHrv != null)    row.hrv      = c.restingHrv;
+    if (c.restingHr != null)     row.rhr      = c.restingHr;
+    if (c.timeAsleep != null)    row.sleepMin = c.timeAsleep;
+    if (d.date === today) {                                        // freshest live values for today
       if (snap.strain) row.strain = snap.strain.real;
       if (rec) {
         if (rec.recoveryScore != null) row.recovery = rec.recoveryScore;

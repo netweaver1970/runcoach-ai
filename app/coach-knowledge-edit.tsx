@@ -1,13 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, SafeAreaView,
-  ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
+  ActivityIndicator, Alert, Keyboard, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   listKnowledge, readKnowledgeContent, writeKnowledgeContent, renameKnowledge,
   deleteKnowledge, resetKnowledge, enhanceKnowledge, isBuiltinId, KnowledgeMeta,
@@ -17,7 +17,7 @@ export default function CoachKnowledgeEditScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
-
+  const { c } = useTheme();
   const [meta, setMeta] = useState<KnowledgeMeta | null>(null);
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
@@ -27,6 +27,37 @@ export default function CoachKnowledgeEditScreen() {
   const [enhancing, setEnhancing] = useState(false);
   const [proposed, setProposed] = useState(false);
   const builtin = isBuiltinId(id ?? '');
+
+  // ── Keyboard-aware editing ──────────────────────────────────────────────────
+  // The content field can be longer than the screen, so we cap its height to the space ABOVE the
+  // keyboard while typing. That makes the native text view scroll internally (it always keeps the
+  // caret visible), instead of growing under the keyboard where the cursor would be hidden.
+  const { height: winH } = useWindowDimensions();
+  const [kbH, setKbH] = useState(0);
+  const scrollRef = useRef<ScrollView>(null);
+  const contentY = useRef(0);
+
+  useEffect(() => {
+    // keyboardWillChangeFrame tracks show / hide / resize, so the editor adapts to whatever
+    // keyboard is loaded (taller emoji/3rd-party keyboards included).
+    const onFrame = (e: any) => {
+      const screenY = e?.endCoordinates?.screenY;
+      setKbH(typeof screenY === 'number' ? Math.max(0, winH - screenY) : (e?.endCoordinates?.height ?? 0));
+    };
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const sub1 = Keyboard.addListener(showEvt, onFrame);
+    const sub2 = Keyboard.addListener(hideEvt, () => setKbH(0));
+    return () => { sub1.remove(); sub2.remove(); };
+  }, [winH]);
+
+  // Cap height to the room above the keyboard (≈150px reserves the header + safe-area + a margin).
+  const editorH = kbH > 0 ? Math.max(150, winH - kbH - 150) : undefined;
+
+  const onContentFocus = () => {
+    // Slide the editor up to just below the header so the whole capped box sits above the keyboard.
+    setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, contentY.current - 6), animated: true }), 60);
+  };
 
   useEffect(() => {
     (async () => {
@@ -99,7 +130,7 @@ export default function CoachKnowledgeEditScreen() {
   ]);
 
   if (loading || !meta) {
-    return <SafeAreaView style={s.container}><ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 40 }} /></SafeAreaView>;
+    return <SafeAreaView style={s.container}><ActivityIndicator size="small" color={c.accent} style={{ marginTop: 40 }} /></SafeAreaView>;
   }
 
   return (
@@ -114,8 +145,12 @@ export default function CoachKnowledgeEditScreen() {
         </TouchableOpacity>
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={s.scroll}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+      >
           {!builtin && (
             <>
               <Text style={s.label}>TITLE</Text>
@@ -128,12 +163,15 @@ export default function CoachKnowledgeEditScreen() {
           <Text style={s.label}>CONTENT (markdown)</Text>
           {proposed && <Text style={s.proposeNote}>✨ AI proposal — unsaved. Tap Save to keep, or edit/Back to discard.</Text>}
           <TextInput
-            style={[s.input, s.contentInput]}
+            style={[s.input, s.contentInput, editorH != null && { height: editorH, minHeight: 0 }]}
             value={content}
             onChangeText={setContent}
             multiline
+            scrollEnabled
             textAlignVertical="top"
             autoCapitalize="sentences"
+            onLayout={e => { contentY.current = e.nativeEvent.layout.y; }}
+            onFocus={onContentFocus}
             placeholder="Write coaching rules, exercises, drills, schedule…"
             placeholderTextColor="#999"
           />
@@ -162,7 +200,6 @@ export default function CoachKnowledgeEditScreen() {
           )}
           <View style={{ height: 30 }} />
         </ScrollView>
-      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -174,9 +211,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title:    { fontSize: 17, fontWeight: '700', color: c.text, flex: 1, textAlign: 'center', marginHorizontal: 8 },
-  saveText: { fontSize: 15, color: '#FF6B35', fontWeight: '700' },
+  saveText: { fontSize: 15, color: c.accent, fontWeight: '700' },
   scroll:   { padding: 12, paddingBottom: 40 },
   label:    { fontSize: 11, fontWeight: '700', color: c.textSub, letterSpacing: 0.4, marginBottom: 5, marginTop: 12 },
   input: {

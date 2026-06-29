@@ -42,7 +42,7 @@ function RootStack() {
       <StatusBar style="light" />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: '#FF6B35' },
+          headerStyle: { backgroundColor: c.accent },
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: '700' },
           contentStyle: { backgroundColor: c.bg },
@@ -70,7 +70,7 @@ function RootStack() {
           name="chat"
           options={{
             title: 'Chat with Coach',
-            headerStyle: { backgroundColor: '#FF6B35' },
+            headerStyle: { backgroundColor: c.accent },
             headerTintColor: '#fff',
           }}
         />

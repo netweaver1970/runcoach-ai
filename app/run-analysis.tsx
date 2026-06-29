@@ -6,12 +6,13 @@ import {
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import Markdown from 'react-native-markdown-display';
 import { loadLatestRunAnalysis, maybeAnalyzeLatestRun, RunAnalysis } from '../src/services/runAnalysis';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 export default function RunAnalysisScreen() {
   const router = useRouter();
   const { runUUID } = useLocalSearchParams<{ runUUID?: string }>();
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const md = useThemedStyles(makeMarkdownStyles);
 
   const [analysis, setAnalysis] = useState<RunAnalysis | null>(null);
@@ -62,7 +63,7 @@ export default function RunAnalysisScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#FF6B35" />
+          <ActivityIndicator size="large" color={c.accent} />
         </View>
       ) : !analysis ? (
         <View style={styles.center}>
@@ -121,14 +122,14 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   emptyIcon: { fontSize: 40, marginBottom: 10 },
   emptyText: { fontSize: 17, fontWeight: '700', color: c.text, marginBottom: 6 },
   emptySub: { fontSize: 13, color: c.textSub, textAlign: 'center', lineHeight: 19, marginBottom: 20 },
-  btn: { backgroundColor: '#FF6B35', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 10, minWidth: 180, alignItems: 'center' },
+  btn: { backgroundColor: c.accent, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 10, minWidth: 180, alignItems: 'center' },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   scroll: { padding: 14, paddingBottom: 40 },
 
   headerCard: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.surface, borderRadius: 14, padding: 16, marginBottom: 10,
-    borderLeftWidth: 4, borderLeftColor: '#FF6B35',
+    borderLeftWidth: 4, borderLeftColor: c.accent,
   },
   verdict: { fontSize: 22, fontWeight: '800', color: c.text },
   runMeta: { fontSize: 13, color: c.textSub, marginTop: 3 },
@@ -155,7 +156,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
 
 const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
   body: { color: c.text, fontSize: 15, lineHeight: 22 },
-  heading2: { fontSize: 16, fontWeight: '700', color: '#FF6B35', marginTop: 14, marginBottom: 4 },
+  heading2: { fontSize: 16, fontWeight: '700', color: c.accent, marginTop: 14, marginBottom: 4 },
   strong: { fontWeight: '700', color: c.text },
   em: { fontStyle: 'italic', color: c.text },
   paragraph: { marginBottom: 8 },

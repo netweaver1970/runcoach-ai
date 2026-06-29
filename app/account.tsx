@@ -4,7 +4,7 @@ import {
   TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getCurrentUser, login, signup, logout, CloudUser, CloudRole } from '../src/services/auth';
 import { getBaseUrl, setBaseUrl } from '../src/services/api';
 import { syncSnapshot, getLastSync } from '../src/services/cloudSync';
@@ -15,7 +15,7 @@ type Mode = 'login' | 'signup';
 export default function AccountScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
-
+  const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<CloudUser | null>(null);
   const [baseUrl, setUrl] = useState('');
@@ -102,7 +102,7 @@ export default function AccountScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
           {loading ? (
-            <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 24 }} />
+            <ActivityIndicator size="small" color={c.accent} style={{ marginTop: 24 }} />
           ) : user ? (
             // ── Signed in ────────────────────────────────────────────────────────
             <>
@@ -128,7 +128,7 @@ export default function AccountScreen() {
               <TouchableOpacity style={s.card} activeOpacity={0.7} onPress={() => router.push('/coach' as any)}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.label}>Coaching</Text>
+                    <Text style={s.label}>Human Coach</Text>
                     <Text style={s.sub}>Invite a coach, or coach other athletes</Text>
                   </View>
                   <Text style={s.chev}>›</Text>
@@ -239,7 +239,7 @@ export default function AccountScreen() {
                       style={[s.segBtn, role === 'coach' && s.segBtnActive]}
                       onPress={() => setRole('coach')}
                     >
-                      <Text style={[s.segText, role === 'coach' && s.segTextActive]}>Coach</Text>
+                      <Text style={[s.segText, role === 'coach' && s.segTextActive]}>Human Coach</Text>
                     </TouchableOpacity>
                   </View>
                 </>
@@ -275,7 +275,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title: { fontSize: 17, fontWeight: '700', color: c.text },
   scroll: { padding: 16, paddingBottom: 48 },
   intro: { fontSize: 13, color: c.textSub, lineHeight: 19, marginBottom: 18 },
@@ -291,10 +291,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   mismatch: { fontSize: 12, color: '#E2553B', marginTop: -6, marginBottom: 10, fontWeight: '600' },
   chev: { fontSize: 22, color: c.textFaint, marginLeft: 8 },
   roleBadge: {
-    alignSelf: 'flex-start', marginTop: 6, backgroundColor: '#FF6B3522',
+    alignSelf: 'flex-start', marginTop: 6, backgroundColor: c.accent + '22',
     paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
   },
-  roleBadgeText: { fontSize: 10, fontWeight: '800', color: '#FF6B35', textTransform: 'uppercase', letterSpacing: 0.5 },
+  roleBadgeText: { fontSize: 10, fontWeight: '800', color: c.accent, textTransform: 'uppercase', letterSpacing: 0.5 },
 
   fieldLabel: { fontSize: 13, fontWeight: '600', color: c.textSub, marginBottom: 6, marginTop: 6 },
   input: {
@@ -311,7 +311,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   segTextActive: { color: c.text },
 
   btn: {
-    backgroundColor: '#FF6B35', borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 4,
+    backgroundColor: c.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 4,
   },
   btnGhost: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, marginTop: 4 },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },

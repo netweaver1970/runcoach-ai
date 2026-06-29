@@ -894,7 +894,7 @@ export default function WorkoutDetailScreen() {
 
       {loading ? (
         <View style={st.center}>
-          <ActivityIndicator size="large" color="#FF6B35" />
+          <ActivityIndicator size="large" color={pal.accent} />
           <Text style={st.loadingText}>Loading workout data…</Text>
         </View>
       ) : error ? (
@@ -905,7 +905,7 @@ export default function WorkoutDetailScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView key={params.id} contentContainerStyle={st.scroll}>
+        <ScrollView key={params.id} contentContainerStyle={st.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
 
           {/* Summary row */}
           <View style={st.summaryRow}>
@@ -1191,11 +1191,11 @@ const makeSt = (c: Palette) => StyleSheet.create({
     borderBottomColor: c.border,
   },
   backBtn:        { paddingRight: 8, minWidth: 52 },
-  backText:       { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText:       { fontSize: 17, color: c.accent, fontWeight: '600' },
   headerDate:     { fontSize: 14, fontWeight: '700', color: c.text },
   headerTime:     { fontSize: 12, color: c.textSub, marginTop: 1 },
   navRow:         { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 },
-  navArrow:       { fontSize: 20, color: '#FF6B35', fontWeight: '800', lineHeight: 22 },
+  navArrow:       { fontSize: 20, color: c.accent, fontWeight: '800', lineHeight: 22 },
   navArrowOff:    { color: c.textFaint },
   navCount:       { fontSize: 11, color: c.textSub, fontWeight: '600', minWidth: 42, textAlign: 'center' },
 
@@ -1203,8 +1203,8 @@ const makeSt = (c: Palette) => StyleSheet.create({
                     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2 },
   notesHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   notesTitle:     { fontSize: 13, fontWeight: '700', color: c.textSub },
-  tempChip:       { backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#FF6B3540' },
-  tempChipText:   { fontSize: 13, fontWeight: '700', color: '#FF6B35' },
+  tempChip:       { backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: c.accent + '40' },
+  tempChipText:   { fontSize: 13, fontWeight: '700', color: c.accent },
   noteInput:      { backgroundColor: c.surfaceAlt, borderRadius: 8, padding: 10, fontSize: 14, color: c.text,
                     minHeight: 44, maxHeight: 120, textAlignVertical: 'top' },
   noteHint:       { fontSize: 10, color: c.textFaint, marginTop: 5 },
@@ -1214,7 +1214,7 @@ const makeSt = (c: Palette) => StyleSheet.create({
   center:       { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   loadingText:  { marginTop: 8, color: c.textSub, fontSize: 14 },
   errorText:    { fontSize: 15, color: '#c0392b', textAlign: 'center', marginBottom: 16, fontWeight: '600' },
-  retryBtn:     { backgroundColor: '#FF6B35', borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },
+  retryBtn:     { backgroundColor: c.accent, borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },
   retryBtnText: { color: '#fff', fontWeight: '700' },
 
   scroll: { padding: 12, paddingBottom: 40 },
@@ -1249,6 +1249,6 @@ const makeSt = (c: Palette) => StyleSheet.create({
   hrFlagBtnActive: { borderColor: '#c0392b', backgroundColor: c.mode === 'dark' ? '#3a1d1d' : '#fdedec' },
   hrFlagText:      { fontSize: 11, color: c.textSub, fontWeight: '600' },
 
-  analyzeBox:   { backgroundColor: '#FF6B35', alignItems: 'center', justifyContent: 'center', paddingVertical: 0, minHeight: 44 },
+  analyzeBox:   { backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center', paddingVertical: 0, minHeight: 44 },
   analyzeText:  { fontSize: 13, fontWeight: '700', color: '#fff' },
 });

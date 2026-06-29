@@ -79,6 +79,7 @@ const SPORT_FILTERS: { label: string; value: SportFilter; emoji: string }[] = [
 export default function HomeScreen() {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const [snapshot, setSnapshot]         = useState<HealthSnapshot | null>(null);
   const [loading, setLoading]           = useState(true);
   const [refreshing, setRefreshing]     = useState(false);
@@ -416,7 +417,7 @@ export default function HomeScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#FF6B35" />
+        <ActivityIndicator size="large" color={c.accent} />
         <Text style={styles.loadingText}>
           {loadingStep?.step ?? 'Connecting to Apple Health…'}
         </Text>
@@ -498,7 +499,7 @@ export default function HomeScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor="#FF6B35"
+            tintColor={c.accent}
             title="Refreshing health data…"
             titleColor="#999"
           />
@@ -848,10 +849,11 @@ type Completion = { runDone: boolean; runMin: number; runKm: number; xMin: numbe
 
 function TrainingRecommendationCard({ rec, loading, strain, onPress, completion }: { rec: TrainingRecommendation | null; loading: boolean; strain: DayStrain | null; onPress?: () => void; completion?: Completion | null }) {
   const recStyles = useThemedStyles(makeRecStyles);
+  const { c } = useTheme();
   if (loading && !rec) {
     return (
       <View style={[recStyles.card, { flexDirection: 'row', alignItems: 'center' }]}>
-        <ActivityIndicator size="small" color="#FF6B35" />
+        <ActivityIndicator size="small" color={c.accent} />
         <Text style={recStyles.loadingText}>Loading recommendation…</Text>
       </View>
     );
@@ -863,7 +865,7 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
   const atCeiling = completion?.atCeiling ?? false;
   const loggedAny = runDone || xMin > 0;
   const typeNm = rec.type === 'LongRun' ? 'Long Run' : rec.type;
-  const color  = runDone ? '#22C55E' : (REC_COLORS[rec.type] ?? '#FF6B35');
+  const color  = runDone ? '#22C55E' : (REC_COLORS[rec.type] ?? c.accent);
   const icon   = runDone ? '✅' : (REC_ICONS[rec.type] ?? '🏃');
 
   return (
@@ -1014,7 +1016,7 @@ const makeRecStyles = (c: Palette) => StyleSheet.create({
     borderRadius: 12,
     padding: 14,
     borderLeftWidth: 4,
-    borderLeftColor: '#FF6B35',
+    borderLeftColor: c.accent,
     gap: 8,
   },
   header: {
@@ -1200,6 +1202,7 @@ function WellnessRings({
 }: WellnessRingsProps) {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const dateKey = toDateKey(viewDate);
   const dateLbl = viewDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
@@ -1222,7 +1225,7 @@ function WellnessRings({
           <Text style={styles.dateArrow}>‹</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onPickDate}>
-          <Text style={[styles.wellnessSubtitle, historic && { color: '#FF6B35', fontWeight: '700' }]}>{dateLbl}</Text>
+          <Text style={[styles.wellnessSubtitle, historic && { color: c.accent, fontWeight: '700' }]}>{dateLbl}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onNext} disabled={!canGoNext} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Text style={[styles.dateArrow, !canGoNext && { opacity: 0.25 }]}>›</Text>
@@ -1242,7 +1245,7 @@ function WellnessRings({
         {!historic && (
           <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={refreshing}>
             {refreshing
-              ? <ActivityIndicator size="small" color="#FF6B35" />
+              ? <ActivityIndicator size="small" color={c.accent} />
               : <Text style={styles.refreshBtnText}>↻  Refresh</Text>}
           </TouchableOpacity>
         )}
@@ -1306,6 +1309,7 @@ const SPORT_EMOJI: Record<string, string> = { Run: '🏃', Walk: '🚶', Dance: 
 // Simple start-to-end card for non-run sports (no zones/structure to show).
 function ActivityCard({ activity }: { activity: ActivitySummary }) {
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const d = new Date(activity.date);
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   const emoji = SPORT_EMOJI[activityCategory(activity.activityType)] ?? '🏅';
@@ -1430,7 +1434,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 12,
     marginHorizontal: 16, marginTop: 4, marginBottom: 4,
     backgroundColor: c.surface, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
-    borderLeftWidth: 4, borderLeftColor: '#FF6B35',
+    borderLeftWidth: 4, borderLeftColor: c.accent,
   },
   raEmoji: { fontSize: 20 },
   raTitle: { fontSize: 14, fontWeight: '700', color: c.text },
@@ -1447,7 +1451,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     marginTop: 16, width: 220, height: 6, borderRadius: 3,
     backgroundColor: c.border, overflow: 'hidden',
   },
-  progressFill: { height: 6, borderRadius: 3, backgroundColor: '#FF6B35' },
+  progressFill: { height: 6, borderRadius: 3, backgroundColor: c.accent },
   progressPct: { marginTop: 6, fontSize: 12, color: c.textFaint },
 
   monthsBtn: {
@@ -1466,12 +1470,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   wellnessTitle: { fontSize: 15, fontWeight: '700', color: c.text },
   wellnessSubtitle: { fontSize: 13, color: c.text, fontWeight: '600' },
   dateNav: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  dateArrow: { fontSize: 22, color: '#FF6B35', fontWeight: '700', lineHeight: 24 },
+  dateArrow: { fontSize: 22, color: c.accent, fontWeight: '700', lineHeight: 24 },
   pickerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   pickerSheet: { backgroundColor: c.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28 },
   pickerTitle: { fontSize: 16, fontWeight: '800', color: c.text, marginBottom: 10 },
   pickerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.border },
-  pickerRowActive: { backgroundColor: '#FF6B3522', borderRadius: 8, paddingHorizontal: 8 },
+  pickerRowActive: { backgroundColor: c.accent + '22', borderRadius: 8, paddingHorizontal: 8 },
   pickerRowText: { fontSize: 15, fontWeight: '600', color: c.text },
   pickerRowMeta: { fontSize: 12, color: c.textFaint },
   pickerEmpty: { fontSize: 13, color: c.textFaint, paddingVertical: 16, textAlign: 'center' },
@@ -1482,14 +1486,14 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   recoveryUnavailableHint: { fontSize: 12, color: c.textFaint, marginBottom: 12, lineHeight: 18 },
   refreshBtn: {
     alignSelf: 'flex-start', backgroundColor: c.mode === 'dark' ? '#3a2218' : '#FFF3EE', borderRadius: 8,
-    paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: '#FF6B35',
+    paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: c.accent,
   },
-  refreshBtnText: { color: '#FF6B35', fontSize: 14, fontWeight: '700' },
+  refreshBtnText: { color: c.accent, fontSize: 14, fontWeight: '700' },
   sleepText: { fontSize: 12, color: c.textSub, marginBottom: 6 },
 
   btnRow: { flexDirection: 'row', marginHorizontal: 12, marginBottom: 8, gap: 8 },
   btnFlex: { flex: 1, marginHorizontal: 0 },
-  coachBtn: { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#FF6B35', borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
+  coachBtn: { marginHorizontal: 12, marginBottom: 8, backgroundColor: c.accent, borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
   coachBtnSecondary: { backgroundColor: '#2c3e50' },
   coachBtnTimeline:  { backgroundColor: '#1a6b4a' },
   coachBtnWarning: { backgroundColor: '#888' },
@@ -1498,7 +1502,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   statsRow: { flexDirection: 'row', paddingHorizontal: 12, gap: 6, marginBottom: 12 },
   statCard: { flex: 1, backgroundColor: c.surface, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
 
-  statValue: { fontSize: 13, fontWeight: '700', color: '#FF6B35' },
+  statValue: { fontSize: 13, fontWeight: '700', color: c.accent },
   statLabel: { fontSize: 10, color: c.textSub, marginTop: 1 },
 
   sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: 16, marginBottom: 6 },
@@ -1506,13 +1510,13 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   filterCount: { fontSize: 12, color: c.textFaint },
   filterBar: { paddingHorizontal: 12, gap: 6, paddingBottom: 2 },
   filterChip: { borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface, paddingHorizontal: 9, paddingVertical: 3 },
-  filterChipActive: { backgroundColor: '#FF6B35', borderColor: '#FF6B35' },
+  filterChipActive: { backgroundColor: c.accent, borderColor: c.accent },
   filterChipText: { fontSize: 11, color: c.textSub, fontWeight: '500' },
   filterChipTextActive: { color: '#fff', fontWeight: '700' },
   emptyBox: { margin: 16, alignItems: 'center' },
   emptyText: { fontSize: 15, color: c.textSub, marginBottom: 6 },
   emptySubtext: { fontSize: 13, color: c.textFaint, textAlign: 'center' },
-  emptyLink: { fontSize: 14, color: '#FF6B35', fontWeight: '600' },
+  emptyLink: { fontSize: 14, color: c.accent, fontWeight: '600' },
 
   runCard: {
     flexDirection: 'row', alignItems: 'center',
@@ -1526,7 +1530,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutBadgeText: { fontSize: 11, fontWeight: '700' },
   runDistance:  { fontSize: 16, fontWeight: '800', color: c.text },
   runStat:      { fontSize: 13, color: c.textSub },
-  runStatWork:  { color: '#FF6B35', fontWeight: '600' },
+  runStatWork:  { color: c.accent, fontWeight: '600' },
   runStatPower: { fontSize: 12, color: '#8e44ad' },
   runStatHR:    { fontSize: 12, color: '#e74c3c' },
 });

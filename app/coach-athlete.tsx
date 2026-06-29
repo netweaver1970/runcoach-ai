@@ -3,7 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator, TextInput, Alert,
 } from 'react-native';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getAthleteSummary, prescribePlan, unprescribe, AthleteSummary, AthleteDayRow, PlanRow } from '../src/services/coachLink';
 import { weekdayName, formatWorkoutStructure, CoachIntensity } from '../src/services/coach';
 
@@ -39,6 +39,7 @@ function defaultsFor(intensity: CoachIntensity, minutes: number) {
 export default function CoachAthleteScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const { id, name } = useLocalSearchParams<{ id: string; name?: string }>();
 
   const [loading, setLoading] = useState(true);
@@ -142,9 +143,9 @@ export default function CoachAthleteScreen() {
         </Text>
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
         {loading ? (
-          <ActivityIndicator size="large" color="#FF6B35" style={{ marginTop: 28 }} />
+          <ActivityIndicator size="large" color={c.accent} style={{ marginTop: 28 }} />
         ) : err ? (
           <View style={s.card}>
             <Text style={s.err}>{err}</Text>
@@ -193,7 +194,7 @@ export default function CoachAthleteScreen() {
 
               <Text style={s.fieldLabel}>Note to athlete (optional)</Text>
               <TextInput
-                style={[s.input, { minHeight: 60, textAlignVertical: 'top' }]}
+                style={[s.input, { minHeight: 60, maxHeight: 130, textAlignVertical: 'top' }]}
                 value={note}
                 onChangeText={setNote}
                 placeholder="e.g. Keep it controlled, stop if the calf flares up."
@@ -301,7 +302,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 10,
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title: { fontSize: 17, fontWeight: '700', color: c.text, flex: 1, textAlign: 'center' },
   coachBanner: { backgroundColor: '#8e44ad', paddingVertical: 7, paddingHorizontal: 12, alignItems: 'center' },
   coachBannerText: { color: '#fff', fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
@@ -317,7 +318,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
 
   dateRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
   dateBtn: { paddingHorizontal: 16, paddingVertical: 4 },
-  dateArrow: { fontSize: 28, color: '#FF6B35', fontWeight: '700' },
+  dateArrow: { fontSize: 28, color: c.accent, fontWeight: '700' },
   dateLabel: { fontSize: 16, fontWeight: '700', color: c.text },
   existing: { fontSize: 12.5, color: c.textSub, marginBottom: 12, textAlign: 'center' },
 
@@ -364,6 +365,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   runDur: { fontSize: 14, fontWeight: '700', color: c.textSub },
 
   err: { fontSize: 14, color: '#E2553B', marginBottom: 12 },
-  btn: { backgroundColor: '#FF6B35', borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginTop: 6 },
+  btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginTop: 6 },
   btnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

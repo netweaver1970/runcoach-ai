@@ -400,7 +400,7 @@ const makeS = (c: Palette) => StyleSheet.create({
     backgroundColor: c.surface, borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backBtn: { paddingHorizontal: 4 },
-  backText: { fontSize: 17, color: '#FF6B35', fontWeight: '600' },
+  backText: { fontSize: 17, color: c.accent, fontWeight: '600' },
   title: { fontSize: 17, fontWeight: '700', color: c.text },
   periodRow: {
     flexDirection: 'row', gap: 8, padding: 12,
