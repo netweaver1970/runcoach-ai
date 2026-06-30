@@ -52,6 +52,14 @@ export default function StrainDetailScreen() {
       if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
       const ok = await pushWorkoutToWatch(watchWorkout);
       setWatchMsg(ok ? '✓ Sent — open the Workout app on your watch.' : 'Could not send (needs iOS 17+ and permission).');
+      // Record what was ACTUALLY pushed (incl. any ± edit) as the live prescription, so the post-run
+      // analysis judges the run against the structure that went to the watch — not yesterday's plan or
+      // a pre-edit version.
+      if (ok && plan && targetIsToday) {
+        const pushed: CoachPlan = { ...plan, runMinutes: effRunMin, workout: watchWorkout, generatedAt: new Date().toISOString() };
+        await saveCachedPlan(targetDate, pushed);
+        setPlan(pushed);
+      }
     } catch (e: any) {
       setWatchMsg(e?.message ?? 'Send failed.');
     } finally { setWatchSending(false); }
@@ -191,14 +199,16 @@ export default function StrainDetailScreen() {
           windKmh: weather.windKmh, description: weather.description, place: weather.place,
         } : undefined,
       });
-      setPlan(p);
-      await saveCachedPlan(targetDate, p);
-      // Automatically push today's structured workout to the watch (overwrites the slot).
-      if (targetIsToday) {
-        const wk = p.workout ?? (p.intensity !== 'rest'
-          ? synthesizeWorkout(p.intensity, p.runMinutes, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones)
-          : null);
-        if (wk) pushWorkoutToWatch(wk).then(ok => ok && setWatchMsg('✓ Auto-sent to watch')).catch(() => {});
+      // Guarantee the SAVED prescription carries the EXACT workout we push — the run analysis + segment
+      // labels read this structure back, so the logged phases must equal what the watch runs. Synthesize
+      // one if the plan lacks it on a run day, and save THAT (not the workout-less plan).
+      const wk = p.intensity === 'rest' ? null
+        : (p.workout ?? synthesizeWorkout(p.intensity, p.runMinutes, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones));
+      const saved: CoachPlan = { ...p, workout: wk };
+      setPlan(saved);
+      await saveCachedPlan(targetDate, saved);
+      if (targetIsToday && wk) {
+        pushWorkoutToWatch(wk).then(ok => ok && setWatchMsg('✓ Auto-sent to watch')).catch(() => {});
       }
     } catch (e: any) {
       setPlanError(e?.message ?? 'Could not reach the coach.');
@@ -332,7 +342,7 @@ export default function StrainDetailScreen() {
                   </Text>
                 </View>
                 <Text style={s.coachTarget}>
-                  {plan.runMinutes > 0 ? `run ${plan.runMinutes}m` : 'no run today'} · within target
+                  {effRunMin > 0 ? `run ${effRunMin}m` : 'no run today'} · within target
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>

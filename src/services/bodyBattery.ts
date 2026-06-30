@@ -38,19 +38,20 @@ const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
 // Reverse-engineered from one night of paired Bevel energy + our stress + HK stages (the
 // energy/stress correlation fit). Two regimes, each LINEAR in stress, NO ceiling:
 //   asleep: ΔE/h = CHARGE_BASE − CHARGE_STRESS_K·S_eff   (floored ≥0 — sleep always charges)
-//   awake:  ΔE/h = DRAIN_BASE  − DRAIN_STRESS_K·S        (holds at rest ~S12, drains above)
+//   awake:  ΔE/h = DRAIN_BASE  − DRAIN_STRESS_K·S        (break-even at S≈32 — calm day holds/recharges)
 // Stage barely matters on its own (deep = core — energy ran straight through the deep block); the one
 // real stage effect is REM's autonomic stress SPIKE, which isn't real strain → cap S during REM.
 const CHARGE_BASE     = 16;    // /h charge intercept while asleep (joint-fit 27 Jun 2026)
 const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
-// Drain = circadian "cortisol-awakening" model. A SINGLE drain rate can't be both steep in the morning
-// (~−8/h, fresh + workout) and gentle in the afternoon (~−2.5/h) — Bevel's energy decays LOGARITHMICALLY
-// in time-since-wake. So the stress drain is scaled by a time-multiplier M(h) that starts high at wake
-// and tapers to a floor. Joint-fit to Bevel's full-day Energy-Bank export (27 Jun 2026): RMSE 0.86 vs a
-// single-rate's 2.52 — and it nails the afternoon plateau the flat model always under-shot.
-//   drain/h = (DRAIN_BASE − DRAIN_STRESS_K·S) · M(h),  M(h)=clamp(MMAX − DECAY·ln(1+h), MMIN, MMAX)
-const DRAIN_BASE      = 1.4;   // /h awake intercept (net ≈0 near S10 at the morning peak)
-const DRAIN_STRESS_K  = 0.14;  // /h drain per stress unit (awake), before the time-multiplier
+// Drain = PURE stress model, NO time-of-day factor (re-fit vs a full paired Bevel export 29 Jun 2026:
+// our drain was clock-shaped and over-drained the calm morning, sitting ~10% below Bevel all day). Bevel
+// holds energy flat through a low-stress morning and drains proportionally to stress above a break-even.
+// Regressing Bevel ΔEnergy on OUR stress at matching clock times → break-even ≈32, slope ≈0.09; the
+// integrated curve tracks Bevel within ~1.5% RMSE across the day. The DRAIN_TIME_* constants below are
+// no longer applied (timeMult = 1) but retained for the debug dump.
+//   drain/h = DRAIN_BASE − DRAIN_STRESS_K·S
+const DRAIN_BASE      = 2.9;   // /h awake intercept — break-even at stress ≈32 (re-fit vs Bevel 29 Jun 2026)
+const DRAIN_STRESS_K  = 0.09;  // /h drain per stress unit (awake); below S≈32 a calm day slightly recharges
 const DRAIN_TIME_MMAX = 1.6;   // M at wake (h=0): steepest drain, fresh out of bed
 const DRAIN_TIME_DECAY= 0.6;   // logarithmic taper of the drain through the waking day
 const DRAIN_TIME_MMIN = 0.3;   // afternoon/evening floor — gentle drain even at high stress
@@ -387,9 +388,11 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // drains under stress. REM's autonomic stress spike isn't real strain → cap it; NREM (core & deep)
     // share one curve. A workout's real effort drains via its higher stress. Rates are per-HOUR.
     const drainStress = workout ? Math.min(WORKOUT_STRESS_CAP, Math.max(rawStress, stress)) : stress;
-    // Time-multiplier: drain is steep right after waking (M≈MMAX) and tapers logarithmically to MMIN
-    // through the day. Neutral (1) for any awake bin inside the night (micro-wakes) so they don't spike.
-    const timeMult = night ? 1 : clamp(DRAIN_TIME_MMAX - DRAIN_TIME_DECAY * Math.log(1 + hoursAwake), DRAIN_TIME_MMIN, DRAIN_TIME_MMAX);
+    // NO time-of-day factor (29 Jun re-fit vs Bevel): Bevel holds energy FLAT through a calm morning and
+    // drains purely on stress — the circadian effect already enters via the measured stress. The old
+    // morning multiplier over-drained the low-stress morning (left us ~10% below Bevel all day). Kept as 1
+    // (DRAIN_TIME_* constants retained for the debug dump / possible future use).
+    const timeMult = 1;
     let ratePerHour = asleep
       ? Math.max(0, CHARGE_BASE - CHARGE_STRESS_K * (stage === 5 ? Math.min(stress, REM_STRESS_CAP) : stress))
       : (DRAIN_BASE - DRAIN_STRESS_K * drainStress) * timeMult;

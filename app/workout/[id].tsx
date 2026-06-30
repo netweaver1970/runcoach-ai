@@ -634,11 +634,10 @@ export default function WorkoutDetailScreen() {
     try {
       const d = await fetchWorkoutDetail(params.startDate, duration);
 
-      // Deterministic phase labels from the prescribed structure that was live when the
-      // run started — matches the Apple Workout app exactly, no distance heuristics. The
-      // app pushed this workout, so the saved plan IS the executed step sequence. Applied
-      // only when the run plausibly matches the plan (≈ same number of steps); trailing
-      // extras (free running past the cooldown) become "Open", as Apple shows them.
+      // Label the segments from the prescribed phase sequence live at run start (HK's per-step labels
+      // aren't reliable enough alone). Safe because every push site saves the EXACT workout it pushes,
+      // so the logged structure == what the watch ran — only per-segment duration can differ. Trailing
+      // free running past the cooldown → "Open". Falls back to HK's own labels if no plan is found.
       try {
         const phases = await prescribedPhasesAt(toDateKey(new Date(params.startDate)), params.startDate);
         if (phases) relabelByPhases([...d.activities].sort((a, b) => a.startMs - b.startMs), phases);

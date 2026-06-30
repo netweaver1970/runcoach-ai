@@ -106,6 +106,10 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   if (nowTemp != null && plan.genTempC == null) return true;
   if (plan.genTempC != null && nowTemp != null && Math.abs(nowTemp - plan.genTempC) >= TEMP_DRIFT_C) return true;
   if (plan.genStrain != null && snap.strainReal != null && Math.abs(snap.strainReal - plan.genStrain) >= STRAIN_DRIFT) return true;
+  // A run done since the plan was written shrinks today's remaining budget — if the prescribed run now
+  // exceeds it, regenerate so we don't keep advising a session that would blow the weekly cap.
+  if (plan.intensity !== 'rest' && (plan.runMinutes ?? 0) > 0 && snap.tofBudgetTodayMin != null
+      && plan.runMinutes > snap.tofBudgetTodayMin + 5) return true;
   // The deterministic volume gate disagrees with the cached plan → the run/rest decision is stale
   // (a run got counted so the cap now blocks today, or a rest day rolled the cap free again).
   const cappedNow = (snap.tofNextRunInDays ?? 0) > 0;
@@ -204,7 +208,7 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
   return {
     name,
     warmupMeters:  600,
-    drillsMinutes: Math.max(0, Math.min(20, num(o.drillsMinutes) ?? 4)),
+    drillsMinutes: Math.max(0, Math.min(8, num(o.drillsMinutes) ?? 4)),  // drills are SHORT form-work, never the main set
     blocks,
     cooldownMeters: 600,
   };
@@ -261,7 +265,7 @@ export function synthesizeWorkout(
   } else { // long / easy / recovery → ONE continuous aerobic block at Z2
     blocks = [{ repeats: 1, workMinutes: Math.min(150, workBudget), restMinutes: 0, hrZone: 'Z2', label: t === 'long' ? 'long' : 'aerobic' }];
   }
-  const drills = (t === 'intervals' || t === 'tempo') ? 4 : 0;         // dynamic prep only before quality
+  const drills = 4;  // a short drills block on EVERY run, incl. easy — the runner's coaching files ask for it
   return ensureBlockPower({ name, warmupMeters: 600, drillsMinutes: drills, blocks, cooldownMeters: 600 }, pz)!;
 }
 
@@ -555,90 +559,65 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   };
 }
 
+const INTENSITY_RANK: Record<CoachIntensity, number> = { rest: 0, easy: 1, moderate: 2, hard: 3 };
+
 export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
-  // Keyless or broken-key → run fully deterministic (no LLM). With a working key the LLM writes the
-  // nicer prose; if that call fails for any reason, fall back so the daily card always resolves.
+  // THE 7-DAY PLAN SETS THE CEILING. The deterministic basis (same logic as the week planner: editable
+  // template → readiness gate → rolling volume cap → heat) decides today's intensity + run minutes. The
+  // LLM then DESIGNS the session reading the editable COACHING FILES (warm-up, drills as the files ask
+  // for — yes, even on easy runs — work, cool-down) and writes the prose. But it may only go EASIER /
+  // SHORTER than the basis: good recovery or cool weather can NEVER inflate the run and eat the rest of
+  // the week's budget; only genuinely poor recovery pushes it down. Keyless / broken key / LLM error →
+  // the deterministic plan verbatim.
+  const basis = await deterministicCoachPlan(snap);
   const status = await getLLMStatus();
-  if (!status.hasKey || !status.reachable) return deterministicCoachPlan(snap);
+  if (!status.hasKey || !status.reachable) return basis;
   try {
-  await ensureZonesFile().catch(() => {}); // seed the Power & HR Zones file into the knowledge
-  const knowledge = await buildKnowledgePrompt();
-  // DETERMINISTIC volume gate: when the rolling +X% cap leaves no meaningful run budget today, today
-  // is a mandatory REST/strength day. The LLM only writes the prose — it cannot conjure a run (that
-  // was the bug: the cap said "next run tomorrow" while the card still prescribed a run today).
-  const cappedToday = (snap.tofNextRunInDays ?? 0) > 0;
-  const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
-  const restGuidance = cappedToday
-    ? `\n\nMANDATORY OVERRIDE: the +${capPct}% rolling volume cap leaves NO running budget today (next run ${snap.tofNextRunLabel ?? 'in a few days'}). You MUST return intensity "rest", runMinutes 0, NO run workout, and a recovery/strength-focused headline + session. Do NOT prescribe any run today.`
-    : '';
-  // Watch not worn overnight → recovery unknown. Don't read the gap as poor recovery; keep the normal
-  // scheduled session and warn the runner to self-regulate to Z2 if they don't feel rested.
-  const recoveryStale = snap.recoveryStale === true;
-  const staleGuidance = recoveryStale
-    ? `\n\nNO OVERNIGHT RECOVERY DATA today (the watch wasn't worn last night; the recovery/HRV/sleep/readiness values shown are the LAST-KNOWN ones, not today's). Do NOT treat the gap as poor recovery — keep the normal scheduled session. Set "cautions" to flag that overnight recovery is unknown and to drop the run to easy Z2 if the runner doesn't feel fully rested.`
-    : '';
-  const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${restGuidance}${staleGuidance}`;
-  const heatFactor = heatStrainFactor(snap.weather);
-  // Heat shrinks the achievable running time for the same strain — cap the budget by it.
-  const heatBudget = snap.tofBudgetTodayMin != null ? Math.round(snap.tofBudgetTodayMin / heatFactor) : undefined;
-  const txt = await callLLM({
-    system,
-    messages: [{ role: 'user', content: JSON.stringify({ ...snap, mustRestToday: cappedToday, heatStrainFactor: heatFactor, tofBudgetTodayMin: heatBudget ?? snap.tofBudgetTodayMin }) }],
-    maxTokens: 1200,
-    temperature: 0.2, // low → a stable daily plan that only shifts when the inputs actually change
-  });
-  const match = txt.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Coach response was not JSON.');
-  const o = JSON.parse(match[0]);
-  const llmIntensity: CoachIntensity =
-    ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : 'easy';
-  const llmRunMinutes = Math.max(0, Math.min(
-    heatBudget ?? snap.tofBudgetTodayMin ?? 999,    // heat-adjusted running cap
-    Math.round(Number(o.runMinutes)) || 0,
-  ));
-  // Hard-enforce the volume gate: on a capped day it's rest, no run minutes, no run workout —
-  // whatever the LLM returned. Otherwise the LLM designs the workout; if it omitted one on a run
-  // day, synthesize a sensible structured session from the intensity + zones for the watch.
-  const intensity: CoachIntensity = cappedToday ? 'rest' : llmIntensity;
-  const runMinutes = cappedToday ? 0 : llmRunMinutes;
-  const wkName = weekdayName(snap.date);
-  const workout = cappedToday ? null : ensureBlockPower(
-    parseWorkout(o.workout, intensity, wkName)
-      ?? (intensity !== 'rest' ? synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones) : null),
-    snap.powerZones,
-  );
-  // If the LLM ignored the rest mandate, swap in deterministic rest copy so the prose can't
-  // contradict the gate; if it complied (intensity rest), keep its nicer wording.
-  const restCopy = cappedToday && o.intensity !== 'rest';
-  const headline = restCopy ? 'At your volume cap — recovery day' : String(o.headline ?? 'Plan ready').slice(0, 120);
-  const session = restCopy
-    ? `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${snap.tofNextRunLabel ?? 'in a couple of days'}.`
-    : String(o.session ?? '').slice(0, 280);
-  return {
-    headline,
-    session,
-    strength:   String(o.strength ?? '').slice(0, 240),
-    intensity,
-    runMinutes,
-    // Target is the single advisable band (synced with the home ring) — not the LLM's own.
-    strainLow:  clampScore(snap.advisableLow, 30),
-    strainHigh: clampScore(snap.advisableHigh, 60),
-    rationale:  String(o.rationale ?? '').slice(0, 400),
-    cautions:   recoveryStale
-      ? "⚠️ Watch not worn overnight — recovery unknown; plan carried from your schedule. If you don't feel fully rested, run this easy in Z2 (keep HR in Z2)."
-      : (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
-    workout,
-    // Deterministic (not LLM): only surface when the +10% cap actually blocks a run today.
-    nextRunLabel:  (snap.tofNextRunInDays ?? 0) > 0 ? snap.tofNextRunLabel : undefined,
-    nextRunInDays: snap.tofNextRunInDays,
-    generatedAt: new Date().toISOString(),
-    genTempC:  snap.weather?.apparentC ?? snap.weather?.tempC,
-    genStrain: snap.strainReal,
-  };
+    await ensureZonesFile().catch(() => {});
+    const knowledge = await buildKnowledgePrompt();
+    const heatFactor = heatStrainFactor(snap.weather);
+    const ceiling = basis.intensity === 'rest'
+      ? `\n\nMANDATORY: today is a REST day (the 7-day plan + rolling volume cap leave no running budget). Return intensity "rest", runMinutes 0, workout null, and a recovery/strength-focused headline + session.`
+      : `\n\nPRESCRIBED CEILING — the 7-day plan + today's recovery/heat have ALREADY set today to intensity "${basis.intensity}", about ${basis.runMinutes} min. You MUST honour this as a CEILING: stay at or BELOW it (you may go easier/shorter if today's data warrants), but NEVER prescribe a harder intensity or more minutes — good recovery or cool weather must not inflate the run, as that eats the rest of the week. Within the ceiling, design the session per the COACHING KNOWLEDGE above: open warm-up, a short DRILLS block if the runner's files call for it (they may, even on easy runs), the work, and an open cool-down.`;
+    const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}`;
+    const txt = await callLLM({
+      system,
+      messages: [{ role: 'user', content: JSON.stringify({ ...snap, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes } }) }],
+      maxTokens: 1200,
+      temperature: 0.2,
+    });
+    const match = txt.match(/\{[\s\S]*\}/);
+    if (!match) return basis;
+    const o = JSON.parse(match[0]);
+    // CAP at the basis — recovery/weather may only EASE (no intensity escalation, no extra minutes).
+    const llmIntensity: CoachIntensity = ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : basis.intensity;
+    const intensity: CoachIntensity = INTENSITY_RANK[llmIntensity] <= INTENSITY_RANK[basis.intensity] ? llmIntensity : basis.intensity;
+    const runMinutes = intensity === 'rest' ? 0
+      : Math.max(8, Math.min(basis.runMinutes, Math.round(Number(o.runMinutes)) || basis.runMinutes));
+    const wkName = weekdayName(snap.date);
+    // Keep the LLM's structure (it honours the coaching-file drills), but reject a malformed one — where
+    // the work blocks don't account for most of the run (e.g. the main work mislabeled as a giant drills
+    // block) — and fall back to the clean synthesized session (which also carries drills now).
+    const parsed = intensity === 'rest' ? null : parseWorkout(o.workout, intensity, wkName);
+    const workTotal = (parsed?.blocks ?? []).reduce((s, b) => s + b.workMinutes * b.repeats, 0);
+    const wellFormed = parsed != null && workTotal >= Math.max(8, runMinutes - (parsed.drillsMinutes ?? 0) - 6) * 0.5;
+    const workout = intensity === 'rest' ? null : ensureBlockPower(
+      wellFormed ? parsed : synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones),
+      snap.powerZones);
+    return {
+      ...basis,
+      headline:  o.headline  ? String(o.headline).slice(0, 120)  : basis.headline,
+      session:   o.session   ? String(o.session).slice(0, 280)   : basis.session,
+      strength:  o.strength  ? String(o.strength).slice(0, 240)  : basis.strength,
+      intensity, runMinutes, workout,
+      rationale: o.rationale ? String(o.rationale).slice(0, 400) : basis.rationale,
+      cautions:  basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
+      generatedAt: new Date().toISOString(),
+    };
   } catch {
     // bad key / network / quota — keep the app usable with the deterministic plan
     // (callLLM has already flipped the reachability flag, so the LLM buttons grey out too).
-    return deterministicCoachPlan(snap);
+    return basis;
   }
 }
 
@@ -740,10 +719,14 @@ export function computeTimeOnFeetPlan(
   };
   const minsAt = (offset: number) => map.get(dayStr(offset)) ?? 0;
 
-  let tofLast6 = 0; for (let o = 1; o <= 6;  o++) tofLast6 += minsAt(o);
-  let tofPrev7 = 0; for (let o = 7; o <= 13; o++) tofPrev7 += minsAt(o);
+  let tofLast6  = 0; for (let o = 1; o <= 6;  o++) tofLast6  += minsAt(o);
+  let tofPrev7  = 0; for (let o = 7; o <= 13; o++) tofPrev7  += minsAt(o);
+  const todayDone = minsAt(0);                       // time-on-feet ALREADY done today (e.g. a morning run)
   const cap = Math.round(capMult * tofPrev7);
-  let budget = Math.max(0, cap - tofLast6);
+  // The cap limits the TRAILING-7 window (days 0–6), so today's remaining room must subtract BOTH the
+  // last 6 days AND what's already been run today — otherwise after a morning run the plan offers the
+  // whole day's allowance again and a second session blows the weekly cap (eating next week's budget).
+  let budget = Math.max(0, cap - tofLast6 - todayDone);
   if (tofPrev7 < reentryBelow) budget = Math.max(budget, reentryFloor); // re-entry / very low base
 
   const series14: { date: string; min: number }[] = [];
@@ -757,7 +740,9 @@ export function computeTimeOnFeetPlan(
   for (let k = 0; k <= 21; k++) {
     let last6 = 0; for (let j = 1; j <= 6;  j++) last6 += minIdx(k - j);
     let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);
-    let b = Math.max(0, Math.round(capMult * prev7) - last6);
+    // minIdx(k) = the current day's already-done minutes (today's run for k=0; 0 for future days) —
+    // subtract it too so "does a run fit today?" reflects what's already on the legs today.
+    let b = Math.max(0, Math.round(capMult * prev7) - last6 - minIdx(k));
     if (prev7 < reentryBelow) b = Math.max(b, reentryFloor); // re-entry / very low base
     if (b >= meaningful) { nextRunInDays = k; nextRunBudgetMin = b; break; }
   }

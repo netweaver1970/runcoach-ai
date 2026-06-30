@@ -1169,10 +1169,12 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       }
     }
 
-    // Deterministic override: when the app pushed this workout, label the segments straight
-    // from the saved prescription that was live at run start — no heuristics. Order-matched
-    // within ±2; trailing free running → "Open". The heuristics above only stand when no
-    // plan is found (a workout the app didn't push).
+    // App-pushed runs: label the segments from the prescribed phase sequence that was live at run
+    // start (HK's own per-step labels aren't reliable enough to trust alone). This is SAFE because
+    // every push site saves the EXACT workout it pushes, so the logged structure == what the watch
+    // ran (phase sequence identical — only the per-segment DURATION may differ). Order-matched within
+    // ±2; trailing free running → "Open". When no plan is found (a run the app didn't push), the HK +
+    // heuristic labels above stand.
     if (segments.length > 0) {
       const startISO = toISOStr(w.startDate);
       const phases = await prescribedPhasesAt(dateKeyLocal(new Date(startISO)), startISO);
@@ -1569,7 +1571,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // everyday-movement energy. Warm the EWMAs 120 days before the visible window.
   // Display ~45 days (card shows the latest value + a 30-day sparkline); warm 120 days
   // before that so today's CTL/ATL is converged without querying a whole year of HR.
-  const loadByDay = await fetchDailyCardioTrimp(daysAgo(45 + CARDIO_WARM_DAYS), now);
+  const loadByDay = await fetchDailyCardioTrimp(daysAgo(45 + CARDIO_WARM_DAYS), now, await getUserMaxHr());
   const trainingLoad: DailyLoad[] = computeTrainingLoadSeries(loadByDay, daysAgo(45), now);
 
   // ── Today's strain — Bevel-style 24/7 TRIMP + muscular load ────────────────
@@ -2560,7 +2562,7 @@ const CARDIO_WARM_DAYS = 120;
  * Used by the cached wrapper below in bounded chunks so a single query never exceeds the
  * sample cap (which would truncate and corrupt long windows).
  */
-async function computeCardioTrimpWindow(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
+async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxHrOverride?: number): Promise<Map<string, number>> {
   const [hrRaw, restingRaw, workouts] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRate,
@@ -2591,7 +2593,10 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date): Promise<M
     if (!byDay.has(day)) byDay.set(day, []);
     byDay.get(day)!.push({ t: d.getTime(), hr });
   }
-  const maxHR = Math.max(185, Math.min(205, Math.round(peak)));
+  // Use the athlete's CONFIGURED max HR when set (e.g. 165) — it drives the %HRR the Banister TRIMP is
+  // exponential in, so a too-high estimate underweights every session (and recent runs more than the
+  // low-HR baseline → ATL/CTL ratio reads low). Fall back to a peak-based estimate (clamped) if unset.
+  const maxHR = maxHrOverride && maxHrOverride > 0 ? maxHrOverride : Math.max(185, Math.min(205, Math.round(peak)));
 
   const windowsByDay = new Map<string, { s: number; e: number }[]>();
   for (const w of (workouts as any[])) {
@@ -2646,14 +2651,20 @@ function listDayKeys(from: Date, to: Date): string[] {
  * map for [fromDate, toDate]; recomputes only today + yesterday each call, fills any
  * uncached older days in chunks, and persists the result.
  */
-export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
-  const cache = await loadTrimpCache();
+export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMaxHr?: number): Promise<Map<string, number>> {
+  const maxOverride = userMaxHr && userMaxHr > 0 ? userMaxHr : undefined;
+  let cache = await loadTrimpCache();
+  // TRIMP depends (non-linearly) on max HR, so if the effective max HR changed, drop the whole cache and
+  // recompute — otherwise old days keep their stale, differently-scaled values. `__maxHr` is a sentinel
+  // (not a date key, so it's never iterated as a day).
+  const tag = maxOverride ?? 0;
+  if (cache['__maxHr'] !== tag) cache = { '__maxHr': tag };
   let changed = false;
 
   // 1) Recent tail — always fresh (today partial, yesterday may have synced more).
   const tailStart = daysAgo(TRIMP_RECOMPUTE_TAIL);
   const tailFrom  = tailStart.getTime() > fromDate.getTime() ? tailStart : fromDate;
-  const tail = await computeCardioTrimpWindow(tailFrom, toDate);
+  const tail = await computeCardioTrimpWindow(tailFrom, toDate, maxOverride);
   for (const d of listDayKeys(tailFrom, toDate)) { cache[d] = tail.get(d) ?? 0; changed = true; }
 
   // 2) Fill still-missing older days in bounded chunks (skip fully-cached chunks).
@@ -2663,7 +2674,7 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date): Promi
     const chunkEnd  = new Date(Math.min(cursor.getTime() + TRIMP_CHUNK_DAYS * 86_400_000, fillEnd.getTime()));
     const chunkDays = listDayKeys(cursor, new Date(chunkEnd.getTime() - 86_400_000));
     if (chunkDays.some(d => !(d in cache))) {
-      const m = await computeCardioTrimpWindow(cursor, chunkEnd);
+      const m = await computeCardioTrimpWindow(cursor, chunkEnd, maxOverride);
       for (const d of chunkDays) cache[d] = m.get(d) ?? 0;
       changed = true;
     }
@@ -2684,7 +2695,7 @@ export async function fetchTrainingLoadHistory(
   const fromDate = new Date(end.getTime() - months * 30 * 86_400_000);
   const warmFrom = new Date(fromDate.getTime() - CARDIO_WARM_DAYS * 86_400_000);
   // Cardio Load = HR-TRIMP per day (Bevel-style), not total active energy.
-  const loadByDay = await fetchDailyCardioTrimp(warmFrom, end);
+  const loadByDay = await fetchDailyCardioTrimp(warmFrom, end, await getUserMaxHr());
   return computeTrainingLoadSeries(loadByDay, fromDate, end);
 }
 
@@ -3551,7 +3562,7 @@ export async function fetchOurDailyComponents(
 
   // Cardio Load (ATL) + CTL + TSB per day — HR-TRIMP basis (Bevel-style), for the
   // history viewer + export / cross-model verification. Warm 120 days before the window.
-  const clLoad = await fetchDailyCardioTrimp(new Date(from.getTime() - CARDIO_WARM_DAYS * 86_400_000), end);
+  const clLoad = await fetchDailyCardioTrimp(new Date(from.getTime() - CARDIO_WARM_DAYS * 86_400_000), end, await getUserMaxHr());
   for (const dl of computeTrainingLoadSeries(clLoad, from, end)) {
     const r = day(dl.date);
     r.cardioLoad = Math.round(dl.atl * 10) / 10;
