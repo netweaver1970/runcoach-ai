@@ -8,7 +8,7 @@
 import * as FileSystem from 'expo-file-system';
 import HealthKit from '@kingstinct/react-native-healthkit';
 import { PowerZones } from '../types';
-import { getPowerZones } from './claude';
+import { getPowerZones, savePowerZones, isPowerZonesConfigured } from './claude';
 import { callLLM } from './llm';
 import { loadSnapshotCache, extractWeatherTempC } from './healthkit';
 import { getRunMeta } from './runMeta';
@@ -58,6 +58,29 @@ export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string): str
   ].join('\n');
 }
 
+// Parse the "Power & HR Zones" markdown table back into structured zones, so getPowerZones (which the
+// SYNTHESIZED watch workouts read) can be kept in sync with the calibrated file. Row: `| Z2 | … | … | 155–201 |`.
+export function parseZonesMarkdown(md: string): PowerZones | null {
+  const rows: Record<string, [number, number]> = {};
+  for (const line of md.split('\n')) {
+    const m = line.match(/^\s*\|\s*(Z[1-5])\b[^|]*\|[^|]*\|[^|]*\|\s*([^|]+?)\s*\|/);
+    if (!m) continue;
+    const nums = (m[2].match(/\d+/g) ?? []).map(Number);
+    if (!nums.length) continue;
+    rows[m[1]] = [nums[0], nums.length > 1 ? nums[1] : nums[0]];
+  }
+  const z2 = rows['Z2'], z3 = rows['Z3'], z4 = rows['Z4'], z5 = rows['Z5'];
+  if (!z2 || !z3) return null;
+  const pz: PowerZones = {
+    recoveryMax:  z2[0],
+    z2Max:        z2[1],
+    tempoMin:     z3[0],
+    tempoMax:     z3[1],
+    intervalsMin: z4 ? z4[1] : (z5 ? z5[0] : z3[1] + 20),
+  };
+  return pz.z2Max > 0 && pz.tempoMax > 0 ? pz : null;
+}
+
 async function getMaxHR(): Promise<number> {
   const snap = await loadSnapshotCache();
   const m = (snap as any)?.estimatedMaxHR;
@@ -66,7 +89,18 @@ async function getMaxHR(): Promise<number> {
 
 /** Seed the zones file from the athlete's current zones if it doesn't exist yet. */
 export async function ensureZonesFile(): Promise<void> {
-  if (await knowledgeExists(ZONES_FILE_ID)) return;
+  if (await knowledgeExists(ZONES_FILE_ID)) {
+    // The file is the calibrated source of truth, but synthesized watch workouts read getPowerZones —
+    // mirror the file's zones into it when it's still unconfigured (don't clobber a manual Settings edit),
+    // so a synthesized/adjusted session carries the same power targets the LLM gets from the file.
+    try {
+      if (!isPowerZonesConfigured(await getPowerZones())) {
+        const parsed = parseZonesMarkdown(await readKnowledgeContent(ZONES_FILE_ID));
+        if (parsed) await savePowerZones(parsed);
+      }
+    } catch { /* best-effort sync */ }
+    return;
+  }
   const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
   await upsertKnowledge(
     ZONES_FILE_ID, 'Power & HR Zones',
@@ -223,6 +257,9 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
   if (!out) return { updated: false, reason: 'Coach returned nothing.' };
 
   await upsertKnowledge(ZONES_FILE_ID, 'Power & HR Zones', 'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs', out);
+  // Mirror the refined power into getPowerZones so synthesized watch workouts target the same watts.
+  const parsedPz = parseZonesMarkdown(out);
+  if (parsedPz) await savePowerZones(parsedPz).catch(() => {});
   return { updated: true };
 }
 

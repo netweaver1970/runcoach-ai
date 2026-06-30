@@ -601,7 +601,6 @@ export default function HomeScreen() {
             </Text>
           </TouchableOpacity>
         ) : (
-          <>
           <View style={styles.btnRow}>
             <TouchableOpacity
               style={[styles.coachBtn, styles.btnFlex]}
@@ -628,14 +627,15 @@ export default function HomeScreen() {
               <Text style={styles.coachBtnText}>📅 Timeline</Text>
             </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.coachBtn, styles.coachBtnSecondary]}
-            onPress={() => router.push('/week-plan' as any)}
-          >
-            <Text style={styles.coachBtnText}>📆 7-Day Plan</Text>
-          </TouchableOpacity>
-          </>
         )}
+
+        {/* 7-Day Plan — fully deterministic (no LLM), so ALWAYS available, even keyless. */}
+        <TouchableOpacity
+          style={[styles.coachBtn, styles.coachBtnSecondary]}
+          onPress={() => router.push('/week-plan' as any)}
+        >
+          <Text style={styles.coachBtnText}>📆 7-Day Plan</Text>
+        </TouchableOpacity>
 
         {/* Stats row */}
         <View style={styles.statsRow}>

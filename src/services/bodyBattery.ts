@@ -60,7 +60,12 @@ const DRAIN_TIME_MMIN = 0.3;   // afternoon/evening floor — gentle drain even 
 // linearly toward 0 at the floor, so the battery approaches but never slams into it. Charge is unaffected.
 const BATTERY_FLOOR     = 2;   // displayed minimum — you can't spend energy you don't have
 const DRAIN_FLOOR_KNEE  = 15;  // below this, drain scales down toward 0 at BATTERY_FLOOR
-const WORKOUT_STRESS_CAP = 65; // cap drain-stress during a workout — Bevel's energy bank doesn't crater on exercise (~−7.7/h)
+const WORKOUT_STRESS_CAP = 65; // (legacy) cap on workout drain-stress — superseded by the HRR drain below
+// A real session drains FAR faster than the stress-linear daytime curve allows (capped stress tops out
+// ~−6/h, but a paired Bevel export showed a HR-130 run draining ~−13/h). So during a workout we drain on
+// HR intensity (%HRR) instead. Fit 30 Jun to two paired days: a HR-130 run (≈0.5 HRR) ≈ −13/h, an easy
+// walk (≈0.2 HRR) ≈ −5/h → ~27/h per unit HRR.
+const WORKOUT_DRAIN_PER_HRR = 27;
 const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the spike doesn't starve charge
 // Z-SCORE STRESS INDEX (research-aligned, replaces the old HR-reserve + HRV-suppression + gate +
 // floor): stress = STRESS_BASE + (zHR − zHRV)·STRESS_SCALE, where z is THIS reading's deviation from
@@ -393,9 +398,16 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // morning multiplier over-drained the low-stress morning (left us ~10% below Bevel all day). Kept as 1
     // (DRAIN_TIME_* constants retained for the debug dump / possible future use).
     const timeMult = 1;
-    let ratePerHour = asleep
-      ? Math.max(0, CHARGE_BASE - CHARGE_STRESS_K * (stage === 5 ? Math.min(stress, REM_STRESS_CAP) : stress))
-      : (DRAIN_BASE - DRAIN_STRESS_K * drainStress) * timeMult;
+    let ratePerHour: number;
+    if (asleep) {
+      ratePerHour = Math.max(0, CHARGE_BASE - CHARGE_STRESS_K * (stage === 5 ? Math.min(stress, REM_STRESS_CAP) : stress));
+    } else if (workout) {
+      // Drain on HR intensity (%HRR) during a session — the stress-linear curve is far too gentle here.
+      const hrr = clamp((avgHR - restHR) / Math.max(1, maxHR - restHR), 0, 1);
+      ratePerHour = -WORKOUT_DRAIN_PER_HRR * hrr;
+    } else {
+      ratePerHour = (DRAIN_BASE - DRAIN_STRESS_K * drainStress) * timeMult;
+    }
     // Near-empty throttle: as the battery approaches the floor, suppress DRAIN toward 0 (asymptote, no
     // flat-line crash). Charge (positive rate) is untouched so it always recovers off the floor.
     if (ratePerHour < 0 && battery < DRAIN_FLOOR_KNEE)
