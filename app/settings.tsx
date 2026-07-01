@@ -38,7 +38,10 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache } from '../src/services/coach';
+import { getPlanMode, setPlanMode, getRaceConfig, setRaceConfig, PlanMode } from '../src/services/racePlan';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { Picker } from '@react-native-picker/picker';
 import { getAccountingMode, setAccountingMode, AccountingMode } from '../src/services/accounting';
 import {
   scheduleWeeklyCoachReminder,
@@ -81,6 +84,19 @@ export default function SettingsScreen() {
   const [minTsb, setMinTsb] = useState(String(DEFAULT_MIN_TSB));
   const [minTsbSaved, setMinTsbSaved] = useState(false);
   const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
+  const [periodOn, setPeriodOn] = useState(true);
+  const [buildW, setBuildW]     = useState('3');
+  const [deloadW, setDeloadW]   = useState('1');
+  const [dropPct, setDropPct]   = useState('25');
+  const [periodSaved, setPeriodSaved] = useState(false);
+  const [anchor, setAnchor] = useState('');
+  const [planMode, setPlanModeState] = useState<PlanMode>('leisure');
+  const [raceDateObj, setRaceDateObj] = useState<Date>(() => { const d = new Date(); d.setDate(d.getDate() + 56); d.setHours(0, 0, 0, 0); return d; });
+  const [raceDist, setRaceDist]   = useState('10');
+  const [goalH, setGoalH] = useState(0);   // deterministic H : M : S goal — no MM:SS / HH:MM ambiguity
+  const [goalM, setGoalM] = useState(45);
+  const [goalS, setGoalS] = useState(0);
+  const [raceSaved, setRaceSaved] = useState(false);
   const [accMode, setAccModeState] = useState<AccountingMode>('work');
   const [coachMode, setCoachModeState] = useState<CoachingMode>('self');
   const [maxHr, setMaxHr] = useState('');
@@ -126,6 +142,13 @@ export default function SettingsScreen() {
     getLoadCapPct().then(p => setCapPct(String(p)));
     getMinTSB().then(v => setMinTsb(String(v)));
     getLoadCapBasis().then(setCapBasisState);
+    getPeriodization().then(p => { setPeriodOn(p.on); setBuildW(String(p.buildWeeks)); setDeloadW(String(p.deloadWeeks)); setDropPct(String(p.deloadDropPct)); setAnchor(p.anchor); });
+    getPlanMode().then(setPlanModeState);
+    getRaceConfig().then(r => {
+      if (r.date) { const d = new Date(r.date + 'T00:00:00'); if (!isNaN(d.getTime())) setRaceDateObj(d); }
+      setRaceDist(String(r.distanceKm));
+      setGoalH(Math.floor(r.goalTimeSec / 3600)); setGoalM(Math.floor((r.goalTimeSec % 3600) / 60)); setGoalS(r.goalTimeSec % 60);
+    });
     getAccountingMode().then(setAccModeState);
     getCoachingMode().then(setCoachModeState);
     getUserMaxHr().then(h => setMaxHr(h > 0 ? String(h) : ''));
@@ -198,6 +221,30 @@ export default function SettingsScreen() {
     await setLoadCapPct(n);
     setCapPctSaved(true);
     setTimeout(() => setCapPctSaved(false), 2000);
+  };
+
+  const handleSavePeriod = async (on?: boolean) => {
+    const bw = parseInt(buildW, 10), dw = parseInt(deloadW, 10), dp = parseInt(dropPct, 10);
+    if ([bw, dw, dp].some(isNaN)) { Alert.alert('Invalid value', 'Enter whole numbers for build weeks, deload weeks and the drop %.'); return; }
+    const a = anchor.trim();
+    if (a && isNaN(new Date(a + 'T00:00:00').getTime())) { Alert.alert('Invalid date', 'Cycle start must be YYYY-MM-DD (or leave blank for the default).'); return; }
+    await setPeriodization({ on: on ?? periodOn, buildWeeks: bw, deloadWeeks: dw, deloadDropPct: dp, anchor: a });
+    setPeriodSaved(true); setTimeout(() => setPeriodSaved(false), 2000);
+  };
+
+  const handleToggleMode = async (race: boolean) => {
+    const m: PlanMode = race ? 'race' : 'leisure';
+    setPlanModeState(m); await setPlanMode(m); await clearTodayPlanCache();
+  };
+  const handleSaveRace = async () => {
+    const dist = parseFloat(raceDist);
+    if (isNaN(dist) || dist < 1 || dist > 200) { Alert.alert('Invalid distance', 'Enter the race distance in km, e.g. 10, 21.1, 42.2.'); return; }
+    const p = (n: number) => String(n).padStart(2, '0');
+    const dateISO = `${raceDateObj.getFullYear()}-${p(raceDateObj.getMonth() + 1)}-${p(raceDateObj.getDate())}`;
+    const goalSec = goalH * 3600 + goalM * 60 + goalS;
+    await setRaceConfig({ date: dateISO, distanceKm: dist, goalTimeSec: goalSec });
+    await clearTodayPlanCache();
+    setRaceSaved(true); setTimeout(() => setRaceSaved(false), 2000);
   };
 
   const handleSaveMinTsb = async () => {
@@ -842,6 +889,103 @@ export default function SettingsScreen() {
               thumbColor="#fff"
             />
           </View>
+        </Section>
+
+        {/* Periodization */}
+        <Section title="Periodization" cat="zones">
+          <Text style={styles.hint}>
+            Instead of growing forever, build for a set number of weeks then take a lighter DELOAD week
+            (lower volume) so you recover and absorb the training — the build then resumes from where it
+            was, not the trough. All adjustable; safe defaults 3 build / 1 deload / −25%.
+          </Text>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Periodize training load</Text>
+              <Text style={styles.switchSub}>Off = the cap ramps continuously. On = build/deload cycles (default).</Text>
+            </View>
+            <Switch
+              value={periodOn}
+              onValueChange={(v) => { setPeriodOn(v); handleSavePeriod(v); }}
+              trackColor={{ true: c.accent, false: '#ccc' }}
+              thumbColor="#fff"
+            />
+          </View>
+          <View style={styles.row}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={buildW} onChangeText={setBuildW}
+              placeholder="3" placeholderTextColor="#bbb" keyboardType="number-pad" returnKeyType="done" />
+            <Text style={styles.unitLabel}>build wks</Text>
+          </View>
+          <View style={styles.row}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={deloadW} onChangeText={setDeloadW}
+              placeholder="1" placeholderTextColor="#bbb" keyboardType="number-pad" returnKeyType="done" />
+            <Text style={styles.unitLabel}>deload wks</Text>
+          </View>
+          <View style={styles.row}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={dropPct} onChangeText={setDropPct}
+              placeholder="25" placeholderTextColor="#bbb" keyboardType="number-pad" returnKeyType="done" />
+            <Text style={styles.unitLabel}>% drop</Text>
+          </View>
+          <Text style={styles.hint}>
+            Cycle start (optional): the week that becomes Build 1. Blank = calendar default. Tap "This wk"
+            to align the cycle to this week.
+          </Text>
+          <View style={styles.row}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={anchor} onChangeText={setAnchor}
+              placeholder="YYYY-MM-DD (blank = default)" placeholderTextColor="#bbb" autoCapitalize="none" autoCorrect={false} returnKeyType="done" />
+            <TouchableOpacity style={[styles.btn, { flex: 0, paddingHorizontal: 12 }]}
+              onPress={() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); setAnchor(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`); }}>
+              <Text style={styles.btnText}>This wk</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.btn, periodSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]} onPress={() => handleSavePeriod()}>
+              <Text style={styles.btnText}>{periodSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+        </Section>
+
+        {/* Race / Training Goal */}
+        <Section title="Race / Training Goal" cat="coaching">
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Race-prep mode</Text>
+              <Text style={styles.switchSub}>
+                Off = leisure build-up (periodized). On = the coach builds a periodized plan toward your race
+                (base→build→peak→taper), overriding the weekly schedule. Needs a race date + a working API key.
+              </Text>
+            </View>
+            <Switch value={planMode === 'race'} onValueChange={handleToggleMode}
+              trackColor={{ true: c.accent, false: '#ccc' }} thumbColor="#fff" />
+          </View>
+          <View style={[styles.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+            <Text style={styles.switchLabel}>Race date</Text>
+            <DateTimePicker value={raceDateObj} mode="date" display="compact" minimumDate={new Date()}
+              onChange={(_e, d) => { if (d) setRaceDateObj(d); }} themeVariant={mode === 'dark' ? 'dark' : 'light'} />
+          </View>
+          <View style={styles.row}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={raceDist} onChangeText={setRaceDist}
+              placeholder="10" placeholderTextColor="#bbb" keyboardType="decimal-pad" returnKeyType="done" />
+            <Text style={styles.unitLabel}>km</Text>
+          </View>
+          <Text style={styles.hint}>Goal time (leave at 0:00:00 for no target)</Text>
+          <View style={{ flexDirection: 'row' }}>
+            <Picker style={{ flex: 1 }} itemStyle={{ fontSize: 20, height: 132, color: c.text }} selectedValue={goalH} onValueChange={(v) => setGoalH(Number(v))}>
+              {Array.from({ length: 10 }, (_, h) => <Picker.Item key={h} label={`${h} h`} value={h} color={c.text} />)}
+            </Picker>
+            <Picker style={{ flex: 1 }} itemStyle={{ fontSize: 20, height: 132, color: c.text }} selectedValue={goalM} onValueChange={(v) => setGoalM(Number(v))}>
+              {Array.from({ length: 60 }, (_, m) => <Picker.Item key={m} label={`${m} m`} value={m} color={c.text} />)}
+            </Picker>
+            <Picker style={{ flex: 1 }} itemStyle={{ fontSize: 20, height: 132, color: c.text }} selectedValue={goalS} onValueChange={(v) => setGoalS(Number(v))}>
+              {Array.from({ length: 60 }, (_, s) => <Picker.Item key={s} label={`${s} s`} value={s} color={c.text} />)}
+            </Picker>
+          </View>
+          <Text style={styles.hint}>
+            Target: {(goalH * 3600 + goalM * 60 + goalS) === 0 ? 'none' : (goalH > 0
+              ? `${goalH}:${String(goalM).padStart(2, '0')}:${String(goalS).padStart(2, '0')}`
+              : `${goalM}:${String(goalS).padStart(2, '0')}`)}
+            {'   ·   '}5K=5 · 10K=10 · half=21.1 · marathon=42.2. Re-plans weekly; flags if the goal looks achievable.
+          </Text>
+          <TouchableOpacity style={[styles.btn, raceSaved && styles.btnSuccess]} onPress={handleSaveRace}>
+            <Text style={styles.btnText}>{raceSaved ? '✓ Saved' : 'Save race'}</Text>
+          </TouchableOpacity>
         </Section>
 
         {/* AI History Depth */}

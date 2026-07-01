@@ -9,7 +9,8 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, planNeedsRefresh, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, CoachPlan } from '../src/services/coach';
+import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
@@ -43,7 +44,9 @@ export default function StrainDetailScreen() {
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
   const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
-  useEffect(() => { getPowerZones().then(setPowerZones).catch(() => {}); }, []);
+  // Sync zones (mirrors the calibrated file → getPowerZones) BEFORE reading, so a re-synthesized
+  // adjusted workout carries real watts even on the first launch after install.
+  useEffect(() => { ensureZonesFile().then(() => getPowerZones()).then(setPowerZones).catch(() => {}); }, []);
 
   const sendToWatch = async () => {
     if (!watchWorkout) return;
@@ -108,9 +111,15 @@ export default function StrainDetailScreen() {
   // runAdj lets the user nudge the prescribed run minutes ± before pushing to the watch.
   const baseRunMin   = plan?.runMinutes ?? 0;
   const effRunMin    = Math.max(0, runAdj ?? baseRunMin);
+  // Distance-basis display: derive km from the plan's km↔min ratio (the ± adjust stays minute-based).
+  const kmPerMin     = plan?.runKm != null && plan.runMinutes ? plan.runKm / plan.runMinutes : null;
+  const effKm        = kmPerMin != null ? Math.round(effRunMin * kmPerMin * 10) / 10 : null;
+  const effDose      = effKm != null ? `${effKm} km` : `${effRunMin}m`;
   const watchWorkout = plan && plan.intensity !== 'rest'
     ? ((runAdj != null || !plan.workout)
-        ? synthesizeWorkout(plan.intensity, effRunMin, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones)
+        ? mergeWorkoutPower(
+            synthesizeWorkout(plan.intensity, effRunMin, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones),
+            plan.workout)   // re-synth on ± adjust: inherit the original plan's per-zone watts (duration-only change)
         : plan.workout)
     : null;
 
@@ -227,6 +236,8 @@ export default function StrainDetailScreen() {
       weather: { apparentC: weather.apparentC, tempC: weather.tempC },
       strainReal: real,
       tofNextRunInDays: capCtx?.cap.nextRunInDays,
+      recentTimeOnFeet: tof?.series14,   // so planNeedsRefresh can see today's run → drop a stale force-placed run
+      date: targetDate,
     } as any;
     if (planNeedsRefresh(plan, snapLike)) {
       staleRegenRef.current = true;
@@ -271,39 +282,6 @@ export default function StrainDetailScreen() {
           </View>
         </View>
 
-        {/* Target Strain Range — baseline-anchored, recovery-widened (Bevel-style) */}
-        {strain && (() => {
-          const lo = strain.safeLow, hi = strain.safeHigh, mid = strain.safeMid;
-          const max = Math.max(60, hi + 8, real + 8);
-          const pos = (v: number) =>
-            `${Math.max(0, Math.min(100, (v / max) * 100))}%` as `${number}%`;
-          const toGo = mid - real;
-          return (
-            <View style={s.rangeCard}>
-              <Text style={s.sectionTitle}>TARGET STRAIN RANGE</Text>
-              <View style={s.rangeHeadRow}>
-                <Text style={s.rangeBig}>{lo}–{hi}<Text style={s.rangePctUnit}> %</Text></Text>
-                <Text style={s.rangeMidLabel}>midpoint {mid}%</Text>
-              </View>
-              <View style={s.rangeTrack}>
-                <View style={[s.rangeBand, { left: pos(lo), width: pos(hi - lo) }]} />
-                <View style={[s.rangeMidTick, { left: pos(mid) }]} />
-                <View style={[s.rangeNow, { left: pos(real), backgroundColor: status.color }]} />
-              </View>
-              <View style={s.rangeScaleRow}>
-                <Text style={s.rangeScaleTxt}>0</Text>
-                <Text style={s.rangeScaleTxt}>{Math.round(max)}</Text>
-              </View>
-              <Text style={s.rangeSub}>
-                {strain.baseline ? `14-day baseline ${strain.baseline}% · ` : ''}
-                you're at {real}% — {toGo > 0
-                  ? `${toGo}% to your optimal target`
-                  : toGo < 0 ? `${-toGo}% over the midpoint` : 'right on target'}.
-              </Text>
-            </View>
-          );
-        })()}
-
         {/* Readiness — multi-factor (recovery + sleep + form + ACWR + illness guards) */}
         {!loadingH && dates.length > 0 && (
           <View style={s.readyCard}>
@@ -342,7 +320,7 @@ export default function StrainDetailScreen() {
                   </Text>
                 </View>
                 <Text style={s.coachTarget}>
-                  {effRunMin > 0 ? `run ${effRunMin}m` : 'no run today'} · within target
+                  {effRunMin > 0 ? `run ${effDose}` : 'no run today'} · within target
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
@@ -394,7 +372,7 @@ export default function StrainDetailScreen() {
                     <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(Math.max(5, effRunMin - 5))}>
                       <Text style={s.adjustBtnText}>−5</Text>
                     </TouchableOpacity>
-                    <Text style={s.adjustVal}>{effRunMin}m{runAdj != null ? ` · was ${baseRunMin}m` : ''}</Text>
+                    <Text style={s.adjustVal}>{effDose}{runAdj != null ? ` · was ${baseRunMin}m` : ''}</Text>
                     <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(effRunMin + 5)}>
                       <Text style={s.adjustBtnText}>+5</Text>
                     </TouchableOpacity>

@@ -9,6 +9,7 @@ import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { callLLM, getLLMStatus } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
+import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
@@ -41,6 +42,7 @@ export interface CoachSnapshot {
   loadCapPct?:       number;   // the rolling increase cap % (default 10)
   loadBudgetToday?:  number;   // remaining budget today in loadUnit
   loadUnit?:         'min' | 'km';
+  paceMinPerKm?:     number;   // trailing real-work pace (min/km) — km↔min conversion when distance basis
   yesterdayTofMin?:  number;   // yesterday's running minutes
   yesterdayStrain?:  number;   // yesterday's strain score
   weather?: {                  // current conditions — heat/humidity raise strain
@@ -82,6 +84,7 @@ export interface CoachPlan {
   strength:   string;        // leg-strength / injury-prevention prescription
   intensity:  CoachIntensity;
   runMinutes: number;        // prescribed running time-on-feet (≤ rolling cap)
+  runKm?:     number;        // prescribed distance (km) — shown instead of minutes when distance basis
   strainLow:  number;
   strainHigh: number;
   rationale:  string;
@@ -92,6 +95,7 @@ export interface CoachPlan {
   generatedAt: string;
   genTempC?:  number;        // apparent temp (°C) when generated — for staleness checks
   genStrain?: number;        // the day's accumulated strain when generated
+  shrinkForced?: boolean;    // shrink-to-fit placed this quality on its day OVER the cap → skip the budget/cap refresh checks
 }
 
 // A cached plan goes stale when the day's conditions drift from when it was written:
@@ -106,16 +110,40 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   if (nowTemp != null && plan.genTempC == null) return true;
   if (plan.genTempC != null && nowTemp != null && Math.abs(nowTemp - plan.genTempC) >= TEMP_DRIFT_C) return true;
   if (plan.genStrain != null && snap.strainReal != null && Math.abs(snap.strainReal - plan.genStrain) >= STRAIN_DRIFT) return true;
-  // A run done since the plan was written shrinks today's remaining budget — if the prescribed run now
-  // exceeds it, regenerate so we don't keep advising a session that would blow the weekly cap.
-  if (plan.intensity !== 'rest' && (plan.runMinutes ?? 0) > 0 && snap.tofBudgetTodayMin != null
-      && plan.runMinutes > snap.tofBudgetTodayMin + 5) return true;
-  // The deterministic volume gate disagrees with the cached plan → the run/rest decision is stale
-  // (a run got counted so the cap now blocks today, or a rest day rolled the cap free again).
-  const cappedNow = (snap.tofNextRunInDays ?? 0) > 0;
-  if (cappedNow && plan.intensity !== 'rest') return true;
-  if (!cappedNow && (plan.nextRunInDays ?? 0) > 0) return true;
+  // Budget / cap-flip checks — SKIPPED for a shrink-to-fit / race plan that intentionally holds a session
+  // over the cap (otherwise it would refresh forever against its own over-budget minutes). EXCEPTION: once
+  // you've actually RUN today, the forced session is DONE → re-check so it can't keep prescribing another
+  // run (the phantom-2nd-run bug — force-placed this morning at todayDone 0, then you ran).
+  const todayRunMin = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
+  if (!plan.shrinkForced || todayRunMin >= 8) {
+    // A run done since the plan was written shrinks today's remaining budget — if the prescribed run now
+    // exceeds it, regenerate so we don't keep advising a session that would blow the weekly cap.
+    if (plan.intensity !== 'rest' && (plan.runMinutes ?? 0) > 0 && snap.tofBudgetTodayMin != null
+        && plan.runMinutes > snap.tofBudgetTodayMin + 5) return true;
+    // The deterministic volume gate disagrees with the cached plan → the run/rest decision is stale
+    // (a run got counted so the cap now blocks today, or a rest day rolled the cap free again).
+    const cappedNow = (snap.tofNextRunInDays ?? 0) > 0;
+    if (cappedNow && plan.intensity !== 'rest') return true;
+    if (!cappedNow && (plan.nextRunInDays ?? 0) > 0) return true;
+  }
   return false;
+}
+
+// True when shrink-to-fit should FORCE a quality on today (scheduled template quality day, recovered,
+// not yet run) — the same conditions deterministicCoachPlan uses. The home calls this so a cached REST
+// plan (from before shrink was on, or the cap) regenerates into today's short quality automatically,
+// without a manual ↻. Async (reads the setting + schedule file) → kept out of the sync planNeedsRefresh.
+export async function shrinkWantsQualityToday(snap: CoachSnapshot): Promise<boolean> {
+  if (!snap.date) return false;
+  const todayDone = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
+  if (todayDone >= 8) return false;
+  // RACE MODE: a cached REST plan should regenerate when the race week prescribes a run today.
+  if (await raceActive()) { const rs = await raceSlotForToday(snap); return !!rs && rs.intensity !== 'rest'; }
+  if (!(await getShrinkToFit())) return false;
+  if ((snap.readiness ?? 0) < 60) return false;
+  const tmpl = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
+  const dow = new Date(snap.date + 'T00:00:00').getDay();
+  return ['intervals', 'tempo', 'long'].includes(tmpl[dow] as string);
 }
 
 
@@ -243,6 +271,29 @@ export function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['pow
   return w;
 }
 
+// Carry the power targets from a SOURCE workout (the cached plan's — the LLM / zone file already set
+// them) onto a freshly synthesized one that may lack them. Used when the user nudges run minutes ± and
+// we re-synthesize: only the DURATION changed, the per-zone watts are unchanged, so don't drop them
+// (the live powerZones state can be empty/stale at that moment → otherwise no PowerRangeAlert reaches
+// the watch). Matches by HR zone, falls back to any powered block.
+export function mergeWorkoutPower(target: WatchWorkout | null, source?: WatchWorkout | null): WatchWorkout | null {
+  if (!target || !source) return target;
+  const byZone = new Map<string, [number, number]>();
+  let anyPow: [number, number] | undefined;
+  for (const b of source.blocks) {
+    if (b.powerLowWatts && b.powerHighWatts) {
+      anyPow = anyPow ?? [b.powerLowWatts, b.powerHighWatts];
+      if (b.hrZone) byZone.set(b.hrZone, [b.powerLowWatts, b.powerHighWatts]);
+    }
+  }
+  target.blocks = target.blocks.map(b => {
+    if (b.powerLowWatts && b.powerHighWatts) return b;
+    const m = (b.hrZone && byZone.get(b.hrZone)) || anyPow;
+    return m ? { ...b, powerLowWatts: m[0], powerHighWatts: m[1] } : b;
+  });
+  return target;
+}
+
 // Fallback structured session when the LLM prescribes a run but omits the workout JSON.
 // Maps the intensity to an HR zone + the matching watt window from the athlete's zones.
 export function synthesizeWorkout(
@@ -292,6 +343,8 @@ export interface WeekPlanDay {
   structure: string;   // concise, e.g. "40min @ Z2" or "4× 6min @ Z4 + 2min jog"
   note: string;        // ≤ ~8 words
   kind?: string;       // resolved session kind: intervals|tempo|long|easy|rest — drives the synthesized structure + the UI label
+  forced?: boolean;    // shrink-to-fit force-placed this short quality on its day — the screen must NOT re-trim it away
+  runKm?: number;      // target distance (km) — shown instead of minutes when distance basis
 }
 
 // Forward 7-day plan (tomorrow → +7), following the preferred weekly schedule but adjusted
@@ -337,10 +390,13 @@ export async function getWeekPlan(
   snap: CoachSnapshot,
   forecast?: { date: string; apparentC: number; humidity: number; description: string }[],
 ): Promise<WeekPlanDay[]> {
+  // RACE MODE overrides the leisure template + cap: the LLM-designed race week IS the plan.
+  if (await raceActive()) { const rw = await getRaceWeekPlan(snap); if (rw) return rw.days; }
   const today = new Date(snap.date + 'T00:00:00');
   const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
-  const capMul = 1 + capPct / 100;
+  const periodization = await getPeriodization();  // build/deload cycle modulates each week's cap multiplier
   const MEANINGFUL = 20;
+  const shrink = await getShrinkToFit();  // ON → a cap-blocked quality SHRINKS to fit its day instead of deferring
   const green = (snap.readiness ?? 60) >= 60; // quality only on a decent-readiness day
   // Re-entry: ~no running in the last week (holiday/illness) → rebuild gently with EASY Z2 ONLY, never
   // quality. The daily plan refines each morning by that day's actual recovery; here we lay out the
@@ -358,7 +414,10 @@ export async function getWeekPlan(
   // rescheduled onto the next budgeted, well-spaced flex day — so the runner's key sessions shift
   // FORWARD instead of vanishing, and the normal structure resumes as the rolling cap frees up.
   // Anything still deferred at week's end simply reappears in next week's recompute.
-  const QMIN = 25;          // a quality session needs ≥ this much budget to run; below it → defer
+  const QMIN = 25;          // (shrink OFF) a quality needs ≥ this much budget to run on its day; below it → defer
+  const SHRINK_FLOOR = 20;  // shrink-to-fit: tempo/intervals never shorter than this (still a real short quality)
+  const SHRINK_TARGET = 28; // shrink-to-fit: cap tempo/intervals at ~this (≤30 min) so the week stays short + balanced
+  const LONG_MIN = 45;      // shrink-to-fit: the long run is PROTECTED — never shrunk below this (keeps it a "long")
   const EASY_RESERVE = 35;  // headroom kept on a flex day before spending budget on an easy jog
   const isQuality = (k: WeekKind) => k === 'intervals' || k === 'tempo' || k === 'long';
   const resolveQuality = (k: WeekKind): [CoachIntensity, number] =>
@@ -384,21 +443,30 @@ export async function getWeekPlan(
     const j = tof.length;
     const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0);
     const prior6 = tof.slice(j - 6,  j).reduce((a, b) => a + b, 0);
-    let allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * capMul - prior6)) : 45;
+    let allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(d, periodization, capPct) - prior6)) : 45;
     if (ref7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
 
     const kind = template[d.getDay()];
     const spaced = (i - lastQ) >= 2; // ≥1 non-quality day since the last quality session
     let intensity: CoachIntensity = 'rest'; let base = 0; let placed: WeekKind = 'rest';
-    let shifted = false, deferredHere = false, banked = false;
+    let shifted = false, deferredHere = false, banked = false, shrunk = false, forcePlaced = false;
     if (reentry) {
       // easy Z2 on the anchor (quality/easy) days, rest on the recovery/flex days → ~3 gentle runs/wk
       if (kind !== 'rest' && kind !== 'flex') { intensity = 'easy'; base = 28; placed = 'easy'; }
     } else if (isQuality(kind)) {
       if (!green) { intensity = 'easy'; base = 35; placed = 'easy'; }                  // readiness too low → easy
-      else if (allowance >= QMIN && spaced) {                                          // run it on its template day
+      else if (shrink && spaced) {                                                     // SHRINK-TO-FIT (structure-first): hold it on its day
+        const [qi, qb] = resolveQuality(kind);
+        intensity = qi; placed = kind; lastQ = i; qPlaced++; forcePlaced = true;
+        // tempo/intervals → a SHORT dose (≤ SHRINK_TARGET) so the week keeps its shape AND banks budget for
+        // the long; the LONG is PROTECTED — kept long (≥ LONG_MIN), never downgraded to a Z2. Placed on its
+        // own day even when the cap is tight: fitting the structure in is the whole point of shrink-to-fit.
+        base = kind === 'long' ? Math.min(qb, Math.max(LONG_MIN, allowance))
+                               : Math.max(SHRINK_FLOOR, Math.min(SHRINK_TARGET, allowance));
+        shrunk = base < qb;
+      } else if (allowance >= QMIN && spaced) {                                         // (shrink OFF) run full on its template day
         [intensity, base] = resolveQuality(kind); placed = kind; lastQ = i; qPlaced++;
-      } else {                                                                         // cap/spacing-blocked → DEFER
+      } else {                                                                         // (shrink OFF) cap/spacing-blocked → DEFER
         deferred.push(kind); deferredHere = true;
         if (allowance >= MEANINGFUL) { intensity = 'easy'; base = 30; placed = 'easy'; } // light jog instead of the quality
       }
@@ -414,11 +482,14 @@ export async function getWeekPlan(
     if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
 
     let capRest = false;
-    if (intensity !== 'rest' && allowance < MEANINGFUL) { intensity = 'rest'; capRest = true; } // HARD cap gate (safety)
+    // HARD cap gate (safety) — but shrink-to-fit's force-placed quality keeps its day even over budget.
+    if (intensity !== 'rest' && allowance < MEANINGFUL && !forcePlaced) { intensity = 'rest'; capRest = true; }
     if (intensity === 'rest') placed = 'rest';
     const runMinutes = intensity === 'rest' ? 0 : base;
     const heatMin = intensity === 'rest' ? 0 : Math.max(8, Math.round(runMinutes / heat));
-    tof.push(intensity === 'rest' ? 0 : Math.min(heatMin, Math.max(MEANINGFUL, allowance)));
+    // Force-placed quality counts its REAL minutes (so later days' budgets — esp. the long — see the true
+    // load); otherwise the day's counted ToF is capped at the available allowance.
+    tof.push(intensity === 'rest' ? 0 : forcePlaced ? heatMin : Math.min(heatMin, Math.max(MEANINGFUL, allowance)));
 
     const isLong = placed === 'long';
     const structure = intensity === 'rest' ? 'Rest'
@@ -429,6 +500,8 @@ export async function getWeekPlan(
       reentry && intensity === 'easy' ? 'Easy Z2 — rebuilding after the break (recovery-gated)' :
       reentry                         ? 'Recovery day — rebuilding' :
       shifted                         ? `${qName(placed)} — rescheduled here as the cap freed up` :
+      shrunk && placed === 'long'     ? 'Long run — protected (kept long on a tight week)' :
+      shrunk                          ? `${qName(placed)} — shortened to hold its day (banks budget for the long)` :
       deferredHere                    ? `${qName(kind)} deferred past the +${capPct}% cap${intensity === 'rest' ? '' : ' — easy jog instead'}` :
       banked                          ? 'Recovery — banking volume for the week’s quality' :
       capRest                         ? `Cap rest — 7-day volume at the +${capPct}% ceiling` :
@@ -436,7 +509,9 @@ export async function getWeekPlan(
       intensity === 'hard'            ? 'Intervals — keep it genuinely hard' :
       intensity === 'moderate'        ? (isLong ? 'Long-ish aerobic run' : 'Tempo / threshold') :
       kind === 'flex'                 ? 'Easy recovery jog' : 'Easy aerobic Z2';
-    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed });
+    const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
+      ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
+    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm });
   }
   return out;
 }
@@ -461,6 +536,25 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const capPct      = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
   const cappedToday = (snap.tofNextRunInDays ?? 0) > 0;
   const wkName      = weekdayName(snap.date);
+  const reentry     = (snap.tof7d ?? 0) < 30;
+  const shrinkOn    = await getShrinkToFit();
+  const template    = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
+  const dow         = new Date(snap.date + 'T00:00:00').getDay();
+  const todaySlot   = reentry ? null : await loadTodaysWeekPlanSlot(snap.date);
+  const todayDone   = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
+  // Shrink-to-fit FORCE-PLACES today's scheduled quality (short) even over the cap — driven by the
+  // TEMPLATE, NOT by finding a prior-day slot (that read is fragile: cache timing / which regen persisted).
+  // Only on a real template quality day, only when recovered (green) and you haven't already run today —
+  // so a cap-exhausted recovery day (e.g. after a double) still rests. Uses the slot's exact shrunk minutes
+  // if one WAS found, else the shrink default.
+  const honourSlot  = shrinkOn
+    && ['intervals', 'tempo', 'long'].includes(template[dow] as string)
+    && (snap.readiness ?? 60) >= 60
+    && todayDone < 8;
+  // RACE MODE: today's session comes from the LLM race week (overrides the leisure template + cap).
+  const raceSlot    = (await raceActive()) ? await raceSlotForToday(snap) : null;
+  const raceForced  = !!raceSlot && raceSlot.intensity !== 'rest';
+  const honorDirect = honourSlot || raceForced;
   const strainLow   = clampScore(snap.advisableLow, 30);
   const strainHigh  = clampScore(snap.advisableHigh, 60);
   const strainReal  = snap.strainReal ?? null;
@@ -476,8 +570,8 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     genStrain: snap.strainReal,
   };
 
-  // Cap reached → mandatory recovery day.
-  if (cappedToday) {
+  // Cap reached → mandatory recovery day (unless shrink-to-fit is holding a quality on its day).
+  if (cappedToday && !honourSlot && !raceSlot) {
     return {
       headline: 'At your volume cap — recovery day',
       session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${snap.tofNextRunLabel ?? 'in a couple of days'}.`,
@@ -487,18 +581,47 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     };
   }
 
-  // Pick today's session from the editable weekly template, gated by readiness / re-entry / heat / budget.
-  const template = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
-  const dow      = new Date(snap.date + 'T00:00:00').getDay();
-  const kind     = template[dow];
+  // Today's session: PREFER the slot the rolling 7-day plan already laid out for today (generated on a
+  // PRIOR day, so it SPREADS the week's volume) over a greedy single-day budget. Today's recovery can only
+  // EASE it (never inflate). Fall back to the editable weekly template + readiness gate when no prior plan
+  // covers today (first run, or re-entry where the gentle rebuild logic should win).
   const green    = (snap.readiness ?? 60) >= 60;
-  const reentry  = (snap.tof7d ?? 0) < 30;
   const heatBudget = snap.tofBudgetTodayMin != null ? Math.round(snap.tofBudgetTodayMin / heatFactor) : undefined;
   const budget   = heatBudget ?? snap.tofBudgetTodayMin ?? 45;
 
   type SK = 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery';
+  const toSK = (k: string | undefined, it: CoachIntensity): SK =>
+    (k === 'intervals' || k === 'tempo' || k === 'long' || k === 'easy') ? k
+      : it === 'hard' ? 'intervals' : it === 'moderate' ? 'tempo' : it === 'easy' ? 'easy' : 'recovery';
   let intensity: CoachIntensity; let sk: SK; let base: number; let eased = '';
-  if (reentry) {
+  let kind: string = template[dow];                 // scheduled session TYPE (drives the rest-day wording)
+  const slot = todaySlot;
+  if (raceSlot) {
+    // RACE MODE: today = the LLM race-week session (overrides template/cap). Recovery may still ease it.
+    if (raceSlot.intensity === 'rest') { intensity = 'rest'; sk = 'recovery'; base = 0; kind = 'rest'; }
+    else {
+      intensity = raceSlot.intensity; sk = toSK(raceSlot.kind, raceSlot.intensity); base = raceSlot.runMinutes; kind = raceSlot.kind ?? kind;
+      if (!green && (intensity === 'hard' || intensity === 'moderate')) { intensity = 'easy'; sk = 'easy'; base = Math.min(base, 35); eased = 'readiness low, eased the race session to easy'; }
+    }
+  } else if (honourSlot) {
+    // shrink-to-fit: force-place today's SCHEDULED quality, short. Prefer the week plan's exact (shrunk)
+    // minutes if a slot was found; else the shrink default (tempo/intervals ~28 min, long 45).
+    const k = template[dow];
+    intensity = k === 'intervals' ? 'hard' : 'moderate';
+    sk = (k === 'intervals' || k === 'tempo' || k === 'long') ? k : 'tempo';
+    base = (slot && slot.intensity !== 'rest') ? slot.runMinutes : (k === 'long' ? 45 : 28);
+    kind = k;
+  } else if (slot) {
+    // The rolling 7-day plan already decided today — honour it as the basis (spread, not greedy).
+    kind = slot.intensity === 'rest' ? 'rest' : (slot.kind ?? kind);
+    if (slot.intensity === 'rest') { intensity = 'rest'; sk = 'recovery'; base = 0; }
+    else {
+      intensity = slot.intensity; sk = toSK(slot.kind, slot.intensity); base = slot.runMinutes;
+      if (!green && (intensity === 'hard' || intensity === 'moderate')) {  // recovery can only push DOWN
+        intensity = 'easy'; sk = 'easy'; base = Math.min(base, 35); eased = 'readiness low, eased the planned session to easy Z2';
+      }
+    }
+  } else if (reentry) {
     intensity = 'easy'; sk = 'easy'; base = 28; eased = 'rebuilding after a light week — easy Z2 only';
   } else if (kind === 'intervals') {
     if (green) { intensity = 'hard'; sk = 'intervals'; base = 45; }
@@ -518,7 +641,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   }
   let heatCut = false;
   if (intensity === 'hard' && (apparentC ?? 0) >= 24) { intensity = 'moderate'; sk = 'tempo'; heatCut = true; }
-  if (intensity !== 'rest' && budget < 12) { intensity = 'rest'; sk = 'recovery'; base = 0; }
+  if (intensity !== 'rest' && budget < 12 && !honorDirect) { intensity = 'rest'; sk = 'recovery'; base = 0; }
 
   // Rest day (scheduled or out of budget).
   if (intensity === 'rest') {
@@ -533,10 +656,13 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     };
   }
 
-  // Build the structured session.
-  const runMinutes = Math.max(8, Math.min(budget, base));
+  // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
+  // only today's heat eases it — so the daily card matches the 7-day plan instead of re-capping to rest.
+  const runMinutes = Math.max(8, honorDirect ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));
+  const runKm      = snap.loadUnit === 'km' && snap.paceMinPerKm ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
   const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk), snap.powerZones);
   const structure  = formatWorkoutStructure(workout);
+  const dose       = runKm != null ? `${runKm} km` : `${runMinutes} min`;  // display unit follows the cap basis
   const label = sk === 'intervals' ? 'Intervals' : sk === 'tempo' ? 'Tempo' : sk === 'long' ? 'Long run' : base <= 30 ? 'Recovery run' : 'Easy Z2';
   const headline =
     sk === 'intervals' ? 'Good to go — intervals day' :
@@ -552,10 +678,10 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
 
   return {
     headline,
-    session: `${label} — ${runMinutes} min${structure ? `, ${structure}` : ''}.`,
-    strength: STRENGTH_DEFAULT, intensity, runMinutes,
+    session: `${label} — ${dose}${structure ? `, ${structure}` : ''}.`,
+    strength: STRENGTH_DEFAULT, intensity, runMinutes, runKm,
     rationale: bandPhrase(strainReal, strainLow, strainHigh, driver) + heatNote,
-    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, ...stamp,
+    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, shrinkForced: honorDirect, ...stamp,
   };
 }
 
@@ -569,17 +695,30 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   // SHORTER than the basis: good recovery or cool weather can NEVER inflate the run and eat the rest of
   // the week's budget; only genuinely poor recovery pushes it down. Keyless / broken key / LLM error →
   // the deterministic plan verbatim.
+  ensureWeekPlanCached(snap).catch(() => {});  // cache today's rolling plan so tomorrow's daily plan can read its slot
   const basis = await deterministicCoachPlan(snap);
   const status = await getLLMStatus();
   if (!status.hasKey || !status.reachable) return basis;
   try {
     await ensureZonesFile().catch(() => {});
     const knowledge = await buildKnowledgePrompt();
+    // RACE PREP context — injected ABOVE the coaching files as the highest-priority instruction.
+    let raceHdr = '';
+    if (await raceActive()) {
+      const race = await getRaceConfig();
+      const rw = await getRaceWeekPlan(snap);
+      const ts = rw?.days.find(d => d.date === snap.date);
+      raceHdr = `\n\n===== RACE PREP (HIGHEST PRIORITY — overrides the weekly-schedule file below) =====\n`
+        + `Goal: ${race.distanceKm}km race on ${race.date}${race.goalTimeSec ? `, target ${fmtTime(race.goalTimeSec)}` : ''}. `
+        + `Phase: ${rw?.phase ?? '—'}, ${rw?.weeksToRace ?? '?'} week(s) out. `
+        + `TODAY's race session: ${ts ? `${ts.kind} — ${ts.structure}${ts.note ? ` (${ts.note})` : ''}` : 'per the ceiling'}. `
+        + `Design today to fit this race block; the weekly-schedule file does NOT apply in race mode.\n===== END RACE PREP =====`;
+    }
     const heatFactor = heatStrainFactor(snap.weather);
     const ceiling = basis.intensity === 'rest'
       ? `\n\nMANDATORY: today is a REST day (the 7-day plan + rolling volume cap leave no running budget). Return intensity "rest", runMinutes 0, workout null, and a recovery/strength-focused headline + session.`
       : `\n\nPRESCRIBED CEILING — the 7-day plan + today's recovery/heat have ALREADY set today to intensity "${basis.intensity}", about ${basis.runMinutes} min. You MUST honour this as a CEILING: stay at or BELOW it (you may go easier/shorter if today's data warrants), but NEVER prescribe a harder intensity or more minutes — good recovery or cool weather must not inflate the run, as that eats the rest of the week. Within the ceiling, design the session per the COACHING KNOWLEDGE above: open warm-up, a short DRILLS block if the runner's files call for it (they may, even on easy runs), the work, and an open cool-down.`;
-    const system = `${ROLE}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}`;
+    const system = `${ROLE}${raceHdr}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}`;
     const txt = await callLLM({
       system,
       messages: [{ role: 'user', content: JSON.stringify({ ...snap, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes } }) }],
@@ -604,12 +743,14 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     const workout = intensity === 'rest' ? null : ensureBlockPower(
       wellFormed ? parsed : synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones),
       snap.powerZones);
+    const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
+      ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
     return {
       ...basis,
       headline:  o.headline  ? String(o.headline).slice(0, 120)  : basis.headline,
       session:   o.session   ? String(o.session).slice(0, 280)   : basis.session,
       strength:  o.strength  ? String(o.strength).slice(0, 240)  : basis.strength,
-      intensity, runMinutes, workout,
+      intensity, runMinutes, runKm, workout,
       rationale: o.rationale ? String(o.rationale).slice(0, 400) : basis.rationale,
       cautions:  basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
       generatedAt: new Date().toISOString(),
@@ -636,6 +777,18 @@ export async function getCoachingMode(): Promise<CoachingMode> {
 }
 export async function setCoachingMode(m: CoachingMode): Promise<void> {
   try { await SecureStore.setItemAsync(COACHING_MODE_KEY, m); } catch { /* ignore */ }
+}
+
+// Shrink-to-fit (off by default): when ON, a cap-blocked quality session SHORTENS to fit its template
+// day instead of being deferred — tempo/intervals shrink to a floor so the week keeps a (short) quality
+// touch AND the long run, rather than rest days. Toggled from the 7-Day Plan screen; the daily plan
+// reads the same setting via getWeekPlan, so they stay consistent.
+const SHRINK_TO_FIT_KEY = 'shrink_to_fit_v1';
+export async function getShrinkToFit(): Promise<boolean> {
+  try { return (await SecureStore.getItemAsync(SHRINK_TO_FIT_KEY)) === '1'; } catch { return false; }
+}
+export async function setShrinkToFit(on: boolean): Promise<void> {
+  try { await SecureStore.setItemAsync(SHRINK_TO_FIT_KEY, on ? '1' : '0'); } catch { /* ignore */ }
 }
 
 export type LoadCapBasis = 'tof' | 'distance';
@@ -690,11 +843,69 @@ export interface TofPlan {
   nextRunBudgetMin: number; // budget available on nextRunDate
 }
 
+// ── Periodization (build / deload cycles) ──────────────────────────────────────
+// Replaces "grow forever": volume ramps for `buildWeeks`, then a `deloadWeeks` block drops the ceiling
+// by `deloadDropPct`% before the build RESUMES from the pre-deload level (not the trough). Adjustable by
+// the athlete/coach with safe defaults. Cycle phase is a deterministic function of the ISO week (fixed
+// epoch Monday) + the settings — no per-user anchor to persist.
+export interface Periodization { on: boolean; buildWeeks: number; deloadWeeks: number; deloadDropPct: number; anchor: string; }
+// anchor = ISO date (YYYY-MM-DD) the athlete chose to START a cycle (its week = Build 1); '' → fixed calendar default.
+export const DEFAULT_PERIODIZATION: Periodization = { on: true, buildWeeks: 3, deloadWeeks: 1, deloadDropPct: 25, anchor: '' };
+const PERIODIZATION_KEY = 'periodization_v1';
+export async function getPeriodization(): Promise<Periodization> {
+  try {
+    const raw = await SecureStore.getItemAsync(PERIODIZATION_KEY);
+    const p: Periodization = raw ? { ...DEFAULT_PERIODIZATION, ...JSON.parse(raw) } : { ...DEFAULT_PERIODIZATION };
+    p.buildWeeks    = Math.max(1, Math.min(12, Math.round(p.buildWeeks)));
+    p.deloadWeeks   = Math.max(1, Math.min(4,  Math.round(p.deloadWeeks)));
+    p.deloadDropPct = Math.max(5, Math.min(60, Math.round(p.deloadDropPct)));
+    p.anchor = typeof p.anchor === 'string' ? p.anchor : '';
+    return p;
+  } catch { return { ...DEFAULT_PERIODIZATION }; }
+}
+export async function setPeriodization(p: Periodization): Promise<void> {
+  try { await SecureStore.setItemAsync(PERIODIZATION_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+}
+
+// Monday of the ISO week containing `d` (local); fixed epoch Monday (2024-01-01) → deterministic cycle index.
+function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+const PERIODIZATION_EPOCH = new Date(2024, 0, 1); // a Monday — the default anchor when the athlete hasn't set one
+function weekIndex(d: Date, per: Periodization): number {
+  const ref = per.anchor ? mondayOf(new Date(per.anchor + 'T00:00:00')) : PERIODIZATION_EPOCH;
+  const t = ref.getTime();
+  return Math.round((mondayOf(d).getTime() - (Number.isNaN(t) ? PERIODIZATION_EPOCH.getTime() : t)) / (7 * 86_400_000));
+}
+
+// Per-week cap multiplier: +cap% ramp on a build week; a drop on the FIRST deload week (hold thereafter);
+// a rebuild jump on the first build week AFTER a deload (undo the drop + ramp → back to the pre-deload
+// level, not the trough). Returns the plain ramp when periodization is off.
+export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: number): number {
+  const ramp = 1 + capPct / 100;
+  if (!per.on) return ramp;
+  const cycleLen = per.buildWeeks + per.deloadWeeks;
+  const idx = weekIndex(dateInWeek, per);
+  const cycleNum = Math.floor(idx / cycleLen);
+  const w = ((idx % cycleLen) + cycleLen) % cycleLen;
+  const deload = 1 - per.deloadDropPct / 100;
+  if (w < per.buildWeeks) return (w === 0 && cycleNum > 0) ? ramp / deload : ramp;
+  return (w === per.buildWeeks) ? deload : 1;
+}
+
+// Human-readable phase for the week containing `date`.
+export function cyclePhase(date: Date, per: Periodization): { phase: 'build' | 'deload'; label: string } {
+  if (!per.on) return { phase: 'build', label: '' };
+  const cycleLen = per.buildWeeks + per.deloadWeeks;
+  const w = ((weekIndex(date, per) % cycleLen) + cycleLen) % cycleLen;
+  if (w < per.buildWeeks) return { phase: 'build', label: `Build ${w + 1}/${per.buildWeeks}` };
+  return { phase: 'deload', label: per.deloadWeeks > 1 ? `Deload ${w - per.buildWeeks + 1}/${per.deloadWeeks}` : 'Deload week' };
+}
+
 export interface CapOpts {
   capPct?:       number;  // rolling increase cap % (default 10)
   meaningful?:   number;  // a run "counts" once the budget allows ≥ this (min or km)
   reentryBelow?: number;  // prior-7 below this → apply the re-entry floor
   reentryFloor?: number;  // minimum budget when returning from a near-zero base
+  periodization?: Periodization; // build/deload cycle modulating the per-week cap multiplier
 }
 
 /**
@@ -707,7 +918,14 @@ export interface CapOpts {
 export function computeTimeOnFeetPlan(
   daily: { date: string; value: number }[], today = new Date(), opts: CapOpts = {},
 ): TofPlan {
-  const capMult      = 1 + (opts.capPct ?? DEFAULT_LOAD_CAP_PCT) / 100;
+  const capPct       = opts.capPct ?? DEFAULT_LOAD_CAP_PCT;
+  const per          = opts.periodization;
+  // Per-week cap multiplier (periodized build/deload); plain +cap% ramp when no periodization passed.
+  const weekMultAt = (offsetDays: number) => {
+    if (!per) return 1 + capPct / 100;
+    const d = new Date(today); d.setDate(d.getDate() + offsetDays);
+    return weekCapMultiplier(d, per, capPct);
+  };
   const meaningful   = opts.meaningful   ?? 20;
   const reentryBelow = opts.reentryBelow ?? 30;
   const reentryFloor = opts.reentryFloor ?? 20;
@@ -722,7 +940,7 @@ export function computeTimeOnFeetPlan(
   let tofLast6  = 0; for (let o = 1; o <= 6;  o++) tofLast6  += minsAt(o);
   let tofPrev7  = 0; for (let o = 7; o <= 13; o++) tofPrev7  += minsAt(o);
   const todayDone = minsAt(0);                       // time-on-feet ALREADY done today (e.g. a morning run)
-  const cap = Math.round(capMult * tofPrev7);
+  const cap = Math.round(weekMultAt(0) * tofPrev7);
   // The cap limits the TRAILING-7 window (days 0–6), so today's remaining room must subtract BOTH the
   // last 6 days AND what's already been run today — otherwise after a morning run the plan offers the
   // whole day's allowance again and a second session blows the weekly cap (eating next week's budget).
@@ -742,7 +960,7 @@ export function computeTimeOnFeetPlan(
     let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);
     // minIdx(k) = the current day's already-done minutes (today's run for k=0; 0 for future days) —
     // subtract it too so "does a run fit today?" reflects what's already on the legs today.
-    let b = Math.max(0, Math.round(capMult * prev7) - last6 - minIdx(k));
+    let b = Math.max(0, Math.round(weekMultAt(k) * prev7) - last6 - minIdx(k));
     if (prev7 < reentryBelow) b = Math.max(b, reentryFloor); // re-entry / very low base
     if (b >= meaningful) { nextRunInDays = k; nextRunBudgetMin = b; break; }
   }
@@ -773,6 +991,7 @@ export interface CapContext {
   loadUnit: 'min' | 'km';
   capBasis: LoadCapBasis;
   capPct: number;
+  paceMinPerKm: number;    // trailing real-work pace (min/km); 0 in tof mode (unused there)
 }
 
 /**
@@ -784,16 +1003,17 @@ export interface CapContext {
 export async function buildCapContext(
   durSeries: { date: string; value: number }[], toDate: Date, capPct: number, capBasis: LoadCapBasis,
 ): Promise<CapContext> {
-  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20 });
-  if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct };
+  const periodization = await getPeriodization();
+  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization });
+  if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0 };
 
   const distKm = await fetchDailyWorkDistanceHistory(toDate);
-  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2 });
+  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization });
   const p = (n: number) => String(n).padStart(2, '0');
   const dStr = `${toDate.getFullYear()}-${p(toDate.getMonth() + 1)}-${p(toDate.getDate())}`;
   const dist7d = distKm.filter(d => d.date <= dStr).slice(-7).reduce((s, d) => s + d.value, 0);
   const paceMinPerKm = dist7d > 0 ? tof.tof7d / dist7d : 6; // fallback ~6 min/km
-  return { tof, cap, budgetMin: Math.round(cap.budgetTodayMin * paceMinPerKm), loadUnit: 'km', capBasis, capPct };
+  return { tof, cap, budgetMin: Math.round(cap.budgetTodayMin * paceMinPerKm), loadUnit: 'km', capBasis, capPct, paceMinPerKm };
 }
 
 /**
@@ -824,7 +1044,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     (dataDate === realToday && !latest.timeAsleep && latest.restingHrv == null);
   const date = (dataDate && dataDate > realToday) ? dataDate : realToday;
 
-  const { tof, cap, budgetMin, loadUnit } = await buildCapContext(dur, new Date(), capPct, capBasis);
+  const { tof, cap, budgetMin, loadUnit, paceMinPerKm } = await buildCapContext(dur, new Date(), capPct, capBasis);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
@@ -858,6 +1078,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     loadCapPct:        capPct,
     loadBudgetToday:   cap.budgetTodayMin,   // in loadUnit
     loadUnit,
+    paceMinPerKm,
     yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
     weather: weather ? {
       tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
@@ -974,6 +1195,33 @@ export async function loadWeekPlanCache(date: string): Promise<WeekPlanCache | n
 
 export async function saveWeekPlanCache(cache: WeekPlanCache): Promise<void> {
   try { await FileSystem.writeAsStringAsync(weekPlanFile(cache.date), JSON.stringify(cache)); } catch { /* ignore */ }
+}
+
+// Read TODAY's slot from the most recent rolling 7-day plan generated on a PRIOR day (which therefore
+// contains today). This keeps the daily plan consistent with the SPREAD week instead of recomputing a
+// greedy single-day budget. Looks back up to 7 generation-days for a cached plan that covers `date`.
+export async function loadTodaysWeekPlanSlot(date: string): Promise<WeekPlanDay | null> {
+  const base = new Date(date + 'T00:00:00');
+  const p = (n: number) => String(n).padStart(2, '0');
+  for (let back = 1; back <= 7; back++) {
+    const g = new Date(base); g.setDate(g.getDate() - back);
+    const cache = await loadWeekPlanCache(`${g.getFullYear()}-${p(g.getMonth() + 1)}-${p(g.getDate())}`);
+    const slot = cache?.days.find(d => d.date === date);
+    if (slot) return slot;   // most-recent prior plan covering today wins
+  }
+  return null;
+}
+
+// Ensure TODAY's rolling 7-day plan is cached, so TOMORROW's daily plan can read today's-equivalent slot
+// from it. Generated at most once per day (the 7-Day Plan screen refreshes it with a forecast + on new
+// runs). No forecast here → heat factor 1; the screen refines later. Best-effort, never throws.
+export async function ensureWeekPlanCached(snap: CoachSnapshot): Promise<void> {
+  try {
+    if (await loadWeekPlanCache(snap.date)) return;          // already cached today (screen or a prior call)
+    const days = await getWeekPlan(snap);
+    const lastRunDate = (snap.recentTimeOnFeet ?? []).filter(d => d.min > 0).map(d => d.date).pop() ?? snap.date;
+    await saveWeekPlanCache({ date: snap.date, generatedAt: new Date().toISOString(), lastRunDate, days });
+  } catch { /* best-effort */ }
 }
 
 function localTodayKey(): string {

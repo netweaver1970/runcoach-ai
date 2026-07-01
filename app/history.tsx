@@ -328,8 +328,13 @@ function Chart({
   const rawMin = allValues.length ? Math.min(...allValues) : 0;
   const rawMax = allValues.length ? Math.max(...allValues) : 1;
   const padTop = (rawMax - rawMin) * 0.15 || 2;
-  // zeroBase=true: axis starts at 0 (good for km/time); zeroBase=false: zoom in around data
-  const lowerBound = zeroBase ? Math.max(0, rawMin * 0.9 - 1) : rawMin - padTop * 1.5;
+  // Y-axis lower bound: NEVER go negative for non-negative data (energy, duration, distance, HR…). Only
+  // allow a negative axis when the data itself genuinely dips below 0 (e.g. TSB/form). Otherwise zoom
+  // dynamically around the data but clamp the floor to 0. zeroBase=true anchors at 0 (bars/km/time).
+  const lowerBound = rawMin < 0
+    ? rawMin - padTop * 1.5
+    : zeroBase ? Math.max(0, rawMin * 0.9 - 1)
+               : Math.max(0, rawMin - padTop * 1.5);
   const scale  = niceScale(lowerBound, rawMax + padTop);
   const yRange = scale.niceMax - scale.niceMin || 1;
 

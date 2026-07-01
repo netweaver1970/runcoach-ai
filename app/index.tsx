@@ -28,7 +28,7 @@ import {
   loadSnapshotCache,
 } from '../src/services/healthkit';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
-import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
+import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, shrinkWantsQualityToday, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { computeBodyBattery, BodyBattery, loadBodyBatteryCache, saveBodyBatteryCache } from '../src/services/bodyBattery';
@@ -148,7 +148,10 @@ export default function HomeScreen() {
       // Use the SAME cached plan the Strain screen + morning day-view use (keyed on cs.date),
       // so the home and detail always read the exact same plan.
       let plan = await loadCachedPlan(cs.date);
-      if (!plan || planNeedsRefresh(plan, cs)) {     // regen if heat/strain drifted
+      // Also regenerate a cached REST plan when shrink-to-fit now wants today's scheduled quality
+      // (e.g. cached before shrink was on / by the cap) — so it self-corrects without a manual ↻.
+      const staleRest = plan?.intensity === 'rest' && await shrinkWantsQualityToday(cs);
+      if (!plan || planNeedsRefresh(plan, cs) || staleRest) {   // regen if heat/strain drifted or shrink wants a run
         plan = await getCoachPlan(cs);
         await saveCachedPlan(cs.date, plan);
       }
@@ -831,7 +834,7 @@ function coachPlanToRec(p: CoachPlan): TrainingRecommendation {
     zone === 'Z3' ? 'Tempo' :
     (zone === 'Z4' || zone === 'Z5') ? 'Intervals' :
     (p.intensity === 'easy' ? 'Z2' : p.intensity === 'hard' ? 'Intervals' : 'Tempo');
-  return { type, duration: `${p.runMinutes} min`, zone: zone || '—', structure: formatWorkoutStructure(p.workout), reason: p.headline || p.rationale };
+  return { type, duration: p.runKm != null ? `${p.runKm} km` : `${p.runMinutes} min`, zone: zone || '—', structure: formatWorkoutStructure(p.workout), reason: p.headline || p.rationale };
 }
 
 // ─── Training Recommendation Card ────────────────────────────────────────────
@@ -1171,7 +1174,7 @@ function StrainRing({ size, strain }: { size: number; strain: DayStrain | null }
       {strain && marker(strain.safeHigh, 'hi')}
       <View style={{ position: 'absolute', alignItems: 'center' }}>
         <Text style={{ fontSize: size * 0.3, fontWeight: '800', color: st.color, lineHeight: size * 0.34 }}>
-          {strain ? `${real}%` : '--'}
+          {strain ? `${real}` : '--'}
         </Text>
       </View>
     </View>

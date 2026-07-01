@@ -5,17 +5,19 @@ import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import {
   assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay,
-  loadWeekPlanCache, saveWeekPlanCache, getMinTSB,
+  loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
+  getPeriodization, weekCapMultiplier, cyclePhase,
 } from '../src/services/coach';
 import {
   estimateWorkoutLoad, strainFromLoad, estimateDayTrimp,
   calibrateTrimpRates, heatStrainFactor, TrimpRates,
 } from '../src/services/trainingLoad';
 import { getMorningForecast, DayForecast } from '../src/services/weather';
+import { getRaceWeekPlan, RaceWeek, fmtTime } from '../src/services/racePlan';
 
 type Row = WeekPlanDay & {
   strain: number; trimp: number; ctl: number; atl: number; tsb: number;
-  adjMin: number; heat: number; capped: boolean; tsbTrim: boolean; fc?: DayForecast; label: string;
+  adjMin: number; heat: number; capped: boolean; tsbTrim: boolean; fc?: DayForecast; label: string; adjKm?: number;
 };
 
 // Derive the displayed label FROM the actual synthesized + cap-trimmed structure, so it always
@@ -73,8 +75,12 @@ export default function WeekPlan() {
   const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number } | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
-  const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number } | null>(null);
+  const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
+  const [periodLabel, setPeriodLabel] = useState('');
+  const [raceWeek, setRaceWeek] = useState<RaceWeek | null>(null);
+  const [shrink, setShrink] = useState(false);
+  useEffect(() => { getShrinkToFit().then(setShrink); }, []);
   const [err, setErr]     = useState<string | null>(null);
   const [busy, setBusy]   = useState(false);
 
@@ -128,7 +134,10 @@ export default function WeekPlan() {
       // of ACTUAL time-on-feet and append each planned day, so the cap compounds across the week
       // and accounts for runs already done.
       const capPct = coach.loadCapPct ?? 10;
-      const capMul = 1 + capPct / 100;
+      const per = await getPeriodization();          // periodized per-week cap multiplier (build/deload)
+      setPeriodLabel(per.on ? cyclePhase(new Date(), per).label : '');
+      const rw = await getRaceWeekPlan(coach); setRaceWeek(rw);  // race mode → the LLM race week IS the plan
+      const raceMode = !!rw;                                     // → skip the cap/TSB re-trim below
       const tof = (coach.recentTimeOnFeet ?? []).map(d => d.min);
       while (tof.length < 14) tof.unshift(0);                 // pad if short
       tof.splice(0, tof.length - 14);                          // keep the last 14 (offsets today-13…today)
@@ -145,12 +154,15 @@ export default function WeekPlan() {
         const j = tof.length;
         const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0); // 7 days ending a week ago
         const prior6 = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
-        const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * capMul - prior6)) : heatMin;
-        const volMin = d.intensity === 'rest' ? 0 : Math.min(heatMin, allowance); // after heat + volume cap
+        const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct) - prior6)) : heatMin;
+        // Shrink-to-fit force-placed this short quality on its day → HONOUR it (heat-eased only); the
+        // volume cap + TSB floor must NOT trim it back to rest, else the week loses its structure (the
+        // exact bug shrink-to-fit fixes). Otherwise apply heat → volume cap → TSB floor as usual.
+        const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
 
         // TSB floor: trim the run so the projected form (ctl'−atl') doesn't fall below minTSB.
         let mins = volMin;
-        if (mins > 0) {
+        if (mins > 0 && !d.forced && !raceMode) {
           const tMax = (ctl * (1 - Lc) - atl * (1 - La) - minTSB) / (La - Lc); // max trimp that holds TSB ≥ floor
           for (let k = 0; k < 4 && mins >= 20; k++) {
             const tr = estimateDayTrimp(d.intensity, mins, cal);
@@ -162,8 +174,8 @@ export default function WeekPlan() {
         }
         const isRun = mins > 0;
         const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
-        const volCapped = isRun && volMin < heatMin;              // trimmed by the volume cap
-        const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor
+        const volCapped = isRun && !d.forced && volMin < heatMin; // trimmed by the volume cap
+        const tsbTrim   = isRun && !d.forced && mins < volMin;    // trimmed by the form floor
         tof.push(mins);
 
         const wk = !isRun ? null
@@ -176,8 +188,10 @@ export default function WeekPlan() {
         atl += La * (trimp - atl);
         ctl += Lc * (trimp - ctl);
         if (volCapped || tsbTrim) cappedDays++;
+        const adjKm = (coach.loadUnit === 'km' && coach.paceMinPerKm && mins > 0)
+          ? Math.round((mins / coach.paceMinPerKm) * 10) / 10 : undefined;
         return {
-          ...d, intensity, structure, label, fc, heat,
+          ...d, intensity, structure, label, fc, heat, adjKm,
           adjMin: mins, capped: volCapped, tsbTrim, strain, trimp,
           ctl: Math.round(ctl * 10) / 10, atl: Math.round(atl * 10) / 10, tsb: Math.round((ctl - atl) * 10) / 10,
         };
@@ -185,7 +199,8 @@ export default function WeekPlan() {
       setRows(builtRows);
       // Chart context: actual CTL/ATL for the last ~21 days (today is the last point → the seed).
       setHist(tl.slice(-21).map(d => ({ ctl: d.ctl, atl: d.atl })));
-      setWeekCap({ capPct, cappedDays });
+      const forcedDays = days.filter(d => d.forced).length;
+      setWeekCap({ capPct, cappedDays, forcedDays });
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to build the week plan.');
     } finally {
@@ -206,6 +221,21 @@ export default function WeekPlan() {
           {rates ? `   ·   TRIMP/min E${rates.easy} M${rates.moderate} H${rates.hard}` : ''}
         </Text>
       )}
+      {periodLabel ? <Text style={s.periodLine}>🗓  {periodLabel}</Text> : null}
+      {raceWeek ? (
+        <View style={s.raceBanner}>
+          <Text style={s.raceTitle}>🏁  {raceWeek.phase} · {raceWeek.weeksToRace} wk to race</Text>
+          <Text style={[s.raceFeas, {
+            color: raceWeek.feasibility.verdict === 'achievable' ? '#27ae60'
+                 : raceWeek.feasibility.verdict === 'ambitious' ? '#e67e22'
+                 : raceWeek.feasibility.verdict === 'unrealistic' ? '#e74c3c' : c.textFaint,
+          }]}>
+            {raceWeek.feasibility.verdict !== 'unknown' ? `Goal ${raceWeek.feasibility.verdict}` : 'Feasibility'}
+            {raceWeek.feasibility.note ? ` — ${raceWeek.feasibility.note}` : ''}
+          </Text>
+          {raceWeek.weekVolume !== '—' ? <Text style={s.raceVol}>Week ~{raceWeek.weekVolume} · long {raceWeek.longRun}</Text> : null}
+        </View>
+      ) : null}
 
       {busy && !rows && (
         <View style={s.center}><ActivityIndicator size="large" color={c.accent} /><Text style={s.dim}>Planning your week…</Text></View>
@@ -249,6 +279,7 @@ export default function WeekPlan() {
                   </Text>
                   <Text style={s.struct} numberOfLines={3}>
                     {r.intensity === 'rest' ? 'Rest' : r.structure}
+                    {r.adjKm != null && r.intensity !== 'rest' ? `  ·  ${r.adjKm} km` : ''}
                     {reduced ? `  → ${r.adjMin}min ${r.tsbTrim ? '(form)' : r.capped ? '(cap)' : '(heat)'}` : ''}
                   </Text>
                 </View>
@@ -262,11 +293,13 @@ export default function WeekPlan() {
             );
           })}
 
-          <Text style={[s.footer, !!weekCap && weekCap.cappedDays > 0 && { color: '#e67e22' }]}>
+          <Text style={[s.footer, !!weekCap && (weekCap.cappedDays > 0 || weekCap.forcedDays > 0) && { color: '#e67e22' }]}>
             {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min (work) this week
-            {weekCap ? (weekCap.cappedDays > 0
-              ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the +${weekCap.capPct}%/wk cap or TSB floor`
-              : `  ·  within the +${weekCap.capPct}%/wk cap + TSB floor ✓`) : ''}
+            {weekCap ? (weekCap.forcedDays > 0
+              ? `  ·  ${weekCap.forcedDays} quality held on its day, shortened — over the +${weekCap.capPct}%/wk cap (shrink-to-fit)`
+              : weekCap.cappedDays > 0
+                ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the +${weekCap.capPct}%/wk cap or TSB floor`
+                : `  ·  within the +${weekCap.capPct}%/wk cap + TSB floor ✓`) : ''}
           </Text>
 
           {genAt && (
@@ -275,6 +308,18 @@ export default function WeekPlan() {
               {' '}· stays fixed until a new run or ↻
             </Text>
           )}
+
+          <TouchableOpacity
+            style={[s.btn, { backgroundColor: shrink ? '#27ae60' : undefined }, busy && { opacity: 0.5 }]}
+            onPress={async () => { const v = !shrink; setShrink(v); await setShrinkToFit(v); build(true); }}
+            disabled={busy}
+          >
+            <Text style={s.btnText}>{shrink ? '✓ Shrink-to-fit: ON' : 'Shrink-to-fit: OFF'}</Text>
+          </TouchableOpacity>
+          <Text style={s.genLine}>
+            {shrink ? 'Tight weeks: tempo/intervals shorten to hold their day; the long run is protected.'
+                    : 'Tight weeks: a quality that won’t fit is deferred to a later day.'}
+          </Text>
 
           <TouchableOpacity style={[s.btn, busy && { opacity: 0.5 }]} onPress={() => build(true)} disabled={busy}>
             <Text style={s.btnText}>{busy ? 'Re-planning…' : '↻ Regenerate'}</Text>
@@ -340,6 +385,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   screen:   { flex: 1, backgroundColor: c.bg },
   intro:    { fontSize: 12.5, color: c.textSub, lineHeight: 18, marginBottom: 8 },
   startLine:{ fontSize: 12.5, fontWeight: '700', color: c.text, marginBottom: 10 },
+  periodLine:{ fontSize: 13, fontWeight: '800', color: c.accent, marginTop: -4, marginBottom: 10 },
+  raceBanner:{ backgroundColor: c.surface, borderRadius: 12, padding: 12, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: c.accent },
+  raceTitle: { fontSize: 14, fontWeight: '800', color: c.text, marginBottom: 3 },
+  raceFeas:  { fontSize: 12.5, fontWeight: '600', marginBottom: 2 },
+  raceVol:   { fontSize: 11.5, color: c.textFaint },
   center:   { alignItems: 'center', paddingVertical: 40, gap: 10 },
   dim:      { color: c.textSub, fontSize: 13 },
   errText:  { color: '#e74c3c', fontSize: 13, textAlign: 'center', paddingHorizontal: 10 },
