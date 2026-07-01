@@ -955,17 +955,18 @@ export default function SettingsScreen() {
             <Switch value={planMode === 'race'} onValueChange={handleToggleMode}
               trackColor={{ true: c.accent, false: '#ccc' }} thumbColor="#fff" />
           </View>
-          <View style={[styles.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
-            <Text style={styles.switchLabel}>Race date</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 22 }}>
+            <Text style={[styles.switchLabel, { width: 96 }]}>Race date</Text>
             <DateTimePicker value={raceDateObj} mode="date" display="compact" minimumDate={new Date()}
               onChange={(_e, d) => { if (d) setRaceDateObj(d); }} themeVariant={mode === 'dark' ? 'dark' : 'light'} />
           </View>
-          <View style={styles.row}>
-            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={raceDist} onChangeText={setRaceDist}
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+            <Text style={[styles.switchLabel, { width: 96 }]}>Distance</Text>
+            <TextInput style={[styles.input, { width: 82, marginBottom: 0, textAlign: 'center' }]} value={raceDist} onChangeText={setRaceDist}
               placeholder="10" placeholderTextColor="#bbb" keyboardType="decimal-pad" returnKeyType="done" />
-            <Text style={styles.unitLabel}>km</Text>
+            <Text style={[styles.unitLabel, { marginLeft: 8 }]}>km</Text>
           </View>
-          <Text style={styles.hint}>Goal time (leave at 0:00:00 for no target)</Text>
+          <Text style={[styles.hint, { marginTop: 14 }]}>Goal time (leave at 0:00:00 for no target)</Text>
           <View style={{ flexDirection: 'row' }}>
             <Picker style={{ flex: 1 }} itemStyle={{ fontSize: 20, height: 132, color: c.text }} selectedValue={goalH} onValueChange={(v) => setGoalH(Number(v))}>
               {Array.from({ length: 10 }, (_, h) => <Picker.Item key={h} label={`${h} h`} value={h} color={c.text} />)}
