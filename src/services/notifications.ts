@@ -24,7 +24,7 @@ export async function scheduleDailyRecoveryReminder(): Promise<string> {
     content: {
       title: '🫀 Morning Recovery Check',
       body: 'Tap to see your recovery score and today\'s training recommendation.',
-      data: { screen: 'analysis', tag: RECOVERY_NOTIFICATION_TAG },
+      data: { screen: 'home', tag: RECOVERY_NOTIFICATION_TAG },
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DAILY,

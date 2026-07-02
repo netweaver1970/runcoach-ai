@@ -155,27 +155,32 @@ export default function WeekPlan() {
         const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0); // 7 days ending a week ago
         const prior6 = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
         const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct) - prior6)) : heatMin;
-        // Shrink-to-fit force-placed this short quality on its day → HONOUR it (heat-eased only); the
-        // volume cap + TSB floor must NOT trim it back to rest, else the week loses its structure (the
-        // exact bug shrink-to-fit fixes). Otherwise apply heat → volume cap → TSB floor as usual.
+        // Shrink-to-fit force-placed this short quality on its day. It bypasses the VOLUME cap (that's the
+        // whole point — hold the structure over the +cap% ToF ceiling), but it must STILL respect the TSB
+        // FLOOR: the volume cap limits weekly VOLUME, the form floor limits acute FATIGUE (a safety limit
+        // shrink shouldn't blow through — that's what drove form to −15). So a forced day is trimmed toward
+        // minTSB like any other, but is NEVER rested — it holds a real (if short) quality touch (FORCED_MIN)
+        // so the week keeps its shape. Race mode still fully bypasses (the LLM owns that block's load).
+        const FORCED_MIN = 15;
         const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
 
         // TSB floor: trim the run so the projected form (ctl'−atl') doesn't fall below minTSB.
         let mins = volMin;
-        if (mins > 0 && !d.forced && !raceMode) {
+        if (mins > 0 && !raceMode) {
+          const floor = d.forced ? FORCED_MIN : 20;               // forced quality shrinks smaller before it stops
           const tMax = (ctl * (1 - Lc) - atl * (1 - La) - minTSB) / (La - Lc); // max trimp that holds TSB ≥ floor
-          for (let k = 0; k < 4 && mins >= 20; k++) {
+          for (let k = 0; k < 5 && mins >= floor; k++) {
             const tr = estimateDayTrimp(d.intensity, mins, cal);
             if (tr <= tMax) break;
             const next = Math.floor(mins * Math.max(0, tMax / tr));
             mins = next < mins ? next : mins - 5;                 // ensure progress toward the floor
           }
-          if (mins < 20) mins = 0;                                // can't fit a meaningful run under the floor → rest
+          if (mins < floor) mins = d.forced ? FORCED_MIN : 0;     // forced: hold a short quality; else rest under the floor
         }
         const isRun = mins > 0;
         const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
         const volCapped = isRun && !d.forced && volMin < heatMin; // trimmed by the volume cap
-        const tsbTrim   = isRun && !d.forced && mins < volMin;    // trimmed by the form floor
+        const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor (forced days too now)
         tof.push(mins);
 
         const wk = !isRun ? null

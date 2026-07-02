@@ -6,6 +6,7 @@ import {
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import Markdown from 'react-native-markdown-display';
 import { loadLatestRunAnalysis, maybeAnalyzeLatestRun, RunAnalysis } from '../src/services/runAnalysis';
+import { scrollableTableRules, TABLE_CELL } from '../src/mdTable';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 
@@ -109,7 +110,7 @@ export default function RunAnalysisScreen() {
 
           {/* Body */}
           <View style={styles.reportCard}>
-            <Markdown style={md}>{analysis.full}</Markdown>
+            <Markdown style={md} rules={scrollableTableRules}>{analysis.full}</Markdown>
           </View>
 
           <Text style={styles.meta}>Generated {genLabel}</Text>
@@ -169,4 +170,9 @@ const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
   code_inline: { fontFamily: 'Courier', fontSize: 13, color: c.text, backgroundColor: c.surfaceAlt, borderRadius: 3, paddingHorizontal: 4 },
   fence: { fontFamily: 'Courier', fontSize: 13, color: c.text, backgroundColor: c.surfaceAlt, padding: 8, borderRadius: 6, marginBottom: 6 },
   hr: { borderBottomWidth: 1, borderColor: c.border, marginVertical: 8 },
+  table: { borderWidth: 1, borderColor: c.border, borderRadius: 4, marginBottom: 8, overflow: 'hidden' },
+  thead: { backgroundColor: c.surfaceAlt },
+  th: { ...TABLE_CELL, fontWeight: '700', padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  td: { ...TABLE_CELL, padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  tr: { borderBottomWidth: 1, borderColor: c.border },
 });

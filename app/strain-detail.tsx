@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
-import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, CoachPlan } from '../src/services/coach';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
@@ -237,12 +237,23 @@ export default function StrainDetailScreen() {
       strainReal: real,
       tofNextRunInDays: capCtx?.cap.nextRunInDays,
       recentTimeOnFeet: tof?.series14,   // so planNeedsRefresh can see today's run → drop a stale force-placed run
+      readiness: readiness.readiness,    // so the force-place staleness check below can gate on green/red
       date: targetDate,
     } as any;
-    if (planNeedsRefresh(plan, snapLike)) {
-      staleRegenRef.current = true;
-      requestPlan();
-    }
+    (async () => {
+      // planNeedsRefresh SKIPS the cap check for a shrinkForced plan (a session intentionally held over the
+      // cap by shrink-to-fit OR race mode). But if that force-place is no longer active — race switched off,
+      // shrink off, low readiness, not a quality day — a leftover shrinkForced RUN stays cached and contradicts
+      // the cap ("run 25m" + "🏃 Next run Sat"). Regenerate it to the rest the cap wants. shrinkWantsQualityToday
+      // is the SAME authority the home uses, so both screens agree. staleRegenRef caps this at one regen.
+      const cappedNow = (capCtx?.cap.nextRunInDays ?? 0) > 0;
+      const forceStale = cappedNow && plan.intensity !== 'rest' && plan.shrinkForced === true
+        && !(await shrinkWantsQualityToday(snapLike));
+      if (forceStale || planNeedsRefresh(plan, snapLike)) {
+        staleRegenRef.current = true;
+        requestPlan();
+      }
+    })();
   }, [plan, weather, targetIsToday, planLoading, real, capCtx]);
 
   return (

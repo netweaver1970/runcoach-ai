@@ -643,6 +643,24 @@ export default function WorkoutDetailScreen() {
         if (phases) relabelByPhases([...d.activities].sort((a, b) => a.startMs - b.startMs), phases);
       } catch { /* fall back to HealthKit's own labels */ }
 
+      // Refine any segments STILL generically labelled 'work'/'rep' by SPEED — HK lumps drills + the
+      // recovery jogs between reps into "work", and relabelByPhases bails when the actual segment count
+      // differs from the prescription by >2. A rep much slower than the true work pace is a Recovery jog;
+      // an extremely slow one is Drills/strides. Warmup/Cooldown (already labelled) are left alone.
+      const durOf = (a: any) => a.netDurationSec > 0 ? a.netDurationSec : (a.endMs - a.startMs) / 1000;
+      const paceOf = (a: any) => a.distanceM > 30 && durOf(a) > 0 ? durOf(a) / (a.distanceM / 1000) : 0;
+      const workSegs = d.activities.filter((a: any) => /^(work|rep)/i.test(a.label) && paceOf(a) > 0);
+      if (workSegs.length >= 2) {
+        const paces = workSegs.map(paceOf).sort((x, y) => x - y);
+        const fast = paces.slice(0, Math.max(1, Math.ceil(paces.length / 2)));      // the true HARD reps
+        const workPace = fast.reduce((s, p) => s + p, 0) / fast.length;
+        for (const a of workSegs) {
+          const p = paceOf(a);
+          if (p > Math.max(840, workPace * 2.2)) (a as any).label = 'Drills';        // ≥14:00/km or ≥2.2× → drills
+          else if (p > workPace * 1.35) (a as any).label = 'Recovery';               // ≥1.35× the rep pace → recovery
+        }
+      }
+
       setDetail(d);
 
       const hrVals = d.hr.map(p => p.v);

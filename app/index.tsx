@@ -27,7 +27,7 @@ import {
   saveSnapshotCache,
   loadSnapshotCache,
 } from '../src/services/healthkit';
-import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation } from '../src/services/claude';
+import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation, getOnboardingDone } from '../src/services/claude';
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, shrinkWantsQualityToday, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
@@ -80,6 +80,11 @@ export default function HomeScreen() {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
   const { c } = useTheme();
+  // First launch (or "Run setup again") → the welcome/onboarding wizard, before anything loads.
+  const [onbChecked, setOnbChecked] = useState(false);
+  useEffect(() => {
+    getOnboardingDone().then(done => { if (!done) router.replace('/onboarding' as any); else setOnbChecked(true); }).catch(() => setOnbChecked(true));
+  }, []);
   const [snapshot, setSnapshot]         = useState<HealthSnapshot | null>(null);
   const [loading, setLoading]           = useState(true);
   const [refreshing, setRefreshing]     = useState(false);
@@ -406,6 +411,7 @@ export default function HomeScreen() {
   }, [viewDate, snapshot, recommendation]);
 
   // ── Render ──────────────────────────────────────────────────────────────
+  if (!onbChecked) return <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} />;  // blank until the onboarding check resolves
   if (loading) {
     return (
       <View style={styles.center}>

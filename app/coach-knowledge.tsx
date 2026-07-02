@@ -70,7 +70,9 @@ export default function CoachKnowledgeScreen() {
               <Switch
                 value={m.enabled}
                 onValueChange={v => toggle(m.id, v)}
-                trackColor={{ true: c.accent }}
+                trackColor={{ true: c.accent, false: c.switchTrack }}
+                ios_backgroundColor={c.switchTrack}
+                thumbColor="#fff"
               />
               <Text style={s.chev}>›</Text>
             </TouchableOpacity>

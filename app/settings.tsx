@@ -18,7 +18,7 @@ import {
   getPowerZones, savePowerZones, DEFAULT_POWER_ZONES,
   getLongRunMinutes, setLongRunMinutes, DEFAULT_LONG_RUN_MINUTES,
   getAiWeeks, setAiWeeks, DEFAULT_AI_WEEKS,
-  getUserMaxHr, setUserMaxHr,
+  getUserMaxHr, setUserMaxHr, setOnboardingDone,
 } from '../src/services/claude';
 import {
   loadLLMConfig, saveLLMConfig, deleteLLMApiKey, validateLLMKey,
@@ -570,7 +570,7 @@ export default function SettingsScreen() {
                   setDailyActive(false);
                 }
               }}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>
@@ -593,7 +593,7 @@ export default function SettingsScreen() {
                 await setAutoDayViewEnabled(v);
                 if (v) await requestNotificationPermissions();
               }}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>
@@ -653,7 +653,7 @@ export default function SettingsScreen() {
             <Switch
               value={weeklyActive}
               onValueChange={toggleWeekly}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>
@@ -865,7 +865,7 @@ export default function SettingsScreen() {
                 setCapBasisState(b);
                 await setLoadCapBasis(b);
               }}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>
@@ -885,7 +885,7 @@ export default function SettingsScreen() {
                 setAccModeState(m);
                 await setAccountingMode(m);
               }}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>
@@ -906,7 +906,7 @@ export default function SettingsScreen() {
             <Switch
               value={periodOn}
               onValueChange={(v) => { setPeriodOn(v); handleSavePeriod(v); }}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>
@@ -953,7 +953,7 @@ export default function SettingsScreen() {
               </Text>
             </View>
             <Switch value={planMode === 'race'} onValueChange={handleToggleMode}
-              trackColor={{ true: c.accent, false: '#ccc' }} thumbColor="#fff" />
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack} thumbColor="#fff" />
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 22 }}>
             <Text style={[styles.switchLabel, { width: 96 }]}>Race date</Text>
@@ -1021,6 +1021,16 @@ export default function SettingsScreen() {
               <Text style={styles.btnText}>{aiWeeksSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
+        </Section>
+
+        {/* Guided setup */}
+        <Section title="Guided Setup" cat="profile">
+          <Text style={styles.hint}>
+            Re-run the welcome flow to reconfigure your profile, goal, weekly schedule and API key from scratch.
+          </Text>
+          <TouchableOpacity style={styles.btn} onPress={async () => { await setOnboardingDone(false); router.replace('/onboarding' as any); }}>
+            <Text style={styles.btnText}>Run setup again</Text>
+          </TouchableOpacity>
         </Section>
 
         {/* Body Weight */}
@@ -1105,7 +1115,7 @@ export default function SettingsScreen() {
                 setCoachModeState(m);
                 await setCoachingMode(m);
               }}
-              trackColor={{ true: c.accent, false: '#ccc' }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
           </View>

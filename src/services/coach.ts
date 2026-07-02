@@ -397,7 +397,12 @@ export async function getWeekPlan(
   const periodization = await getPeriodization();  // build/deload cycle modulates each week's cap multiplier
   const MEANINGFUL = 20;
   const shrink = await getShrinkToFit();  // ON → a cap-blocked quality SHRINKS to fit its day instead of deferring
-  const green = (snap.readiness ?? 60) >= 60; // quality only on a decent-readiness day
+  // The forward week lays out the INTENDED structure. EVERY day here is tomorrow-or-later (today + 1 + i),
+  // so TODAY's single readiness reading must NOT gate the whole week — doing so collapsed every quality day
+  // (intervals/tempo/long) to Z2 whenever today happened to be red, AND made shrink-to-fit a no-op (its
+  // placement branch lives inside the else of this gate). Readiness is a DAILY signal, not a week predictor:
+  // plan the structure here; the DAILY plan (deterministicCoachPlan) applies the real gate each morning.
+  const green = true;
   // Re-entry: ~no running in the last week (holiday/illness) → rebuild gently with EASY Z2 ONLY, never
   // quality. The daily plan refines each morning by that day's actual recovery; here we lay out the
   // intended easy-run days so the forecast doesn't either slam intervals or show an empty week.
@@ -553,7 +558,9 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     && todayDone < 8;
   // RACE MODE: today's session comes from the LLM race week (overrides the leisure template + cap).
   const raceSlot    = (await raceActive()) ? await raceSlotForToday(snap) : null;
-  const raceForced  = !!raceSlot && raceSlot.intensity !== 'rest';
+  // Race force-places the day's session — but ONLY if you haven't already run today (else it re-prescribes
+  // a 2nd run after you've done it: the ghost run). Same todayDone<8 guard shrink-to-fit uses.
+  const raceForced  = !!raceSlot && raceSlot.intensity !== 'rest' && todayDone < 8;
   const honorDirect = honourSlot || raceForced;
   const strainLow   = clampScore(snap.advisableLow, 30);
   const strainHigh  = clampScore(snap.advisableHigh, 60);
@@ -563,15 +570,18 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const apparentC   = snap.weather?.apparentC ?? snap.weather?.tempC;
   const stamp = {
     strainLow, strainHigh,
-    nextRunLabel:  cappedToday ? snap.tofNextRunLabel : undefined,
-    nextRunInDays: snap.tofNextRunInDays,
+    // The leisure volume-cap "next run" stamp does NOT apply in race mode — the race block, not the cap,
+    // decides the days. Suppressing it removes the contradiction (a prescribed run + "next run Sat").
+    nextRunLabel:  (cappedToday && !raceForced) ? snap.tofNextRunLabel : undefined,
+    nextRunInDays: raceForced ? undefined : snap.tofNextRunInDays,
     generatedAt: new Date().toISOString(),
     genTempC:  apparentC,
     genStrain: snap.strainReal,
   };
 
-  // Cap reached → mandatory recovery day (unless shrink-to-fit is holding a quality on its day).
-  if (cappedToday && !honourSlot && !raceSlot) {
+  // Cap reached → mandatory recovery day, unless a session is genuinely being force-placed today (shrink
+  // or race — both now require you HAVEN'T run yet). Once you've run + are capped, this rests, whatever mode.
+  if (cappedToday && !honourSlot && !raceForced) {
     return {
       headline: 'At your volume cap — recovery day',
       session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${snap.tofNextRunLabel ?? 'in a couple of days'}.`,
@@ -598,7 +608,8 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const slot = todaySlot;
   if (raceSlot) {
     // RACE MODE: today = the LLM race-week session (overrides template/cap). Recovery may still ease it.
-    if (raceSlot.intensity === 'rest') { intensity = 'rest'; sk = 'recovery'; base = 0; kind = 'rest'; }
+    // If you've ALREADY run today, the session is done → rest (don't re-prescribe the same run).
+    if (raceSlot.intensity === 'rest' || todayDone >= 8) { intensity = 'rest'; sk = 'recovery'; base = 0; kind = 'rest'; }
     else {
       intensity = raceSlot.intensity; sk = toSK(raceSlot.kind, raceSlot.intensity); base = raceSlot.runMinutes; kind = raceSlot.kind ?? kind;
       if (!green && (intensity === 'hard' || intensity === 'moderate')) { intensity = 'easy'; sk = 'easy'; base = Math.min(base, 35); eased = 'readiness low, eased the race session to easy'; }

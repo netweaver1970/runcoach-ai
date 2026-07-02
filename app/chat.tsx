@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import { scrollableTableRules, TABLE_CELL } from '../src/mdTable';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadRunMeta } from '../src/services/runMeta';
 import { getCachedPlace } from '../src/services/weather';
@@ -89,6 +90,7 @@ const SELECTABLE_RULES = {
   textgroup: (node: any, children: React.ReactNode, _parent: any, mdStyles: any) => (
     <Text key={node.key} style={mdStyles.textgroup} selectable>{children}</Text>
   ),
+  ...scrollableTableRules,   // wide LLM tables scroll sideways instead of crushing columns
 };
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -562,8 +564,8 @@ const mdBase = {
   fence:       { fontFamily: 'Courier', fontSize: 12, backgroundColor: 'rgba(0,0,0,0.06)', padding: 8, borderRadius: 6, marginBottom: 6 },
   table:       { borderWidth: 1, borderColor: '#ddd', borderRadius: 4, marginBottom: 8, overflow: 'hidden' as const },
   thead:       { backgroundColor: '#f0f0f0' },
-  th:          { fontWeight: '700' as const, padding: 6, fontSize: 12, borderRightWidth: 1, borderColor: '#ddd' },
-  td:          { padding: 6, fontSize: 12, borderRightWidth: 1, borderColor: '#ddd' },
+  th:          { ...TABLE_CELL, fontWeight: '700' as const, padding: 6, fontSize: 11, borderRightWidth: 1, borderColor: '#ddd' },
+  td:          { ...TABLE_CELL, padding: 6, fontSize: 11, borderRightWidth: 1, borderColor: '#ddd' },
   tr:          { borderBottomWidth: 1, borderColor: '#eee' },
   hr:          { borderBottomWidth: 1, borderColor: '#ddd', marginVertical: 8 },
   blockquote:  { borderLeftWidth: 3, borderColor: '#ccc', paddingLeft: 10, marginLeft: 0, opacity: 0.8 },

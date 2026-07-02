@@ -24,6 +24,7 @@ export interface Palette {
   textFaint:   string;  // tertiary / hints
   border:      string;  // hairlines / dividers
   gridline:    string;  // chart gridlines
+  switchTrack: string;  // OFF-state track of toggles (needs clear contrast vs. the card + white thumb)
   accent:      string;  // brand orange
   onAccent:    string;  // text on accent
   shadowOpacity: number;
@@ -39,6 +40,7 @@ const LIGHT: Palette = {
   textFaint:  '#9A9EA6',
   border:     '#D5D6DD',
   gridline:   '#E2E2E8',
+  switchTrack:'#AEB3BF',  // mid-grey, clearly visible on white cards behind a white thumb
   accent:     '#FF6B35',
   onAccent:   '#FFFFFF',
   shadowOpacity: 0.12,
@@ -54,6 +56,7 @@ const DARK: Palette = {
   textFaint:  '#6B7280',
   border:     '#34353F',  // stronger hairlines
   gridline:   '#2E2F38',
+  switchTrack:'#55575F',  // lighter than card/border so the OFF toggle reads against the dark card
   accent:     '#FF6B35',
   onAccent:   '#FFFFFF',
   shadowOpacity: 0.5,

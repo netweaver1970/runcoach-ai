@@ -207,6 +207,27 @@ export async function setUserMaxHr(bpm: number): Promise<void> {
   await SecureStore.setItemAsync(MAX_HR_KEY, String(Math.round(bpm)));
 }
 
+// ── Onboarding / welcome flow ──────────────────────────────────────────────────
+const ONBOARDING_KEY = 'onboarding_done_v1';
+export async function getOnboardingDone(): Promise<boolean> {
+  try { return (await SecureStore.getItemAsync(ONBOARDING_KEY)) === '1'; } catch { return false; }
+}
+export async function setOnboardingDone(done: boolean): Promise<void> {
+  try { await SecureStore.setItemAsync(ONBOARDING_KEY, done ? '1' : '0'); } catch { /* ignore */ }
+}
+
+// Athlete profile (age + sex) — feeds the max-HR estimate + tailors defaults / the athlete-profile file.
+export interface UserProfile { age?: number; sex?: 'M' | 'F' | ''; }
+const PROFILE_KEY = 'user_profile_v1';
+export async function getUserProfile(): Promise<UserProfile> {
+  try { const raw = await SecureStore.getItemAsync(PROFILE_KEY); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+}
+export async function setUserProfile(p: UserProfile): Promise<void> {
+  try { await SecureStore.setItemAsync(PROFILE_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+}
+// Tanaka (2001) age-predicted max HR — a better default than 220−age for most adults.
+export function estimateMaxHr(age: number): number { return Math.round(208 - 0.7 * age); }
+
 const AI_WEEKS_KEY = 'ai_weeks';
 export const DEFAULT_AI_WEEKS = 8;
 export async function getAiWeeks(): Promise<number> {

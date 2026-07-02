@@ -21,6 +21,8 @@ import {
   requestNotificationPermissions,
 } from '../src/services/notifications';
 import { HealthSnapshot, CoachingReport } from '../src/types';
+import { scrollableTableRules, TABLE_CELL } from '../src/mdTable';
+import { loadSnapshotCache } from '../src/services/healthkit';
 
 export default function AnalysisScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
@@ -35,7 +37,10 @@ export default function AnalysisScreen() {
   const snapshot: HealthSnapshot | null = data ? JSON.parse(data) : null;
 
   const generate = async () => {
-    if (!snapshot) {
+    // From the home button we get the snapshot as a param; from a notification tap we get none —
+    // fall back to the cached snapshot so the report still works instead of erroring.
+    let snap = snapshot ?? await loadSnapshotCache().catch(() => null);
+    if (!snap) {
       setError('No health data available. Go back and refresh.');
       setLoading(false);
       return;
@@ -43,7 +48,7 @@ export default function AnalysisScreen() {
     setLoading(true);
     setError(null);
     try {
-      const result = await generateCoachingReport(snapshot);
+      const result = await generateCoachingReport(snap);
       setReport(result);
     } catch (err: any) {
       setError(err.message);
@@ -128,7 +133,7 @@ export default function AnalysisScreen() {
 
           {/* Report */}
           <View style={styles.reportCard}>
-            <Markdown style={markdownStyles}>{report?.content ?? ''}</Markdown>
+            <Markdown style={markdownStyles} rules={scrollableTableRules}>{report?.content ?? ''}</Markdown>
           </View>
 
           {/* Data summary */}
@@ -210,8 +215,8 @@ const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
   fence: { fontFamily: 'Courier', fontSize: 13, color: c.text, backgroundColor: c.surfaceAlt, padding: 8, borderRadius: 6, marginBottom: 6 },
   table: { borderWidth: 1, borderColor: c.border, borderRadius: 4, marginBottom: 8, overflow: 'hidden' },
   thead: { backgroundColor: c.surfaceAlt },
-  th: { fontWeight: '700', padding: 6, fontSize: 13, color: c.text, borderRightWidth: 1, borderColor: c.border },
-  td: { padding: 6, fontSize: 13, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  th: { ...TABLE_CELL, fontWeight: '700', padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  td: { ...TABLE_CELL, padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
   tr: { borderBottomWidth: 1, borderColor: c.border },
   hr: { borderBottomWidth: 1, borderColor: c.border, marginVertical: 8 },
 });
