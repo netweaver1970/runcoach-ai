@@ -41,7 +41,10 @@ const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
 //   awake:  ΔE/h = DRAIN_BASE  − DRAIN_STRESS_K·S        (break-even at S≈32 — calm day holds/recharges)
 // Stage barely matters on its own (deep = core — energy ran straight through the deep block); the one
 // real stage effect is REM's autonomic stress SPIKE, which isn't real strain → cap S during REM.
-const CHARGE_BASE     = 16;    // /h charge intercept while asleep (joint-fit 27 Jun 2026)
+const CHARGE_BASE     = 16;    // /h charge intercept while asleep. (Reverted 13→16: the 13 was a mistake —
+                               // it matched Bevel's TAPERED late-night rate 4.4%/h, but Bevel's FULL-night
+                               // average is ~7.4%/h = +48 over the night, which CHARGE_BASE 16 gives. At 13
+                               // the charge (+35) couldn't replace the day's drain (−47) → battery spiralled to 6%.)
 const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
 // Drain = PURE stress model, NO time-of-day factor (re-fit vs a full paired Bevel export 29 Jun 2026:
 // our drain was clock-shaped and over-drained the calm morning, sitting ~10% below Bevel all day). Bevel
@@ -50,8 +53,8 @@ const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
 // integrated curve tracks Bevel within ~1.5% RMSE across the day. The DRAIN_TIME_* constants below are
 // no longer applied (timeMult = 1) but retained for the debug dump.
 //   drain/h = DRAIN_BASE − DRAIN_STRESS_K·S
-const DRAIN_BASE      = 2.9;   // /h awake intercept — break-even at stress ≈32 (re-fit vs Bevel 29 Jun 2026)
-const DRAIN_STRESS_K  = 0.09;  // /h drain per stress unit (awake); below S≈32 a calm day slightly recharges
+const DRAIN_BASE      = 2.1;   // /h awake intercept — re-fit to Bevel's awake drain 2026-07-03 (ΔE/h = 2.1 − 0.129·S,
+const DRAIN_STRESS_K  = 0.129; // break-even S≈16). Steeper than the old 2.9/0.09 which was only "right" on inflated stress.
 const DRAIN_TIME_MMAX = 1.6;   // M at wake (h=0): steepest drain, fresh out of bed
 const DRAIN_TIME_DECAY= 0.6;   // logarithmic taper of the drain through the waking day
 const DRAIN_TIME_MMIN = 0.3;   // afternoon/evening floor — gentle drain even at high stress
@@ -73,12 +76,14 @@ const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the 
 // your typical → more stress. Self-normalizing, no per-person tuning. The night uses the night
 // baseline (so a low-HRV night reads as poor recovery) plus a sleep-stage bump.
 const STRESS_BASE   = 26;     // stress at "typical" (z = 0)
-const STRESS_SCALE  = 13;     // stress points per unit of (zHR − zHRV)
+const STRESS_SCALE  = 8.3;    // stress pts per unit of (zHR − zHRV) — was 13; compressed to Bevel (our daytime
+                              // stress ran ~1.5× hot: regress Bevel = 3.3 + 0.64·ours, R²=0.72, 2026-07-03)
 // (B) DAYTIME stress correction. vs Bevel's stress export our DAY stress correlates r=0.93 but reads
 // ~12 BELOW it (a near-constant offset). Lift it so the stress METRIC — and the drain it drives — match
 // Bevel. NIGHT is untouched (zStressNight + its own base already matches). Tunable; the raw (pre-offset)
 // smoothed value is emitted as `s0` in the debug dump so we can A/B against clean data.
-const DAY_STRESS_OFFSET = 12;
+const DAY_STRESS_OFFSET = 1.5;  // was 12 — the old lift assumed our day-stress read BELOW Bevel; it now reads
+                                // ABOVE, so with STRESS_SCALE 8.3 this gives daytime stress = 3.3 + 0.64·old.
 const BASE_SD_MIN   = 3;      // floor on a baseline's SD so a tight baseline can't explode z-scores
 const STRESS_SMOOTH = 0.11;   // awake-day EWMA decay weight (smooth on the way down; rise is instant)
 const SESSION_GAP_MS = 60 * 60_000; // merge sleep segments < 1h apart into one night session
@@ -415,12 +420,19 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     battery = clamp(battery + ratePerHour * (BIN_MIN / 60), BATTERY_FLOOR, 100);
     // Dev anchor: at the chosen moment, override the integrated level, then keep integrating
     // forward from there (so the curve passes through the known value).
-    if (anchor && !anchored && mid >= anchor.at) { battery = clamp(anchor.value, 0, 100); anchored = true; }
+    // Only honour anchors that fall INSIDE the 60h window; a stale one (e.g. days old) would otherwise
+    // apply at the window's start and skew the whole curve. anchor.at must be ≥ start to bite here.
+    if (anchor && anchor.at >= start && !anchored && mid >= anchor.at) { battery = clamp(anchor.value, 0, 100); anchored = true; }
     series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
     binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), s0: night ? Math.round(stress) : Math.max(0, Math.round(stress - DAY_STRESS_OFFSET)), h: Math.round(hoursAwake * 10) / 10, tm: Math.round(timeMult * 100) / 100, b: Math.round(battery) });
     corrBins.push({ t, s: Math.round(stress), hr: Math.round(avgHR), hrv: vHrv ? Math.round(vHrv) : 0, stg: stage, a: night ? 1 : 0, b: Math.round(battery) });
   }
   if (!series.length) return null;
+  // A JUST-set anchor (its time past the last bin's midpoint but still ≤ now) is missed by the in-loop
+  // mid-check, so the "now" reading wouldn't reflect it. Pin the final bin to it directly.
+  if (anchor && !anchored && anchor.at >= start && anchor.at <= now + binMs) {
+    series[series.length - 1].battery = Math.round(clamp(anchor.value, 0, 100));
+  }
 
   // Keep last 24h for display.
   const cut = now - 24 * 3_600_000;

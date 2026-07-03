@@ -49,6 +49,7 @@ import {
 } from '../types';
 import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates } from './trainingLoad';
 import { getLocalWeather } from './weather';
+import { computePersonalSleepGoal, computeAdjustedGoal } from './bevelCalibration';
 import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
 import { getSwitchList, regimeForDate, AccountingMode } from './accounting';
 
@@ -555,10 +556,6 @@ function restfulDaytimeHR(vals: number[]): number {
 
 const DEFAULT_SLEEP_GOAL_MINUTES = 480; // 8 hours
 
-// Duration target for the Sleep Score ≈ Bevel's dynamic Sleep Need (base 6h15m + strain +
-// debt), which averages ~7h. Best-fit constant over Bevel's 30 nights (R² peaks at 420).
-const SLEEP_SCORE_NEED = 420;
-
 // Bevel's 5-pillar Sleep Score. Weights + mappings reverse-engineered from 30 nights of Bevel data
 // (Duration 40 / Efficiency 20 / Stages 20 / HR-dip 10 / Consistency 10): corr 0.88, bias +2.7.
 export interface SleepScoreParts { score: number; dur: number; eff: number; stage: number; dip: number; cons: number }
@@ -572,8 +569,14 @@ export function computeSleepScore(
     x <= a ? c : x >= b ? d : c + (d - c) * (x - a) / (b - a);
   const asleep = session.totalMinutes;
 
-  // 1. Duration (40%): time asleep vs Sleep Need. 0 at <50%, 50 at ~75%, 100 at 100%+.
-  const r = SLEEP_SCORE_NEED > 0 ? asleep / SLEEP_SCORE_NEED : 1;
+  // 1. Duration (40%): time asleep vs a DYNAMIC Sleep Need (Bevel model), NOT a fixed 7h. Base = 90-day
+  // median actual sleep (this athlete ~6h15, matching Bevel's goal) + a debt bump from the 7-night sleep
+  // bank. The old fixed 420 over-penalised nights that met the real need (6h25 scored 84, Bevel says 100).
+  const baseGoal = computePersonalSleepGoal(recentSessions);
+  const bank7 = recentSessions.filter((s) => s.totalMinutes >= 120).slice(-7)
+    .reduce((acc, s) => acc + (s.totalMinutes - baseGoal), 0);     // <0 = debt → raises tonight's need
+  const need = computeAdjustedGoal(baseGoal, bank7, 0 /* strain not available here */, 85 /* eff-neutral */);
+  const r = need > 0 ? asleep / need : 1;
   const durScore = r >= 1 ? 100 : r >= 0.75 ? lin(r, 0.75, 1, 50, 100) : r >= 0.5 ? lin(r, 0.5, 0.75, 0, 50) : 0;
 
   // 2. Efficiency (20%): asleep / time-in-bed. 0 at <60%, 50 at ~75%, 100 at 95%+.
@@ -630,70 +633,57 @@ function absoluteRHRScore(hr: number): number {
   return Math.min(95, Math.max(5, 190 - hr * 2.1));
 }
 
-// Recovery z-score scaling: a reading 1 SD above your baseline shifts the score this much.
-// Fit to Bevel's 30-day recovery data: K=23.6 → 100 at ~+2.1 SD; HRV/RHR split 75/25
-// (the data beats Bevel's stated 65/35: R² 0.918 vs 0.905). Baselines are 60-day mean/SD.
-const RECOVERY_Z_SCALE = 23.6;
-const RECOVERY_HRV_W   = 0.75;
-// FIXED reference SDs (Bevel's effective sensitivity from the R²=0.985 fit: 2.80/ms HRV, 2.40/bpm RHR
-// → SD 6.3 / 2.46). Bevel's quoted SDs (7.5 / 4.7) are wider than what its recovery actually responds
-// to, so we scale by these fixed refs, not our rolling SD — matches Bevel's RHR sensitivity exactly.
-const RECOVERY_HRV_SD_REF = 6.3;
-const RECOVERY_RHR_SD_REF = 2.46;
+// ── Recovery model — fit to Bevel recovery using OUR OWN metrics (RHR = overnight sleep-HR, which tracks
+// Bevel's resting HR at corr 0.99; HRV = weightedRMSSD, corr 0.97; sleep = our aligned sleep score).
+// Fit on 30 days (2026-06-03…07-03) and then VALIDATED over the full 82-day history (04-05…07-03, after
+// backfilling overnight-HR): clamped MAE 5.5 pts — BEATS re-fitting on all 82 days (6.1, dragged by
+// floor-outliers like 05-23=1) and a robust rec≥12 fit (5.6). So these coefficients generalise; kept.
+// recovery = 61.2 + 13.2·zHRV + 8.5·zSleepHR + 7.1·zSleep + 4.4·zRR (z vs 60-day rolling mean, fixed SD).
+const REC_BASE = 61.2, REC_W_HRV = 13.2, REC_W_RHR = 8.5, REC_W_SLEEP = 7.1, REC_W_RR = 4.4;
+const REC_SD_HRV = 6.3, REC_SD_RHR = 3.3, REC_SD_SLEEP = 16, REC_SD_RR = 0.61, REC_SLEEP_MEAN = 75;
 
 function computeRecoveryScore(
   todayRMSSD: number,
-  todayOvernightHR: number,
-  history: NightlyHRV[],
+  todayRestingHR: number,          // Apple RESTING HR (HKRestingHeartRate) — NOT overnight sleep-HR
+  hrvHistory: NightlyHRV[],        // for the HRV (weightedRMSSD) 60-day baseline
+  restingHRHistory: number[],      // Apple resting HR values for the RHR 60-day baseline
   sleepScore = 0,
   todayRR = 0,
   rrBaseline = 0,
 ): { score: number; baseline: number; trend: DailyRecovery['trend']; overnightHRBaseline: number; breakdown: RecoveryBreakdown } {
-  // Bevel's baseline window is 60 CALENDAR days (not the last 60 data points — with missing nights
-  // that reaches further back and pulls in older outliers). Filter by date.
-  const withData = history.filter((n) => n.weightedRMSSD > 0);
+  const clamp01 = (v: number) => Math.min(100, Math.max(0, v));
+  const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+  const std  = (a: number[], m: number) => Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
+
+  // 60-CALENDAR-day HRV baseline (missing nights don't drag in old outliers).
+  const withData = hrvHistory.filter((n) => n.weightedRMSSD > 0);
   const latest = withData.length ? withData[withData.length - 1].date : '';
   const cutoff = latest ? new Date(new Date(latest + 'T00:00:00Z').getTime() - 59 * 86_400_000).toISOString().slice(0, 10) : '';
   const recent = cutoff ? withData.filter((n) => n.date >= cutoff) : withData;
 
-  const clamp01 = (v: number) => Math.min(100, Math.max(0, v));
-  const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
-  const std  = (a: number[], m: number) => Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
-  // ── HRV component: TRUE RMSSD vs a 60-day mean, scaled by Bevel's FIXED sensitivity ──────────
-  // z = (today − mean)/SD_REF (fixed, not rolling SD); score = 50 + z·SCALE, eased in over 2 weeks.
-  let hrvMean = todayRMSSD, hrvSD = 0, zHRV = 0;
-  let blendedHRV = absoluteHRVScore(todayRMSSD); // cold-start fallback
-  if (recent.length >= 5) {
-    const v = recent.map((n) => n.weightedRMSSD);
-    hrvMean = mean(v); hrvSD = std(v, hrvMean);
-    zHRV = (todayRMSSD - hrvMean) / RECOVERY_HRV_SD_REF;
-    const w = Math.min(1, recent.length / 14); // ease in from the anchor over 2 weeks
-    blendedHRV = (1 - w) * absoluteHRVScore(todayRMSSD) + w * clamp01(50 + zHRV * RECOVERY_Z_SCALE);
-  }
+  // HRV z — rolling mean, Bevel-fixed SD (6.3).
+  let hrvMean = todayRMSSD, zHRV = 0;
+  if (recent.length >= 5) { hrvMean = mean(recent.map((n) => n.weightedRMSSD)); zHRV = (todayRMSSD - hrvMean) / REC_SD_HRV; }
 
-  // ── Overnight-HR component: vs the 60-day mean, fixed sensitivity (lower HR = better) ──
-  const recentWithHR = recent.filter((n) => n.overnightHR > 0);
-  let overnightHRBaseline = todayOvernightHR;
-  let rhrMean = todayOvernightHR, rhrSD = 0, zRHR = 0;
-  let blendedRHR = todayOvernightHR > 0 ? absoluteRHRScore(todayOvernightHR) : 50;
-  if (recentWithHR.length >= 5 && todayOvernightHR > 0) {
-    const hv = recentWithHR.map((n) => n.overnightHR);
-    rhrMean = mean(hv); rhrSD = std(hv, rhrMean);
-    overnightHRBaseline = Math.round(rhrMean);
-    zRHR = (rhrMean - todayOvernightHR) / RECOVERY_RHR_SD_REF; // lower HR than baseline → positive
-    const w = Math.min(1, recentWithHR.length / 14);
-    blendedRHR = (1 - w) * absoluteRHRScore(todayOvernightHR) + w * clamp01(50 + zRHR * RECOVERY_Z_SCALE);
-  }
+  // RHR z — Apple resting HR, rolling mean, fixed SD (3.3); lower than baseline → positive.
+  const rhrVals = restingHRHistory.filter((v) => v > 0).slice(-60);
+  let rhrMean = todayRestingHR, zRHR = 0;
+  if (rhrVals.length >= 5 && todayRestingHR > 0) { rhrMean = mean(rhrVals); zRHR = (rhrMean - todayRestingHR) / REC_SD_RHR; }
 
-  // ── Final score: HRV-weighted core + sleep "multiplier" + RR illness penalty ──
-  const useRHR = todayOvernightHR > 0;
-  const core = useRHR ? RECOVERY_HRV_W * blendedHRV + (1 - RECOVERY_HRV_W) * blendedRHR : blendedHRV;
-  const sleepTerm = sleepScore > 0 ? 0.32 * (sleepScore - 72) : 0;          // good sleep lifts, poor caps
-  const rrPenalty = (todayRR > 0 && rrBaseline > 0) ? -3.9 * Math.max(0, todayRR - rrBaseline) : 0; // illness flag
-  const score = Math.round(clamp01(core + sleepTerm + rrPenalty));
+  // Sleep z (fixed baseline 75) + RR z (rolling baseline; lower = better — now symmetric, not a penalty).
+  const zSleep = sleepScore > 0 ? (sleepScore - REC_SLEEP_MEAN) / REC_SD_SLEEP : 0;
+  const zRR    = (todayRR > 0 && rrBaseline > 0) ? (rrBaseline - todayRR) / REC_SD_RR : 0;
 
-  // ── Baseline + trend (raw RMSSD, for display) ─────────────────────────────
+  const cHRV = REC_W_HRV * zHRV, cRHR = REC_W_RHR * zRHR, cSleep = REC_W_SLEEP * zSleep, cRR = REC_W_RR * zRR;
+  const linear = clamp01(REC_BASE + cHRV + cRHR + cSleep + cRR);
+  // Ease in from an absolute cold-start over the first two weeks of data.
+  const warm = Math.min(1, recent.length / 14);
+  const cold = clamp01(0.6 * absoluteHRVScore(todayRMSSD) + 0.4 * (todayRestingHR > 0 ? absoluteRHRScore(todayRestingHR) : 50));
+  const score = Math.round(warm * linear + (1 - warm) * cold);
+
+  // Baseline + trend (raw RMSSD, for display).
   const rmssdMean = recent.length ? hrvMean : todayRMSSD;
+  const hrvSD = recent.length >= 5 ? std(recent.map((n) => n.weightedRMSSD), hrvMean) : 0;
   const last7 = recent.slice(-7);
   const avg7  = last7.length > 0 ? mean(last7.map((n) => n.weightedRMSSD)) : todayRMSSD;
   const delta = todayRMSSD - avg7;
@@ -702,14 +692,14 @@ function computeRecoveryScore(
 
   const r1 = (x: number) => Math.round(x * 10) / 10;
   const breakdown: RecoveryBreakdown = {
-    rmssd: r1(todayRMSSD), hrvMean: r1(hrvMean), hrvSD: RECOVERY_HRV_SD_REF, zHRV: Math.round(zHRV * 100) / 100, hrvSub: Math.round(blendedHRV),
-    overnightHR: todayOvernightHR, rhrMean: r1(rhrMean), rhrSD: RECOVERY_RHR_SD_REF, zRHR: Math.round(zRHR * 100) / 100, rhrSub: Math.round(blendedRHR),
-    hrvWeight: RECOVERY_HRV_W, core: Math.round(core),
-    sleepScore, sleepTerm: r1(sleepTerm),
-    rr: r1(todayRR), rrBaseline: r1(rrBaseline), rrPenalty: r1(rrPenalty),
+    rmssd: r1(todayRMSSD), hrvMean: r1(hrvMean), hrvSD: REC_SD_HRV, zHRV: r1(zHRV), hrvSub: Math.round(50 + cHRV),
+    overnightHR: Math.round(todayRestingHR), rhrMean: r1(rhrMean), rhrSD: REC_SD_RHR, zRHR: r1(zRHR), rhrSub: Math.round(50 + cRHR),
+    hrvWeight: REC_W_HRV / (REC_W_HRV + REC_W_RHR), core: Math.round(REC_BASE + cHRV + cRHR),
+    sleepScore, sleepTerm: r1(cSleep),
+    rr: r1(todayRR), rrBaseline: r1(rrBaseline), rrPenalty: r1(cRR),
     final: score,
   };
-  return { score, baseline: r1(rmssdMean), trend, overnightHRBaseline, breakdown };
+  return { score, baseline: r1(rmssdMean), trend, overnightHRBaseline: Math.round(rhrMean), breakdown };
 }
 
 // Bevel-aligned bands: Optimal >67 / Normal 34-67 / Poor <34.
@@ -921,6 +911,13 @@ export interface FetchOptions {
    * normal app start; a full refresh (pull-down / new version) recomputes the long window.
    */
   light?: boolean;
+  /**
+   * ONE-TIME calibration backfill: fetch heartbeat/HRV/sleep back ~90 days AND run a per-night HR query
+   * for 95 nights to fill the overnight sleep-HR history (for the Bevel recovery re-fit). SLOW (~6.5 min,
+   * 95 HK queries) — must NEVER run on a normal/automatic scan. Only the manual "Refresh all history"
+   * button sets it. Everything else (home, morning observer, run-analysis) leaves it off → light path.
+   */
+  deepBackfill?: boolean;
 }
 
 export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<HealthSnapshot> {
@@ -1205,8 +1202,13 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const cachedNightByDate = new Map((recoveryCache ?? []).map(n => [n.date, n]));
   const newestCachedMs = (recoveryCache ?? []).reduce((m, n) => Math.max(m, new Date(n.date + 'T00:00:00').getTime()), 0);
   const cacheWarm = !!recoveryCache && recoveryCache.length >= 50 && newestCachedMs >= daysAgo(5).getTime();
-  const freshFromMs   = cacheWarm ? daysAgo(21).getTime() : 0;        // 0 → recompute every night (cold)
-  const heartbeatSince = cacheWarm ? daysAgo(21) : sixtyDaysAgo;      // 21d covers the displayed last-14 even with sleep gaps
+  // Deep scan ("Refresh all history", light=false) reaches ~90d back for HRV + heartbeat and recomputes
+  // EVERY night — this backfills the overnight sleep-HR history (the recovery-cache bottleneck: warm scans
+  // only fetch 21d, so older nights never got overnight-HR) and re-caches it for the Bevel calibration fit.
+  const deepBackfill  = opts.deepBackfill === true;   // EXPLICIT only — never on an omitted/normal scan
+  const freshFromMs   = deepBackfill ? 0 : (cacheWarm ? daysAgo(21).getTime() : 0);   // 0 → recompute every night
+  const heartbeatSince = deepBackfill ? daysAgo(90) : (cacheWarm ? daysAgo(21) : sixtyDaysAgo);
+  const hrvSince       = deepBackfill ? daysAgo(90) : sixtyDaysAgo;
 
   const [
     vo2maxSamples,
@@ -1238,14 +1240,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // the limit always captures the most recent nights rather than the oldest.
     (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
-      { filter: { startDate: sixtyDaysAgo, endDate: now }, unit: 'ms', ascending: false, limit: 40000 }
+      { filter: { startDate: hrvSince, endDate: now }, unit: 'ms', ascending: false, limit: deepBackfill ? 60000 : 40000 }
     ).catch(() => [] as any[]),
     // Heartbeat series: raw R-R intervals → true RMSSD (recovery) + quality filtering (precededByGap).
     // The heaviest query — on a warm recovery cache we fetch only the recent window (older nights reused).
     safeQuery(
       () => (HealthKit as any).queryHeartbeatSeriesSamples({
         filter: { startDate: heartbeatSince, endDate: now },
-        limit: 20000,
+        limit: deepBackfill ? 45000 : 20000,
       }),
       [] as any[]
     ),
@@ -1260,7 +1262,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     safeQuery(
       () => (HealthKit.queryCategorySamples as any)(
         HKCategoryTypeIdentifier.sleepAnalysis,
-        { filter: { startDate: sixtyDaysAgo, endDate: now }, ascending: true, limit: 4000 }
+        { filter: { startDate: hrvSince, endDate: now }, ascending: true, limit: deepBackfill ? 7000 : 4000 }
       ),
       []
     ),
@@ -1355,8 +1357,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // than pulling all HR for 30 days and filtering.
   let sleepHRSamples: { startDate: string; quantity: number }[] = [];
   if (sleepSessions.length > 0) {
+    // Overnight-HR needs a per-night HR query. Light scans do the recent 30 (fast); the deep backfill
+    // does 95 so the recovery cache fills its full overnight sleep-HR history (Bevel calibration fit).
     const nightHRResults = await Promise.all(
-      sleepSessions.slice(-30).map((session) =>
+      sleepSessions.slice(deepBackfill ? -95 : -30).map((session) =>
         // session.bedtime/wakeTime are already ISO strings after groupIntoSessions normalisation
         safeQuery(
           () => (HealthKit.queryQuantitySamples as any)(
@@ -1550,10 +1554,15 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     const sleepScore = recentSession
       ? computeSleepScore(recentSession, recentHRV.overnightHR, daytimeHR, sleepSessions).score
       : 0;
+    // RHR term uses our overnight SLEEP HR — Apple's HKRestingHeartRate LAGS a day and doesn't correlate
+    // with Bevel's resting HR (see debug 2026-07-03). The linear model's coefficients will be re-fit to
+    // OUR metrics once the 60-day nightly series is regressed against Bevel's recovery.
+    const sleepHRVals = historyBefore.map((n) => n.overnightHR).filter((v) => v > 0);
     const { score, baseline, trend, breakdown } = computeRecoveryScore(
       recentHRV.weightedRMSSD,
       recentHRV.overnightHR,
       historyBefore,
+      sleepHRVals,
       sleepScore,
       recentNightRR,
       rrBaseline,
@@ -1730,6 +1739,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     weeklyMileage:    computeWeeklyMileage(runs),
     todayRecovery,
     recentNightlyHRV: nightlyHRV.slice(-14),
+    // Lean FULL nightly series (every night with HRV) — for the Bevel recovery re-fit over 60-90 days
+    // (the -14 copy above is just for display). date / weightedRMSSD / overnight sleep-HR.
+    nightlyLean: nightlyHRV
+      .filter((n) => n.weightedRMSSD > 0)
+      .map((n) => ({ d: n.date, h: Math.round(n.weightedRMSSD * 10) / 10, s: Math.round(n.overnightHR * 10) / 10 })),
     recentSleep:      sleepSessions.slice(-14),
     workoutTypeStats: computeWorkoutTypeStats(runs),
     estimatedMaxHR:   maxHR,
@@ -2875,7 +2889,9 @@ export async function fetchRecoveryHistory(
   const out: { date: string; value: number }[] = [];
   for (let i = 0; i < nightly.length; i++) {
     if (nightly[i].date < fromKey) continue;
-    const { score } = computeRecoveryScore(nightly[i].weightedRMSSD, nightly[i].overnightHR, nightly.slice(0, i));
+    // In this path nightly[].overnightHR IS Apple resting HR (from rhrByDate), so it's the right metric.
+    const restVals = nightly.slice(0, i + 1).map((n) => n.overnightHR).filter((v) => v > 0);
+    const { score } = computeRecoveryScore(nightly[i].weightedRMSSD, nightly[i].overnightHR, nightly.slice(0, i), restVals);
     if (score > 0) out.push({ date: nightly[i].date, value: score });
   }
   return out;

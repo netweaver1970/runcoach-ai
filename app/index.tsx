@@ -48,7 +48,8 @@ import { tsbStatus, strainStatus, cardioLoadStatus, activityCategory } from '../
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
 import { trySyncSnapshot, fetchCoachPlanForDate } from '../src/services/cloudSync';
 import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
-import { maybeAutoRecalibrate } from '../src/services/zones';
+import { maybeAutoRecalibrate, seedPowerZonesFromRuns } from '../src/services/zones';
+import { pushWorkoutToWatch } from '../src/services/watchWorkout';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { buildDayView, toDateKey } from '../src/services/dayView';
 import { markPrescriptionExecuted } from '../src/services/coachFiles';
@@ -225,6 +226,9 @@ export default function HomeScreen() {
     setLoadingRec(true);
     try {
       const mode = await getCoachingMode();
+      // Seed power zones from the athlete's own runs if still unconfigured → watt targets appear on the
+      // plan + watch immediately (before/without LLM calibration). No-op once zones exist.
+      const seeded = await seedPowerZonesFromRuns(snap.runs).catch(() => false);
       const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
 
       // ── Coach mode: use the prescription the coach wrote in the cloud ─────────
@@ -244,6 +248,7 @@ export default function HomeScreen() {
           }
           await saveCachedPlan(cs.date, plan); // same cache the home + Strain + watch read
           setRecommendation(coachPlanToRec(plan));
+          if (plan.workout) pushWorkoutToWatch(plan.workout).catch(() => {}); // auto-send today's session to the watch
         } else {
           setRecommendation({ type: 'Rest', duration: '—', zone: '—', reason: "Waiting for your coach to set today's session." });
         }
@@ -258,11 +263,13 @@ export default function HomeScreen() {
       // Also regenerate a cached REST plan when shrink-to-fit now wants today's scheduled quality
       // (e.g. cached before shrink was on / by the cap) — so it self-corrects without a manual ↻.
       const staleRest = plan?.intensity === 'rest' && await shrinkWantsQualityToday(cs);
-      if (!plan || planNeedsRefresh(plan, cs) || staleRest) {   // regen if heat/strain drifted or shrink wants a run
+      if (!plan || planNeedsRefresh(plan, cs) || staleRest || seeded) {   // regen on drift, shrink, or freshly-seeded zones
         plan = await getCoachPlan(cs);
         await saveCachedPlan(cs.date, plan);
       }
       setRecommendation(coachPlanToRec(plan));
+      // Auto-send today's session to the watch (the home no longer relies on opening the Strain screen).
+      if (plan?.workout) pushWorkoutToWatch(plan.workout).catch(() => {});
     } catch {
       // silently ignore — card simply won't appear/update
     } finally {
@@ -651,8 +658,8 @@ export default function HomeScreen() {
           />
         </View>
 
-        {/* Training recommendation — only meaningful for today. Tapping opens the Strain
-            detail (same coach plan, fuller view). */}
+        {/* Training recommendation — only meaningful for today. Tapping opens the Daily Coach page
+            (the full plan). The strain KPI card (below) is what opens the Strain detail. */}
         {isTodayView && (loadingRec || recommendation) && (
           <TrainingRecommendationCard
             rec={recommendation}
@@ -660,7 +667,7 @@ export default function HomeScreen() {
             strain={snapshot?.strain ?? null}
             completion={completion}
             onPress={snapshot?.strain ? () => router.push({
-              pathname: '/strain-detail' as any,
+              pathname: '/daily-coach' as any,
               params: { str: JSON.stringify(snapshot.strain), rec: recovery ? JSON.stringify(recovery) : undefined },
             }) : undefined}
           />
@@ -748,14 +755,6 @@ export default function HomeScreen() {
               }
             >
               <Text style={styles.coachBtnText}>📋 Report</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.coachBtn, styles.btnFlex, styles.coachBtnTimeline]}
-              onPress={() =>
-                router.push({ pathname: '/history', params: { type: 'timeline' } } as any)
-              }
-            >
-              <Text style={styles.coachBtnText}>📅 Timeline</Text>
             </TouchableOpacity>
           </View>
         )}

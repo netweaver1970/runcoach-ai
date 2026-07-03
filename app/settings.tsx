@@ -31,7 +31,8 @@ import { recalibrateZonesFromLastRun } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
 import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep, ACCENT_OPTIONS } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache } from '../src/services/healthkit';
-import { loadScanTimings } from '../src/services/perf';
+import { loadScanTimings, loadAutoTimings } from '../src/services/perf';
+import { computeWorkoutLoad } from '../src/services/trainingLoad';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useRouter, useNavigation } from 'expo-router';
@@ -50,9 +51,6 @@ import {
   scheduleWeeklyCoachReminder,
   cancelWeeklyCoachReminder,
   isWeeklyReminderActive,
-  scheduleDailyRecoveryReminder,
-  cancelDailyRecoveryReminder,
-  isDailyRecoveryActive,
   requestNotificationPermissions,
 } from '../src/services/notifications';
 
@@ -76,7 +74,6 @@ export default function SettingsScreen() {
   const validatingRef = useRef(false);
 
   const [weeklyActive, setWeeklyActive] = useState(false);
-  const [dailyActive, setDailyActive] = useState(false);
   const [bodyMass, setBodyMass] = useState(String(DEFAULT_BODY_MASS_KG));
   const [massSaved, setMassSaved] = useState(false);
   const [powerZones, setPowerZones] = useState<PowerZones>(DEFAULT_POWER_ZONES);
@@ -144,7 +141,6 @@ export default function SettingsScreen() {
     }).then(setModelHistory);
     getAgenticMode().then(setAgentic);
     isWeeklyReminderActive().then(setWeeklyActive);
-    isDailyRecoveryActive().then(setDailyActive);
     resolveBodyMassKg().then(kg => setBodyMass(String(kg)));
     getPowerZones().then(setPowerZones);
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
@@ -592,45 +588,15 @@ export default function SettingsScreen() {
           </View>
         </Section>
 
-        {/* Daily recovery */}
-        <Section title="Daily Recovery Notification" cat="automation">
-          <View style={styles.switchRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.switchLabel}>Every morning at 7:30 AM</Text>
-              <Text style={styles.switchSub}>
-                Reminds you to check your recovery score (based on last night's HRV during sleep).
-              </Text>
-            </View>
-            <Switch
-              value={dailyActive}
-              onValueChange={async (v) => {
-                if (v) {
-                  const granted = await requestNotificationPermissions();
-                  if (!granted) {
-                    Alert.alert('Notifications blocked', 'Enable notifications in iOS Settings.');
-                    return;
-                  }
-                  await scheduleDailyRecoveryReminder();
-                  setDailyActive(true);
-                } else {
-                  await cancelDailyRecoveryReminder();
-                  setDailyActive(false);
-                }
-              }}
-              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
-              thumbColor="#fff"
-            />
-          </View>
-        </Section>
-
-        {/* Auto day view */}
+        {/* Auto day view — the single morning control (the old fixed-7:30 reminder is retired). */}
         <Section title="Auto Day View" cat="automation">
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.switchLabel}>Prepare automatically each morning</Text>
+              <Text style={styles.switchLabel}>Prepare when sleep data lands</Text>
               <Text style={styles.switchSub}>
-                When last night's sleep is fully determined, refresh all KPIs, generate the AI day view, and
-                notify you it's ready. Also runs when the app detects new sleep data.
+                No fixed time — when last night's sleep is fully determined (end your sleep in Apple Health),
+                the app refreshes all KPIs, computes today's plan, pushes the workout to your watch, then
+                notifies you it's ready. Tap the notification for the coach page; AI notes are on request there.
               </Text>
             </View>
             <Switch
@@ -1199,13 +1165,23 @@ export default function SettingsScreen() {
                 const snap = await loadSnapshotCache();
                 if (!snap) { Alert.alert('No data yet', 'Open the Home screen once to load your health data, then export.'); return; }
                 const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
-                const [shrink, per, planMode, minTSB, schedule, cachedPlan, weekCache, scanTimings] = await Promise.all([
+                const [shrink, per, planMode, minTSB, schedule, cachedPlan, weekCache, scanTimings, autoTimings] = await Promise.all([
                   getShrinkToFit(), getPeriodization(), getPlanMode(), getMinTSB(),
                   readKnowledgeContent('running-schedule').catch(() => ''),
                   loadCachedPlan(cs.date).catch(() => null),
                   loadWeekPlanCache(cs.date).catch(() => null),
                   loadScanTimings().catch(() => null),
+                  loadAutoTimings().catch(() => null),
                 ]);
+                // Today's strain buildup: each activity's individual load contribution (same model as the
+                // Strain Detail screen), so the export shows how the day's strain was assembled.
+                const _mhr = (snap as any).estimatedMaxHR || 190;
+                const _rhr = (snap as any).todayRecovery?.restingHr ?? 50;
+                const strainBuildup = (snap.activities ?? [])
+                  .filter((a: any) => (a.date ?? '').slice(0, 10) === cs.date)
+                  .map((a: any) => ({ name: a.name, min: Math.round(a.durationMin || 0), avgHR: Math.round(a.avgHR || 0), load: computeWorkoutLoad(a, _mhr, _rhr) }))
+                  .filter((a: any) => a.load > 0)
+                  .sort((x: any, y: any) => y.load - x.load);
                 // Matches harness/fixture/scenario.json (drop straight in) + a _debug block with the exact
                 // snapshot + cached plans. NO API keys — just training data.
                 const scenario = {
@@ -1226,7 +1202,18 @@ export default function SettingsScreen() {
                   recentTimeOnFeet: cs.recentTimeOnFeet,
                   athleteStatus: cs.athleteStatus,
                   athleteStatusUntil: cs.athleteStatusUntil,
-                  _debug: { cachedPlan, weekCache, scanTimings, fullSnapshot: cs },
+                  _debug: {
+                    cachedPlan, weekCache, scanTimings, autoTimings, strainBuildup,
+                    // Recovery calibration diagnostics: what the recovery calc actually used vs the raw series.
+                    recoveryBreakdown: (snap as any).todayRecovery?.breakdown,
+                    sleepHRtoday:      (snap as any).todayRecovery?.overnightHR,   // overnight SLEEP HR (fresh)
+                    // OUR FULL nightly series (60-90 nights) — to re-fit Bevel's recovery on OUR sub-KPIs
+                    // over a long window (kills the 14-day overfit). date / hrv / sleepHR.
+                    nightly: ((snap as any).nightlyLean ?? [])
+                      .map((n: any) => ({ date: n.d, hrv: n.h, sleepHR: n.s })),
+                    appleRestingHR: ((snap as any).restingHR ?? []).map((r: any) => ({ date: (r.date ?? '').slice(0, 10), value: r.value })),
+                    fullSnapshot: cs,
+                  },
                 };
                 const json = JSON.stringify(scenario, null, 2);
                 const uri = `${FileSystem.cacheDirectory}runcoach-coach-debug.json`;
@@ -1436,7 +1423,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.bg },
   navHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
+    paddingHorizontal: 16, paddingVertical: 12,
+    backgroundColor: c.surface,   // match the other detail-screen headers (was transparent/bg)
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
   },
   navTitle: { fontSize: 17, fontWeight: '700', color: c.text },
   backLink: { fontSize: 16, color: c.accent, fontWeight: '600', width: 96 },

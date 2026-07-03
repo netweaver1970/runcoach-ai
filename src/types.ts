@@ -259,6 +259,7 @@ export interface HealthSnapshot {
   weeklyMileage: WeeklyMileage[];
   todayRecovery: DailyRecovery | null;
   recentNightlyHRV: NightlyHRV[];
+  nightlyLean?: { d: string; h: number; s: number }[];  // full lean nightly series (debug/calibration)
   recentSleep: SleepSession[];
   // Workout classification
   workoutTypeStats: WorkoutTypeStats[];   // aggregated per type

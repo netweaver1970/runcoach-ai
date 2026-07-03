@@ -7,8 +7,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
-import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
-import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, computeWorkoutLoad } from '../src/services/trainingLoad';
+import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
+import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
 import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, CoachPlan } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
@@ -23,28 +23,11 @@ const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
 };
 
-// Compact icon per HealthKit workout type for the strain-buildup list.
-function actEmoji(type: number, distanceKm: number): string {
-  switch (type) {
-    case 37: return '🏃';           // running
-    case 52: return '🚶';           // walking
-    case 24: return '🥾';           // hiking
-    case 13: return '🚴';           // cycling
-    case 46: return '🏊';           // swimming
-    case 63: return '🧘';           // yoga
-    case 44: case 50: return '💪';  // functional / traditional strength
-    case 35: return '🚣';           // rowing
-    case 16: return '🕺';           // dance
-  }
-  return distanceKm > 0 ? '🏃' : '💪';
-}
-
-export default function StrainDetailScreen() {
+export default function DailyCoachScreen() {
   const { str, rec, date } = useLocalSearchParams<{ str?: string; rec?: string; date?: string }>();
   const router   = useRouter();
   const s = useThemedStyles(makeStyles);
   const strain = str ? JSON.parse(str) as DayStrain : null;
-  const swipe = useDetailSwipe('/strain-detail', { rec, str, date });
   const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' }) : '';
   const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
 
@@ -176,30 +159,13 @@ export default function StrainDetailScreen() {
     safeHigh:  strain?.safeHigh ?? 0,
   };
 
-  // Coach plan moved to app/daily-coach.tsx — this screen no longer loads/generates/pushes a plan.
-  // `plan` stays null, so the disabled coach block never renders and the auto-refresh effect early-returns.
+  // Load any plan already cached for the viewed day (one per calendar day).
   const staleRegenRef = useRef(false);
-  useEffect(() => { staleRegenRef.current = false; }, [targetDate]);
-
-  // Strain buildup: the individual activities that produced the viewed day's strain, each with its load
-  // contribution (same computeWorkoutLoad the training-load model uses). Sourced from the snapshot cache.
-  const [dayActs, setDayActs] = useState<{ name: string; min: number; load: number; hr: number; emoji: string }[]>([]);
   useEffect(() => {
-    loadSnapshotCache().then((snap: any) => {
-      if (!snap) { setDayActs([]); return; }
-      const maxHR = snap.estimatedMaxHR || 190;
-      const restHR = snap.todayRecovery?.restingHr ?? 50;
-      const acts = (snap.activities ?? [])
-        .filter((a: any) => (a.date ?? '').slice(0, 10) === targetDate)
-        .map((a: any) => ({
-          name: a.name || 'Activity', min: Math.round(a.durationMin || 0),
-          load: computeWorkoutLoad(a, maxHR, restHR), hr: Math.round(a.avgHR || 0),
-          emoji: actEmoji(a.activityType, a.distanceKm || 0),
-        }))
-        .filter((a: any) => a.load > 0)
-        .sort((x: any, y: any) => y.load - x.load);
-      setDayActs(acts);
-    }).catch(() => setDayActs([]));
+    staleRegenRef.current = false;
+    setPlan(null);
+    setRunAdj(null);
+    loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); });
   }, [targetDate]);
 
   // useLLM=false → fast DETERMINISTIC plan (the default: morning prep, auto-refresh, ↻ Regenerate).
@@ -306,15 +272,18 @@ export default function StrainDetailScreen() {
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
         <View style={{ alignItems: 'center' }}>
-          <Text style={s.title}>Strain Detail</Text>
+          <Text style={s.title}>Daily Coach</Text>
           <Text style={s.headerDate}>{dayLabel}</Text>
         </View>
-        <TouchableOpacity onPress={() => navTo('strain')} style={{ paddingHorizontal: 4 }}>
-          <Text style={s.historyLink}>History ›</Text>
+        <TouchableOpacity
+          onPress={() => router.push({ pathname: '/strain-detail' as any, params: { str, rec, date } })}
+          style={{ paddingHorizontal: 4 }}
+        >
+          <Text style={s.historyLink}>Strain ›</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={{ flex: 1 }} {...swipe}>
+      <View style={{ flex: 1 }}>
       <ScrollView
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={status.color} />}
@@ -361,10 +330,8 @@ export default function StrainDetailScreen() {
           </View>
         )}
 
-        {/* The coach plan now lives on its own screen (app/daily-coach.tsx) — reachable via the home
-            recommendation card + the "Strain ›"/back links. This screen is a pure strain KPI page, so the
-            coach block below is disabled (plan stays null → it never renders and never pushes to the watch). */}
-        {plan && (
+        {/* Coach's plan — LLM, fed the full picture per current training guidelines */}
+        <Text style={s.sectionTitle}>COACH'S PLAN</Text>
         <View style={s.coachCard}>
           {plan ? (
             <>
@@ -483,7 +450,6 @@ export default function StrainDetailScreen() {
           )}
           {planError && <Text style={s.coachError}>{planError}</Text>}
         </View>
-        )}
         <View style={{ height: 14 }} />
 
         {loadingH && (
@@ -493,36 +459,8 @@ export default function StrainDetailScreen() {
           </View>
         )}
 
-        {/* Strain buildup — the day's activities that produced this strain, most-loading first. Concise. */}
-        {dayActs.length > 0 && (
-          <>
-            <Text style={s.sectionTitle}>STRAIN BUILDUP</Text>
-            <View style={s.card}>
-              {dayActs.map((a, i) => (
-                <View key={i} style={s.buildRow}>
-                  <Text style={s.buildName} numberOfLines={1}>{a.emoji} {a.name}</Text>
-                  <Text style={s.buildMeta}>{a.min}m{a.hr > 0 ? ` · ${a.hr}bpm` : ''}</Text>
-                  <Text style={[s.buildLoad, { color: status.color }]}>{a.load}</Text>
-                </View>
-              ))}
-              <View style={s.buildTotalRow}>
-                <Text style={s.buildTotalLabel}>Total load → strain</Text>
-                <Text style={s.buildTotalVal}>{dayActs.reduce((sum, a) => sum + a.load, 0)} → {real}%</Text>
-              </View>
-            </View>
-          </>
-        )}
-
-        {/* Sub-KPI metrics (sleep-detail pattern: sparkline + tap → history) */}
-        <Text style={s.sectionTitle}>STRAIN METRICS</Text>
-        <View style={s.card}>
-          <SubKPICard label="Strain Score"      value={last('strainScore') !== null ? `${last('strainScore')}` : `${real}`} unit="%" history={hist.strainScore ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('strain')} />
-          <SubKPICard label="Cardio Load"        value={last('cardioLoad') !== null ? `${last('cardioLoad')}` : '—'} unit="ATL" history={hist.cardioLoad ?? []} higherIsBetter color="#F97316" onPress={() => navTo('cardio-load')} />
-          <SubKPICard label="Exercise Duration"  value={last('exerciseDuration') !== null ? `${last('exerciseDuration')}` : '—'} unit="min" history={hist.exerciseDuration ?? []} higherIsBetter color="#2980b9" onPress={() => navTo('exercise-duration')} />
-          <SubKPICard label="Daytime HR"         value={last('daytimeHR') !== null ? `${last('daytimeHR')}` : '—'} unit="bpm" history={hist.daytimeHR ?? []} higherIsBetter={false} color="#e74c3c" onPress={() => navTo('daytime-hr')} />
-          <SubKPICard label="Total Energy"       value={last('totalEnergy') !== null ? `${last('totalEnergy')}` : '—'} unit="kcal" history={hist.totalEnergy ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('total-energy')} />
-          <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
-        </View>
+        {/* Strain KPI detail (day's runs + metrics) lives on its own screen now — reachable via the
+            "Strain ›" link in the header. This screen is purely the daily coach plan. */}
 
       </ScrollView>
       </View>
@@ -568,13 +506,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   rowSub: { fontSize: 11, color: c.textFaint },
-  buildRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
-  buildName: { flex: 1, fontSize: 13.5, color: c.text, fontWeight: '600' },
-  buildMeta: { fontSize: 12, color: c.textFaint, marginRight: 12 },
-  buildLoad: { fontSize: 14, fontWeight: '800', minWidth: 34, textAlign: 'right' },
-  buildTotalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 9 },
-  buildTotalLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
-  buildTotalVal: { fontSize: 13, color: c.text, fontWeight: '800' },
 
   rangeCard: {
     backgroundColor: c.surface, borderRadius: 12, padding: 14, marginBottom: 14,

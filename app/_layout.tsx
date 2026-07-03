@@ -4,6 +4,7 @@ import { TouchableOpacity, Text } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
+import { cancelDailyRecoveryReminder } from '../src/services/notifications';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 
@@ -17,6 +18,10 @@ function routeNotification(router: ReturnType<typeof useRouter>, data: any) {
     case 'analysis':
       router.push('/analysis' as any);
       break;
+    case 'coach':
+      // Morning "plan is ready" tap → the daily coach page for that day.
+      router.push({ pathname: '/daily-coach', params: data.date ? { date: String(data.date) } : {} } as any);
+      break;
     // 'home' (and anything else) just opens the app — no navigation needed.
   }
 }
@@ -24,6 +29,10 @@ function routeNotification(router: ReturnType<typeof useRouter>, data: any) {
 function RootStack() {
   const router = useRouter();
   const { c } = useTheme();
+
+  // Retire the old fixed-7:30 daily reminder — the morning notification is now event-driven
+  // (fires when the plan is actually ready). Cancels any lingering schedule from a prior install.
+  useEffect(() => { cancelDailyRecoveryReminder().catch(() => {}); }, []);
 
   // Deep-link notification taps (both warm taps and cold launches).
   useEffect(() => {
@@ -81,6 +90,7 @@ function RootStack() {
         <Stack.Screen name="recovery-detail" options={{ headerShown: false }} />
         <Stack.Screen name="sleep-detail" options={{ headerShown: false }} />
         <Stack.Screen name="strain-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="daily-coach" options={{ headerShown: false }} />
         <Stack.Screen name="body-battery" options={{ headerShown: false }} />
         <Stack.Screen name="history" options={{ headerShown: false }} />
         <Stack.Screen name="training-load" options={{ headerShown: false }} />

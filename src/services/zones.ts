@@ -87,6 +87,32 @@ async function getMaxHR(): Promise<number> {
   return typeof m === 'number' && m > 0 ? m : 190;
 }
 
+/**
+ * DETERMINISTIC power-zone seed from the athlete's own runs — so watt targets appear on the plan (and the
+ * watch) immediately, even before the LLM calibration has run (that path needs a key + a clean power run
+ * and is fragile). Only fires when zones are still unconfigured; the LLM refinement then adjusts over time.
+ * Base = recent Z2/easy WORK power (the aerobic anchor); other zones scale around it.
+ */
+export async function seedPowerZonesFromRuns(
+  runs: { label?: string; workPower?: number }[],
+): Promise<boolean> {
+  if (isPowerZonesConfigured(await getPowerZones())) return false;
+  const withPower = (runs ?? []).filter(r => (r.workPower ?? 0) > 0);
+  if (withPower.length < 3) return false;
+  const z2ish = withPower.filter(r => /z2|easy|recovery|long/i.test(r.label ?? ''));
+  const pool = (z2ish.length >= 3 ? z2ish : withPower).slice(0, 20);
+  const base = Math.round(pool.reduce((s, r) => s + (r.workPower ?? 0), 0) / pool.length);
+  if (base <= 0) return false;
+  await savePowerZones({
+    recoveryMax:  Math.round(base * 0.90),   // Z1↔Z2 boundary
+    z2Max:        Math.round(base * 1.08),   // Z2 upper
+    tempoMin:     Math.round(base * 1.10),
+    tempoMax:     Math.round(base * 1.28),
+    intervalsMin: Math.round(base * 1.35),
+  });
+  return true;
+}
+
 /** Seed the zones file from the athlete's current zones if it doesn't exist yet. */
 export async function ensureZonesFile(): Promise<void> {
   if (await knowledgeExists(ZONES_FILE_ID)) {

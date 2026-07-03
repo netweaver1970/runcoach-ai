@@ -62,8 +62,9 @@ export default function BodyBatteryScreen() {
       .finally(() => { setLoading(false); setRefreshing(false); });
   }, []);
   useEffect(() => { load(); }, [load]);
-  // Keep the picker showing the active anchor's moment when one exists.
-  useEffect(() => { if (anchorInfo) setAnchorDate(new Date(anchorInfo.at)); }, [anchorInfo]);
+  // Picker defaults to NOW (not a stale previous-anchor date) — setting an anchor should target the
+  // present moment unless the user deliberately scrolls back. The active anchor's time is shown in the
+  // "Active:" line instead. (Bug 2026-07-04: it kept the old anchor's date → anchors landed on 29 Jun.)
 
   return (
     <SafeAreaView style={s.container}>
