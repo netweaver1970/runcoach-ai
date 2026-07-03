@@ -11,7 +11,7 @@ import {
   Share,
 } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
-import Markdown from 'react-native-markdown-display';
+import MarkdownBody from '../src/MarkdownBody';
 import { generateCoachingReport } from '../src/services/claude';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
@@ -21,7 +21,7 @@ import {
   requestNotificationPermissions,
 } from '../src/services/notifications';
 import { HealthSnapshot, CoachingReport } from '../src/types';
-import { scrollableTableRules, TABLE_CELL } from '../src/mdTable';
+import { TABLE_CELL } from '../src/mdTable';
 import { loadSnapshotCache } from '../src/services/healthkit';
 
 export default function AnalysisScreen() {
@@ -107,7 +107,7 @@ export default function AnalysisScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scroll}>
+        <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="never">
           {/* Action bar */}
           <View style={styles.actionRow}>
             <TouchableOpacity style={styles.actionBtn} onPress={generate}>
@@ -133,7 +133,7 @@ export default function AnalysisScreen() {
 
           {/* Report */}
           <View style={styles.reportCard}>
-            <Markdown style={markdownStyles} rules={scrollableTableRules}>{report?.content ?? ''}</Markdown>
+            <MarkdownBody content={report?.content ?? ''} style={markdownStyles} c={c} />
           </View>
 
           {/* Data summary */}
@@ -215,8 +215,8 @@ const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
   fence: { fontFamily: 'Courier', fontSize: 13, color: c.text, backgroundColor: c.surfaceAlt, padding: 8, borderRadius: 6, marginBottom: 6 },
   table: { borderWidth: 1, borderColor: c.border, borderRadius: 4, marginBottom: 8, overflow: 'hidden' },
   thead: { backgroundColor: c.surfaceAlt },
-  th: { ...TABLE_CELL, fontWeight: '700', padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
-  td: { ...TABLE_CELL, padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  th: { ...TABLE_CELL, fontWeight: '700', padding: 4, fontSize: 10, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  td: { ...TABLE_CELL, padding: 4, fontSize: 10, color: c.text, borderRightWidth: 1, borderColor: c.border },
   tr: { borderBottomWidth: 1, borderColor: c.border },
   hr: { borderBottomWidth: 1, borderColor: c.border, marginVertical: 8 },
 });

@@ -231,7 +231,10 @@ export default function StrainDetailScreen() {
   // Must pass tofNextRunInDays so planNeedsRefresh can see the cap, else a stale "run" plan lingers
   // (and was even auto-sent to the watch) while the accounting already says "next run tomorrow".
   useEffect(() => {
-    if (!plan || !weather || !targetIsToday || planLoading || staleRegenRef.current) return;
+    // Wait for capCtx: regenerating before the cap is known would produce an UNCAPPED run (a ghost), and
+    // staleRegenRef would then block the correct capped regen once capCtx loads — the "ghost run until I
+    // press Generate" bug. Only auto-refresh once the cap context is in.
+    if (!plan || !weather || !targetIsToday || planLoading || !capCtx || staleRegenRef.current) return;
     const snapLike = {
       weather: { apparentC: weather.apparentC, tempC: weather.tempC },
       strainReal: real,
@@ -335,10 +338,10 @@ export default function StrainDetailScreen() {
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
-              {capCtx && capCtx.cap.nextRunInDays > 0 && (
+              {plan.nextRunLabel && (plan.nextRunInDays ?? 0) > 0 && (
                 <Text style={s.coachNextRun}>
-                  🏃 Next run <Text style={{ fontWeight: '800' }}>{capCtx.cap.nextRunLabel}</Text>
-                  {capCtx.cap.nextRunInDays === 1 ? ' (tomorrow)' : ` (in ${capCtx.cap.nextRunInDays} days)`} — when the +{capCtx.capPct}% {capCtx.loadUnit === 'km' ? 'distance' : 'volume'} cap frees up
+                  🏃 Next run <Text style={{ fontWeight: '800' }}>{plan.nextRunLabel}</Text>
+                  {plan.nextRunInDays === 1 ? ' (tomorrow)' : ` (in ${plan.nextRunInDays} days)`}
                 </Text>
               )}
               {plan.strength ? (

@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import Markdown from 'react-native-markdown-display';
 import {
   View,
   Text,
@@ -17,7 +16,8 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { scrollableTableRules, TABLE_CELL } from '../src/mdTable';
+import { TABLE_CELL } from '../src/mdTable';
+import MarkdownBody from '../src/MarkdownBody';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadRunMeta } from '../src/services/runMeta';
 import { getCachedPlace } from '../src/services/weather';
@@ -90,7 +90,6 @@ const SELECTABLE_RULES = {
   textgroup: (node: any, children: React.ReactNode, _parent: any, mdStyles: any) => (
     <Text key={node.key} style={mdStyles.textgroup} selectable>{children}</Text>
   ),
-  ...scrollableTableRules,   // wide LLM tables scroll sideways instead of crushing columns
 };
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -112,6 +111,7 @@ export default function ChatScreen() {
 
   const { height: screenHeight } = useWindowDimensions();
   const listRef      = useRef<FlatList>(null);
+  const atBottomRef  = useRef(true);   // is the list scrolled to (near) the bottom? gates auto-stick-to-bottom
   const inputRef     = useRef<TextInput>(null);
 
   // Full persisted history (with timestamps). Only toApiMessages() result goes to the API.
@@ -293,7 +293,7 @@ export default function ChatScreen() {
     const loadingMsg: Message = { id: loadingId, role: 'assistant', content: '', loading: true };
     setMessages(prev => [...prev, userMsg, loadingMsg]);
     setSending(true);
-    setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+    setTimeout(() => { atBottomRef.current = true; listRef.current?.scrollToEnd({ animated: true }); }, 100);
 
     const now       = new Date().toISOString();
     const persisted = makeMsg('user', text, now);
@@ -324,7 +324,7 @@ export default function ChatScreen() {
       ]);
     } finally {
       setSending(false);
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+      setTimeout(() => { atBottomRef.current = true; listRef.current?.scrollToEnd({ animated: true }); }, 100);
     }
   }, [snapshot, memoryNote]);
 
@@ -376,7 +376,7 @@ export default function ChatScreen() {
 
     setMessages(prev => [...prev, userMsg, loadingMsg]);
     setSending(true);
-    setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+    setTimeout(() => { atBottomRef.current = true; listRef.current?.scrollToEnd({ animated: true }); }, 100);
 
     // Build API history: persisted messages (with time-gap labels) + new user turn
     const apiHistory: ChatMessage[] = toApiMessages([...historyRef.current, persisted]);
@@ -409,7 +409,7 @@ export default function ChatScreen() {
       ]);
     } finally {
       setSending(false);
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+      setTimeout(() => { atBottomRef.current = true; listRef.current?.scrollToEnd({ animated: true }); }, 100);
     }
   }, [sending, snapshot, memoryNote]);
 
@@ -450,9 +450,7 @@ export default function ChatScreen() {
             delayLongPress={300}
             style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}
           >
-            <Markdown style={isUser ? mdStylesUser : mdAssistant} rules={SELECTABLE_RULES}>
-              {item.content}
-            </Markdown>
+            <MarkdownBody content={item.content} style={isUser ? mdStylesUser : mdAssistant} rules={SELECTABLE_RULES} c={c} />
           </TouchableOpacity>
           {/* Copy affordance — assistant answers (the ones you debug) get an explicit button */}
           {!isUser && (
@@ -496,7 +494,14 @@ export default function ChatScreen() {
           keyExtractor={m => m.id}
           renderItem={renderMessage}
           contentContainerStyle={styles.list}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+          scrollEventThrottle={16}
+          onScroll={e => {
+            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+            atBottomRef.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 60;
+          }}
+          // Only stick to the bottom on content growth if the user is ALREADY near it — otherwise a
+          // re-layout (rotation, table/markdown re-measure) yanks them back down while they scroll up.
+          onContentSizeChange={() => { if (atBottomRef.current) listRef.current?.scrollToEnd({ animated: false }); }}
         />
 
         {/* Quick-action chips */}
@@ -564,8 +569,8 @@ const mdBase = {
   fence:       { fontFamily: 'Courier', fontSize: 12, backgroundColor: 'rgba(0,0,0,0.06)', padding: 8, borderRadius: 6, marginBottom: 6 },
   table:       { borderWidth: 1, borderColor: '#ddd', borderRadius: 4, marginBottom: 8, overflow: 'hidden' as const },
   thead:       { backgroundColor: '#f0f0f0' },
-  th:          { ...TABLE_CELL, fontWeight: '700' as const, padding: 6, fontSize: 11, borderRightWidth: 1, borderColor: '#ddd' },
-  td:          { ...TABLE_CELL, padding: 6, fontSize: 11, borderRightWidth: 1, borderColor: '#ddd' },
+  th:          { ...TABLE_CELL, fontWeight: '700' as const, padding: 4, fontSize: 10, borderRightWidth: 1, borderColor: '#ddd' },
+  td:          { ...TABLE_CELL, padding: 4, fontSize: 10, borderRightWidth: 1, borderColor: '#ddd' },
   tr:          { borderBottomWidth: 1, borderColor: '#eee' },
   hr:          { borderBottomWidth: 1, borderColor: '#ddd', marginVertical: 8 },
   blockquote:  { borderLeftWidth: 3, borderColor: '#ccc', paddingLeft: 10, marginLeft: 0, opacity: 0.8 },

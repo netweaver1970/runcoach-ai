@@ -4,9 +4,9 @@ import {
   ActivityIndicator, SafeAreaView, Share,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
-import Markdown from 'react-native-markdown-display';
+import MarkdownBody from '../src/MarkdownBody';
 import { loadLatestRunAnalysis, maybeAnalyzeLatestRun, RunAnalysis } from '../src/services/runAnalysis';
-import { scrollableTableRules, TABLE_CELL } from '../src/mdTable';
+import { TABLE_CELL } from '../src/mdTable';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 
@@ -79,7 +79,7 @@ export default function RunAnalysisScreen() {
           {error && <Text style={styles.errorText}>{error}</Text>}
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scroll}>
+        <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="never">
           {/* Verdict header */}
           <View style={styles.headerCard}>
             <View style={{ flex: 1 }}>
@@ -110,7 +110,7 @@ export default function RunAnalysisScreen() {
 
           {/* Body */}
           <View style={styles.reportCard}>
-            <Markdown style={md} rules={scrollableTableRules}>{analysis.full}</Markdown>
+            <MarkdownBody content={analysis.full} style={md} c={c} />
           </View>
 
           <Text style={styles.meta}>Generated {genLabel}</Text>
@@ -172,7 +172,7 @@ const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
   hr: { borderBottomWidth: 1, borderColor: c.border, marginVertical: 8 },
   table: { borderWidth: 1, borderColor: c.border, borderRadius: 4, marginBottom: 8, overflow: 'hidden' },
   thead: { backgroundColor: c.surfaceAlt },
-  th: { ...TABLE_CELL, fontWeight: '700', padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
-  td: { ...TABLE_CELL, padding: 6, fontSize: 11, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  th: { ...TABLE_CELL, fontWeight: '700', padding: 4, fontSize: 10, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  td: { ...TABLE_CELL, padding: 4, fontSize: 10, color: c.text, borderRightWidth: 1, borderColor: c.border },
   tr: { borderBottomWidth: 1, borderColor: c.border },
 });

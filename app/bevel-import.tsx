@@ -149,7 +149,7 @@ export default function BevelImportScreen() {
         <View style={{ width: 44 }} />
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll}>
+      <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={s.scroll}>
         <Text style={s.intro}>
           Import Bevel screenshots (overview or a single metric). Each is read by the AI, then you confirm
           the date and save. Values are stored alongside ours for calibration.

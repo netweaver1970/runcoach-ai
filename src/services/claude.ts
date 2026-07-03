@@ -1,6 +1,8 @@
 import * as SecureStore from 'expo-secure-store';
 import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, KmSplit } from '../types';
 import { callLLM, getActiveApiKey } from './llm';
+import { agentComplete } from './agent';
+import { buildTimelineContext } from './timelineEvents';
 import { tsbStatus, ctlRamp } from './trainingLoad';
 
 // Legacy constant — kept so existing imports don't break; actual model comes from llm.ts config.
@@ -449,22 +451,8 @@ function buildDataBlock(snap: HealthSnapshot, maxRuns = 10): string {
     return `${n.date.slice(5)}:${n.weightedRMSSD > 0 ? `${n.weightedRMSSD}ms` : '?'}${slStr}`;
   }).join('  ') || '—';
 
-  // ── Timeline events ───────────────────────────────────────────────────────
-  let timelineBlock = '';
-  if (snap.timelineEvents && snap.timelineEvents.length > 0) {
-    const evLines = snap.timelineEvents
-      .slice(0, 20)
-      .map(ev => {
-        const shortDate = fd(ev.date + 'T00:00:00');
-        if (ev.type === 'status') {
-          return `  ${shortDate}: ${ev.status}${ev.note ? ` (${ev.note})` : ''}`;
-        } else {
-          return `  ${shortDate}: ${ev.supplement ?? ''} ${ev.action ?? ''}${ev.note ? ` (${ev.note})` : ''}`.trimEnd();
-        }
-      })
-      .join('\n');
-    timelineBlock = `\n\nTIMELINE (events):\n${evLines}`;
-  }
+  // ── Timeline: current status + life events (economical, ±120d window) + supplements ──
+  const timelineBlock = buildTimelineContext(snap.timelineEvents ?? [], snap.athleteStatus ?? null) + (snap.supplementContext ?? '');
 
   return `RUNS (4w, [type] date dist dur pace wHR temp note):
 ${runLines}
@@ -724,10 +712,13 @@ export async function getChatResponse(
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Add one in Settings first.');
 
-  return callLLM({
+  // Agentic mode (when enabled + Anthropic) lets the model pull specific runs/metrics via tools; otherwise
+  // this is the existing single-shot call. The snapshot is still passed as baseline context either way.
+  return agentComplete({
     system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext),
     messages:  history,
     maxTokens: 1024,
+    snap,
   });
 }
 

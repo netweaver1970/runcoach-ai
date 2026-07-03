@@ -11,6 +11,7 @@ import {
   StyleSheet, SafeAreaView, ActivityIndicator,
   useWindowDimensions, ActionSheetIOS, Platform, Alert, PanResponder, TextInput,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import {
   fetchWorkoutDetail,
@@ -293,6 +294,7 @@ function AreaChart({
   pauseIntervals?:  { s: number; e: number }[];
 }) {
   const { width: screenW } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const ac = useThemedStyles(makeAc);
   const { c: pal } = useTheme();
 
@@ -375,7 +377,9 @@ function AreaChart({
   //   scroll contentContainerStyle padding: 12px each side = 24px
   //   chartCard padding:                   12px each side = 24px
   //   total:                                                48px
-  const chartW = screenW - Y_AXIS_W - 48;
+  // PLUS the safe-area left/right insets — zero in portrait, but in LANDSCAPE the SafeAreaView pads the
+  // notch/home-indicator sides, so using the raw window width overran the card's right border.
+  const chartW = screenW - insets.left - insets.right - Y_AXIS_W - 48;
 
   // Format Y-axis ticks as M:SS for pace charts
   const fmtTick = (tick: number): string => {

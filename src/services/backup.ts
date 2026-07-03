@@ -28,6 +28,11 @@ const STATIC_SECURE_KEYS = [
   'user_max_hr', 'body_mass_kg',  // physiology that drives zones/strain/power
   'dayview_auto_v1', 'watch_kpi_v1', // auto day-view toggle, watch complication choice
   'coaching_mode_v1',             // self (LLM) vs coach (cloud prescription) mode
+  'athlete_status_v1',            // overall status (Active/Sick/Injured/On a break) + until
+  'shrink_to_fit_v1', 'periodization_v1', 'min_tsb', // coach cycle/shape settings
+  'plan_mode_v1', 'race_config_v1', // leisure vs race + race config
+  'agentic_mode_v1',              // agentic (tool-using) coach toggle
+  'onboarding_done_v1', 'user_profile_v1', // onboarding + age/sex profile
 ];
 
 function providerKeys(): string[] {
@@ -48,6 +53,7 @@ const FILES = [
   'bevel-calibration.json',         // Bevel calibration data
   'runcoach-run-meta.json',         // per-run notes + manual temps (user-entered)
   'runcoach-timeline.json',         // timeline events (injuries / races / notes)
+  'runcoach-supplements.json',      // supplement list + daily intake log
 ];
 // Per-date files captured by prefix — the prescription plan-logs that drive deterministic
 // run-detail phase labels (HealthKit has no record of the prescribed structure).

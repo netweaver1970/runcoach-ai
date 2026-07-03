@@ -162,12 +162,16 @@ export default function WeekPlan() {
         // minTSB like any other, but is NEVER rested — it holds a real (if short) quality touch (FORCED_MIN)
         // so the week keeps its shape. Race mode still fully bypasses (the LLM owns that block's load).
         const FORCED_MIN = 15;
+        const LONG_FLOOR = 45;   // the LONG is the priority session — the TSB floor may shorten intervals/tempo
+                                 // (down to FORCED_MIN) but must NEVER trim the long into a recovery jog.
+        const isLongDay = d.forced && d.kind === 'long';
         const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
 
-        // TSB floor: trim the run so the projected form (ctl'−atl') doesn't fall below minTSB.
+        // TSB floor: trim the run so the projected form (ctl'−atl') doesn't fall below minTSB — except the
+        // long, which is protected at LONG_FLOOR (its day may dip a little deeper; that's the cost of the long).
         let mins = volMin;
         if (mins > 0 && !raceMode) {
-          const floor = d.forced ? FORCED_MIN : 20;               // forced quality shrinks smaller before it stops
+          const floor = isLongDay ? LONG_FLOOR : (d.forced ? FORCED_MIN : 20);
           const tMax = (ctl * (1 - Lc) - atl * (1 - La) - minTSB) / (La - Lc); // max trimp that holds TSB ≥ floor
           for (let k = 0; k < 5 && mins >= floor; k++) {
             const tr = estimateDayTrimp(d.intensity, mins, cal);
@@ -175,7 +179,7 @@ export default function WeekPlan() {
             const next = Math.floor(mins * Math.max(0, tMax / tr));
             mins = next < mins ? next : mins - 5;                 // ensure progress toward the floor
           }
-          if (mins < floor) mins = d.forced ? FORCED_MIN : 0;     // forced: hold a short quality; else rest under the floor
+          if (mins < floor) mins = d.forced ? floor : 0;         // forced: hold its floor (long stays long); else rest
         }
         const isRun = mins > 0;
         const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
@@ -186,7 +190,7 @@ export default function WeekPlan() {
         const wk = !isRun ? null
           : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any), coach.powerZones);
         const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
-        const label = labelFromWorkout(wk, mins);
+        const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins);
         const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;
         const trimp = estimateDayTrimp(intensity, mins, cal);
 

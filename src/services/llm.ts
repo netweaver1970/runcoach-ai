@@ -36,6 +36,7 @@ const SK_MODEL        = (p: LLMProvider) => `llm_model_${p}_v1`;
 const SK_APIKEY       = (p: LLMProvider) => `llm_apikey_${p}_v1`;
 const SK_BASEURL      = 'llm_baseurl_custom_v1';
 const SK_HISTORY      = (p: LLMProvider) => `llm_model_history_${p}_v1`;
+const SK_MODEL_LIST   = (p: LLMProvider) => `llm_model_list_${p}_v1`;   // live list fetched from /v1/models
 const SK_OLD_ANTHRO   = 'anthropic_api_key'; // legacy key — migrated on first load
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -311,6 +312,87 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
     }),
   });
   return recordingReturn(handleOpenAIResponse(res));
+}
+
+// ─── Tool-use (agentic) call — Anthropic native ───────────────────────────────
+// Unlike callLLM (single-shot, returns text), this returns the RAW assistant content blocks + stop_reason
+// so the agent loop can detect tool_use blocks, run the tools, feed results back, and continue.
+export interface LLMToolsCallOptions {
+  system?:      string;
+  messages:     any[];   // content-block messages (may contain tool_use / tool_result blocks)
+  tools:        any[];   // Anthropic tool schemas
+  maxTokens:    number;
+  temperature?: number;
+}
+export interface LLMToolsResult { stopReason: string; content: any[]; text: string; }
+
+/** True when the active provider supports the native tool loop (Anthropic). */
+export async function agenticSupported(): Promise<boolean> {
+  return (await loadLLMConfig()).provider === 'anthropic';
+}
+
+export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsResult> {
+  const cfg = await loadLLMConfig();
+  if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
+  if (cfg.provider !== 'anthropic') throw new Error('AGENTIC_UNSUPPORTED'); // caller falls back to single-shot
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: cfg.model,
+      max_tokens: opts.maxTokens,
+      ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+      // Cache the (static) system + tool defs so each loop step bills cached input tokens.
+      ...(opts.system ? { system: [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }] } : {}),
+      ...(opts.tools?.length ? { tools: opts.tools } : {}),   // omit when empty → forces a final text answer
+      messages: opts.messages,
+    }),
+  });
+  if (!res.ok) {
+    let body: any = {}; try { body = await res.json(); } catch {}
+    const msg: string = body?.error?.message ?? '';
+    if (res.status === 401) { await recordLLMReachable(false); throw new Error('Invalid API key. Check Settings.'); }
+    if (res.status === 429) throw new Error('Rate limited — wait a moment and try again.');
+    throw new Error(`API error ${res.status}: ${msg || JSON.stringify(body).slice(0, 200)}`);
+  }
+  const data = await res.json();
+  await recordLLMReachable(true);
+  const content: any[] = data.content ?? [];
+  const text = content.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('').trim();
+  return { stopReason: data.stop_reason ?? 'end_turn', content, text };
+}
+
+// ─── Model discovery — fetch the provider's live model list (Settings "Refresh") ──
+export async function fetchAvailableModels(provider: LLMProvider, apiKey?: string, baseUrl?: string): Promise<string[]> {
+  const key = (apiKey ?? (await SecureStore.getItemAsync(SK_APIKEY(provider))) ?? '').trim();
+  if (!key && provider !== 'custom') throw new Error('Add and save an API key first.');
+  let url: string; let headers: Record<string, string>;
+  if (provider === 'anthropic') {
+    url = 'https://api.anthropic.com/v1/models';
+    headers = { 'x-api-key': key, 'anthropic-version': '2023-06-01' };
+  } else if (provider === 'openai') {
+    url = 'https://api.openai.com/v1/models';
+    headers = { Authorization: `Bearer ${key}` };
+  } else {
+    const base = ((baseUrl ?? (await SecureStore.getItemAsync(SK_BASEURL)) ?? '')).replace(/\/+$/, '');
+    if (!base) throw new Error('Set the Base URL first.');
+    url = `${base}/models`;
+    headers = { Authorization: `Bearer ${key}` };
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(res.status === 401 ? 'Key rejected (401).' : `Couldn't fetch models (HTTP ${res.status}).`);
+  const data = await res.json();
+  let ids: string[] = (data?.data ?? []).map((m: any) => m?.id).filter((x: any) => typeof x === 'string');
+  // Trim to chat-capable models — drop embeddings/audio/image/etc noise.
+  if (provider === 'openai') ids = ids.filter(id => /^(gpt|o\d|chatgpt)/i.test(id) && !/embedding|whisper|tts|audio|image|moderation|dall|realtime|search|transcribe/i.test(id));
+  if (provider === 'anthropic') ids = ids.filter(id => /^claude/i.test(id));
+  ids = [...new Set(ids)].sort().reverse(); // roughly newest-first
+  if (ids.length) await SecureStore.setItemAsync(SK_MODEL_LIST(provider), JSON.stringify(ids)).catch(() => {});
+  return ids;
+}
+export async function loadModelList(provider: LLMProvider): Promise<string[]> {
+  try { const raw = await SecureStore.getItemAsync(SK_MODEL_LIST(provider)); return raw ? JSON.parse(raw) : []; } catch { return []; }
 }
 
 // ─── Vision call (single image + prompt) ──────────────────────────────────────

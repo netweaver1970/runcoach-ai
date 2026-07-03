@@ -152,6 +152,7 @@ export default function CoachKnowledgeEditScreen() {
         contentContainerStyle={s.scroll}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets
       >
           {!builtin && (
             <>

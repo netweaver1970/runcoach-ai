@@ -38,17 +38,28 @@ export interface KmSplit {
   avgPower:    number;  // avg power watts, pauses excluded; 0 if unavailable
 }
 
-export type TimelineEventType = 'status' | 'supplement';
+export type TimelineEventType = 'status' | 'supplement' | 'event';
+// running = "Active" (normal training), holiday = "On a break". Labels live in timelineEvents.ts.
 export type HealthStatus = 'running' | 'injured' | 'sick' | 'holiday';
 
 export interface TimelineEvent {
   id:          string;
-  date:        string;           // YYYY-MM-DD
+  date:        string;           // YYYY-MM-DD (start date)
   type:        TimelineEventType;
-  status?:     HealthStatus;
-  supplement?: string;
+  status?:     HealthStatus;      // type 'status'
+  supplement?: string;            // type 'supplement'
   action?:     'start' | 'stop';
+  title?:      string;            // type 'event' — e.g. "Hair transplant", "Dance trip in Portugal"
+  endDate?:    string;            // type 'event' (range) or status set "until" — YYYY-MM-DD
+  category?:   string;            // type 'event' — e.g. 'medical' | 'holiday' | 'travel' | 'other'
   note?:       string;
+}
+
+// The athlete's current overall status, shown on the home screen + fed to the coach.
+export interface AthleteStatus {
+  status: HealthStatus;
+  since:  string;                 // YYYY-MM-DD it was set
+  until?: string;                 // YYYY-MM-DD it auto-reverts to Active (optional)
 }
 
 export interface WorkoutAnalysis {
@@ -259,6 +270,8 @@ export interface HealthSnapshot {
   trainingLoad: DailyLoad[];       // daily CTL/ATL/TSB series (recent ~90 days)
   strain: DayStrain | null;        // today's strain (real effort vs safe range)
   trimpRates?: { easy: number; moderate: number; hard: number }; // rolling TRIMP/min calibration (per intensity)
+  athleteStatus?: AthleteStatus;   // current overall status (Active/Sick/Injured/On a break)
+  supplementContext?: string;      // compact supplement-adherence line for the LLM
 }
 
 export interface CoachingReport {

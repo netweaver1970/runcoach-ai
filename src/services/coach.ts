@@ -15,6 +15,8 @@ import { getLocalWeather } from './weather';
 import { getPowerZones } from './claude';
 import { ensureZonesFile } from './zones';
 import { activityCategory, heatStrainFactor } from './trainingLoad';
+import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
+import { loadSupplements, buildSupplementContext } from './supplements';
 import { DayStrain, ActivitySummary } from '../types';
 
 export interface CoachSnapshot {
@@ -55,6 +57,10 @@ export interface CoachSnapshot {
   // Recent NON-run training (dance/walk/cardio/strength) — no zones/structure, but real
   // fatigue/load the coach should weigh alongside the runs.
   recentActivities?: { date: string; name: string; durationMin: number; avgHR?: number }[];
+  // Overall athlete status + a compact life-events context (medical/holiday/travel).
+  athleteStatus?:      'running' | 'injured' | 'sick' | 'holiday';
+  athleteStatusUntil?: string;
+  timelineContext?:    string;
 }
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
@@ -536,8 +542,47 @@ function bandPhrase(real: number | null | undefined, low: number, high: number, 
   return `Strain ${Math.round(real)}% is ${where} the ${low}–${high}% band — ${driver}.`;
 }
 
+// The daily card's "next run" should match the 7-DAY PLAN the athlete actually sees — which, with
+// shrink-to-fit on, may hold a REDUCED run TOMORROW even while the raw volume cap only clears a FULL
+// meaningful run days later (e.g. it said "Saturday" while the 7-day plan ran a short Z2 on Friday). Read
+// the forward plan and return its first real run day so the daily + home "next run" agree with the 7-day
+// screen. getWeekPlan starts at TOMORROW (today+1+i), so index i → inDays i+1.
+async function nextRunFromWeekPlan(snap: CoachSnapshot): Promise<{ label: string; inDays: number } | null> {
+  try {
+    const days = await getWeekPlan(snap);
+    for (let i = 0; i < days.length; i++) {
+      if (days[i].intensity !== 'rest' && (days[i].runMinutes ?? 0) > 0) {
+        const d = new Date(days[i].date + 'T00:00:00');
+        const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return { label: `${WD[d.getDay()]} ${d.getDate()} ${MO[d.getMonth()]}`, inDays: i + 1 };
+      }
+    }
+  } catch { /* fall back to the cap projection */ }
+  return null;
+}
+
 export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
   await ensureZonesFile().catch(() => {});
+  // OVERALL STATUS override: Injured / Sick / On-a-break (set via the home status button) → no running,
+  // whatever the cap/schedule say. Highest-priority gate; clears when the athlete sets status back to Active.
+  const st = snap.athleteStatus;
+  if (st === 'injured' || st === 'sick' || st === 'holiday') {
+    const label = st === 'injured' ? 'Injured' : st === 'sick' ? 'Sick' : 'On a break';
+    const untilTxt = snap.athleteStatusUntil ? ` until ${snap.athleteStatusUntil}` : '';
+    return {
+      headline: `${label} — no run today`,
+      session: st === 'holiday'
+        ? `You're on a break${untilTxt}. Rest or light cross-training only; the plan resumes when you set your status back to Active.`
+        : `Status is "${label}"${untilTxt} — rest and recover. Gentle pain-free mobility only; set your status back to Active when you're ready to run.`,
+      strength: st === 'injured' ? 'Only pain-free mobility/rehab as advised by your physio.' : STRENGTH_DEFAULT,
+      intensity: 'rest', runMinutes: 0,
+      rationale: `Athlete status "${label}" — running suppressed until cleared.`,
+      cautions: undefined, workout: null,
+      strainLow: clampScore(snap.advisableLow, 30), strainHigh: clampScore(snap.advisableHigh, 60),
+      generatedAt: new Date().toISOString(),
+    };
+  }
   const capPct      = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
   const cappedToday = (snap.tofNextRunInDays ?? 0) > 0;
   const wkName      = weekdayName(snap.date);
@@ -568,12 +613,19 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const recoveryStale = snap.recoveryStale === true;
   const heatFactor  = heatStrainFactor(snap.weather);
   const apparentC   = snap.weather?.apparentC ?? snap.weather?.tempC;
+  // "Next run" tracks the 7-DAY PLAN (may hold a reduced shrink-to-fit run tomorrow), not the raw
+  // meaningful-run cap projection — so the daily card + home agree with the 7-day screen. Race mode is
+  // suppressed (the race block, not the cap, decides the days → avoids "run 25m" + "next run Sat").
+  let nextRunLabel  = (cappedToday && !raceForced) ? snap.tofNextRunLabel : undefined;
+  let nextRunInDays = raceForced ? undefined : snap.tofNextRunInDays;
+  if (cappedToday && !raceForced) {
+    const wp = await nextRunFromWeekPlan(snap);
+    if (wp) { nextRunLabel = wp.label; nextRunInDays = wp.inDays; }
+  }
   const stamp = {
     strainLow, strainHigh,
-    // The leisure volume-cap "next run" stamp does NOT apply in race mode — the race block, not the cap,
-    // decides the days. Suppressing it removes the contradiction (a prescribed run + "next run Sat").
-    nextRunLabel:  (cappedToday && !raceForced) ? snap.tofNextRunLabel : undefined,
-    nextRunInDays: raceForced ? undefined : snap.tofNextRunInDays,
+    nextRunLabel,
+    nextRunInDays,
     generatedAt: new Date().toISOString(),
     genTempC:  apparentC,
     genStrain: snap.strainReal,
@@ -584,7 +636,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   if (cappedToday && !honourSlot && !raceForced) {
     return {
       headline: 'At your volume cap — recovery day',
-      session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${snap.tofNextRunLabel ?? 'in a couple of days'}.`,
+      session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${nextRunLabel ?? 'in a couple of days'}.`,
       strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
       rationale: bandPhrase(strainReal, strainLow, strainHigh, 'cap reached, so banking volume for the next quality day'),
       cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, ...stamp,
@@ -729,10 +781,12 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     const ceiling = basis.intensity === 'rest'
       ? `\n\nMANDATORY: today is a REST day (the 7-day plan + rolling volume cap leave no running budget). Return intensity "rest", runMinutes 0, workout null, and a recovery/strength-focused headline + session.`
       : `\n\nPRESCRIBED CEILING — the 7-day plan + today's recovery/heat have ALREADY set today to intensity "${basis.intensity}", about ${basis.runMinutes} min. You MUST honour this as a CEILING: stay at or BELOW it (you may go easier/shorter if today's data warrants), but NEVER prescribe a harder intensity or more minutes — good recovery or cool weather must not inflate the run, as that eats the rest of the week. Within the ceiling, design the session per the COACHING KNOWLEDGE above: open warm-up, a short DRILLS block if the runner's files call for it (they may, even on easy runs), the work, and an open cool-down.`;
-    const system = `${ROLE}${raceHdr}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}`;
+    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}`;
     const txt = await callLLM({
       system,
-      messages: [{ role: 'user', content: JSON.stringify({ ...snap, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes } }) }],
+      // Feed the LLM the SAME next-run the basis resolved from the 7-day plan (may be tomorrow's shrink-to-fit
+      // run), so its prose doesn't state the raw cap date (e.g. "run Saturday") while the card shows Friday.
+      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes } }) }],
       maxTokens: 1200,
       temperature: 0.2,
     });
@@ -1033,13 +1087,16 @@ export async function buildCapContext(
  * the on-demand plan and the auto-prepared plan are identical.
  */
 export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[]): Promise<CoachSnapshot> {
-  const [comps, dur, weather, powerZones, capPct, capBasis] = await Promise.all([
+  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
     getLocalWeather().catch(() => null),
     getPowerZones().catch(() => undefined),
     getLoadCapPct(),
     getLoadCapBasis(),
+    getAthleteStatus(),
+    loadEvents(),
+    loadSupplements(),
   ]);
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};
@@ -1100,6 +1157,9 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     })}`,
     powerZones,
     recentActivities: buildRecentActivities(activities),
+    athleteStatus:      status.status,
+    athleteStatusUntil: status.until,
+    timelineContext:    buildTimelineContext(events, status, date) + buildSupplementContext(supps, 7, date),
   };
 }
 

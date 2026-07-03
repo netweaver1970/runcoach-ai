@@ -264,7 +264,7 @@ export default function OnboardingScreen() {
         </View>
         <TouchableOpacity onPress={finishAndGo} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Text style={s.exit}>✕</Text></TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
         <Body />
       </ScrollView>
       <View style={s.footer}>

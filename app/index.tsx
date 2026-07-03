@@ -31,6 +31,10 @@ import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, T
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, shrinkWantsQualityToday, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { saveScanTimings } from '../src/services/perf';
+import { getAthleteStatus, setAthleteStatus, STATUS_LABEL, STATUS_ORDER } from '../src/services/timelineEvents';
+import { AthleteStatus, HealthStatus } from '../src/types';
 import { computeBodyBattery, BodyBattery, loadBodyBatteryCache, saveBodyBatteryCache } from '../src/services/bodyBattery';
 import { syncWatch } from '../src/services/watchSync';
 
@@ -76,6 +80,103 @@ const SPORT_FILTERS: { label: string; value: SportFilter; emoji: string }[] = [
   { label: 'All',    value: 'All',    emoji: '✨' },
 ];
 
+// ── Home status pill + timeline entry ────────────────────────────────────────
+const HS_ICON: Record<string, string> = { running: '🏃', injured: '🩹', sick: '🤒', holiday: '🌴' };
+const hsP2 = (n: number) => String(n).padStart(2, '0');
+const hsToISO = (d: Date) => `${d.getFullYear()}-${hsP2(d.getMonth() + 1)}-${hsP2(d.getDate())}`;
+const hsFmtShort = (iso: string) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); } catch { return iso; } };
+
+function HomeStatusRow() {
+  const { c } = useTheme();
+  const router = useRouter();
+  const st = useThemedStyles(statusStyles);
+  const [status, setStatus] = useState<AthleteStatus>({ status: 'running', since: '' });
+  const [modal, setModal] = useState(false);
+  const [sel, setSel] = useState<HealthStatus>('running');
+  const [until, setUntil] = useState<Date | null>(null);
+  const [showPick, setShowPick] = useState(false);
+
+  const reload = useCallback(() => { getAthleteStatus().then(setStatus); }, []);
+  useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  const open = () => {
+    setSel(status.status);
+    setUntil(status.until ? new Date(status.until + 'T00:00:00') : null);
+    setShowPick(false); setModal(true);
+  };
+  const save = async () => {
+    await setAthleteStatus(sel, (sel !== 'running' && until) ? hsToISO(until) : undefined);
+    await reload(); setModal(false);
+  };
+
+  const alert = status.status !== 'running';
+  return (
+    <View style={st.row}>
+      <TouchableOpacity style={[st.pill, alert && st.pillAlert]} onPress={open} activeOpacity={0.85}>
+        <Text style={[st.pillText, alert && st.pillTextAlert]} numberOfLines={1}>
+          {HS_ICON[status.status]}  {STATUS_LABEL[status.status]}{status.until ? ` · until ${hsFmtShort(status.until)}` : ''}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={st.tlBtn} onPress={() => router.push('/timeline' as any)} activeOpacity={0.85}>
+        <Text style={st.tlText}>🗓  Timeline</Text>
+      </TouchableOpacity>
+
+      <Modal visible={modal} transparent animationType="fade" onRequestClose={() => setModal(false)}>
+        <TouchableOpacity style={st.backdrop} activeOpacity={1} onPress={() => setModal(false)}>
+          <TouchableOpacity activeOpacity={1} style={st.sheet}>
+            <Text style={st.sheetTitle}>Set your status</Text>
+            {STATUS_ORDER.map(k => (
+              <TouchableOpacity key={k} style={[st.opt, sel === k && st.optActive]} onPress={() => { setSel(k); if (k === 'running') setUntil(null); }}>
+                <Text style={[st.optText, sel === k && st.optTextActive]}>{HS_ICON[k]}  {STATUS_LABEL[k]}</Text>
+                {sel === k && <Text style={st.optCheck}>✓</Text>}
+              </TouchableOpacity>
+            ))}
+            {sel !== 'running' && (
+              <TouchableOpacity style={st.untilRow} onPress={() => (until ? setUntil(null) : setShowPick(true))}>
+                <Text style={st.untilLbl}>Until date {until ? '' : '(optional)'}</Text>
+                <Text style={st.untilVal}>{until ? hsFmtShort(hsToISO(until)) : '— tap to add'}</Text>
+              </TouchableOpacity>
+            )}
+            {showPick && sel !== 'running' && (
+              <DateTimePicker value={until ?? new Date()} mode="date" display="inline" onChange={(_e, d) => { if (d) setUntil(d); }} />
+            )}
+            <View style={st.btnRow}>
+              <TouchableOpacity style={st.cancel} onPress={() => setModal(false)}><Text style={st.cancelText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={st.saveBtn} onPress={save}><Text style={st.saveText}>Save</Text></TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </View>
+  );
+}
+
+const statusStyles = (c: Palette) => StyleSheet.create({
+  row: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingTop: 10 },
+  pill: { flex: 1, backgroundColor: c.surface, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: c.border, justifyContent: 'center' },
+  pillAlert: { borderColor: c.accent, backgroundColor: c.surfaceAlt },
+  pillText: { fontSize: 14, fontWeight: '700', color: c.text },
+  pillTextAlert: { color: c.accent },
+  tlBtn: { backgroundColor: c.surface, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: c.border, justifyContent: 'center' },
+  tlText: { fontSize: 14, fontWeight: '600', color: c.textSub },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 24 },
+  sheet: { backgroundColor: c.surface, borderRadius: 16, padding: 16 },
+  sheetTitle: { fontSize: 16, fontWeight: '700', color: c.text, marginBottom: 10 },
+  opt: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10, backgroundColor: c.surfaceAlt, marginBottom: 6 },
+  optActive: { backgroundColor: c.accent },
+  optText: { fontSize: 15, fontWeight: '600', color: c.text },
+  optTextActive: { color: c.onAccent },
+  optCheck: { color: c.onAccent, fontWeight: '800', fontSize: 16 },
+  untilRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12, backgroundColor: c.surfaceAlt, borderRadius: 10, marginTop: 4 },
+  untilLbl: { fontSize: 13, color: c.textSub, fontWeight: '600' },
+  untilVal: { fontSize: 14, color: c.text },
+  btnRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  cancel: { flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: c.surfaceAlt, alignItems: 'center' },
+  cancelText: { color: c.textSub, fontWeight: '700', fontSize: 15 },
+  saveBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: c.accent, alignItems: 'center' },
+  saveText: { color: c.onAccent, fontWeight: '700', fontSize: 15 },
+});
+
 export default function HomeScreen() {
   const router = useRouter();
   const styles = useThemedStyles(makeStyles);
@@ -88,6 +189,7 @@ export default function HomeScreen() {
   const [snapshot, setSnapshot]         = useState<HealthSnapshot | null>(null);
   const [loading, setLoading]           = useState(true);
   const [refreshing, setRefreshing]     = useState(false);
+  const [bgScan, setBgScan]             = useState(false);   // silent background refresh in flight
   const [hasApiKey, setHasApiKey]       = useState(false);
   const llm = useLLMReady();
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
@@ -184,7 +286,7 @@ export default function HomeScreen() {
     isLoadingRef.current = true;
 
     const months = monthsOverride ?? syncMonthsRef.current;
-    if (silent) { /* background refresh over already-shown cache — no blocking spinner */ }
+    if (silent) { setBgScan(true); /* background refresh over already-shown cache — no blocking spinner, but flag it */ }
     else if (isRefresh) setRefreshing(true); // paired with the finally reset
     else { setLoading(true); setLoadingStep(null); }
     try {
@@ -196,14 +298,22 @@ export default function HomeScreen() {
         );
         return;
       }
+      const scanStart = Date.now();
+      const scanSteps: { step: string; ms: number }[] = [];
       const [snap, key] = await Promise.all([
         fetchHealthSnapshot({
           months,
           light,
-          onProgress: silent ? undefined : (step, pct) => setLoadingStep({ step, pct }),
+          onProgress: (step, pct) => {
+            scanSteps.push({ step, ms: Date.now() - scanStart });   // always record for profiling
+            if (!silent) setLoadingStep({ step, pct });              // UI only on a foreground scan
+          },
         }),
         getApiKey(),
       ]);
+      const scanMs = Date.now() - scanStart;
+      saveScanTimings({ at: new Date().toISOString(), light, months, runs: snap.runs.length, totalMs: scanMs, steps: scanSteps }).catch(() => {});
+      if (__DEV__) console.log(`[scan] ${light ? 'light' : 'full'} ${months}mo · ${snap.runs.length} runs · ${scanMs}ms`, scanSteps);
       setSnapshot(snap);
       saveSnapshotCache(snap).catch(() => {});
       // Cloud sync (opt-in): push derived data to the coach cloud if signed in. Fire-and-forget.
@@ -245,6 +355,7 @@ export default function HomeScreen() {
       setLoading(false);
       setLoadingStep(null);
       setRefreshing(false);
+      setBgScan(false);
     }
   }, [refreshRecommendation]); // stable — reads syncMonths via ref
 
@@ -510,6 +621,17 @@ export default function HomeScreen() {
         }
         contentContainerStyle={{ paddingBottom: 32 }}
       >
+        {/* Overall status pill + Timeline entry */}
+        <HomeStatusRow />
+
+        {/* Background refresh in flight → the plan may still change; say so instead of silently swapping it. */}
+        {bgScan && !loading && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'center', backgroundColor: c.surfaceAlt, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, marginTop: 8 }}>
+            <ActivityIndicator size="small" color={c.accent} />
+            <Text style={{ color: c.textSub, fontSize: 12, fontWeight: '600' }}>Updating from Apple Health — plan may change…</Text>
+          </View>
+        )}
+
         {/* Wellness rings — time-travelable (swipe ← → or use the date picker) */}
         <View>
           <WellnessRings
@@ -908,7 +1030,7 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
 
       {rec.nextRunLabel && (
         <Text style={recStyles.target}>
-          🏃 Next run <Text style={{ color: SAFE_COLOR, fontWeight: '800' }}>{rec.nextRunLabel}</Text> — when volume frees up
+          🏃 Next run <Text style={{ color: SAFE_COLOR, fontWeight: '800' }}>{rec.nextRunLabel}</Text>
         </Text>
       )}
 

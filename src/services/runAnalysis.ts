@@ -12,6 +12,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Notifications from 'expo-notifications';
 import { HealthSnapshot, RunWorkout } from '../types';
 import { callLLM } from './llm';
+import { agentComplete } from './agent';
 import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadPrescriptionAt, CoachPlan } from './coach';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
@@ -132,7 +133,9 @@ export async function analyzeRun(
   const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true);
   const userMsg = [recoveryLoadContext(snap), prescription, runBlock].filter(Boolean).join('\n\n');
 
-  const raw = await callLLM({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userMsg }], maxTokens: 950 });
+  // Same shape as Chat, only the SYSTEM_PROMPT differs: run through agentComplete so agentic mode (when on)
+  // can pull prior runs / metric series via tools to ground the analysis; else single-shot.
+  const raw = await agentComplete({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userMsg }], maxTokens: 950, snap });
 
   let verdict = '', headline = '', full = '';
   const match = raw.match(/\{[\s\S]*\}/);

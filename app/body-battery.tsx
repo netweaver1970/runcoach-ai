@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Dimensions, TextInput, Alert } from 'react-native';
+import { View, Text, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, useWindowDimensions, TextInput, Alert } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
@@ -74,7 +75,7 @@ export default function BodyBatteryScreen() {
         <View style={{ width: 50 }} />
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />}>
+      <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={s.scroll} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />}>
         {loading ? (
           <View style={s.center}><ActivityIndicator /><Text style={s.sub}>Reading heart rate + HRV…</Text></View>
         ) : !data ? (
@@ -211,7 +212,9 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
   const grid = c.border, axis = c.textSub;
-  const W = Math.round(Dimensions.get('window').width) - 32;
+  const { width: winW } = useWindowDimensions();       // reactive to rotation
+  const insets = useSafeAreaInsets();                  // landscape notch/home-indicator side padding
+  const W = Math.round(winW - insets.left - insets.right) - 32;
   const H = 170;
   const padL = 26, padR = 8, padT = 10, padB = 18;
   const gw = W - padL - padR, gh = H - padT - padB;
@@ -275,7 +278,9 @@ function StressGraph({ data }: { data: BodyBattery }) {
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
   const grid = c.border, axis = c.textSub;
-  const W = Math.round(Dimensions.get('window').width) - 32;
+  const { width: winW } = useWindowDimensions();       // reactive to rotation
+  const insets = useSafeAreaInsets();                  // landscape notch/home-indicator side padding
+  const W = Math.round(winW - insets.left - insets.right) - 32;
   const H = 150;
   const padL = 26, padR = 8, padT = 10, padB = 18;
   const gw = W - padL - padR, gh = H - padT - padB;

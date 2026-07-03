@@ -86,7 +86,7 @@ export default function CoachScreen() {
         <View style={{ width: 44 }} />
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
         {loading ? (
           <ActivityIndicator size="small" color={c.accent} style={{ marginTop: 24 }} />
         ) : !user ? (

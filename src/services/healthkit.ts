@@ -62,7 +62,9 @@ import {
   getPowerZones, getRunOverrides, isPowerZonesConfigured,
   getLongRunMinutes, getHrUnreliableRuns, getUserMaxHr,
 } from './claude';
-import { loadEvents } from './timelineEvents';
+import { loadEvents, getAthleteStatus } from './timelineEvents';
+import { loadSupplements, buildSupplementContext } from './supplements';
+import { loadRecoveryCache, saveRecoveryCache } from './recoveryCache';
 
 // ─── Snapshot cache ───────────────────────────────────────────────────────────
 
@@ -1196,6 +1198,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // ── Step 5: Wellness data + workout classification (parallel) ─────────────
   progress('Fetching wellness data…', 65);
 
+  // Incremental recovery cache: on a WARM cache (≥50 scored nights, newest within 5 days) we only fetch the
+  // heaviest query — heartbeat series — for the recent window and reuse cached nightly recovery for the
+  // ≤60-day baseline. Cold/first-run/version-change → full 60-day fetch + recompute.
+  const recoveryCache = await loadRecoveryCache();
+  const cachedNightByDate = new Map((recoveryCache ?? []).map(n => [n.date, n]));
+  const newestCachedMs = (recoveryCache ?? []).reduce((m, n) => Math.max(m, new Date(n.date + 'T00:00:00').getTime()), 0);
+  const cacheWarm = !!recoveryCache && recoveryCache.length >= 50 && newestCachedMs >= daysAgo(5).getTime();
+  const freshFromMs   = cacheWarm ? daysAgo(21).getTime() : 0;        // 0 → recompute every night (cold)
+  const heartbeatSince = cacheWarm ? daysAgo(21) : sixtyDaysAgo;      // 21d covers the displayed last-14 even with sleep gaps
+
   const [
     vo2maxSamples,
     allHRVSamples,
@@ -1228,10 +1240,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       HKQuantityTypeIdentifier.heartRateVariabilitySDNN,
       { filter: { startDate: sixtyDaysAgo, endDate: now }, unit: 'ms', ascending: false, limit: 40000 }
     ).catch(() => [] as any[]),
-    // Heartbeat series: raw R-R intervals → true RMSSD (recovery) + quality filtering (precededByGap)
+    // Heartbeat series: raw R-R intervals → true RMSSD (recovery) + quality filtering (precededByGap).
+    // The heaviest query — on a warm recovery cache we fetch only the recent window (older nights reused).
     safeQuery(
       () => (HealthKit as any).queryHeartbeatSeriesSamples({
-        filter: { startDate: sixtyDaysAgo, endDate: now },
+        filter: { startDate: heartbeatSince, endDate: now },
         limit: 20000,
       }),
       [] as any[]
@@ -1367,24 +1380,38 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   }
 
   // ── Step 7: Nightly HRV + overnight HR ───────────────────────────────────
-  const hrvSamplesForSleep = (allHRVSamples as any[]).map((s: any) => ({
-    // v9: startDate is a Date object; normalise to ISO string
-    startDate: toISOStr(s.startDate),
-    quantity:  s.quantity as number,
-  }));
-  const globalQualityMap = buildHeartbeatQualityMap(allHeartbeatSeries as any[]);
+  // PERF: only the RECENT nights are consumed — recentNightlyHRV.slice(-14) + the ≤60-day recovery
+  // baseline. Computing RMSSD for ALL ~730 nights of a 24-month history, each re-scanning the full
+  // heartbeat/HRV series (with per-element Date parsing), was the ~9-minute scan stall. Window BOTH the
+  // nights and the series to the recent range → the same output, orders of magnitude faster.
+  const recentSessions = sleepSessions.slice(-95);                   // 60-day baseline + margin
+  const winCutMs = recentSessions.length ? new Date(recentSessions[0].bedtime).getTime() - 2 * 3600_000 : 0;
+  const recentHeartbeat = (allHeartbeatSeries as any[]).filter((s) => new Date(s.startDate).getTime() >= winCutMs);
+  const hrvSamplesForSleep = (allHRVSamples as any[])
+    .map((s: any) => ({ startDate: toISOStr(s.startDate), quantity: s.quantity as number }))
+    .filter((s) => new Date(s.startDate).getTime() >= winCutMs);
+  const globalQualityMap = buildHeartbeatQualityMap(recentHeartbeat);
 
-  const nightlyHRV: NightlyHRV[] = sleepSessions.map((session) => {
+  const nightlyHRV: NightlyHRV[] = recentSessions.map((session) => {
+    // WARM CACHE: reuse a previously-scored older night verbatim (its RMSSD can't change) — no heartbeat
+    // fetch/recompute. Recent nights (≥ freshFromMs, incl. today) are always recomputed with live data.
+    if (cacheWarm && new Date(session.bedtime).getTime() < freshFromMs) {
+      const c = cachedNightByDate.get(session.date);
+      if (c) return { date: c.date, samples: [], weightedRMSSD: c.weightedRMSSD, overnightHR: c.overnightHR };
+      // cache gap for an old night → fall through and compute (heartbeat may be absent → SDNN fallback)
+    }
     const { weightedRMSSD: sdnnRMSSD, annotatedSamples } = computeWeightedRMSSD(session, hrvSamplesForSleep, globalQualityMap);
     // Recovery is fit to Bevel's TRUE RMSSD (R-R intervals), ~20% below Apple's SDNN. Prefer it;
     // fall back to the SDNN-weighted value on nights without a heartbeat series.
-    const trueRMSSD = nightlyTrueRMSSD(session, allHeartbeatSeries as any[]);
+    const trueRMSSD = nightlyTrueRMSSD(session, recentHeartbeat);
     const weightedRMSSD = trueRMSSD > 0 ? trueRMSSD : sdnnRMSSD;
     // RHR = avg HR during sleep stages. (Apple's Resting HR ran LOWER + noisier here, not Bevel's
     // metric; sleep HR's SD matches Bevel's. The remaining baseline gap is under investigation.)
     const overnightHR = computeOvernightHR(session, sleepHRSamples);
     return { date: session.date, samples: annotatedSamples, weightedRMSSD, overnightHR };
   });
+  // Persist the complete nights for next launch's warm cache (samples stripped; version-marked).
+  saveRecoveryCache(nightlyHRV, dateKeyLocal(new Date())).catch(() => {});
 
   // ── Step 8: Power estimation + power zone classification + user overrides ──
   progress('Classifying workouts…', 90);
@@ -1680,6 +1707,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
   progress('Done', 100);
 
+  const athleteStatus = await getAthleteStatus();
+  const supplementContext = buildSupplementContext(await loadSupplements());
   return {
     runs,
     activities:    recentActivities,
@@ -1706,6 +1735,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     estimatedMaxHR:   maxHR,
     fetchedAt:        now.toISOString(),
     timelineEvents:   events as TimelineEvent[],
+    athleteStatus,
+    supplementContext,
   };
 }
 

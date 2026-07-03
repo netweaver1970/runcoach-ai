@@ -64,6 +64,7 @@ function RootStack() {
           }}
         />
         <Stack.Screen name="analysis" options={{ title: 'Coach Report' }} />
+        <Stack.Screen name="timeline" options={{ title: 'Timeline' }} />
         <Stack.Screen name="week-plan" options={{ title: '7-Day Plan' }} />
         <Stack.Screen name="run-analysis" options={{ title: 'Run Analysis' }} />
         <Stack.Screen

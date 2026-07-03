@@ -23,13 +23,15 @@ import {
 import {
   loadLLMConfig, saveLLMConfig, deleteLLMApiKey, validateLLMKey,
   loadModelHistory, PROVIDER_LABELS, PROVIDER_KEY_PLACEHOLDER, SUGGESTED_MODELS,
-  LLMProvider,
+  fetchAvailableModels, loadModelList, LLMProvider,
 } from '../src/services/llm';
+import { getAgenticMode, setAgenticMode } from '../src/services/agent';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
 import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep, ACCENT_OPTIONS } from '../src/theme';
-import { resolveBodyMassKg, loadSnapshotCache } from '../src/services/healthkit';
+import { resolveBodyMassKg, loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache } from '../src/services/healthkit';
+import { loadScanTimings } from '../src/services/perf';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useRouter, useNavigation } from 'expo-router';
@@ -38,7 +40,8 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit } from '../src/services/coach';
+import { readKnowledgeContent } from '../src/services/coachFiles';
 import { getPlanMode, setPlanMode, getRaceConfig, setRaceConfig, PlanMode } from '../src/services/racePlan';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
@@ -64,6 +67,9 @@ export default function SettingsScreen() {
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
   const [modelHistory,  setModelHistory]  = useState<string[]>([]);
+  const [fetchedModels, setFetchedModels] = useState<string[]>([]);   // live list from provider /v1/models
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [agentic,       setAgentic]       = useState(false);          // agentic (tool-using) coach
   const [hasKey,        setHasKey]        = useState(false);
   const [saved,         setSaved]         = useState(false);
   const [validating,    setValidating]    = useState(false);
@@ -106,6 +112,7 @@ export default function SettingsScreen() {
   const [coachMemory, setCoachMemory] = useState('');
   const [memorySaved, setMemorySaved] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [refreshingAll, setRefreshingAll] = useState(false);
   const [dayViewAuto, setDayViewAuto] = useState(true);
   const [preparing, setPreparing] = useState(false);
   const [activeCat, setActiveCat] = useState<string | null>(null);
@@ -132,8 +139,10 @@ export default function SettingsScreen() {
       setApiKey(cfg.apiKey ?? '');
       setBaseUrl(cfg.baseUrl ?? '');
       setHasKey(!!(cfg.apiKey));
+      loadModelList(cfg.provider).then(setFetchedModels).catch(() => {});
       return loadModelHistory(cfg.provider);
     }).then(setModelHistory);
+    getAgenticMode().then(setAgentic);
     isWeeklyReminderActive().then(setWeeklyActive);
     isDailyRecoveryActive().then(setDailyActive);
     resolveBodyMassKg().then(kg => setBodyMass(String(kg)));
@@ -323,8 +332,23 @@ export default function SettingsScreen() {
     setBaseUrl(cfg.baseUrl ?? '');
     setHasKey(!!(cfg.apiKey));
     setModelHistory(hist);
+    loadModelList(p).then(setFetchedModels).catch(() => {});
     setSaved(false);
   }, []);
+
+  // Fetch the provider's live model list from /v1/models (the "Refresh" button).
+  const handleRefreshModels = useCallback(async () => {
+    setRefreshingModels(true);
+    try {
+      const list = await fetchAvailableModels(provider, apiKey.trim() || undefined, baseUrl.trim() || undefined);
+      setFetchedModels(list);
+      Alert.alert('Models updated', list.length ? `Found ${list.length} models for ${PROVIDER_LABELS[provider]}.` : 'No models returned.');
+    } catch (e: any) {
+      Alert.alert('Could not refresh models', e?.message ?? 'Unknown error.');
+    } finally {
+      setRefreshingModels(false);
+    }
+  }, [provider, apiKey, baseUrl]);
 
   const handleSaveModel = useCallback(async () => {
     if (!model.trim()) return;
@@ -453,7 +477,14 @@ export default function SettingsScreen() {
           </View>
 
           {/* Model input */}
-          <Text style={styles.fieldLabel}>Model</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.fieldLabel}>Model</Text>
+            <TouchableOpacity onPress={handleRefreshModels} disabled={refreshingModels} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ color: c.accent, fontWeight: '600', fontSize: 13 }}>
+                {refreshingModels ? 'Refreshing…' : `↻ Refresh models${fetchedModels.length ? ` (${fetchedModels.length})` : ''}`}
+              </Text>
+            </TouchableOpacity>
+          </View>
           <View style={styles.row}>
             <TextInput
               style={[styles.input, { flex: 1, marginBottom: 0 }]}
@@ -469,10 +500,10 @@ export default function SettingsScreen() {
             />
           </View>
 
-          {/* Model chips: history + suggestions */}
+          {/* Model chips: live fetched list + history + suggestions */}
           {(() => {
             const suggestions = SUGGESTED_MODELS[provider];
-            const chips = [...new Set([...modelHistory, ...suggestions])].slice(0, 8);
+            const chips = [...new Set([...fetchedModels, ...modelHistory, ...suggestions])].slice(0, 15);
             return chips.length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
                 {chips.map(m => (
@@ -489,6 +520,22 @@ export default function SettingsScreen() {
               </ScrollView>
             ) : null;
           })()}
+
+          {/* Agentic (tool-using) coach */}
+          <View style={[styles.switchRow, { marginTop: 14 }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.switchLabel}>Agentic coach (tools)</Text>
+              <Text style={styles.switchSub}>
+                Lets the coach pull specific runs & metrics on demand for deeper answers in Chat and Run Analysis. Anthropic only — slower and uses more tokens.
+              </Text>
+            </View>
+            <Switch
+              value={agentic}
+              onValueChange={async (v) => { setAgentic(v); await setAgenticMode(v); }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
+              thumbColor="#fff"
+            />
+          </View>
 
           {/* Base URL for custom providers */}
           {provider === 'custom' && (
@@ -1077,7 +1124,7 @@ export default function SettingsScreen() {
             <Text style={styles.btnText}>Import Bevel Screenshots</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.btn, { marginTop: 8, backgroundColor: c.surfaceAlt }]}
+            style={[styles.btnSecondary, { marginTop: 8 }]}
             onPress={() => router.push('/bevel-calibration' as any)}
           >
             <Text style={[styles.btnText, { color: c.textSub }]}>Recovery Regression (legacy)</Text>
@@ -1146,7 +1193,80 @@ export default function SettingsScreen() {
             <Text style={styles.btnText}>Back Up All Settings</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.btn, { marginTop: 8, backgroundColor: c.surfaceAlt }]}
+            style={[styles.btnSecondary, { marginTop: 8 }]}
+            onPress={async () => {
+              try {
+                const snap = await loadSnapshotCache();
+                if (!snap) { Alert.alert('No data yet', 'Open the Home screen once to load your health data, then export.'); return; }
+                const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
+                const [shrink, per, planMode, minTSB, schedule, cachedPlan, weekCache, scanTimings] = await Promise.all([
+                  getShrinkToFit(), getPeriodization(), getPlanMode(), getMinTSB(),
+                  readKnowledgeContent('running-schedule').catch(() => ''),
+                  loadCachedPlan(cs.date).catch(() => null),
+                  loadWeekPlanCache(cs.date).catch(() => null),
+                  loadScanTimings().catch(() => null),
+                ]);
+                // Matches harness/fixture/scenario.json (drop straight in) + a _debug block with the exact
+                // snapshot + cached plans. NO API keys — just training data.
+                const scenario = {
+                  _note: 'RunCoachAI coach debug snapshot — drop into harness/fixture/ as a scenario. Training data only (no API keys).',
+                  date: cs.date,
+                  capPct: cs.loadCapPct ?? 10,
+                  shrinkToFit: shrink,
+                  planMode,
+                  periodization: per,
+                  minTSB,
+                  readiness: cs.readiness,
+                  strainReal: cs.strainReal,
+                  advisableLow: cs.advisableLow,
+                  advisableHigh: cs.advisableHigh,
+                  acwr: cs.acwr,
+                  weather: cs.weather,
+                  schedule,
+                  recentTimeOnFeet: cs.recentTimeOnFeet,
+                  athleteStatus: cs.athleteStatus,
+                  athleteStatusUntil: cs.athleteStatusUntil,
+                  _debug: { cachedPlan, weekCache, scanTimings, fullSnapshot: cs },
+                };
+                const json = JSON.stringify(scenario, null, 2);
+                const uri = `${FileSystem.cacheDirectory}runcoach-coach-debug.json`;
+                await FileSystem.writeAsStringAsync(uri, json);
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(uri, { mimeType: 'application/json', dialogTitle: 'RunCoachAI coach debug snapshot' });
+                } else {
+                  await Clipboard.setStringAsync(json);
+                  Alert.alert('Copied', 'Sharing unavailable — debug snapshot copied to clipboard.');
+                }
+              } catch (e: any) { Alert.alert('Export failed', e?.message ?? String(e)); }
+            }}
+          >
+            <Text style={styles.btnTextSecondary}>Export Coach Debug Snapshot</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btnSecondary, { marginTop: 8 }]}
+            disabled={refreshingAll}
+            onPress={() => Alert.alert(
+              'Refresh all history',
+              'Read your FULL Apple Health history (multi-year). This can take a while + use more battery. Normal startup only reads recent data for speed.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Refresh all', onPress: async () => {
+                  setRefreshingAll(true);
+                  try {
+                    const t0 = Date.now();
+                    const snap = await fetchHealthSnapshot({ months: 60, light: false });
+                    await saveSnapshotCache(snap);
+                    Alert.alert('History loaded', `${snap.runs.length} runs in ${((Date.now() - t0) / 1000).toFixed(1)}s. Go back to Home to see the full history.`);
+                  } catch (e: any) { Alert.alert('Refresh failed', e?.message ?? String(e)); }
+                  finally { setRefreshingAll(false); }
+                } },
+              ],
+            )}
+          >
+            <Text style={styles.btnTextSecondary}>{refreshingAll ? 'Reading full history…' : '↻ Refresh all history (multi-year)'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btnSecondary, { marginTop: 8 }]}
             onPress={async () => {
               const json = await Clipboard.getStringAsync();
               if (!json) { Alert.alert('Clipboard empty', 'Copy a backup file\'s contents first, then restore.'); return; }
@@ -1389,6 +1509,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     alignItems: 'center',
   },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  // Secondary (grey) buttons: a border for definition + THEME text colour (white was invisible on grey).
+  btnSecondary: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, paddingVertical: 11, alignItems: 'center', borderWidth: 1, borderColor: c.border },
+  btnTextSecondary: { color: c.text, fontWeight: '700', fontSize: 14 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   switchLabel: { fontSize: 14, color: c.text, fontWeight: '600', marginBottom: 2 },
   switchSub: { fontSize: 12, color: c.textFaint },

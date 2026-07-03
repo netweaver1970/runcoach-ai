@@ -1,0 +1,30 @@
+{
+  "_comment": "A reproducible coach scenario. Edit these or drop in a real app export. recentTimeOnFeet is the last 14 days of running MINUTES (0 = no run). Today is the last date.",
+  "date": "2026-07-02",
+  "capPct": 20,
+  "shrinkToFit": true,
+  "planMode": "leisure",
+  "readiness": 47,
+  "strainReal": 1,
+  "advisableLow": 25,
+  "advisableHigh": 59,
+  "acwr": 1.02,
+  "weather": { "tempC": 19, "apparentC": 18, "humidity": 78, "windKmh": 21, "description": "Light drizzle", "place": "Merelbeke-Melle" },
+  "schedule": "# Preferred Weekly Structure\n\nMonday: intervals\nTuesday: recovery/z2 or rest\nWednesday: tempo\nThursday: recovery/z2 or rest\nFriday: Long\nSaturday: recovery/z2 or rest\nSunday: recovery/z2 or rest\n",
+  "recentTimeOnFeet": [
+    { "date": "2026-06-19", "min": 0 },
+    { "date": "2026-06-20", "min": 62 },
+    { "date": "2026-06-21", "min": 0 },
+    { "date": "2026-06-22", "min": 0 },
+    { "date": "2026-06-23", "min": 25 },
+    { "date": "2026-06-24", "min": 0 },
+    { "date": "2026-06-25", "min": 0 },
+    { "date": "2026-06-26", "min": 0 },
+    { "date": "2026-06-27", "min": 38 },
+    { "date": "2026-06-28", "min": 0 },
+    { "date": "2026-06-29", "min": 0 },
+    { "date": "2026-06-30", "min": 45 },
+    { "date": "2026-07-01", "min": 28 },
+    { "date": "2026-07-02", "min": 0 }
+  ]
+}
