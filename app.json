@@ -23,7 +23,8 @@
           "fetch",
           "remote-notification"
         ],
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIDesignRequiresCompatibility": true
       },
       "entitlements": {
         "com.apple.developer.healthkit": true,
