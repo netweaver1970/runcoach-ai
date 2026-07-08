@@ -1,7 +1,13 @@
 import * as SecureStore from 'expo-secure-store';
 import { HealthSnapshot, RunWorkout } from '../types';
-import { fetchWorkoutDetail } from './healthkit';
+import { fetchWorkoutDetail, fetchOurDailyComponents } from './healthkit';
 import { callLLM, callLLMTools, agenticSupported } from './llm';
+// coach.ts pulls in claude.ts (getPowerZones) and claude.ts pulls in this file (agentComplete) → a require
+// cycle. It's safe: every use of these imports is inside a tool `run` callback (call-time), never at module
+// load, so the live bindings are fully initialised by the time they run.
+import { assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getWeekPlan, formatWorkoutStructure } from './coach';
+import { computeBodyBattery } from './bodyBattery';
+import { buildKnowledgePrompt } from './coachFiles';
 
 // ─── Agentic coach: give the LLM read-only TOOLS to pull data on demand ────────
 // Instead of one fat snapshot → one answer, the model can call these tools to drill into specific runs
@@ -9,20 +15,40 @@ import { callLLM, callLLMTools, agenticSupported } from './llm';
 // in-memory snapshot + HealthKit detail; nothing mutates state or leaves the device beyond the LLM call.
 
 const SK_AGENTIC = 'agentic_mode_v1';
+// Default ON: the coach now has genuinely useful read-only tools (plan/budget, week plan, prescription
+// history, KPI series, coaching files). It only engages on Anthropic (else it degrades to single-shot), and
+// any tool error falls back silently — so on-by-default is safe. Explicitly turn it off → stored '0'.
 export async function getAgenticMode(): Promise<boolean> {
-  try { return (await SecureStore.getItemAsync(SK_AGENTIC)) === '1'; } catch { return false; }
+  try { return (await SecureStore.getItemAsync(SK_AGENTIC)) !== '0'; } catch { return true; }
 }
 export async function setAgenticMode(on: boolean): Promise<void> {
   try { await SecureStore.setItemAsync(SK_AGENTIC, on ? '1' : '0'); } catch { /* ignore */ }
 }
 
-interface AgentCtx { snap: HealthSnapshot }
+interface AgentCtx {
+  snap: HealthSnapshot;
+  _cs?: Promise<any>;     // memoised CoachSnapshot (plan/ToF-budget/load context) — assembled once per turn
+  _comps?: Promise<any>;  // memoised daily-components map (recovery/strain/sleep/... history)
+}
 interface AgentTool {
   name: string;
   description: string;
   input_schema: any;
   run: (input: any, ctx: AgentCtx) => Promise<any>;
 }
+
+// The full coaching context (today's plan inputs, the rolling ToF budget, CTL/ATL/TSB, readiness, strain
+// band, next-run projection, weather) — the SAME snapshot the daily plan is built from. Memoised so several
+// tools in one turn don't recompute it (assembleCoachSnapshot is imported statically; safe — call-time only).
+async function coachSnap(ctx: AgentCtx): Promise<any> {
+  return (ctx._cs ??= assembleCoachSnapshot(ctx.snap.strain ?? null, ctx.snap.activities));
+}
+// Per-day KPI components (recovery/strain/sleep score/sleep bank/resting HR·HRV/resp rate/SpO₂/CTL/ATL/TSB),
+// ~4 months, window-invariant. Memoised per turn.
+async function dailyComps(ctx: AgentCtx): Promise<Record<string, Record<string, number>>> {
+  return (ctx._comps ??= fetchOurDailyComponents(4));
+}
+const toKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 const round = (n: number | undefined, d = 1) => { const f = 10 ** d; return Math.round(((n ?? 0)) * f) / f; };
 const paceStr = (secPerKm?: number) =>
@@ -101,11 +127,11 @@ const TOOLS: AgentTool[] = [
   {
     name: 'get_metric_series',
     description:
-      'Time series for a wellness or training-load metric over the last N days. metric = hrv (nightly RMSSD, ms), resting_hr (bpm), vo2max, sleep (hours), or ctl_atl_tsb (fitness / fatigue / form). Use to correlate wellness with performance.',
+      'Daily history for a wellness / training-load / KPI metric over the last N days. metric = hrv (nightly RMSSD, ms), resting_hr (bpm), vo2max, sleep (hours), ctl_atl_tsb (fitness/fatigue/form), recovery (0–100 score), strain (0–100 daily load %), sleep_score (0–100), sleep_bank (min vs need), respiratory_rate (br/min), or spo2 (%). Use to spot trends and correlate wellness with training.',
     input_schema: {
       type: 'object',
       properties: {
-        metric: { type: 'string', enum: ['hrv', 'resting_hr', 'vo2max', 'sleep', 'ctl_atl_tsb'] },
+        metric: { type: 'string', enum: ['hrv', 'resting_hr', 'vo2max', 'sleep', 'ctl_atl_tsb', 'recovery', 'strain', 'sleep_score', 'sleep_bank', 'respiratory_rate', 'spo2'] },
         days: { type: 'number', description: 'Lookback window in days (default 30).' },
       },
       required: ['metric'],
@@ -114,6 +140,19 @@ const TOOLS: AgentTool[] = [
       const cut = Date.now() - (Number(days) || 30) * 864e5;
       const within = (d: string) => new Date(d).getTime() >= cut;
       const s = ctx.snap;
+      // Sub-KPI series that live in the per-day components map (not on the snapshot).
+      const COMP_KEY: Record<string, [string, string]> = {
+        recovery: ['recoveryScore', 'score 0–100'], strain: ['strainScore', '% 0–100'],
+        sleep_score: ['sleepScore', 'score 0–100'], sleep_bank: ['sleepBank', 'min vs need'],
+        respiratory_rate: ['respiratoryRate', 'br/min'], spo2: ['oxygenSaturation', '%'],
+      };
+      if (COMP_KEY[metric]) {
+        const [key, unit] = COMP_KEY[metric];
+        const comps = await dailyComps(ctx);
+        const series = Object.keys(comps).filter(within).sort()
+          .map(d => ({ date: d, value: comps[d][key] })).filter(x => x.value != null).map(x => ({ date: x.date, value: round(x.value, 1) }));
+        return { metric, unit, series };
+      }
       switch (metric) {
         case 'hrv':
           return { metric, unit: 'ms RMSSD', series: (s.hrv ?? []).filter(x => within(x.date)).map(x => ({ date: day(x.date), value: round(x.value, 1) })) };
@@ -130,13 +169,115 @@ const TOOLS: AgentTool[] = [
       }
     },
   },
+  {
+    name: 'get_plan_context',
+    description:
+      "The live coaching state for TODAY — call this for ANY question about the plan, the volume budget, or how a run affects things (never guess these numbers). Returns today's prescription, the ROLLING 7-DAY TIME-ON-FEET BUDGET (minutes used vs the +cap% ceiling and how much is left today — every running minute is deducted from it), CTL/ATL/TSB, readiness & its drivers, today's strain vs the advisable band, ACWR, the next meaningful-run day, current Body Battery, and weather/heat.",
+    input_schema: { type: 'object', properties: {} },
+    run: async (_input, ctx) => {
+      const cs = await coachSnap(ctx);
+      const [plan, bb] = await Promise.all([
+        loadCachedPlan(cs.date).catch(() => null),
+        computeBodyBattery().catch(() => null),
+      ]);
+      return {
+        date: cs.date,
+        todays_plan: plan ? {
+          headline: plan.headline, session: plan.session, intensity: plan.intensity, kind: plan.sessionKind,
+          run_minutes: plan.runMinutes, run_km: plan.runKm ?? null,
+          structure: formatWorkoutStructure(plan.workout) || (plan.intensity === 'rest' ? 'rest' : null),
+        } : 'no plan cached yet today',
+        tof_budget: {
+          basis: cs.loadCapBasis, cap_pct: cs.loadCapPct,
+          last_7d_min: cs.tof7d, prev_7d_min: cs.tofPrev7d,
+          remaining_today_min: cs.tofBudgetTodayMin,
+          next_meaningful_run: cs.tofNextRunLabel ?? null, next_run_in_days: cs.tofNextRunInDays ?? null,
+          note: 'Every running minute (any zone) is deducted from this rolling +cap% 7-day time-on-feet budget.',
+        },
+        training_load: { ctl_fitness: cs.ctl, atl_fatigue: cs.atl, tsb_form: cs.tsb, acwr: cs.acwr },
+        readiness: cs.readiness ?? null, recovery: cs.recovery ?? null, drivers: cs.drivers ?? null,
+        strain_today: cs.strainReal ?? null, advisable_band: [cs.advisableLow ?? null, cs.advisableHigh ?? null],
+        wellness: { hrv: cs.hrv ?? null, resting_hr: cs.rhr ?? null, resp_rate: cs.respRate ?? null, spo2: cs.spO2 ?? null, sleep_score: cs.sleepScore ?? null, sleep_min: cs.sleepMin ?? null, sleep_debt_min: cs.sleepDebtMin ?? null },
+        body_battery: bb ? { current: Math.round(bb.current), stress: Math.round(bb.currentStress), trend_per_hour: round(bb.trendPerHour, 1), day_low: Math.round(bb.dayLow), day_high: Math.round(bb.dayHigh) } : null,
+        weather: cs.weather ? { temp_c: cs.weather.tempC, apparent_c: cs.weather.apparentC, humidity: cs.weather.humidity, description: cs.weather.description } : null,
+      };
+    },
+  },
+  {
+    name: 'get_week_plan',
+    description:
+      "The forward 7-day training schedule (today → +7): each day's session kind, intensity, prescribed minutes/km, structure and a short note. This is what the app has actually laid out — use it to answer 'what's my week', to reason about how today affects the rest of the week, or to critique/propose changes.",
+    input_schema: { type: 'object', properties: {} },
+    run: async (_input, ctx) => {
+      const cs = await coachSnap(ctx);
+      const cache = await loadWeekPlanCache(cs.date).catch(() => null);
+      const days = cache?.days ?? await getWeekPlan(cs).catch(() => []);
+      return {
+        generated_for: cache?.date ?? cs.date,
+        days: (days ?? []).map((d: any) => ({
+          date: d.date, weekday: d.weekday, kind: d.kind ?? null, intensity: d.intensity,
+          run_minutes: d.runMinutes, run_km: d.runKm ?? null, structure: d.structure, note: d.note,
+        })),
+      };
+    },
+  },
+  {
+    name: 'get_prescription_history',
+    description:
+      'What was PRESCRIBED each of the last N days vs what you actually RAN — so you can see plan adherence and how the coach has been progressing the athlete. Returns per day: the prescribed session (intensity/kind/minutes/structure) and the executed run minutes.',
+    input_schema: {
+      type: 'object',
+      properties: { days: { type: 'number', description: 'How many days back (default 14, max 60).' } },
+    },
+    run: async ({ days }, ctx) => {
+      const n = Math.max(1, Math.min(Number(days) || 14, 60));
+      const ranByDay = new Map<string, number>();
+      for (const r of ctx.snap.runs ?? []) {
+        const k = day(r.date);
+        ranByDay.set(k, (ranByDay.get(k) ?? 0) + Math.round(((r.workDuration ?? r.duration) ?? 0) / 60));
+      }
+      const now = new Date();
+      const rows: any[] = [];
+      for (let i = 0; i < n; i++) {
+        const key = toKey(new Date(now.getTime() - i * 864e5));
+        const plan = await loadCachedPlan(key).catch(() => null);
+        const ran = ranByDay.get(key) ?? 0;
+        if (!plan && !ran) continue;
+        rows.push({
+          date: key,
+          prescribed: plan ? { intensity: plan.intensity, kind: plan.sessionKind ?? null, min: plan.runMinutes, structure: formatWorkoutStructure(plan.workout) || (plan.intensity === 'rest' ? 'rest' : null) } : null,
+          executed_run_min: ran,
+        });
+      }
+      return { days: rows };
+    },
+  },
+  {
+    name: 'get_coaching_files',
+    description:
+      "The athlete's OWN editable coaching setup — their weekly schedule template, Power & HR zones, drills, athlete profile and any coaching notes. Call this when designing or critiquing a program, discussing zones/pace targets, or when you need the athlete's actual training structure rather than generic advice.",
+    input_schema: { type: 'object', properties: {} },
+    run: async () => {
+      const text = await buildKnowledgePrompt().catch(() => '');
+      return { coaching_files: text || 'No coaching files configured yet.' };
+    },
+  },
 ];
 
 const TOOLS_HINT =
-  '\n\nYou have TOOLS to pull data beyond the snapshot above: query_runs (list/filter runs), get_run_detail ' +
-  '(one run\'s km-splits + segments + HR/power), get_metric_series (hrv, resting_hr, vo2max, sleep, ctl_atl_tsb). ' +
-  'Call them when a precise answer needs data not already in context — e.g. comparing specific runs, inspecting ' +
-  "intervals, or correlating wellness with performance. Don't ask the user for data you can fetch. Keep the final answer concise.";
+  '\n\nYou have READ-ONLY TOOLS to pull the athlete\'s real data on demand — use them instead of guessing, and ' +
+  'NEVER ask the user for a number you can fetch yourself:\n' +
+  '• get_plan_context — today\'s prescription + the rolling 7-day time-on-feet BUDGET (used vs cap, remaining), ' +
+  'CTL/ATL/TSB, readiness, strain vs band, next-run day, Body Battery, weather. Call this for ANY plan/budget/' +
+  '"does this run fit" question — those numbers are NOT in the snapshot above.\n' +
+  '• get_week_plan — the forward 7-day schedule (kinds, minutes, structure) the app has laid out.\n' +
+  '• get_prescription_history — prescribed vs executed per day (adherence / how you\'ve been progressing them).\n' +
+  '• get_metric_series — daily history for hrv, resting_hr, vo2max, sleep, ctl_atl_tsb, recovery, strain, ' +
+  'sleep_score, sleep_bank, respiratory_rate, spo2.\n' +
+  '• query_runs / get_run_detail — list/filter runs; one run\'s km-splits + segments + HR/power.\n' +
+  '• get_coaching_files — the athlete\'s OWN weekly schedule, Power/HR zones, drills & profile (call before ' +
+  'designing/critiquing a program or discussing zones/paces).\n' +
+  'Chain tools freely (e.g. get_plan_context then get_week_plan) before answering. Keep the final answer concise and cite the numbers you pulled.';
 
 /** Anthropic tool schemas (no run fn) sent to the API. */
 const toolSchemas = () => TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema }));

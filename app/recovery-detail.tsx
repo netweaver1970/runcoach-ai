@@ -157,6 +157,7 @@ export default function RecoveryDetailScreen() {
             <Text style={s.rowSub}>Loading 30-day history…</Text>
           </View>
         )}
+        {!loadingH && (<>
         <Text style={s.sectionTitle}>RECOVERY METRICS</Text>
         <View style={s.card}>
           <SubKPICard label="Recovery Score" value={`${recoveryScore}`} unit="/100" history={[...(hist.recoveryScore ?? []), recoveryScore]} higherIsBetter color={color} onPress={() => navTo('recovery')} />
@@ -166,6 +167,7 @@ export default function RecoveryDetailScreen() {
           <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
           <SubKPICard label="Heart Rate Dip" value={last('heartRateDip') !== null ? `${last('heartRateDip')}` : '—'} unit="%" history={hist.heartRateDip ?? []} higherIsBetter color="#16a085" onPress={() => navTo('sleep-hrdip')} />
         </View>
+        </>)}
         <View style={{ height: 14 }} />
 
         {/* Detailed breakdown (z-scores, score build-up, last night's sleep) — today's snapshot only. */}

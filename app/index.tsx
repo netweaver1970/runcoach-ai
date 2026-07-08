@@ -52,7 +52,7 @@ import { requestNotificationPermissions } from '../src/services/notifications';
 import { trySyncSnapshot, fetchCoachPlanForDate } from '../src/services/cloudSync';
 import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
 import { maybeAutoRecalibrate, seedPowerZonesFromRuns } from '../src/services/zones';
-import { pushWorkoutToWatch } from '../src/services/watchWorkout';
+import { pushWorkoutToWatch, clearWatchWorkout } from '../src/services/watchWorkout';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { buildDayView, toDateKey } from '../src/services/dayView';
 import { markPrescriptionExecuted } from '../src/services/coachFiles';
@@ -252,6 +252,7 @@ export default function HomeScreen() {
           await saveCachedPlan(cs.date, plan); // same cache the home + Strain + watch read
           setRecommendation(coachPlanToRec(plan));
           if (plan.workout) pushWorkoutToWatch(plan.workout).catch(() => {}); // auto-send today's session to the watch
+          else clearWatchWorkout().catch(() => {}); // rest / session-done → clear the wrist (don't leave a stale workout)
         } else {
           setRecommendation({ type: 'Rest', duration: '—', zone: '—', reason: "Waiting for your coach to set today's session." });
         }
@@ -272,7 +273,10 @@ export default function HomeScreen() {
       }
       setRecommendation(coachPlanToRec(plan));
       // Auto-send today's session to the watch (the home no longer relies on opening the Strain screen).
-      if (plan?.workout) pushWorkoutToWatch(plan.workout).catch(() => {});
+      // Auto-send today's session — but NOT an OPTIONAL post-completion 2nd run (that's opt-in; send it
+      // yourself from the coach screen). Rest / session-done / optional-2nd → clear the wrist.
+      if (plan?.workout && !plan.optional2nd) pushWorkoutToWatch(plan.workout).catch(() => {});
+      else clearWatchWorkout().catch(() => {});
     } catch {
       // silently ignore — card simply won't appear/update
     } finally {
@@ -607,9 +611,15 @@ export default function HomeScreen() {
   // tops up the strain. The top-up reflects the live strain, which already includes both — and
   // once the ceiling is reached we say so instead of nagging for more.
   const completion = (() => {
-    if (!recommendation || recommendation.type === 'Rest') return null;
+    // Compute even when the plan is Rest — once today's run is done, the completion-aware plan flips to
+    // "session done → recover" (a rest), and we still want the "Completed X min · done ✓" credit to show.
+    if (!recommendation) return null;
     const todaysRuns = allRuns.filter(r => toDateKey(new Date(r.date)) === todayKey);
-    const todaysActs = (snapshot?.activities ?? []).filter(a => toDateKey(new Date(a.date)) === todayKey);
+    // snapshot.activities maps ALL workout types INCLUDING runs, so exclude runs here — they're already
+    // counted in todaysRuns. Without this a single run shows twice ("Completed 21 min ... +45min Run").
+    const todaysActs = (snapshot?.activities ?? [])
+      .filter(a => toDateKey(new Date(a.date)) === todayKey)
+      .filter(a => activityCategory(a.activityType) !== 'Run');
     if (todaysRuns.length === 0 && todaysActs.length === 0) return null; // nothing logged today
     const runMin = Math.round(todaysRuns.reduce((s, r) => s + (r.workDuration ?? r.duration), 0) / 60);
     const runKm  = todaysRuns.reduce((s, r) => s + r.distance, 0) / 1000;
@@ -967,13 +977,23 @@ function coachPlanToRec(p: CoachPlan): TrainingRecommendation {
   }
   const zones = p.workout.blocks.map(b => b.hrZone).filter((z): z is string => !!z);
   const zone  = zones.sort().pop() ?? ''; // hardest zone of the day (Z1<…<Z5 lexically)
+  // Label from the CANONICAL session kind (the coach's intent) — NOT the hardest HR zone, which mislabelled
+  // a tempo carrying a Z4 "push" as "Intervals". Fall back to the zone/intensity heuristic only for cloud/
+  // coach-mode plans that predate sessionKind.
+  const KIND_TO_TYPE: Record<string, TrainingRecommendation['type']> = {
+    intervals: 'Intervals', tempo: 'Tempo', long: 'LongRun', easy: 'Z2', recovery: 'Easy',
+  };
   const type: TrainingRecommendation['type'] =
-    zone === 'Z1' ? 'Easy' :
-    zone === 'Z2' ? 'Z2' :
-    zone === 'Z3' ? 'Tempo' :
-    (zone === 'Z4' || zone === 'Z5') ? 'Intervals' :
-    (p.intensity === 'easy' ? 'Z2' : p.intensity === 'hard' ? 'Intervals' : 'Tempo');
-  return { type, duration: p.runKm != null ? `${p.runKm} km` : `${p.runMinutes} min`, zone: zone || '—', structure: formatWorkoutStructure(p.workout), reason: p.headline || p.rationale };
+    (p.sessionKind && KIND_TO_TYPE[p.sessionKind]) ??
+    (zone === 'Z1' ? 'Easy' :
+     zone === 'Z2' ? 'Z2' :
+     zone === 'Z3' ? 'Tempo' :
+     (zone === 'Z4' || zone === 'Z5') ? 'Intervals' :
+     (p.intensity === 'easy' ? 'Z2' : p.intensity === 'hard' ? 'Intervals' : 'Tempo'));
+  const duration = p.secondSession
+    ? `${p.runMinutes} + ${p.secondSession.runMinutes} min (split)`
+    : (p.runKm != null ? `${p.runKm} km` : `${p.runMinutes} min`);
+  return { type, duration, zone: zone || '—', structure: formatWorkoutStructure(p.workout), reason: p.headline || p.rationale, optional2nd: p.optional2nd };
 }
 
 // ─── Training Recommendation Card ────────────────────────────────────────────
@@ -1014,9 +1034,9 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
         <Text style={recStyles.icon}>{icon}</Text>
         <View style={{ flex: 1 }}>
           <Text style={[recStyles.type, { color }]}>
-            {typeNm}{runDone ? '  ·  done ✓' : ''}
+            {runDone ? 'Session done ✓' : typeNm}
           </Text>
-          {rec.type !== 'Rest' && (
+          {(rec.type !== 'Rest' || runDone) && (
             <Text style={recStyles.meta}>
               {runDone
                 ? `Completed ${completion!.runMin} min${completion!.runKm >= 0.1 ? ` · ${completion!.runKm.toFixed(1)} km` : ''}${xMin > 0 ? `  ·  +${xMin}min ${completion!.xLabel}` : ''}`
@@ -1029,14 +1049,18 @@ function TrainingRecommendationCard({ rec, loading, strain, onPress, completion 
         </Text>
       </View>
 
-      {atCeiling ? (
+      {rec.optional2nd ? (
+        <Text style={[recStyles.reason, { color: '#22C55E', fontWeight: '700' }]} numberOfLines={2}>
+          ✓ Done — OPTIONAL easy {rec.duration} top-up if you're fresh (tomorrow rests). Tap to send it to the watch ›
+        </Text>
+      ) : atCeiling ? (
         <Text style={[recStyles.reason, { color: '#22C55E', fontWeight: '700' }]}>
           ✓ Strain target reached — you're at {completion!.strainReal}%, top of your {strain!.safeLow}–{strain!.safeHigh}% band.
         </Text>
       ) : completion?.topUp ? (
         <Text style={recStyles.topUp} numberOfLines={1}>⚡ {completion.topUp}</Text>
       ) : (
-        <Text style={recStyles.reason}>{runDone ? 'Prescribed session done. ✓' : rec.reason}</Text>
+        <Text style={recStyles.reason}>{runDone ? 'Prescribed session done — recover. ✓' : rec.reason}</Text>
       )}
 
       {rec.nextRunLabel && (

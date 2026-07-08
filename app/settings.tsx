@@ -41,7 +41,7 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
 import { getPlanMode, setPlanMode, getRaceConfig, setRaceConfig, PlanMode } from '../src/services/racePlan';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -102,6 +102,7 @@ export default function SettingsScreen() {
   const [raceSaved, setRaceSaved] = useState(false);
   const [accMode, setAccModeState] = useState<AccountingMode>('work');
   const [coachMode, setCoachModeState] = useState<CoachingMode>('self');
+  const [longRunStyle, setLongRunStyleState] = useState<LongRunStyle>('long');
   const [maxHr, setMaxHr] = useState('');
   const [maxHrSaved, setMaxHrSaved] = useState(false);
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
@@ -156,6 +157,7 @@ export default function SettingsScreen() {
     });
     getAccountingMode().then(setAccModeState);
     getCoachingMode().then(setCoachModeState);
+    getLongRunStyle().then(setLongRunStyleState);
     getUserMaxHr().then(h => setMaxHr(h > 0 ? String(h) : ''));
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
@@ -801,6 +803,29 @@ export default function SettingsScreen() {
               <Text style={styles.btnText}>{longRunSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
+        </Section>
+
+        <Section title="Long Run Style" cat="zones">
+          <Text style={styles.hint}>
+            How a scheduled long run is delivered. Splitting keeps the aerobic volume with less heat &amp;
+            injury load, but a continuous long run builds more race-specific durability.
+          </Text>
+          <View style={styles.providerTabs}>
+            {([['long', 'Whole'], ['auto', 'Auto'], ['optin', 'Opt-in']] as [LongRunStyle, string][]).map(([v, label]) => (
+              <TouchableOpacity
+                key={v}
+                style={[styles.providerTab, longRunStyle === v && styles.providerTabActive]}
+                onPress={async () => { setLongRunStyleState(v); await setLongRunStyle(v); }}
+              >
+                <Text style={[styles.providerTabText, longRunStyle === v && styles.providerTabTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.hint}>
+            {longRunStyle === 'long'  ? 'Always one continuous long run (never split).'
+             : longRunStyle === 'auto' ? 'Coach may split it on hot, low-readiness, or over-budget days — never in a race peak.'
+             : 'Only split when you turn it on for that day (a toggle appears on the Daily Coach on long-run days).'}
+          </Text>
         </Section>
 
         <Section title="Max Heart Rate" cat="zones">

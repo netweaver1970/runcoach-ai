@@ -534,7 +534,9 @@ export default function StrainDetailScreen() {
           </>
         )}
 
-        {/* Sub-KPI metrics (sleep-detail pattern: sparkline + tap → history) */}
+        {/* Sub-KPI metrics — hidden while the history refresh runs (the spinner above stands in), so
+            the old period's numbers don't linger and swap live. */}
+        {!loadingH && (<>
         <Text style={s.sectionTitle}>STRAIN METRICS</Text>
         <View style={s.card}>
           <SubKPICard label="Strain Score"      value={last('strainScore') !== null ? `${last('strainScore')}` : `${real}`} unit="%" history={hist.strainScore ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('strain')} />
@@ -544,6 +546,7 @@ export default function StrainDetailScreen() {
           <SubKPICard label="Total Energy"       value={last('totalEnergy') !== null ? `${last('totalEnergy')}` : '—'} unit="kcal" history={hist.totalEnergy ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('total-energy')} />
           <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
         </View>
+        </>)}
 
       </ScrollView>
       </View>

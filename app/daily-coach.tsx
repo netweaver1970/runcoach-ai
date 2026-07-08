@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl,
+  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl, Switch,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, CoachPlan } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -40,6 +40,15 @@ export default function DailyCoachScreen() {
   const [planLoading, setPlanLoading] = useState(false);   // deterministic (fast) generate/regenerate
   const [proseLoading, setProseLoading] = useState(false); // on-request LLM coach's-notes
   const [planError, setPlanError] = useState<string | null>(null);
+  // In COACH mode the plan is authored in the cloud (the home caches it locally) — this screen must only
+  // DISPLAY it, never self-regenerate a deterministic plan over the coach's prescription. Default true so
+  // self mode (the common case) is unaffected while the mode loads.
+  const [selfMode, setSelfMode] = useState(true);
+  useEffect(() => { getCoachingMode().then(m => setSelfMode(m !== 'coach')).catch(() => {}); }, []);
+  // Long-run style + per-day opt-in (drives the "Split this long run" toggle shown on long days).
+  const [longStyle, setLongStyle] = useState<LongRunStyle>('long');
+  const [splitOptIn, setSplitOptIn] = useState(false);
+  const [part2Sending, setPart2Sending] = useState(false);
   const llm = useLLMReady();
   const [watchSending, setWatchSending] = useState(false);
   const [watchMsg, setWatchMsg] = useState<string | null>(null);
@@ -105,16 +114,21 @@ export default function DailyCoachScreen() {
   const strainObj = strain ?? snapStrain;
 
   // The coach plan is built for the VIEWED day (the `date` param), not just today.
-  const dates      = Object.keys(comps).sort();
-  const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
+  const dates        = Object.keys(comps).sort();
+  const realTodayKey = toDateKey(new Date());
+  // Viewing TODAY must resolve to today's plan even before today's components are computed — otherwise it
+  // silently falls back to the last day WITH data (yesterday), showing a stale "yesterday" plan while the
+  // strain hero + title (from the snapshot/params) show today. Only a specific PAST day with data targets it.
+  const targetDate = (date && comps[date]) ? date
+                   : (!date || date === realTodayKey) ? realTodayKey
+                   : (dates.length ? dates[dates.length - 1] : realTodayKey);
   const target     = comps[targetDate] ?? {};
-  const targetIsToday = targetDate === toDateKey(new Date());
+  const targetIsToday = targetDate === realTodayKey;
 
   const real   = strainObj?.real ?? Math.round((target.strainScore as number) ?? 0);
   const status = strainObj ? strainStatus(strainObj) : { label: '—', color: '#888' };
   // "est." readiness: viewing today but there's no overnight recovery for last night (watch not worn)
   // → the recovery/readiness shown is the last-known estimate, not today's. (History days have data.)
-  const realTodayKey = toDateKey(new Date());
   const wantToday = !date || date === realTodayKey;
   const todayRec = comps[realTodayKey];
   const recoveryStale = wantToday && dates.length > 0 && (!todayRec || (!todayRec.timeAsleep && todayRec.restingHrv == null));
@@ -172,12 +186,21 @@ export default function DailyCoachScreen() {
 
   // Load any plan already cached for the viewed day (one per calendar day).
   const staleRegenRef = useRef(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
   useEffect(() => {
     staleRegenRef.current = false;
     setPlan(null);
     setRunAdj(null);
-    loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); });
+    setCacheChecked(false);
+    loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); setCacheChecked(true); });
   }, [targetDate]);
+
+  // Long-run style + this day's split opt-in (for the toggle shown on long-run days).
+  useEffect(() => {
+    getLongRunStyle().then(setLongStyle).catch(() => {});
+    getLongSplitOptIn(targetDate).then(setSplitOptIn).catch(() => {});
+  }, [targetDate]);
+  const isLongDay = plan?.sessionKind === 'long';
 
   // useLLM=false → fast DETERMINISTIC plan (the default: morning prep, auto-refresh, ↻ Regenerate).
   // useLLM=true  → on-request LLM prose (the "Coach's notes" button), the ONLY path that hits the model.
@@ -219,7 +242,9 @@ export default function DailyCoachScreen() {
         loadCapPct:        capCtx?.capPct,
         loadBudgetToday:   capCtx?.cap.budgetTodayMin,
         loadUnit:          capCtx?.loadUnit,
-        yesterdayStrain:   strainHistUpTo.length >= 2 ? strainHistUpTo[strainHistUpTo.length - 2] : undefined,
+        // Yesterday's strain by DATE (not strainHistUpTo[length-2], which reads the day-before-yesterday
+        // whenever today's components aren't in `comps` yet — the "yesterday's intervals" ghost).
+        yesterdayStrain:   comps[toDateKey(new Date(new Date(targetDate + 'T00:00:00').getTime() - 86_400_000))]?.strainScore,
         powerZones,
         // Live weather only makes sense for today; past days had different conditions.
         weather: (targetIsToday && weather) ? {
@@ -236,7 +261,9 @@ export default function DailyCoachScreen() {
       const saved: CoachPlan = { ...p, workout: wk };
       setPlan(saved);
       await saveCachedPlan(targetDate, saved);
-      if (targetIsToday && wk) {
+      // Auto-send today's session to the watch — but NOT an OPTIONAL post-completion 2nd run (it's opt-in;
+      // the athlete taps "Send to Watch" below if they want it).
+      if (targetIsToday && wk && !saved.optional2nd) {
         pushWorkoutToWatch(wk).then(ok => ok && setWatchMsg('✓ Auto-sent to watch')).catch(() => {});
       }
     } catch (e: any) {
@@ -254,7 +281,14 @@ export default function DailyCoachScreen() {
     // Wait for capCtx: regenerating before the cap is known would produce an UNCAPPED run (a ghost), and
     // staleRegenRef would then block the correct capped regen once capCtx loads — the "ghost run until I
     // press Generate" bug. Only auto-refresh once the cap context is in.
-    if (!plan || !weather || !targetIsToday || planLoading || proseLoading || !capCtx || !strainObj || staleRegenRef.current) return;
+    if (!weather || !targetIsToday || planLoading || proseLoading || !capCtx || !strainObj || staleRegenRef.current) return;
+    if (!selfMode) return;   // coach mode: the coach owns the plan — display only, never self-regenerate
+    if (!plan) {
+      // No plan cached for today (e.g. the morning flow didn't run) — generate one once the cache lookup
+      // has resolved (so we don't race it and double-generate before a cached plan loads).
+      if (cacheChecked) { staleRegenRef.current = true; requestPlan(false); }
+      return;
+    }
     const snapLike = {
       weather: { apparentC: weather.apparentC, tempC: weather.tempC },
       strainReal: real,
@@ -277,7 +311,7 @@ export default function DailyCoachScreen() {
         requestPlan(false);   // deterministic — auto-refresh never hits the LLM
       }
     })();
-  }, [plan, weather, targetIsToday, planLoading, real, capCtx]);
+  }, [plan, weather, targetIsToday, planLoading, proseLoading, real, strainObj, capCtx, cacheChecked, selfMode]);
 
   return (
     <SafeAreaView style={s.container}>
@@ -347,7 +381,13 @@ export default function DailyCoachScreen() {
         {/* Coach's plan — LLM, fed the full picture per current training guidelines */}
         <Text style={s.sectionTitle}>COACH'S PLAN</Text>
         <View style={s.coachCard}>
-          {plan ? (
+          {planLoading ? (
+            // While (re)generating, show a spinner instead of the stale plan — so the swap isn't a surprise.
+            <View style={{ paddingVertical: 28, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={status.color} />
+              <Text style={[s.coachRefresh, { marginTop: 10 }]}>Preparing today's plan…</Text>
+            </View>
+          ) : plan ? (
             <>
               <Text style={s.coachHeadline}>{plan.headline}</Text>
               <View style={s.coachRow}>
@@ -375,6 +415,20 @@ export default function DailyCoachScreen() {
               ) : null}
               <Text style={s.coachRationale}>{plan.rationale}</Text>
               {plan.cautions ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
+
+              {/* Opt-in split toggle — only on a long-run day when the Long-run style is "Opt-in". */}
+              {isLongDay && longStyle === 'optin' && targetIsToday && (
+                <View style={s.splitRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.splitLabel}>Split this long run</Text>
+                    <Text style={s.splitSub}>Deliver it as two shorter Z2 runs today (Part 1 now + Part 2 later).</Text>
+                  </View>
+                  <Switch
+                    value={splitOptIn}
+                    onValueChange={async v => { setSplitOptIn(v); await setLongSplitOptIn(targetDate, v); requestPlan(false); }}
+                  />
+                </View>
+              )}
 
               {watchWorkout && (
                 <View style={s.workoutBox}>
@@ -426,6 +480,42 @@ export default function DailyCoachScreen() {
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
+              {/* SPLIT LONG RUN — Part 2 (the later easy run). Shown below Part 1; the watch takes one workout
+                  at a time, so Part 1 auto-sends and Part 2 is sent on demand once you're ready for it. */}
+              {plan.secondSession && plan.secondSession.workout && (
+                <View style={[s.workoutBox, { borderColor: '#3498db55' }]}>
+                  <Text style={s.workoutTitle}>🔁 {plan.secondSession.label} · later today</Text>
+                  <Text style={s.coachSession}>
+                    {plan.secondSession.runMinutes} min easy Z2 · leave ~{plan.secondSession.earliestAfterHrs ?? 4}h after Part 1.
+                  </Text>
+                  <Text style={s.workoutStep}>1. Warm-up {plan.secondSession.workout.warmupMeters} m</Text>
+                  {plan.secondSession.workout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {plan.secondSession.workout.drillsMinutes} min</Text>}
+                  {plan.secondSession.workout.blocks.map((b, idx) => (
+                    <Text key={idx} style={s.workoutStep}>
+                      {plan.secondSession!.workout!.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.workMinutes}m
+                      {b.hrZone ? ` @ ${b.hrZone}` : ''}
+                      {b.powerLowWatts && b.powerHighWatts ? ` ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
+                    </Text>
+                  ))}
+                  <Text style={s.workoutStep}>Cool-down {plan.secondSession.workout.cooldownMeters} m</Text>
+                  <TouchableOpacity
+                    style={s.watchBtn}
+                    disabled={part2Sending}
+                    onPress={async () => {
+                      setPart2Sending(true); setWatchMsg(null);
+                      try {
+                        if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
+                        const ok = await pushWorkoutToWatch(plan.secondSession!.workout!);
+                        setWatchMsg(ok ? '✓ Part 2 sent — replaces Part 1 on the watch.' : 'Could not send Part 2.');
+                      } catch (e: any) { setWatchMsg(e?.message ?? 'Send failed.'); }
+                      finally { setPart2Sending(false); }
+                    }}
+                  >
+                    <Text style={s.watchBtnText}>{part2Sending ? 'Sending…' : '⌚ Send Part 2 to Watch'}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {!watchWorkout && plan.intensity === 'rest' && (
                 <Text style={s.workoutStep}>⌚ Rest day — no watch workout pushed.</Text>
               )}
@@ -580,6 +670,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },
   coachCaution: { fontSize: 12, color: '#e67e22', marginTop: 8, lineHeight: 18 },
+  splitRow:    { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 12, paddingVertical: 6 },
+  splitLabel:  { fontSize: 14, color: c.text, fontWeight: '700' },
+  splitSub:    { fontSize: 12, color: c.textSub, marginTop: 2, lineHeight: 16 },
   coachRefresh: { fontSize: 12, color: c.accent, fontWeight: '600', marginTop: 12 },
   proseBtn:     { borderRadius: 10, paddingVertical: 10, alignItems: 'center', borderWidth: 1.5, marginTop: 14 },
   proseBtnText: { fontWeight: '700', fontSize: 13 },

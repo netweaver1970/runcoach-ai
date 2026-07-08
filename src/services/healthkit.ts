@@ -3314,10 +3314,14 @@ function workDrillsTotals(w: any, regime: AccountingMode = 'work'): { seconds: n
     }
   }
   const inc = (s: { label: string }) => !TOF_EXCLUDE_PHASE.test(s.label);
-  return {
-    seconds: segs.reduce((sum, s) => sum + (inc(s) ? s.durationSec : 0), 0),
-    meters:  segs.reduce((sum, s) => sum + (inc(s) ? s.distanceM  : 0), 0),
-  };
+  const workSec = segs.reduce((sum, s) => sum + (inc(s) ? s.durationSec : 0), 0);
+  const workM   = segs.reduce((sum, s) => sum + (inc(s) ? s.distanceM  : 0), 0);
+  // A STRUCTURED run whose raw HK step labels all resolve to excluded phases (warm/cool/recover/…) would
+  // sum to 0 — e.g. a tempo whose work block isn't literally tagged "Work" (the snapshot path fixes this via
+  // relabelByPhases; this raw path doesn't). Don't drop the whole run's time-on-feet: fall back to the total,
+  // matching the zero-segment guard above. Without this the coach reads todayDone≈0 and re-prescribes a done run.
+  if (workSec === 0) return { seconds: totalSec, meters: totalM };
+  return { seconds: workSec, meters: workM };
 }
 
 // Per-day running WORK+DRILLS totals (runs only). `pick` selects minutes or km.

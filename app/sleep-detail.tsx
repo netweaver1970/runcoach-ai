@@ -383,7 +383,8 @@ export default function SleepDetailScreen() {
         {/* Sleep Stages (Bevel-style hypnogram + rings + share) */}
         <SleepStagesCard session={sleep} sleepNeededMin={sleepNeeded} palette={pal} />
 
-        {/* Sub-KPI section */}
+        {/* Sub-KPI section — hidden during the history refresh so the spinner stands in (no stale swap). */}
+        {!loadingH && (<>
         <Text style={[s.sectionTitle, { marginTop: 18 }]}>SLEEP METRICS</Text>
         <View style={s.kpiList}>
 
@@ -475,6 +476,7 @@ export default function SleepDetailScreen() {
             onPress={() => navTo('sleep-bank')}
           />
         </View>
+        </>)}
 
         {/* Score Breakdown */}
         <Text style={[s.sectionTitle, { marginTop: 16 }]}>SCORE BREAKDOWN</Text>

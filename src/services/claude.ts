@@ -580,6 +580,19 @@ Rules: cite real numbers, 2–4 sentences per section, skip sections with no dat
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
 
+// Coaching intelligence: how THIS app models training (so the coach reads the same numbers the plan does and
+// never invents them) + the program-design principles it should reason from. Fetch live numbers with the tools.
+const COACH_KNOWLEDGE = `## How this app models training (fetch the live numbers with get_plan_context — never guess them)
+- TIME-ON-FEET BUDGET: every running minute (any zone) is deducted from a rolling +cap% 7-day budget — the trailing-7-day total must stay ≤ (1+cap%)× the total of the 7 days before it. When a run won't fit, it's deferred; "today ≤ X min" is the remaining budget. This is the master volume guardrail.
+- LOAD: CTL (fitness, Banister EWMA τ≈42d), ATL (fatigue, τ≈7d), TSB = CTL−ATL (form). ACWR = ATL/CTL (safe ~0.8–1.3). Readiness is recovery-anchored (HRV/RHR/sleep) and gates quality (green ≥60 → full session; below → eased to easy). Daily STRAIN is a TRIMP-based % kept inside an advisable band set by recovery + form.
+- RULES: completion-aware — once the athlete has done today's prescribed session, no 2nd run is prescribed (recover); a 2nd run only to complete a genuinely cut-short session and only if every cap/TSB/heat/recovery gate still has room. Long runs may be split into two easy Z2 parts (heat/injury/leisure). Heat trims prescribed minutes.
+
+## Program-design principles to reason from
+- Polarised ~80/20: most volume easy (Z1–Z2), a minority hard; keep easy easy and hard hard. Recovery is where adaptation happens — don't stack quality days back-to-back.
+- Periodise: progressive overload (~≤10%/wk volume) in build weeks, then a deload; keep ACWR in the safe zone. Specificity + consistency beat heroics.
+- Session purpose: long run → aerobic durability/fat-oxidation; tempo/threshold → lactate clearance; intervals (Z4–5) → VO2/economy; easy → volume + recovery. Taper into races. Sleep/HRV/RHR trends flag under-recovery before performance drops.
+Use the tools to ground every claim in the athlete's actual budget, plan, history and KPIs; cite the numbers.`;
+
 function buildChatSystemPrompt(
   snap:          HealthSnapshot,
   memoryNote?:   string,
@@ -597,6 +610,8 @@ function buildChatSystemPrompt(
 
   let prompt = `You are a personal running coach in a runner's iPhone app. ${timeHeader}.
 Concise answers, phone-friendly. Cite numbers. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
+
+${COACH_KNOWLEDGE}
 
 ${buildDataBlock(snap, maxRuns)}`;
 
@@ -814,5 +829,6 @@ export interface TrainingRecommendation {
   structure?: string;     // concise run structure, e.g. "3× 10min @ 180–205W" or "60min @ 205W"
   reason: string;
   nextRunLabel?: string;  // when the volume cap blocks a run today: when the next one fits, e.g. "Thu 26 Jun"
+  optional2nd?: boolean;   // this run is an OPTIONAL post-completion top-up (offered, not auto-pushed)
 }
 

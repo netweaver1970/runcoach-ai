@@ -64,6 +64,9 @@ export interface CoachSnapshot {
 }
 
 export type CoachIntensity = 'rest' | 'easy' | 'moderate' | 'hard';
+// Canonical session TYPE — the single source of truth for the UI label (home card / headline / watch),
+// so a tempo carrying a Z4 "push" block is never mislabelled "Intervals" from its hardest zone.
+export type SessionKind = 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery';
 
 // A structured running workout for the Apple Watch (WorkoutKit): warmup → drills →
 // work/recovery blocks → cooldown. Null on rest days (no watch workout pushed).
@@ -101,7 +104,17 @@ export interface CoachPlan {
   generatedAt: string;
   genTempC?:  number;        // apparent temp (°C) when generated — for staleness checks
   genStrain?: number;        // the day's accumulated strain when generated
+  genReadiness?: number;     // readiness (0–100) when generated — morning plans use STALE (yesterday's) readiness
+                             // before overnight HRV/sleep lands; refresh once it crosses the green (≥60) gate
   shrinkForced?: boolean;    // shrink-to-fit placed this quality on its day OVER the cap → skip the budget/cap refresh checks
+  sessionKind?: SessionKind; // canonical type → drives the honest UI label (not the workout's hardest zone)
+  secondSession?: {          // present ONLY on a split long run — the day's Part 2 (a later easy/Z2 run)
+    runMinutes: number;
+    workout: WatchWorkout | null;
+    label: string;           // e.g. "Long run — Part 2"
+    earliestAfterHrs?: number; // suggested gap before Part 2 (glycogen/partial recovery), e.g. 4
+  } | null;
+  optional2nd?: boolean;     // this run is an OPTIONAL post-completion top-up (not auto-pushed to the watch)
 }
 
 // A cached plan goes stale when the day's conditions drift from when it was written:
@@ -116,6 +129,31 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   if (nowTemp != null && plan.genTempC == null) return true;
   if (plan.genTempC != null && nowTemp != null && Math.abs(nowTemp - plan.genTempC) >= TEMP_DRIFT_C) return true;
   if (plan.genStrain != null && snap.strainReal != null && Math.abs(snap.strainReal - plan.genStrain) >= STRAIN_DRIFT) return true;
+  // A plan from before readiness-tracking has no genReadiness — refresh it once so it picks up today's
+  // readiness (and gets stamped for future flip checks). Mirrors the genTempC bootstrap above; without it,
+  // TODAY's already-cached (pre-upgrade) eased plan would never self-correct.
+  if (snap.readiness != null && plan.genReadiness == null) return true;
+  // A plan from before the canonical-kind upgrade has no sessionKind — refresh once so it picks up the
+  // honest label + the tempo≤Z3 clamp + split support. Every regenerated plan now stamps sessionKind, so
+  // this fires at most once (self mode only — coach mode returns before planNeedsRefresh).
+  if (plan.intensity !== 'rest' && plan.sessionKind == null) return true;
+  // The "optional 2nd run" concept was retired — any plan still carrying that flag is STALE (from an older
+  // build) and must regenerate to the current logic ("session done → recover"). Fires at most once: the new
+  // plan never sets optional2nd, so it can't loop.
+  if (plan.optional2nd) return true;
+  // COMPLETION: today's prescribed run is now essentially DONE (you ran ≥70% of it). Regenerate so the plan
+  // becomes "session done → recover" instead of re-offering the session you just did — the "2nd run ghost".
+  // Skipped once the plan is already a rest (no re-loop).
+  const doneToday = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
+  if (plan.intensity !== 'rest' && !plan.secondSession
+      && doneToday >= Math.max(15, Math.round((plan.runMinutes ?? 0) * 0.7))) return true;
+  // Readiness crossed the green (≥60) gate since the plan was written. The morning plan is often built on
+  // STALE readiness — yesterday's recovery, because last night's HRV/sleep hasn't landed yet — so a scheduled
+  // tempo/intervals day gets eased to "easy Z2" (green=false). Once today's recovery is in and readiness goes
+  // green, the fresh compute is the real quality session. This is THE fix for the home + Daily Coach showing a
+  // stale eased plan all day (planNeedsRefresh previously never re-checked readiness). Symmetric: green→red re-eases.
+  if (plan.genReadiness != null && snap.readiness != null
+      && (plan.genReadiness >= 60) !== (snap.readiness >= 60)) return true;
   // Budget / cap-flip checks — SKIPPED for a shrink-to-fit / race plan that intentionally holds a session
   // over the cap (otherwise it would refresh forever against its own over-budget minutes). EXCEPTION: once
   // you've actually RUN today, the forced session is DONE → re-check so it can't keep prescribing another
@@ -229,15 +267,24 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
   if (intensity === 'rest' || !o || typeof o !== 'object') return null;
   const rawBlocks = Array.isArray(o.blocks) ? o.blocks : [];
   const watts = (v: any) => { const n = num(v); return n != null ? Math.max(50, Math.min(700, Math.round(n))) : undefined; };
-  const blocks: WatchWorkoutBlock[] = rawBlocks.slice(0, 8).map((b: any) => ({
-    repeats:     Math.max(1, Math.min(30, Math.round(num(b?.repeats) ?? 1))),
-    workMinutes: Math.max(0.5, Math.min(120, num(b?.workMinutes) ?? 5)),
-    restMinutes: Math.max(0, Math.min(30, num(b?.restMinutes) ?? 0)),
-    hrZone: typeof b?.hrZone === 'string' && /^Z[1-5]$/.test(b.hrZone) ? b.hrZone : undefined,
-    powerLowWatts:  watts(b?.powerLowWatts),
-    powerHighWatts: watts(b?.powerHighWatts),
-    label: b?.label ? String(b.label).slice(0, 40) : undefined,
-  })).filter((b: WatchWorkoutBlock) => b.workMinutes > 0);
+  // Clamp the workout to the session's rating: a moderate/tempo day is ≤ Z3, an easy day ≤ Z2 — the LLM
+  // must not slip a Z4/Z5 "push" into a tempo (that read as "Intervals" on the home + violated the
+  // same-rating rule). Only true intervals (intensity 'hard') may go Z4/Z5.
+  const maxZone = intensity === 'hard' ? 5 : intensity === 'moderate' ? 3 : 2;
+  const blocks: WatchWorkoutBlock[] = rawBlocks.slice(0, 8).map((b: any) => {
+    const rawZone = typeof b?.hrZone === 'string' && /^Z[1-5]$/.test(b.hrZone) ? b.hrZone : undefined;
+    const zone = rawZone && Number(rawZone[1]) > maxZone ? `Z${maxZone}` : rawZone;
+    const downgraded = rawZone != null && zone !== rawZone;   // watts belong to the OLD zone → drop, ensureBlockPower refills
+    return {
+      repeats:     Math.max(1, Math.min(30, Math.round(num(b?.repeats) ?? 1))),
+      workMinutes: Math.max(0.5, Math.min(120, num(b?.workMinutes) ?? 5)),
+      restMinutes: Math.max(0, Math.min(30, num(b?.restMinutes) ?? 0)),
+      hrZone: zone,
+      powerLowWatts:  downgraded ? undefined : watts(b?.powerLowWatts),
+      powerHighWatts: downgraded ? undefined : watts(b?.powerHighWatts),
+      label: b?.label ? String(b.label).slice(0, 40) : undefined,
+    };
+  }).filter((b: WatchWorkoutBlock) => b.workMinutes > 0);
   if (blocks.length === 0) return null;
   return {
     name,
@@ -578,13 +625,14 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
       strength: st === 'injured' ? 'Only pain-free mobility/rehab as advised by your physio.' : STRENGTH_DEFAULT,
       intensity: 'rest', runMinutes: 0,
       rationale: `Athlete status "${label}" — running suppressed until cleared.`,
-      cautions: undefined, workout: null,
+      cautions: undefined, workout: null, sessionKind: 'recovery', secondSession: null,
       strainLow: clampScore(snap.advisableLow, 30), strainHigh: clampScore(snap.advisableHigh, 60),
       generatedAt: new Date().toISOString(),
       // Stamp conditions like every other plan — without these, planNeedsRefresh saw genTempC == null and
       // regenerated (an LLM call in self-mode) on EVERY home refresh for as long as the status was set.
       genTempC:  snap.weather?.apparentC ?? snap.weather?.tempC,
       genStrain: snap.strainReal,
+      genReadiness: snap.readiness,   // stamp on EVERY path so the genReadiness==null bootstrap can't loop
     };
   }
   const capPct      = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
@@ -633,6 +681,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     generatedAt: new Date().toISOString(),
     genTempC:  apparentC,
     genStrain: snap.strainReal,
+    genReadiness: snap.readiness,
   };
 
   // Cap reached → mandatory recovery day, unless a session is genuinely being force-placed today (shrink
@@ -643,7 +692,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
       session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${nextRunLabel ?? 'in a couple of days'}.`,
       strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
       rationale: bandPhrase(strainReal, strainLow, strainHigh, 'cap reached, so banking volume for the next quality day'),
-      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, ...stamp,
+      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, sessionKind: 'recovery', secondSession: null, ...stamp,
     };
   }
 
@@ -719,18 +768,59 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
         : 'Volume’s used up for now — rest or cross-train; mobility & strength.',
       strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
       rationale: bandPhrase(strainReal, strainLow, strainHigh, kind === 'rest' ? 'a scheduled recovery day' : 'no running budget left today'),
-      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, ...stamp,
+      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, sessionKind: 'recovery', secondSession: null, ...stamp,
     };
   }
 
   // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
   // only today's heat eases it — so the daily card matches the 7-day plan instead of re-capping to rest.
-  const runMinutes = Math.max(8, honorDirect ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));
+  const totalMin = Math.max(8, honorDirect ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));
+
+  // SPLIT LONG RUN: on a long day, per the athlete's Long-run style, deliver the SAME long target as Part 1
+  // (now) + Part 2 (later, easy Z2). This redistributes today's long — it does NOT add volume — so there's
+  // no "cannibalise tomorrow" concern (that gate belongs to the opportunistic 2nd run, not the split); if
+  // anything a split is LESS fatiguing before a quality day than one continuous long.
+  let secondSession: CoachPlan['secondSession'] = null;
+  let runMinutes = totalMin;                       // Part 1 (the run prescribed NOW); === total when not split
+  const SPLIT_MIN_TOTAL = 60;                       // only split a genuinely long run
+  if (sk === 'long' && totalMin >= SPLIT_MIN_TOTAL && !honorDirect) {
+    const style = await getLongRunStyle();
+    const doSplit = style === 'auto'  ? await shouldSplitLong(snap, base)   // base = the DESIRED (uncapped) long
+                  : style === 'optin' ? await getLongSplitOptIn(snap.date)
+                  : false;                           // 'long' (default) → never split
+    if (doSplit) {
+      runMinutes = Math.ceil(totalMin * 0.6);        // ~60% now
+      const part2Min = totalMin - runMinutes;        // ~40% later
+      const p2wo = ensureBlockPower(synthesizeWorkout('easy', part2Min, `${wkName} P2`, snap.powerZones, 'long'), snap.powerZones);
+      secondSession = { runMinutes: part2Min, workout: p2wo, label: 'Long run — Part 2', earliestAfterHrs: 4 };
+    }
+  }
+
+  // COMPLETION-AWARE: once you've done (≥70% of) today's PRESCRIBED session, the day's running is complete —
+  // don't re-prescribe it (the "ghost 2nd run"). The bar is the MORNING prescription (the cached plan's
+  // minutes), NOT a fresh recompute: post-run the fresh compute EXPANDS (shrink-to-fit's todayDone<8 guard
+  // flips off, base jumps 28→50), which used to look "cut short" and conjure a bogus 2nd run. Split days are
+  // handled by their own Part 2. A cut-short easy top-up is a deliberate FOLLOW-UP (needs the ToF accounting
+  // proven first) — for now, complete = recover, honouring the cap that already shaped the morning session.
+  const cachedToday = await loadCachedPlan(snap.date);
+  const plannedMorning = (cachedToday && cachedToday.intensity !== 'rest' && !cachedToday.optional2nd)
+    ? (cachedToday.runMinutes ?? 0) : 0;
+  const primaryDone = todayDone >= Math.max(15, Math.round(plannedMorning * 0.7));
+  if (primaryDone && !secondSession && !honorDirect) {
+    return {
+      headline: 'Today’s session done ✓',
+      session: 'You’ve done today’s run — recover now. Optional easy mobility & strength; no more running today.',
+      strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
+      rationale: bandPhrase(strainReal, strainLow, strainHigh, 'today’s prescribed session is complete — recover (no 2nd run within today’s caps)'),
+      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, sessionKind: 'recovery', secondSession: null, ...stamp,
+    };
+  }
+
   const runKm      = snap.loadUnit === 'km' && snap.paceMinPerKm ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
   const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk), snap.powerZones);
   const structure  = formatWorkoutStructure(workout);
   const dose       = runKm != null ? `${runKm} km` : `${runMinutes} min`;  // display unit follows the cap basis
-  const label = sk === 'intervals' ? 'Intervals' : sk === 'tempo' ? 'Tempo' : sk === 'long' ? 'Long run' : base <= 30 ? 'Recovery run' : 'Easy Z2';
+  const label = sk === 'intervals' ? 'Intervals' : sk === 'tempo' ? 'Tempo' : sk === 'long' ? (secondSession ? 'Long run (Part 1 of 2)' : 'Long run') : base <= 30 ? 'Recovery run' : 'Easy Z2';
   const headline =
     sk === 'intervals' ? 'Good to go — intervals day' :
     sk === 'tempo'     ? 'Solid day — tempo' :
@@ -741,14 +831,17 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     : (sk === 'intervals' || sk === 'tempo' || sk === 'long') ? 'on-schedule for the week’s quality'
     : 'easy aerobic to keep ticking over';
   const heatNote = heatFactor > 1.08 && heatBudget != null && heatBudget < (snap.tofBudgetTodayMin ?? 999)
-    ? ` Heat ×${heatFactor.toFixed(2)} → trimmed to ${runMinutes} min.` : '';
+    ? ` Heat ×${heatFactor.toFixed(2)} → trimmed to ${totalMin} min${secondSession ? ' (split)' : ''}.` : '';
 
+  const splitNote = secondSession
+    ? ` Then Part 2 later (after ~${secondSession.earliestAfterHrs}h): ${secondSession.runMinutes} min easy Z2.` : '';
   return {
     headline,
-    session: `${label} — ${dose}${structure ? `, ${structure}` : ''}.`,
+    session: `${label} — ${dose}${structure ? `, ${structure}` : ''}.${splitNote}`,
     strength: STRENGTH_DEFAULT, intensity, runMinutes, runKm,
     rationale: bandPhrase(strainReal, strainLow, strainHigh, driver) + heatNote,
-    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, shrinkForced: honorDirect, ...stamp,
+    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, shrinkForced: honorDirect,
+    sessionKind: sk, secondSession, ...stamp,
   };
 }
 
@@ -820,6 +913,13 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       snap.powerZones);
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
+    // Canonical kind follows the FINAL (possibly eased) intensity so the label stays honest; a moderate
+    // session is 'long' only if the basis was a long run (keeps the split), else 'tempo'.
+    const sessionKind: SessionKind =
+      intensity === 'rest' ? 'recovery' :
+      intensity === 'hard' ? 'intervals' :
+      intensity === 'easy' ? 'easy' :
+      basis.sessionKind === 'long' ? 'long' : 'tempo';
     return {
       ...basis,
       headline:  o.headline  ? String(o.headline).slice(0, 120)  : basis.headline,
@@ -828,6 +928,10 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       intensity, runMinutes, runKm, workout,
       rationale: o.rationale ? String(o.rationale).slice(0, 400) : basis.rationale,
       cautions:  basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
+      sessionKind,
+      // Keep Part 2 only if it's STILL a long run (the LLM designs Part 1 within the split ceiling); if it
+      // eased the long to easy, the day is no longer a split.
+      secondSession: sessionKind === 'long' ? basis.secondSession : null,
       generatedAt: new Date().toISOString(),
     };
   } catch {
@@ -852,6 +956,56 @@ export async function getCoachingMode(): Promise<CoachingMode> {
 }
 export async function setCoachingMode(m: CoachingMode): Promise<void> {
   try { await SecureStore.setItemAsync(COACHING_MODE_KEY, m); } catch { /* ignore */ }
+}
+
+// Long-run style: how a scheduled LONG run is delivered.
+//   'long'  (default) = one continuous long run, never split.
+//   'auto'            = the coach may split it (Part 1 now + Part 2 later, both Z2) when shouldSplitLong() says so
+//                       — hot day, low readiness, or the target won't fit today's budget (and not a race peak).
+//   'optin'           = only split when the athlete flips the per-day toggle on the coach screen.
+// Physiology: splitting keeps the volume-driven aerobic adaptations + lowers heat/injury load, but forgoes the
+// race-specific durability of a continuous long run — so it's a base/leisure/heat tool, not for race-peak weeks.
+export type LongRunStyle = 'long' | 'auto' | 'optin';
+const LONG_RUN_STYLE_KEY = 'long_run_style_v1';
+const VALID_LONG_RUN_STYLES = ['long', 'auto', 'optin'] as const;
+export const DEFAULT_LONG_RUN_STYLE: LongRunStyle = 'long';
+export async function getLongRunStyle(): Promise<LongRunStyle> {
+  try {
+    const raw = await SecureStore.getItemAsync(LONG_RUN_STYLE_KEY);
+    return (VALID_LONG_RUN_STYLES as readonly string[]).includes(raw ?? '') ? (raw as LongRunStyle) : DEFAULT_LONG_RUN_STYLE;
+  } catch { return DEFAULT_LONG_RUN_STYLE; }
+}
+export async function setLongRunStyle(v: LongRunStyle): Promise<void> {
+  try { await SecureStore.setItemAsync(LONG_RUN_STYLE_KEY, v); } catch { /* ignore */ }
+}
+
+// Per-DATE opt-in flag for the 'optin' long-run style (transient day flags — not backed up).
+const longSplitKey = (d: string) => `long_split_optin_${d}`;
+export async function getLongSplitOptIn(d: string): Promise<boolean> {
+  try { return (await SecureStore.getItemAsync(longSplitKey(d))) === '1'; } catch { return false; }
+}
+export async function setLongSplitOptIn(d: string, on: boolean): Promise<void> {
+  try {
+    if (on) await SecureStore.setItemAsync(longSplitKey(d), '1');
+    else    await SecureStore.deleteItemAsync(longSplitKey(d));
+  } catch { /* ignore */ }
+}
+
+// AUTO-split criteria: split today's long run when the continuous version is either too taxing to do well
+// (heat / low readiness) or won't fit today's rolling volume budget — but NEVER in a race peak/taper week,
+// where the continuous long run IS the specific stimulus.
+export async function shouldSplitLong(snap: CoachSnapshot, longTargetMin: number): Promise<boolean> {
+  if (await raceActive()) {
+    const rw = await getRaceWeekPlan(snap);
+    if (rw && /peak|taper/i.test(rw.phase ?? '')) return false;
+  }
+  const apparentC = snap.weather?.apparentC ?? snap.weather?.tempC ?? 0;
+  const budget    = snap.tofBudgetTodayMin ?? Infinity;
+  const readiness = snap.readiness ?? 100;
+  // longTargetMin is the DESIRED (uncapped) long — so "won't fit today's budget" can actually fire. A long
+  // run only reaches here when green (≥60), so the readiness gate is the LOW end of green (not fresh enough
+  // for one big continuous effort → split it gentler).
+  return apparentC >= 24 || longTargetMin > budget || readiness < 65; // heat / over-budget / low-end readiness
 }
 
 // Shrink-to-fit (off by default): when ON, a cap-blocked quality session SHORTENS to fit its template
@@ -1121,6 +1275,11 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     (!!dataDate && dataDate < realToday) ||
     (dataDate === realToday && !latest.timeAsleep && latest.restingHrv == null);
   const date = (dataDate && dataDate > realToday) ? dataDate : realToday;
+  // Yesterday = the calendar day BEFORE the plan's date, looked up by KEY — not strainHist[length-2],
+  // which is off by one whenever today's components aren't in `comps` yet (then the array ends at
+  // yesterday, so [length-2] reads the day BEFORE yesterday → "yesterday's intervals" ghost).
+  const yDate = new Date(new Date(date + 'T00:00:00').getTime() - 86_400_000);
+  const yesterdayKey = `${yDate.getFullYear()}-${String(yDate.getMonth() + 1).padStart(2, '0')}-${String(yDate.getDate()).padStart(2, '0')}`;
 
   const { tof, cap, budgetMin, loadUnit, paceMinPerKm } = await buildCapContext(dur, new Date(), capPct, capBasis);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
@@ -1157,7 +1316,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     loadBudgetToday:   cap.budgetTodayMin,   // in loadUnit
     loadUnit,
     paceMinPerKm,
-    yesterdayStrain:   strainHist.length >= 2 ? strainHist[strainHist.length - 2] : undefined,
+    yesterdayStrain:   comps[yesterdayKey]?.strainScore,
     weather: weather ? {
       tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity,
       windKmh: weather.windKmh, description: weather.description, place: weather.place,
