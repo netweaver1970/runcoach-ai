@@ -21,6 +21,13 @@ const HR_ID    = 'HKQuantityTypeIdentifierHeartRate';
 const HRV_ID   = 'HKQuantityTypeIdentifierHeartRateVariabilitySDNN';
 const RHR_ID   = 'HKQuantityTypeIdentifierRestingHeartRate';
 const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
+const STEP_ID  = 'HKQuantityTypeIdentifierStepCount';
+// Movement gating (Bevel-method): Bevel uses motion to separate physical EXERTION (walking, housework)
+// from autonomic stress — HR raised by moving around is NOT counted as stress. We approximate motion with
+// step rate: at ≥ MOVE_STEPS_FULL steps/min the HR bump is treated as movement and daytime stress is
+// discounted by up to MOVE_GATE. (Initial values — tune against the next paired Bevel export.)
+const MOVE_STEPS_FULL = 70;   // steps/min ≈ steady walking → full movement
+const MOVE_GATE       = 0.6;  // fraction of daytime stress removed at full movement
 const ASLEEP = new Set([1, 3, 4, 5]); // asleepUnspecified/core/deep/REM (0=inBed, 2=awake)
 
 const BIN_MIN = 5;            // 5-min bins → finer curve (drain rates are per-minute, so the
@@ -53,8 +60,21 @@ const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
 // integrated curve tracks Bevel within ~1.5% RMSE across the day. The DRAIN_TIME_* constants below are
 // no longer applied (timeMult = 1) but retained for the debug dump.
 //   drain/h = DRAIN_BASE − DRAIN_STRESS_K·S
-const DRAIN_BASE      = 2.1;   // /h awake intercept — re-fit to Bevel's awake drain 2026-07-03 (ΔE/h = 2.1 − 0.129·S,
-const DRAIN_STRESS_K  = 0.129; // break-even S≈16). Steeper than the old 2.9/0.09 which was only "right" on inflated stress.
+const DRAIN_BASE      = 0.7;   // /h awake intercept. RE-FIT 2026-07-05 vs a full 16h paired Bevel energy export
+const DRAIN_STRESS_K  = 0.07;  // (both anchored at 77 @07:30): our drain was FAR too stress-sensitive — at S=90
+                               // it drained −9.5/h vs Bevel −4.5/h, ending the day at 33 vs Bevel 49. Bevel's
+                               // drain is gentle & near-linear (ΔE/h ≈ −0.05·S). Slope 0.129→0.07, break-even
+                               // ≈10. (Our daytime stress also now overshoots at peaks after DAY_STRESS_SCALE;
+                               // the gentler slope compensates. Night charge branch untouched.)
+// AWAKE REST-CHARGE (Garmin/Bevel behaviour): lying/sitting STILL at low stress is genuine recovery, so the
+// battery CHARGES even awake — a calm awake morning in bed recovers (Bevel does; our sleep-gated model
+// didn't once Apple Health ended the sleep session). Gated on STILLNESS (≈no steps) so up-and-about calm
+// time still uses the drain curve (which is why 07-05's up-and-about morning correctly held flat). Gentle:
+// well below the asleep charge, break-even at S≈20 (matches "in bed, awake, <20% stress → charging").
+// (Rates are provisional — validate/​trim against a fresh paired export of an awake-in-bed morning.)
+const REST_STEPS_MAX    = 12;  // steps/min below this ≈ lying/sitting still (a few in-bed shifts); above = moving
+const REST_CHARGE_BASE  = 6;   // /h rest-charge intercept (vs asleep CHARGE_BASE 16)
+const REST_CHARGE_K     = 0.3; // /h charge lost per stress unit while resting awake → break-even S≈20
 const DRAIN_TIME_MMAX = 1.6;   // M at wake (h=0): steepest drain, fresh out of bed
 const DRAIN_TIME_DECAY= 0.6;   // logarithmic taper of the drain through the waking day
 const DRAIN_TIME_MMIN = 0.3;   // afternoon/evening floor — gentle drain even at high stress
@@ -76,8 +96,14 @@ const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the 
 // your typical → more stress. Self-normalizing, no per-person tuning. The night uses the night
 // baseline (so a low-HRV night reads as poor recovery) plus a sleep-stage bump.
 const STRESS_BASE   = 26;     // stress at "typical" (z = 0)
-const STRESS_SCALE  = 8.3;    // stress pts per unit of (zHR − zHRV) — was 13; compressed to Bevel (our daytime
-                              // stress ran ~1.5× hot: regress Bevel = 3.3 + 0.64·ours, R²=0.72, 2026-07-03)
+const STRESS_SCALE  = 8.3;    // NIGHT stress pts per unit of (zHR − zHRV). Night already matches Bevel (paired
+                              // 2026-07-05: night mean ours 20.7 vs Bevel 21.2) — leave it.
+// DAY needs a STEEPER scale: paired vs Bevel our daytime stress was compressed (sat 15–23 while Bevel swings
+// 1–28) → calm moments read far too high (user saw 15 vs Bevel 2). Steepening around the pivot (BASE+OFFSET
+// ≈27.5) decompresses it: day mean → 17.2 (Bevel 17.1) and the calm floor drops toward Bevel's ~2-5. Night
+// keeps STRESS_SCALE. (2026-07-05 paired refit; the wake spikes still under-read — our z-index doesn't spike
+// like Bevel's, an accepted limitation.)
+const DAY_STRESS_SCALE = 15;
 // (B) DAYTIME stress correction. vs Bevel's stress export our DAY stress correlates r=0.93 but reads
 // ~12 BELOW it (a near-constant offset). Lift it so the stress METRIC — and the drain it drives — match
 // Bevel. NIGHT is untouched (zStressNight + its own base already matches). Tunable; the raw (pre-offset)
@@ -203,15 +229,30 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   const q = (id: string, start: Date, unit: string, limit = 100_000) =>
     safe(() => (HealthKit.queryQuantitySamples as any)(id, { filter: { startDate: start, endDate: new Date(now) }, unit, ascending: true, limit }), [] as any[]);
 
-  const [hrRaw, hrvRaw, beatsRaw, rhrRaw, sleepRaw, hrvBaseRaw, snap] = await Promise.all([
+  const [hrRaw, hrvRaw, beatsRaw, rhrRaw, sleepRaw, hrvBaseRaw, stepRaw, snap] = await Promise.all([
     q(HR_ID, from, 'count/min'),
     q(HRV_ID, from, 'ms', 20_000),
     safe(() => (HealthKit as any).queryHeartbeatSeriesSamples({ filter: { startDate: from, endDate: new Date(now) }, ascending: true, limit: 5_000 }), [] as any[]),
     q(RHR_ID, baseFrom, 'count/min', 5_000),
     safe(() => (HealthKit.queryCategorySamples as any)(SLEEP_ID, { filter: { startDate: from, endDate: new Date(now) }, ascending: true, limit: 10_000 }), [] as any[]),
     q(HRV_ID, baseFrom, 'ms', 50_000),
+    q(STEP_ID, from, 'count', 50_000),
     loadSnapshotCache(),
   ]);
+
+  // Steps as time-weighted samples (midpoint, steps/min) → movement gate for daytime stress.
+  const stepRate: { t: number; spm: number }[] = (stepRaw as any[])
+    .map(s => {
+      const t0 = new Date(s.startDate).getTime(), t1 = new Date(s.endDate ?? s.startDate).getTime();
+      const durMin = Math.max(1 / 60, (t1 - t0) / 60_000);
+      return { t: (t0 + t1) / 2, spm: (s.quantity as number) / durMin };
+    })
+    .sort((a, b) => a.t - b.t);
+  const stepsPerMinNear = (t: number, win = 150_000): number => {
+    let sum = 0, n = 0;
+    for (const s of stepRate) { if (s.t < t - win) continue; if (s.t > t + win) break; sum += s.spm; n++; }
+    return n ? sum / n : 0;
+  };
 
   const hr: Sample[] = (hrRaw as any[]).map(s => ({ t: new Date(s.startDate).getTime(), v: s.quantity })).sort((a, b) => a.t - b.t);
   if (hr.length < 5) return null;
@@ -335,7 +376,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   const zStress = (avgHR: number, vHrv: number | null, b: { hvM: number; hvS: number; hrM: number; hrS: number }): number => {
     const zHR  = (avgHR - b.hrM) / b.hrS;
     const zHRV = vHrv != null ? (vHrv - b.hvM) / b.hvS : 0;
-    return clamp(STRESS_BASE + (zHR - zHRV) * STRESS_SCALE, 0, 100);
+    return clamp(STRESS_BASE + (zHR - zHRV) * DAY_STRESS_SCALE, 0, 100); // DAY: steeper scale (decompressed to Bevel)
   };
   // Night variant: anchor low and count ONLY HR arousal beyond a margin (normal settling HR ≈ 0),
   // soften the HRV term, hard-cap. Keeps a calm night flat & low (Bevel-like) without starving charge.
@@ -377,9 +418,12 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // so the REM bumps drown; a rested night → low baseline, crisp square wave.
     const base = night ? nightBase : dayBase;
     const dayZ = night ? 0 : zStress(avgHR, vHrv, base); // (B) pre-offset day z-score (recoverable as s0)
+    // Movement gate (Bevel-method): discount daytime stress by how much of the HR bump is explained by
+    // stepping around — walking/housework HR is exertion, not autonomic stress. Night has no steps → 0.
+    const moveFrac = night ? 0 : clamp(stepsPerMinNear(mid) / MOVE_STEPS_FULL, 0, 1);
     const rawStress = night
       ? clamp(zStressNight(avgHR, vHrv, base) + (stage >= 0 ? STAGE_BUMP[stage] : 0), 0, NIGHT_STRESS_CAP)
-      : clamp(dayZ + DAY_STRESS_OFFSET, 0, 100); // (B) lift daytime stress to Bevel's level
+      : clamp((dayZ + DAY_STRESS_OFFSET) * (1 - MOVE_GATE * moveFrac), 0, 100);
     // EWMA momentum: fast attack only AWAKE-DAY (a real stressor). At night use a faster weight so
     // REM/stage transitions actually show (a slow weight smears the square wave flat). Workout +
     // settle FREEZES the EWMA (bin → gap).
@@ -411,7 +455,14 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       const hrr = clamp((avgHR - restHR) / Math.max(1, maxHR - restHR), 0, 1);
       ratePerHour = -WORKOUT_DRAIN_PER_HRR * hrr;
     } else {
-      ratePerHour = (DRAIN_BASE - DRAIN_STRESS_K * drainStress) * timeMult;
+      // AWAKE. Up-and-about burns energy → the drain curve. But STILL (≈no steps) + low stress is genuine
+      // recovery → gentle rest-charge (Garmin/Bevel charge a calm awake morning). drainStress is the
+      // movement-GATED stress, but when genuinely still moveFrac≈0 so the gate is a no-op — it equals the
+      // real, low calm stress the rest-charge wants. If stressed even while still (acute stress), rest-charge
+      // goes ≤0 and we fall back to the drain curve.
+      const spm = stepsPerMinNear(mid);
+      const restCharge = spm < REST_STEPS_MAX ? (REST_CHARGE_BASE - REST_CHARGE_K * drainStress) : -1;
+      ratePerHour = restCharge > 0 ? restCharge : (DRAIN_BASE - DRAIN_STRESS_K * drainStress) * timeMult;
     }
     // Near-empty throttle: as the battery approaches the floor, suppress DRAIN toward 0 (asymptote, no
     // flat-line crash). Charge (positive rate) is untouched so it always recovers off the floor.
@@ -439,6 +490,9 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   const shown = series.filter(p => p.t >= cut);
   const last = series[series.length - 1];
   const hourAgo = series.find(p => p.t >= now - 3_600_000) ?? last;
+  // Top-line stress pauses during a workout + settle (Bevel-method): show the last NON-workout reading, not
+  // the exercise-driven value. Battery is unaffected (it drains via the workout HRR model regardless).
+  const lastStress = ([...series].reverse().find(p => !p.workout) ?? last).stress;
   const bats = shown.map(p => p.battery);
 
   // Cumulative charge/drain over the shown window (Bevel's "Total Charged/Drained").
@@ -488,7 +542,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   return {
     current: last.battery,
-    currentStress: last.stress,
+    currentStress: lastStress,
     trendPerHour: Math.round(last.battery - hourAgo.battery),
     dayLow: bats.length ? Math.min(...bats) : last.battery,
     dayHigh: bats.length ? Math.max(...bats) : last.battery,

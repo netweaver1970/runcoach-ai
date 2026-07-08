@@ -7,7 +7,7 @@
  */
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
-import { callLLM, getLLMStatus } from './llm';
+import { callLLM, getLLMStatus, extractJsonObject } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
@@ -581,6 +581,10 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
       cautions: undefined, workout: null,
       strainLow: clampScore(snap.advisableLow, 30), strainHigh: clampScore(snap.advisableHigh, 60),
       generatedAt: new Date().toISOString(),
+      // Stamp conditions like every other plan — without these, planNeedsRefresh saw genTempC == null and
+      // regenerated (an LLM call in self-mode) on EVERY home refresh for as long as the status was set.
+      genTempC:  snap.weather?.apparentC ?? snap.weather?.tempC,
+      genStrain: snap.strainReal,
     };
   }
   const capPct      = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
@@ -790,12 +794,18 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       maxTokens: 1200,
       temperature: 0.2,
     });
-    const match = txt.match(/\{[\s\S]*\}/);
-    if (!match) return basis;
-    const o = JSON.parse(match[0]);
+    const json = extractJsonObject(txt);
+    if (!json) return basis;
+    const o = JSON.parse(json);
     // CAP at the basis — recovery/weather may only EASE (no intensity escalation, no extra minutes).
     const llmIntensity: CoachIntensity = ['rest', 'easy', 'moderate', 'hard'].includes(o.intensity) ? o.intensity : basis.intensity;
-    const intensity: CoachIntensity = INTENSITY_RANK[llmIntensity] <= INTENSITY_RANK[basis.intensity] ? llmIntensity : basis.intensity;
+    const eased: CoachIntensity = INTENSITY_RANK[llmIntensity] <= INTENSITY_RANK[basis.intensity] ? llmIntensity : basis.intensity;
+    // The LLM may EASE the session (hard→moderate→easy) but must NEVER cancel a scheduled RUN to REST — rest
+    // days are decided upstream (the 7-day plan + rolling volume cap + readiness gate), not by the prose
+    // model. Without this floor the home (LLM path) silently downgraded a green-day intervals session to
+    // rest and disagreed with the notification / coach-detail / 7-day plan, which all use the deterministic
+    // basis. Floor at 'easy' whenever the basis prescribed a run.
+    const intensity: CoachIntensity = (basis.intensity !== 'rest' && eased === 'rest') ? 'easy' : eased;
     const runMinutes = intensity === 'rest' ? 0
       : Math.max(8, Math.min(basis.runMinutes, Math.round(Number(o.runMinutes)) || basis.runMinutes));
     const wkName = weekdayName(snap.date);

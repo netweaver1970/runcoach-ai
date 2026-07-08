@@ -84,6 +84,9 @@ export async function loadLLMConfig(): Promise<LLMConfig> {
     if (oldKey && !newKey) {
       await SecureStore.setItemAsync(SK_APIKEY('anthropic'), oldKey);
     }
+    // One-shot migration: clear the legacy slot so a later "delete key" is FINAL — leaving it in place
+    // resurrected a deleted key on every config load.
+    if (oldKey) await SecureStore.deleteItemAsync(SK_OLD_ANTHRO);
   } catch {}
 
   const provider = ((await SecureStore.getItemAsync(SK_PROVIDER)) as LLMProvider | null) ?? 'anthropic';
@@ -117,6 +120,8 @@ export async function saveLLMConfig(
 /** Remove the stored API key for a provider. */
 export async function deleteLLMApiKey(provider: LLMProvider): Promise<void> {
   await SecureStore.deleteItemAsync(SK_APIKEY(provider));
+  // The pre-provider slot too, or the migration in loadLLMConfig brings the key back from the dead.
+  if (provider === 'anthropic') await SecureStore.deleteItemAsync(SK_OLD_ANTHRO);
 }
 
 /** Get just the active API key (used as a quick existence check). */
@@ -494,4 +499,26 @@ async function handleOpenAIResponse(res: Response): Promise<string> {
   }
   const data = await res.json();
   return data.choices[0].message.content as string;
+}
+
+/**
+ * Extract the FIRST balanced JSON object from LLM output. The old greedy regex (/\{[\s\S]*\}/) spanned
+ * from the first '{' to the LAST '}' in the text — any trailing prose containing a brace made the whole
+ * response unparseable and silently discarded. Walks braces, string- and escape-aware.
+ */
+export function extractJsonObject(txt: string): string | null {
+  const start = txt.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < txt.length; i++) {
+    const ch = txt[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return txt.slice(start, i + 1); }
+  }
+  return null;
 }

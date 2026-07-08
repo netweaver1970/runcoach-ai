@@ -18,7 +18,7 @@ import {
   getPowerZones, savePowerZones, DEFAULT_POWER_ZONES,
   getLongRunMinutes, setLongRunMinutes, DEFAULT_LONG_RUN_MINUTES,
   getAiWeeks, setAiWeeks, DEFAULT_AI_WEEKS,
-  getUserMaxHr, setUserMaxHr, setOnboardingDone,
+  getUserMaxHr, setMaxHrRecalcAll, setMaxHrFromNow, getMaxHrHistory, setOnboardingDone,
 } from '../src/services/claude';
 import {
   loadLLMConfig, saveLLMConfig, deleteLLMApiKey, validateLLMKey,
@@ -269,9 +269,20 @@ export default function SettingsScreen() {
       Alert.alert('Invalid value', 'Enter your max HR between 150 and 220 bpm.');
       return;
     }
-    await setUserMaxHr(n);
-    setMaxHrSaved(true);
-    setTimeout(() => setMaxHrSaved(false), 2000);
+    const flash = () => { setMaxHrSaved(true); setTimeout(() => setMaxHrSaved(false), 2000); };
+    // Max HR rescales every past day's training load (Banister TRIMP is exponential in %HRR). Ask
+    // whether to correct the whole history at the new value, or apply it from today forward.
+    const prev = await getUserMaxHr();
+    if (prev === n && (await getMaxHrHistory()).length === 0) { flash(); return; } // no change
+    Alert.alert(
+      `Set max HR to ${n} bpm`,
+      'This changes how every past day\'s training load is scored.\n\n• Recalculate history — re-score all past days at the new max (use when correcting a wrong value).\n• From now on — keep past days on the old max, apply the new one going forward (use if your max genuinely changed).',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'From now on', onPress: async () => { await setMaxHrFromNow(n); flash(); } },
+        { text: 'Recalculate history', onPress: async () => { await setMaxHrRecalcAll(n); flash(); } },
+      ],
+    );
   };
 
   const handleSave = useCallback(async () => {
@@ -567,7 +578,7 @@ export default function SettingsScreen() {
             autoCorrect={false}
             autoComplete="off"
             spellCheck={false}
-            secureTextEntry={false}
+            secureTextEntry
           />
           <View style={styles.row}>
             <TouchableOpacity
@@ -1383,8 +1394,8 @@ export default function SettingsScreen() {
         <Section title="Data & Privacy" cat="data">
           <Text style={styles.hint}>
             RunCoach AI reads Apple Health data directly on your device.{'\n\n'}
-            Your health data is sent to Anthropic's API only when you request a coaching report. Anthropic does not use API data to train models.{'\n\n'}
-            No data is stored on any server. Your API key stays in the iOS Keychain.
+            Health data leaves the device in exactly two cases: coaching requests send context to your configured AI provider (Anthropic does not use API data to train models), and — only if you set up a Cloud account — daily metrics and runs sync to YOUR OWN Cloudflare Worker so a linked coach can see them.{'\n\n'}
+            Your API key and cloud tokens stay in the iOS Keychain.
           </Text>
         </Section>
         </ActiveCat.Provider>

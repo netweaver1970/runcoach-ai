@@ -5,11 +5,16 @@
  *   • Access JWT — HMAC-SHA256, short TTL, verified with crypto.subtle.verify.
  *   • Refresh    — 256-bit random token, stored only as a SHA-256 hash, rotated on use.
  *
- * PBKDF2 iterations are capped to stay within the Workers per-request CPU budget; raise
- * if you move to a paid plan with a higher CPU limit.
+ * PBKDF2 iterations stay at 100k ON PURPOSE: the Workers free-plan CPU budget makes OWASP's 600k a
+ * real "CPU time exceeded" risk in production (random login failures — worse than the finding). The
+ * offline-cracking defense is a PEPPER instead: when the PW_PEPPER Worker secret is set, the PBKDF2
+ * output is HMAC-SHA256'd with it before storage (format pbkdf2p$). The pepper lives only in Worker
+ * secrets — a leaked D1 dump alone is then uncrackable at ANY iteration count, which beats 600k
+ * unpeppered for that threat model at ~zero CPU. Old un-peppered hashes verify fine and are
+ * re-hashed to the peppered format on the next successful login (passwordNeedsRehash).
  */
 
-const PBKDF2_ITERATIONS = 100_000;
+export const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
 
@@ -38,22 +43,41 @@ async function pbkdf2(password: string, salt: Uint8Array, iterations: number): P
   return new Uint8Array(bits);
 }
 
-/** Stored as `pbkdf2$<iterations>$<saltB64url>$<hashB64url>`. */
-export async function hashPassword(password: string): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
-  const hash = await pbkdf2(password, salt, PBKDF2_ITERATIONS);
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${toB64url(salt)}$${toB64url(hash)}`;
+async function pepperize(bits: Uint8Array, pepper: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey('raw', enc.encode(pepper), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, bits));
 }
 
-export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+/** Stored as `pbkdf2$<iters>$<salt>$<hash>` (no pepper) or `pbkdf2p$<iters>$<salt>$<hmac>` (peppered). */
+export async function hashPassword(password: string, pepper?: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+  let bits = await pbkdf2(password, salt, PBKDF2_ITERATIONS);
+  if (pepper) bits = await pepperize(bits, pepper);
+  const scheme = pepper ? 'pbkdf2p' : 'pbkdf2';
+  return `${scheme}$${PBKDF2_ITERATIONS}$${toB64url(salt)}$${toB64url(bits)}`;
+}
+
+export async function verifyPassword(password: string, stored: string, pepper?: string): Promise<boolean> {
   const parts = stored.split('$');
-  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
+  if (parts.length !== 4 || (parts[0] !== 'pbkdf2' && parts[0] !== 'pbkdf2p')) return false;
+  if (parts[0] === 'pbkdf2p' && !pepper) return false; // peppered hash but no secret configured
   const iterations = parseInt(parts[1], 10);
   if (!Number.isFinite(iterations) || iterations < 1) return false;
   const salt = fromB64url(parts[2]);
   const expected = fromB64url(parts[3]);
-  const actual = await pbkdf2(password, salt, iterations);
+  let actual = await pbkdf2(password, salt, iterations);
+  if (parts[0] === 'pbkdf2p') actual = await pepperize(actual, pepper!);
   return timingSafeEqual(actual, expected);
+}
+
+/** True when the stored hash is below current policy (un-peppered while a pepper is configured, or
+ *  fewer iterations) — re-hash on the next successful login, when we briefly have the password. */
+export function passwordNeedsRehash(stored: string, pepperAvailable: boolean): boolean {
+  const parts = stored.split('$');
+  if (parts.length !== 4) return false;
+  if (pepperAvailable && parts[0] === 'pbkdf2') return true;
+  const iterations = parseInt(parts[1], 10);
+  return Number.isFinite(iterations) && iterations < PBKDF2_ITERATIONS;
 }
 
 function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -82,16 +106,21 @@ export async function signJwt(claims: { sub: string; role: string }, secret: str
 }
 
 export async function verifyJwt(token: string, secret: string): Promise<JwtPayload | null> {
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const data = `${parts[0]}.${parts[1]}`;
-  const key = await hmacKey(secret);
-  const ok = await crypto.subtle.verify('HMAC', key, fromB64url(parts[2]), enc.encode(data));
-  if (!ok) return null;
-  let payload: JwtPayload;
-  try { payload = JSON.parse(dec.decode(fromB64url(parts[1]))); } catch { return null; }
-  if (typeof payload.exp !== 'number' || payload.exp < Math.floor(Date.now() / 1000)) return null;
-  return payload;
+  // Whole body guarded: malformed base64 in a crafted token made fromB64url/atob THROW, which
+  // bubbled to the global error handler as a 500 — an invalid token must simply be a 401.
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const data = `${parts[0]}.${parts[1]}`;
+    const key = await hmacKey(secret);
+    const ok = await crypto.subtle.verify('HMAC', key, fromB64url(parts[2]), enc.encode(data));
+    if (!ok) return null;
+    const payload: JwtPayload = JSON.parse(dec.decode(fromB64url(parts[1])));
+    if (typeof payload.exp !== 'number' || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 // ── refresh tokens & ids ─────────────────────────────────────────────────────────

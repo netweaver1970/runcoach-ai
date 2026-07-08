@@ -47,7 +47,21 @@ export class ApiError extends Error {
   }
 }
 
-async function tryRefresh(base: string): Promise<boolean> {
+// Single-flight token refresh. A batched cloudSync fires several requests at once; once the access
+// token expires they ALL 401 together. Without a shared lock each one refreshes independently — the
+// first rotates the refresh token and the rest present the now-stale one, which the server's
+// reuse-detection reads as a stolen-token replay and revokes the whole family (silent logout). So
+// concurrent callers must await the SAME rotation; the winner stores the new tokens and everyone
+// retries with them.
+let refreshInFlight: Promise<boolean> | null = null;
+
+function tryRefresh(base: string): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = doRefresh(base).finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+async function doRefresh(base: string): Promise<boolean> {
   const refresh = await SecureStore.getItemAsync(K_REFRESH);
   if (!refresh) return false;
   try {

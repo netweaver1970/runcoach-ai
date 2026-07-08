@@ -7,7 +7,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
-import { fetchOurDailyComponents, fetchDailyDurationHistory } from '../src/services/healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
 import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, CoachPlan } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
@@ -93,14 +93,25 @@ export default function DailyCoachScreen() {
   // Sub-KPI values for the VIEWED day (target is defined below; this closure runs in render).
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
-  const real   = strain?.real ?? 0;
-  const status = strain ? strainStatus(strain) : { label: '—', color: '#888' };
+  // Notification-tap entry passes NO str param → strain would be null and readiness defaulted to 0, and any
+  // auto/manual regen then re-planned the day as if readiness were 0 — easing/resting a green-day session and
+  // SAVING it over the correct morning plan. Fall back to the snapshot cache's DayStrain (the same object the
+  // home passes), so this screen always plans with the real readiness.
+  const [snapStrain, setSnapStrain] = useState<DayStrain | null>(null);
+  useEffect(() => {
+    if (str) return; // param already carries today's DayStrain
+    loadSnapshotCache().then((sn: any) => setSnapStrain(sn?.strain ?? null)).catch(() => {});
+  }, [str]);
+  const strainObj = strain ?? snapStrain;
 
   // The coach plan is built for the VIEWED day (the `date` param), not just today.
   const dates      = Object.keys(comps).sort();
   const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === toDateKey(new Date());
+
+  const real   = strainObj?.real ?? Math.round((target.strainScore as number) ?? 0);
+  const status = strainObj ? strainStatus(strainObj) : { label: '—', color: '#888' };
   // "est." readiness: viewing today but there's no overnight recovery for last night (watch not worn)
   // → the recovery/readiness shown is the last-known estimate, not today's. (History days have data.)
   const realTodayKey = toDateKey(new Date());
@@ -129,7 +140,7 @@ export default function DailyCoachScreen() {
   const planHeatFactor = heatStrainFactor(targetIsToday && weather
     ? { tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity } : null);
   const runLoad         = watchWorkout ? estimateWorkoutLoad(watchWorkout) : 0;
-  const projectedStrain = watchWorkout ? strainFromLoad((strain?.trimp ?? 0) + runLoad * planHeatFactor) : real;
+  const projectedStrain = watchWorkout ? strainFromLoad((strainObj?.trimp ?? 0) + runLoad * planHeatFactor) : real;
   const runStrain       = Math.max(0, projectedStrain - real);
 
   // Rolling progression cap as of the viewed day, honouring the user's % + basis settings.
@@ -152,11 +163,11 @@ export default function DailyCoachScreen() {
   // Single source of truth for the displayed band + drivers: the readiness carried on
   // the viewed day's DayStrain — the ring, hero, this card and the coach all agree.
   const readiness = {
-    readiness: strain?.readiness ?? 0,
-    acwr:      strain?.acwr ?? 0,
-    drivers:   strain?.drivers ?? [],
-    safeLow:   strain?.safeLow ?? 0,
-    safeHigh:  strain?.safeHigh ?? 0,
+    readiness: strainObj?.readiness ?? 0,
+    acwr:      strainObj?.acwr ?? 0,
+    drivers:   strainObj?.drivers ?? [],
+    safeLow:   strainObj?.safeLow ?? 0,
+    safeHigh:  strainObj?.safeHigh ?? 0,
   };
 
   // Load any plan already cached for the viewed day (one per calendar day).
@@ -171,6 +182,9 @@ export default function DailyCoachScreen() {
   // useLLM=false → fast DETERMINISTIC plan (the default: morning prep, auto-refresh, ↻ Regenerate).
   // useLLM=true  → on-request LLM prose (the "Coach's notes" button), the ONLY path that hits the model.
   const requestPlan = async (useLLM = false) => {
+    // Regenerating TODAY before the rolling volume-cap context loads would produce an UNCAPPED "ghost run"
+    // that gets saved + auto-pushed to the watch. Make the button wait for it instead.
+    if (!useLLM && targetIsToday && !capCtx) { setPlanError('Volume budget still loading — try again in a second.'); return; }
     if (useLLM) setProseLoading(true); else setPlanLoading(true);
     setPlanError(null);
     try {
@@ -189,10 +203,10 @@ export default function DailyCoachScreen() {
         tsb:          target.tsb,
         acwr:         readiness.acwr || undefined,
         strainReal:   real,
-        advisableLow:  strain?.safeLow,
-        advisableHigh: strain?.safeHigh,
-        readiness:    readiness.readiness,
-        drivers:      readiness.drivers,
+        advisableLow:  strainObj?.safeLow,
+        advisableHigh: strainObj?.safeHigh,
+        readiness:    strainObj ? readiness.readiness : undefined,
+        drivers:      strainObj ? readiness.drivers : undefined,
         recentStrain: strainHistUpTo.slice(-10),
         recentTimeOnFeet:  tof?.series14,
         tof7d:             tof?.tof7d,
@@ -240,7 +254,7 @@ export default function DailyCoachScreen() {
     // Wait for capCtx: regenerating before the cap is known would produce an UNCAPPED run (a ghost), and
     // staleRegenRef would then block the correct capped regen once capCtx loads — the "ghost run until I
     // press Generate" bug. Only auto-refresh once the cap context is in.
-    if (!plan || !weather || !targetIsToday || planLoading || proseLoading || !capCtx || staleRegenRef.current) return;
+    if (!plan || !weather || !targetIsToday || planLoading || proseLoading || !capCtx || !strainObj || staleRegenRef.current) return;
     const snapLike = {
       weather: { apparentC: weather.apparentC, tempC: weather.tempC },
       strainReal: real,
@@ -316,7 +330,7 @@ export default function DailyCoachScreen() {
             <Text style={s.readyDrivers}>
               {recoveryStale ? '⚠️ Estimate — watch not worn overnight' : (readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range')}
             </Text>
-            <Text style={s.readyRange}>Target {strain?.safeLow ?? readiness.safeLow}–{strain?.safeHigh ?? readiness.safeHigh}% strain</Text>
+            <Text style={s.readyRange}>Target {strainObj?.safeLow ?? readiness.safeLow}–{strainObj?.safeHigh ?? readiness.safeHigh}% strain</Text>
             {tof && (
               <Text style={s.readyTof}>
                 7-day time on feet {tof.tof7d}m · +{capCtx?.capPct ?? 10}% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m

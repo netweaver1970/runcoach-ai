@@ -187,6 +187,7 @@ export interface SleepSegment {
   endDate: string;
   stage: SleepStageLabel;
   durationMinutes: number;
+  source?: string;   // HealthKit source (bundleId/name) — used to pick one authoritative source per night
 }
 
 export interface SleepSession {

@@ -1,4 +1,4 @@
-import HealthKit from '@kingstinct/react-native-healthkit';
+import HealthKit, { subscribeToChanges } from '@kingstinct/react-native-healthkit';
 import * as FileSystem from 'expo-file-system';
 
 // In @kingstinct/react-native-healthkit v9, the enums are TypeScript-only types
@@ -47,7 +47,8 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates } from './trainingLoad';
+import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp } from './trainingLoad';
+import { getForecastPairs } from './forecastLog';
 import { getLocalWeather } from './weather';
 import { computePersonalSleepGoal, computeAdjustedGoal } from './bevelCalibration';
 import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
@@ -61,7 +62,8 @@ import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRun
 import {
   getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, getRunOverrides, isPowerZonesConfigured,
-  getLongRunMinutes, getHrUnreliableRuns, getUserMaxHr,
+  getLongRunMinutes, getHrUnreliableRuns, getUserMaxHr, getEffectiveMaxHr, setObservedMaxHr,
+  getMaxHrHistory, buildMaxHrResolver,
 } from './claude';
 import { loadEvents, getAthleteStatus } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
@@ -163,9 +165,11 @@ function minutesBetween(a: string, b: string): number {
 }
 
 function toDateStr(iso: string | Date | any): string {
-  // v9 API returns Date objects; older builds / mocks return ISO strings.
-  if (iso instanceof Date) return iso.toISOString().split('T')[0];
-  return String(iso).split('T')[0];
+  // LOCAL calendar date. Slicing the ISO string took the UTC date — in UTC+2 everything between
+  // 00:00–02:00 local was keyed to the PREVIOUS day (and "today" itself was wrong in that window).
+  const d = iso instanceof Date ? iso : new Date(String(iso));
+  if (isNaN(d.getTime())) return String(iso).split('T')[0]; // unparseable — old behavior as fallback
+  return toLocalDateStr(d);
 }
 
 /**
@@ -184,11 +188,9 @@ export async function subscribeToWorkoutChanges(
   onNewWorkout: () => void
 ): Promise<() => void> {
   try {
-    const unsubscribe = await (HealthKit as any).subscribeToChanges(
-      HKQuantityTypeIdentifier.distanceWalkingRunning,
-      onNewWorkout
-    );
-    if (typeof unsubscribe === 'function') return unsubscribe;
+    // v9: subscribeToChanges returns a queryId string; unsubscribe via unsubscribeQueries([id]).
+    const queryId = subscribeToChanges(HKQuantityTypeIdentifier.distanceWalkingRunning as any, onNewWorkout);
+    if (queryId) return () => { try { (HealthKit as any).unsubscribeQueries([queryId]); } catch { /* ignore */ } };
   } catch {
     // Observer API unavailable — caller falls back to AppState
   }
@@ -261,7 +263,7 @@ export async function resolveBodyMassKg(): Promise<number> {
 // ─── Sleep parsing ────────────────────────────────────────────────────────────
 
 function groupIntoSessions(
-  rawSamples: { startDate: string | Date | any; endDate: string | Date | any; value: number }[]
+  rawSamples: { startDate: string | Date | any; endDate: string | Date | any; value: number; source?: string }[]
 ): SleepSession[] {
   if (rawSamples.length === 0) return [];
 
@@ -270,6 +272,7 @@ function groupIntoSessions(
     startDate: toISOStr(s.startDate),
     endDate:   toISOStr(s.endDate),
     value:     s.value as number,
+    source:    (s as any).source ?? '',
   }));
 
   const sorted = [...normalised].sort(
@@ -278,14 +281,19 @@ function groupIntoSessions(
 
   const sessions: SleepSession[] = [];
   let current: typeof sorted = [sorted[0]];
+  // Gap must be measured against the FURTHEST end seen so far — with overlapping multi-source samples the
+  // last-by-start sample can end EARLY, which made a mid-night "gap" appear and split one night in two.
+  let currentMaxEnd = new Date(sorted[0].endDate).getTime();
 
   for (let i = 1; i < sorted.length; i++) {
-    const gap = minutesBetween(current[current.length - 1].endDate, sorted[i].startDate);
-    if (gap > 180) {
+    const gapMin = (new Date(sorted[i].startDate).getTime() - currentMaxEnd) / 60_000;
+    if (gapMin > 180) {
       sessions.push(buildSession(current));
       current = [sorted[i]];
+      currentMaxEnd = new Date(sorted[i].endDate).getTime();
     } else {
       current.push(sorted[i]);
+      currentMaxEnd = Math.max(currentMaxEnd, new Date(sorted[i].endDate).getTime());
     }
   }
   sessions.push(buildSession(current));
@@ -294,9 +302,9 @@ function groupIntoSessions(
 }
 
 function buildSession(
-  samples: { startDate: string | Date | any; endDate: string | Date | any; value: number }[]
+  samples: { startDate: string | Date | any; endDate: string | Date | any; value: number; source?: string }[]
 ): SleepSession {
-  const segments: SleepSegment[] = samples.map((s) => {
+  const allSegments: SleepSegment[] = samples.map((s) => {
     const stage = SLEEP_VALUE_TO_LABEL[s.value] ?? 'asleepUnspecified';
     const start = toISOStr(s.startDate);
     const end   = toISOStr(s.endDate);
@@ -305,25 +313,77 @@ function buildSession(
       endDate: end,
       stage,
       durationMinutes: minutesBetween(start, end),
+      source: (s as any).source ?? '',
     };
   });
 
-  const totals = { asleepCore: 0, asleepDeep: 0, asleepREM: 0, awake: 0 };
-  segments.forEach((seg) => {
-    if (seg.stage === 'asleepCore' || seg.stage === 'asleepUnspecified') {
-      totals.asleepCore += seg.durationMinutes;
-    } else if (seg.stage === 'asleepDeep') {
-      totals.asleepDeep += seg.durationMinutes;
-    } else if (seg.stage === 'asleepREM') {
-      totals.asleepREM += seg.durationMinutes;
-    } else if (seg.stage === 'awake') {
-      totals.awake += seg.durationMinutes;
+  // Pick ONE authoritative source per night. Several devices/apps (Apple Watch + iPhone + a 3rd-party sleep
+  // app) can EACH log the whole night with their OWN staging; merging across sources double-counts (a REM
+  // window from one overlapping a Core/awake window from another) and inflates REM/deep even after the
+  // per-slice resolution below. Prefer a source with detailed staging (has deep or REM), then Apple's own,
+  // then the widest asleep coverage — and use only that source's samples.
+  const bySource = new Map<string, SleepSegment[]>();
+  for (const seg of allSegments) {
+    const k = seg.source ?? '';
+    const arr = bySource.get(k); if (arr) arr.push(seg); else bySource.set(k, [seg]);
+  }
+  let segments = allSegments;
+  if (bySource.size > 1) {
+    const isAsleep = (st: string) => st === 'asleepCore' || st === 'asleepUnspecified' || st === 'asleepDeep' || st === 'asleepREM';
+    const stats = Array.from(bySource.entries()).map(([src, segs]) => ({
+      src, segs,
+      asleepMin: segs.filter((s) => isAsleep(s.stage)).reduce((a, s) => a + s.durationMinutes, 0),
+      hasDetail: segs.some((s) => s.stage === 'asleepDeep' || s.stage === 'asleepREM'),
+      isApple:   src.startsWith('com.apple'),
+    }));
+    const maxAsleep = Math.max(...stats.map((x) => x.asleepMin));
+    let best = stats[0], bestScore = -Infinity;
+    for (const x of stats) {
+      // The detailed-staging bonus only applies when that source actually covered MOST of the night —
+      // a Watch that staged 2h of a 7h night must not beat a full-coverage coarse source (short totals).
+      const detailOk = x.hasDetail && x.asleepMin >= 0.7 * maxAsleep;
+      const score = (detailOk ? 1e6 : 0) + (x.isApple ? 5e5 : 0) + x.asleepMin;
+      if (score > bestScore) { bestScore = score; best = x; }
     }
-  });
+    segments = best.segs;
+  }
 
+  // Multiple HealthKit sources (Apple Watch + iPhone + 3rd-party sleep apps) can write OVERLAPPING samples
+  // for the same window; naively summing them double-counts and produces impossible spikes (e.g. 13h45
+  // "time asleep"). A per-stage union isn't enough because the overlaps are usually CROSS-stage — a coarse
+  // whole-night "in bed / unspecified" block from one source sitting over the Watch's detailed core/deep/REM.
+  // Resolve it by slicing the night at every sample boundary and letting the most-specific stage win each
+  // slice. Each minute is then counted exactly once, and total asleep === core+deep+REM by construction.
+  const STAGE_PRIORITY: Record<string, number> = {
+    asleepDeep: 5, asleepREM: 4, asleepCore: 3, awake: 2, asleepUnspecified: 1, inBed: 0,
+  };
+  const ivs = segments
+    .map((seg) => ({ s: new Date(seg.startDate).getTime(), e: new Date(seg.endDate).getTime(), stage: seg.stage }))
+    .filter((v) => v.e > v.s);
+  const bounds = Array.from(new Set(ivs.flatMap((v) => [v.s, v.e]))).sort((a, b) => a - b);
+  const totals = { asleepCore: 0, asleepDeep: 0, asleepREM: 0, awake: 0 };
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const a = bounds[i], b = bounds[i + 1];
+    if (b <= a) continue;
+    let winner = '', wp = -1;
+    for (const v of ivs) {
+      if (v.s <= a && v.e >= b) {
+        const p = STAGE_PRIORITY[v.stage] ?? 0;
+        if (p > wp) { wp = p; winner = v.stage; }
+      }
+    }
+    const mins = (b - a) / 60_000;
+    if (winner === 'asleepDeep')      totals.asleepDeep += mins;
+    else if (winner === 'asleepREM')  totals.asleepREM  += mins;
+    else if (winner === 'asleepCore' || winner === 'asleepUnspecified') totals.asleepCore += mins;
+    else if (winner === 'awake')      totals.awake      += mins;
+    // 'inBed' / no cover → not counted as sleep
+  }
   const sleepMinutes = totals.asleepCore + totals.asleepDeep + totals.asleepREM;
   const bedtime  = toISOStr(samples[0].startDate);
-  const wakeTime = toISOStr(samples[samples.length - 1].endDate);
+  // Wake = the FURTHEST end, not the last-by-start sample's end (which can be an early-ending overlap).
+  const wakeMs   = samples.reduce((m, s) => Math.max(m, new Date(toISOStr(s.endDate)).getTime()), 0);
+  const wakeTime = new Date(wakeMs).toISOString();
 
   return {
     date: toDateStr(wakeTime),
@@ -1350,6 +1410,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       startDate: s.startDate,  // may be Date (v9) or string (older) — handled below
       endDate:   s.endDate,
       value:     s.value as number,
+      source:    s.sourceRevision?.source?.bundleIdentifier ?? s.sourceRevision?.source?.name ?? '',
     }))
   );
 
@@ -1607,8 +1668,14 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // everyday-movement energy. Warm the EWMAs 120 days before the visible window.
   // Display ~45 days (card shows the latest value + a 30-day sparkline); warm 120 days
   // before that so today's CTL/ATL is converged without querying a whole year of HR.
-  const loadByDay = await fetchDailyCardioTrimp(daysAgo(45 + CARDIO_WARM_DAYS), now, await getUserMaxHr());
-  const trainingLoad: DailyLoad[] = computeTrainingLoadSeries(loadByDay, daysAgo(45), now);
+  const clWarm = daysAgo(45 + CARDIO_WARM_DAYS);
+  const [loadByDay, floorByDay] = await Promise.all([
+    fetchDailyCardioTrimp(clWarm, now, await getEffectiveMaxHr()),
+    fetchActivityFloorByDay(clWarm, now),
+  ]);
+  const trainingLoad: DailyLoad[] = computeTrainingLoadSeries(loadByDay, daysAgo(45), now, floorByDay);
+  // Refresh the cached robust observed max HR so getEffectiveMaxHr can auto-anchor (fire-and-forget).
+  computeRobustObservedMaxHr().then((v) => { if (v > 0) setObservedMaxHr(v); }).catch(() => {});
 
   // ── Today's strain — Bevel-style 24/7 TRIMP + muscular load ────────────────
   // Cardio: integrate Banister TRIMP over ALL of today's heart rate (captures both
@@ -1627,16 +1694,13 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     : 50;
   // Today's workout windows — HR inside these counts as exercise (full weight).
   const todayWindows = (loadWorkoutsRaw as any[])
-    .filter(w => toDateStr(toISOStr(w.startDate)) === todayStr)
+    .filter(w => trainingDayKey(toISOStr(w.startDate)) === trainingDayKey(now))
     .map(w => {
       const s = new Date(toISOStr(w.startDate)).getTime();
       return { s, e: s + workoutDurationSec(w) * 1000 };
     });
-  // %max-HR strain zones need the TRUE max HR. The observed run peak under-estimates it for
-  // easy-only runners (zones shift up → strain inflates), so prefer the user's set max; else floor
-  // the observed peak at a sane adult default.
-  const userMaxHr = await getUserMaxHr();
-  const strainMaxHR = userMaxHr > 0 ? userMaxHr : Math.max(190, maxHR);
+  // %max-HR strain zones need the TRUE max HR — the set value, else the robust observed peak (auto-anchor).
+  const strainMaxHR = await getEffectiveMaxHr();
   // Zone-weighted active+passive strain load (workout HR full weight, background HR ×fraction).
   const activeZoneLoad = zoneStrainLoad(
     (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number })),
@@ -1649,7 +1713,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   let muscularLoad = 0;
   for (const w of (loadWorkoutsRaw as any[])) {
     if (!STRENGTH_TYPES.has(w.workoutActivityType)) continue;
-    if (toDateStr(toISOStr(w.startDate)) !== todayStr) continue;
+    if (trainingDayKey(toISOStr(w.startDate)) !== trainingDayKey(now)) continue;
     muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
   }
   const latestLoad = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1] : null;
@@ -1746,7 +1810,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       .map((n) => ({ d: n.date, h: Math.round(n.weightedRMSSD * 10) / 10, s: Math.round(n.overnightHR * 10) / 10 })),
     recentSleep:      sleepSessions.slice(-14),
     workoutTypeStats: computeWorkoutTypeStats(runs),
-    estimatedMaxHR:   maxHR,
+    // A USER-SET max HR must govern the whole app — zones/body-battery/strain-detail all read this
+    // field. So the set value wins here too; only when unset do we fall back to the classifier's
+    // observed run estimate. (This is what made a set max HR not reach the prescribed HR zones.)
+    estimatedMaxHR:   (await getUserMaxHr()) || maxHR,
     fetchedAt:        now.toISOString(),
     timelineEvents:   events as TimelineEvent[],
     athleteStatus,
@@ -2607,7 +2674,7 @@ const CARDIO_WARM_DAYS = 120;
  * Used by the cached wrapper below in bounded chunks so a single query never exceeds the
  * sample cap (which would truncate and corrupt long windows).
  */
-async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxHrOverride?: number): Promise<Map<string, number>> {
+async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?: (day: string) => number): Promise<Map<string, number>> {
   const [hrRaw, restingRaw, workouts] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRate,
@@ -2634,14 +2701,13 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxHrOverr
     const hr = s.quantity as number;
     if (hr > peak) peak = hr;
     const d   = new Date(toISOStr(s.startDate));
-    const day = toLocalDateStr(d);
+    const day = trainingDayKey(d); // 4am training-day boundary — overnight HR belongs to the previous day
     if (!byDay.has(day)) byDay.set(day, []);
     byDay.get(day)!.push({ t: d.getTime(), hr });
   }
-  // Use the athlete's CONFIGURED max HR when set (e.g. 165) — it drives the %HRR the Banister TRIMP is
-  // exponential in, so a too-high estimate underweights every session (and recent runs more than the
-  // low-HR baseline → ATL/CTL ratio reads low). Fall back to a peak-based estimate (clamped) if unset.
-  const maxHR = maxHrOverride && maxHrOverride > 0 ? maxHrOverride : Math.max(185, Math.min(205, Math.round(peak)));
+  // Max HR drives the %HRR the Banister TRIMP is exponential in. Per-day via the resolver (honours a
+  // date-keyed "from now" change); a peak-based estimate (clamped) covers days the resolver can't.
+  const fallbackMax = Math.max(185, Math.min(205, Math.round(peak)));
 
   const windowsByDay = new Map<string, { s: number; e: number }[]>();
   for (const w of (workouts as any[])) {
@@ -2653,6 +2719,8 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxHrOverr
 
   for (const [day, samples] of byDay) {
     samples.sort((a, b) => a.t - b.t); // TRIMP integration needs time order
+    const dm = maxForDay?.(day);
+    const maxHR = dm && dm > 0 ? dm : fallbackMax;
     out.set(day, computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []));
   }
   return out;
@@ -2697,19 +2765,22 @@ function listDayKeys(from: Date, to: Date): string[] {
  * uncached older days in chunks, and persists the result.
  */
 export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMaxHr?: number): Promise<Map<string, number>> {
-  const maxOverride = userMaxHr && userMaxHr > 0 ? userMaxHr : undefined;
+  const fallback  = userMaxHr && userMaxHr > 0 ? userMaxHr : 0;
+  const history   = await getMaxHrHistory();
+  const maxForDay = buildMaxHrResolver(history, fallback);
   let cache = await loadTrimpCache();
-  // TRIMP depends (non-linearly) on max HR, so if the effective max HR changed, drop the whole cache and
-  // recompute — otherwise old days keep their stale, differently-scaled values. `__maxHr` is a sentinel
-  // (not a date key, so it's never iterated as a day).
-  const tag = maxOverride ?? 0;
-  if (cache['__maxHr'] !== tag) cache = { '__maxHr': tag };
+  // TRIMP depends (non-linearly) on max HR, so if the effective max HR (or its date-keyed segments)
+  // changed, drop the whole cache and recompute — otherwise old days keep stale, differently-scaled
+  // values. `__maxHr` is a sentinel (not a date key, so it's never iterated as a day).
+  const tag = history.length ? 'k:' + history.map((h) => `${h.from}@${h.maxHR}`).join(',') : `s:${fallback}`;
+  const TRIMP_CACHE_VER = 3; // v3: date-keyed max-HR resolver (2026-07-08)
+  if ((cache as any)['__maxHr'] !== tag || cache['__ver'] !== TRIMP_CACHE_VER) cache = { '__maxHr': tag, '__ver': TRIMP_CACHE_VER } as any;
   let changed = false;
 
   // 1) Recent tail — always fresh (today partial, yesterday may have synced more).
   const tailStart = daysAgo(TRIMP_RECOMPUTE_TAIL);
   const tailFrom  = tailStart.getTime() > fromDate.getTime() ? tailStart : fromDate;
-  const tail = await computeCardioTrimpWindow(tailFrom, toDate, maxOverride);
+  const tail = await computeCardioTrimpWindow(tailFrom, toDate, maxForDay);
   for (const d of listDayKeys(tailFrom, toDate)) { cache[d] = tail.get(d) ?? 0; changed = true; }
 
   // 2) Fill still-missing older days in bounded chunks (skip fully-cached chunks).
@@ -2719,7 +2790,7 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMa
     const chunkEnd  = new Date(Math.min(cursor.getTime() + TRIMP_CHUNK_DAYS * 86_400_000, fillEnd.getTime()));
     const chunkDays = listDayKeys(cursor, new Date(chunkEnd.getTime() - 86_400_000));
     if (chunkDays.some(d => !(d in cache))) {
-      const m = await computeCardioTrimpWindow(cursor, chunkEnd, maxOverride);
+      const m = await computeCardioTrimpWindow(cursor, chunkEnd, maxForDay);
       for (const d of chunkDays) cache[d] = m.get(d) ?? 0;
       changed = true;
     }
@@ -2732,6 +2803,23 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMa
   return out;
 }
 
+/**
+ * Per-day NEAT/activity floor over [from,to] (LOCAL keys) — feeds computeTrainingLoadSeries so rest /
+ * unlogged-walk days don't collapse to ~0 (Bevel scores them via energy/steps). Must span the CTL
+ * warm-up window, else zeroed rest days there still drag the 42-day EWMA down.
+ */
+async function fetchActivityFloorByDay(from: Date, to: Date): Promise<Map<string, number>> {
+  const [active, exercise] = await Promise.all([
+    fetchDailyActiveEnergy(from, to),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', from, to),
+  ]);
+  const out = new Map<string, number>();
+  for (const d of new Set<string>([...active.keys(), ...exercise.keys()])) {
+    out.set(d, activityFloorTrimp(active.get(d) ?? 0, exercise.get(d) ?? 0));
+  }
+  return out;
+}
+
 export async function fetchTrainingLoadHistory(
   months: number,
   toDate?: Date,
@@ -2739,20 +2827,185 @@ export async function fetchTrainingLoadHistory(
   const end      = toDate ?? new Date();
   const fromDate = new Date(end.getTime() - months * 30 * 86_400_000);
   const warmFrom = new Date(fromDate.getTime() - CARDIO_WARM_DAYS * 86_400_000);
-  // Cardio Load = HR-TRIMP per day (Bevel-style), not total active energy.
-  const loadByDay = await fetchDailyCardioTrimp(warmFrom, end, await getUserMaxHr());
-  return computeTrainingLoadSeries(loadByDay, fromDate, end);
+  // Cardio Load = HR-TRIMP per day (Bevel-style), floored by NEAT/activity so rest days aren't ~0.
+  const [loadByDay, floorByDay] = await Promise.all([
+    fetchDailyCardioTrimp(warmFrom, end, await getEffectiveMaxHr()),
+    fetchActivityFloorByDay(warmFrom, end),
+  ]);
+  return computeTrainingLoadSeries(loadByDay, fromDate, end, floorByDay);
+}
+
+/**
+ * CTL/ATL calibration export — copied to the clipboard from the Training Load screen so the daily
+ * load / CTL / ATL / TSB series + the model params can be correlated OFF-DEVICE against Bevel's
+ * "Cardio Load" and HealthFit's Fitness/Fatigue, to back out any scale/bias correction. Per-day
+ * kcal / exercise-min / steps are included so a low day can be traced to missing workout coverage
+ * vs a genuine easy day.
+ */
+/**
+ * Aerobic-base outlook via DECOUPLING (Pw:HR, else speed:HR) — how much efficiency drifts across a
+ * steady long run. Median <5% over recent steady runs = base solid → aerobically ready for a quality
+ * dose; higher = keep building easy time-on-feet. Hot runs (HR-inflated) and interval/variable runs
+ * (high HR CV) are flagged so the median is over clean, steady long efforts only. Computed from each
+ * run's per-km splits (avgHR + avgPower + pace), first-half vs second-half, warm-up km dropped.
+ */
+export async function analyzeAerobicBase(): Promise<any> {
+  const snap = await loadSnapshotCache();
+  const HEAT_C = 19;          // heat-sensitive athlete — HR drifts by ~19°C, so warmer runs confound decoupling
+  const MIN_DUR_MIN = 45;     // decoupling only develops over a genuinely long steady effort
+  const MIN_KM = 5;
+  const allRuns = (snap?.runs ?? []);
+  // Candidates: recent runs long enough to develop drift. kmSplits live in the per-run detail
+  // (computed lazily, one run/scan on snap.runs), so fetch each candidate's detail.
+  const candidates = allRuns
+    .filter((r) => (r.distance ?? 0) >= 4000 && (r.duration ?? 0) >= 1500)
+    .slice(0, 8);
+
+  const rows: any[] = [];
+  const diagnostics: any[] = [];
+  for (const r of candidates) {
+    let detail: any = null;
+    try { detail = await fetchWorkoutDetail(r.date, r.duration); } catch { /* skip */ }
+    const splits = ((detail?.kmSplits ?? []) as any[]).filter((s) => s.avgHR > 0 && s.paceSecs > 0);
+    const durMin = Math.round((r.duration ?? 0) / 60);
+    diagnostics.push({ date: String(r.date).slice(0, 10), distKm: Math.round((r.distance ?? 0) / 100) / 10, durMin, label: r.label ?? null, splitCount: splits.length });
+    if (splits.length < 5) continue;
+    const usable = splits.slice(1);                                   // drop the warm-up km (HR still rising)
+    const mid = Math.floor(usable.length / 2);
+    const decoup = (eff: (s: any) => number) => {
+      const mean = (a: any[]) => a.reduce((x, s) => x + eff(s), 0) / a.length;
+      const e1 = mean(usable.slice(0, mid)), e2 = mean(usable.slice(mid));
+      return e1 > 0 ? Math.round(((e1 - e2) / e1) * 1000) / 10 : null;  // + = efficiency dropped (HR drifted up)
+    };
+    const hasPower = usable.every((s) => s.avgPower > 0);
+    const dPower = hasPower ? decoup((s) => s.avgPower / s.avgHR) : null;     // power/HR — terrain-robust
+    const dPace  = decoup((s) => (1000 / s.paceSecs) / s.avgHR);              // speed(m/s)/HR — cross-check
+    const hrs = usable.map((s) => s.avgHR);
+    const hrMean = hrs.reduce((a, b) => a + b, 0) / hrs.length;
+    const hrSd = Math.sqrt(hrs.reduce((a, h) => a + (h - hrMean) ** 2, 0) / hrs.length);
+    const cv = Math.round((hrSd / hrMean) * 1000) / 10;                       // HR variability across kms → steadiness
+    const tempC = detail?.weatherTempC ?? r.tempC ?? null;
+    rows.push({
+      date: String(r.date).slice(0, 10), km: usable.length + 1, durMin, avgHR: Math.round(hrMean),
+      decouplePct: dPower ?? dPace, decouplePowerPct: dPower, decouplePacePct: dPace, hrCVpct: cv, tempC,
+      hot: tempC != null && tempC >= HEAT_C, steady: cv < 8, longEnough: durMin >= MIN_DUR_MIN && (usable.length + 1) >= MIN_KM,
+    });
+  }
+
+  const clean = rows.filter((r) => r.steady && !r.hot && r.longEnough && r.decouplePct != null);
+  const median = (a: number[]) => a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
+  const med = median(clean.map((r) => r.decouplePct));
+  const confidence = clean.length >= 3 ? 'ok' : clean.length >= 1 ? 'provisional (few clean long runs — confirm with more)' : 'none';
+  const verdict = med == null ? `no clean steady run ≥${MIN_DUR_MIN} min & <${HEAT_C}°C yet — do one to read it`
+    : med < 5   ? 'base SOLID (<5%) — aerobically ready to add a small quality dose'
+    : med < 7.5 ? 'base DEVELOPING (5–7.5%) — mostly hold; ease intensity in cautiously'
+    :             'base BUILDING (>7.5%) — prioritise easy time-on-feet before adding power';
+  return {
+    method: `decoupling = (firstHalf−secondHalf)/firstHalf of power/HR (pace/HR cross-check); warm-up km dropped; clean = HR CV <8% AND ≥${MIN_DUR_MIN} min AND ≥${MIN_KM} km AND <${HEAT_C}°C`,
+    totalRuns: allRuns.length, candidatesChecked: candidates.length,
+    qualifyingRuns: rows.length, steadyCleanRuns: clean.length, confidence, medianDecouplePct: med, verdict,
+    runs: rows, diagnostics,
+  };
+}
+
+export async function buildTrainingLoadCalibration(months: number, toDate?: Date): Promise<string> {
+  const end   = toDate ?? new Date();
+  const since = new Date(end.getTime() - months * 30 * 86_400_000);
+  const maxHR = await getEffectiveMaxHr();
+
+  const [series, restRaw, active, exercise, steps] = await Promise.all([
+    fetchTrainingLoadHistory(months, end),
+    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.restingHeartRate,
+      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: false, limit: 400 }), [] as any[]),
+    fetchDailyActiveEnergy(since, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', since, end),
+    dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', since, end),
+  ]);
+
+  const restVals = (restRaw as any[]).map((s: any) => s.quantity as number).filter((v) => v > 0).sort((a, b) => a - b);
+  const restHR   = restVals.length ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 0;
+
+  // Per-day: the activity floor now BAKED INTO load (load = max(cardioTrimp, floor)); shown so the
+  // rest/easy-day lift is auditable against Bevel/HealthFit.
+  const days = series.map((d) => {
+    const kcal  = Math.round(active.get(d.date) ?? 0);
+    const exMin = Math.round(exercise.get(d.date) ?? 0);
+    return {
+      d: d.date, load: Math.round(d.load), atl: d.atl, ctl: d.ctl, tsb: d.tsb,
+      kcal, exMin, steps: Math.round(steps.get(d.date) ?? 0),
+      floor: Math.round(activityFloorTrimp(kcal, exMin)),
+    };
+  });
+
+  const latest = series[series.length - 1];
+  let maxLoad = 0, peakCtl = 0, sumLoad = 0, floorLifted = 0;
+  for (const x of days) { if (x.load > maxLoad) maxLoad = x.load; sumLoad += x.load; if (x.load <= x.floor && x.floor > 0) floorLifted++; }
+  for (const d of series) if (d.ctl > peakCtl) peakCtl = d.ctl;
+
+  const dump = {
+    app: 'RunCoachAI', metric: 'training-load-calibration',
+    generatedAt: end.toISOString(), periodMonths: months,
+    model: {
+      basis: 'Banister HR-TRIMP; workout HR full-weight, NON-workout HR discounted to 10% and only above 40% HRr',
+      perSampleTrimp: 'dtMin * HRr * 0.64 * exp(1.92*HRr)  (men Banister)',
+      HRr: '(HR - restHR) / (maxHR - restHR), clamped 0..1',
+      nonWorkoutDiscount: { passiveFactor: 0.10, onlyAboveHRr: 0.40 },
+      gapCapMin: 8,
+      neatFloor: {
+        trimpPerActiveKcal: 0.030, trimpPerExerciseMin: 0.30,
+        note: 'WIRED: daily load = max(cardioTrimp, kcal*0.030, exMin*0.30) — lifts rest/unlogged days off ~0 (fit to Bevel 07-08)',
+      },
+      ctlTauDays: 42, atlTauDays: 7, warmupDays: 120,
+    },
+    params: {
+      maxHR, maxHrSource: 'getEffectiveMaxHr (user-set, else robust observed peak, else Tanaka)', hrReserve: maxHR - restHR,
+      restHR, restHrMin: restVals[0] ?? 0, restHr10thPct: restVals[Math.floor(restVals.length * 0.1)] ?? 0, restHrSamples: restVals.length,
+      passiveFactor: 0.10, passiveMinHrr: 0.40, gapCapMin: 8,
+      thresholdHourTrimp: Math.round(0.85 * 0.64 * Math.exp(1.92 * 0.85) * 60), // one hour @ ~85% HRr, for TRIMP↔TSS sanity
+    },
+    summary: {
+      days: days.length,
+      latestCTL: latest ? Math.round(latest.ctl) : null,
+      latestATL: latest ? Math.round(latest.atl) : null,
+      latestTSB: latest ? Math.round(latest.tsb) : null,
+      meanDailyLoad: days.length ? Math.round(sumLoad / days.length) : 0,
+      maxDailyLoad: maxLoad, peakCTL: Math.round(peakCtl),
+      daysFloorSetTheLoad: floorLifted, // days where the NEAT floor (not cardio TRIMP) determined load
+    },
+    days,
+    // Projected-vs-realised TSB pairs (accumulates as the 7-day plan is viewed) — for calibrating the
+    // −10 form gate: projTSB is what the plan forecast, actTSB is what materialised.
+    forecastAccuracy: await getForecastPairs(),
+    // Observed max-HR across ~24 months of daily peaks (robust vs single-sample glitches).
+    maxHrAnalysis: await analyzeMaxHr(24),
+    // Aerobic-base outlook (decoupling per recent long steady run → ready for intensity or keep building ToF).
+    aerobicBase: await analyzeAerobicBase(),
+  };
+  return JSON.stringify(dump);
+}
+
+// HealthKit caps a query at `limit` samples; with ascending:true an overflow silently drops the
+// NEWEST samples — exactly the data a history chart most needs on long (6M/1Y) windows. So the
+// high-volume history queries below run DESCENDING (overflow drops the OLDEST instead) and restore
+// ascending order with this helper, keeping the most-recent `limit` samples while every downstream
+// consumer still sees oldest→newest.
+function sortByStartAsc<T extends { startDate: unknown }>(samples: T[]): T[] {
+  return samples.sort(
+    (a, b) => new Date(toISOStr(a.startDate as any)).getTime() - new Date(toISOStr(b.startDate as any)).getTime(),
+  );
 }
 
 // Time-stamped step buckets → lets us split workout vs non-workout steps (only the latter is passive).
 async function fetchStepSamples(since: Date, end: Date): Promise<{ t: number; steps: number; day: string }[]> {
   const raw = await safeQuery(() => (HealthKit.queryQuantitySamples as any)(
     HKQuantityTypeIdentifier.stepCount,
-    { filter: { startDate: since, endDate: end }, unit: 'count', ascending: true, limit: 50_000 }), [] as any[]);
+    // descending → an overflow of the 50k cap drops the oldest days, not the newest (dailyNonWorkoutSteps buckets by day, order-independent)
+    { filter: { startDate: since, endDate: end }, unit: 'count', ascending: false, limit: 50_000 }), [] as any[]);
   return (raw as any[]).map((s: any) => {
     const t0 = new Date(toISOStr(s.startDate)).getTime();
     const t1 = s.endDate ? new Date(toISOStr(s.endDate)).getTime() : t0;
-    return { t: (t0 + t1) / 2, steps: s.quantity as number, day: toDateStr(toISOStr(s.startDate)) };
+    return { t: (t0 + t1) / 2, steps: s.quantity as number, day: trainingDayKey(toISOStr(s.startDate)) };
   });
 }
 
@@ -2793,7 +3046,8 @@ export async function fetchStrainHistory(
   const [hrRaw, restingRaw, workouts] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRate,
-      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 200_000 },
+      // descending → the 200k cap drops the oldest days on 6M/1Y windows, not the newest; re-sorted ascending below
+      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: false, limit: 200_000 },
     ), [] as any[]),
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.restingHeartRate,
@@ -2807,20 +3061,16 @@ export async function fetchStrainHistory(
   const hr = (hrRaw as any[]).map((s: any) => ({
     t:  new Date(toISOStr(s.startDate)).getTime(),
     hr: s.quantity as number,
-    day: toDateStr(toISOStr(s.startDate)),
-  }));
+    day: trainingDayKey(toISOStr(s.startDate)),
+  })).sort((a, b) => a.t - b.t); // query ran descending (to keep newest on overflow) — restore ascending for per-day integration
   if (hr.length === 0) return [];
 
-  // restHR = median resting HR; maxHR = observed peak (looped, NOT Math.max(...spread)
-  // which throws "Maximum call stack size" on the 50k–200k samples of a multi-month
-  // window — that was the error on every view except 1M). Floor of 185 prevents a
-  // low-activity window from clamping maxHR down and inflating the HR-reserve.
+  // restHR = median resting HR; maxHR = the effective max (set value, else robust observed peak) —
+  // one source of truth across strain/TRIMP/zones, glitch-filtered (the old per-window raw peak
+  // could latch onto a single sensor spike).
   const restVals = (restingRaw as any[]).map((s: any) => s.quantity as number).filter(v => v > 0).sort((a, b) => a - b);
   const restHR = restVals.length > 0 ? Math.round(restVals[Math.floor(restVals.length / 2)]) : 50;
-  let peak = 0;
-  for (const sm of hr) if (sm.hr > peak) peak = sm.hr;
-  const userMaxHr = await getUserMaxHr();
-  const maxHR = userMaxHr > 0 ? userMaxHr : Math.max(190, Math.min(205, Math.round(peak)));
+  const maxForDay = buildMaxHrResolver(await getMaxHrHistory(), await getEffectiveMaxHr()); // per-day (date-keyed "from now")
 
   // Bucket HR by day; workout windows per day (HR inside = exercise, full weight)
   const byDay = new Map<string, { t: number; hr: number }[]>();
@@ -2832,7 +3082,7 @@ export async function fetchStrainHistory(
   const muscularByDay = new Map<string, number>();
   const windowsByDay  = new Map<string, { s: number; e: number }[]>();
   for (const w of (workouts as any[])) {
-    const day = toDateStr(toISOStr(w.startDate));
+    const day = trainingDayKey(toISOStr(w.startDate));
     const ws  = new Date(toISOStr(w.startDate)).getTime();
     const win = { s: ws, e: ws + workoutDurationSec(w) * 1000 };
     if (!windowsByDay.has(day)) windowsByDay.set(day, []);
@@ -2853,7 +3103,7 @@ export async function fetchStrainHistory(
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
     // Same model as today's live strain: workout HR-zone load (active) + non-workout steps (passive).
-    const zoneLoad = zoneStrainLoad(samples, restHR, maxHR, windowsByDay.get(day) ?? []);
+    const zoneLoad = zoneStrainLoad(samples, restHR, maxForDay(day) || 190, windowsByDay.get(day) ?? []);
     const rawLoad  = zoneLoad + stepStrainLoad(nwStepsByDay.get(day) ?? 0) + (muscularByDay.get(day) ?? 0);
     out.push({ date: day, value: strainFromLoad(rawLoad) }); // 0-100 (Bevel %)
   }
@@ -3148,7 +3398,8 @@ export async function fetchHRVHistory(months: number, toDate?: Date): Promise<{ 
     safeQuery(
       () => (HealthKit.queryCategorySamples as any)(
         HKCategoryTypeIdentifier.sleepAnalysis,
-        { filter: { startDate: since, endDate: endDate }, ascending: true, limit: 5000 }
+        // descending → the 5k cap drops the oldest nights on long windows, not the newest; re-sorted ascending below
+        { filter: { startDate: since, endDate: endDate }, ascending: false, limit: 5000 }
       ),
       [] as any[]
     ),
@@ -3166,10 +3417,11 @@ export async function fetchHRVHistory(months: number, toDate?: Date): Promise<{ 
   ]);
 
   const sessions = groupIntoSessions(
-    (sleepSamples as any[]).map((s: any) => ({
+    sortByStartAsc(sleepSamples as any[]).map((s: any) => ({
       startDate: s.startDate,
       endDate:   s.endDate,
       value:     s.value as number,
+      source:    s.sourceRevision?.source?.bundleIdentifier ?? s.sourceRevision?.source?.name ?? '',
     }))
   );
 
@@ -3270,6 +3522,7 @@ export async function fetchOvernightHRHistory(
   const sessions = groupIntoSessions(
     (rawSleep as any[]).map((s: any) => ({
       startDate: s.startDate, endDate: s.endDate, value: s.value as number,
+      source: s.sourceRevision?.source?.bundleIdentifier ?? s.sourceRevision?.source?.name ?? '',
     }))
   );
 
@@ -3482,16 +3735,18 @@ export async function fetchSleepHistory(months: number, toDate?: Date): Promise<
   const rawSamples = await safeQuery(
     () => (HealthKit.queryCategorySamples as any)(
       HKCategoryTypeIdentifier.sleepAnalysis,
-      { filter: { startDate: since, endDate: endDate }, ascending: true, limit: 10000 }
+      // descending → the 10k cap drops the oldest nights on long windows, not the newest; re-sorted ascending below
+      { filter: { startDate: since, endDate: endDate }, ascending: false, limit: 10000 }
     ),
     [] as any[]
   );
 
   const sessions = groupIntoSessions(
-    (rawSamples as any[]).map((s: any) => ({
+    sortByStartAsc(rawSamples as any[]).map((s: any) => ({
       startDate: s.startDate,
       endDate:   s.endDate,
       value:     s.value as number,
+      source:    s.sourceRevision?.source?.bundleIdentifier ?? s.sourceRevision?.source?.name ?? '',
     }))
   );
 
@@ -3530,6 +3785,64 @@ const clockMinutes = (iso: string): number => {
 };
 
 /**
+ * Observed max-HR analysis over a long window. Uses the DAILY max HR (discreteMax per day, cheap
+ * statistics query) rather than raw samples: a max reached on MANY days is a true physiological
+ * ceiling, whereas a single high day is almost always a sensor glitch (cadence lock-on / motion).
+ * Glitch-filtered at >220. The robust estimate is the value your daily peaks actually cluster at.
+ */
+/** Daily max HR (discreteMax per day), descending, glitch-filtered >220. Cheap statistics query. */
+async function dailyMaxHrPeaks(months: number): Promise<number[]> {
+  const end    = new Date();
+  const since  = new Date(end.getTime() - months * 30 * 86_400_000);
+  const anchor = new Date(since); anchor.setHours(0, 0, 0, 0);
+  const anchorStr = anchor.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const buckets = await safeQuery(
+    () => (HealthKit as any).queryStatisticsCollectionForQuantity(
+      HKQuantityTypeIdentifier.heartRate, ['discreteMax'], anchorStr, { day: 1 },
+      { filter: { startDate: since, endDate: end }, unit: 'count/min' },
+    ),
+    [] as any[],
+  );
+  const daily: number[] = [];
+  for (const b of (buckets as any[])) {
+    const v = b?.maximumQuantity?.quantity ?? b?.maxQuantity?.quantity ?? 0;
+    if (v > 0 && v <= 220) daily.push(Math.round(v)); // >220 = obvious glitch
+  }
+  return daily.sort((a, b) => b - a); // descending
+}
+
+/** Robust observed max = highest daily peak reached on ≥2 separate days → drops lone sensor spikes. */
+function robustPeak(peaksDesc: number[]): number {
+  const n = peaksDesc.length;
+  if (n === 0) return 0;
+  if (n === 1) return peaksDesc[0];
+  for (const v of peaksDesc) if (peaksDesc.filter((x) => x >= v).length >= 2) return v;
+  return peaksDesc[0];
+}
+
+/** Robust observed max HR (bpm) from the athlete's own data, 0 if none — feeds getEffectiveMaxHr's auto-anchor. */
+export async function computeRobustObservedMaxHr(months = 24): Promise<number> {
+  return robustPeak(await dailyMaxHrPeaks(months));
+}
+
+export async function analyzeMaxHr(months = 24): Promise<any> {
+  const daily = await dailyMaxHrPeaks(months);
+  const n = daily.length;
+  if (n === 0) return { error: 'no heart-rate data found', monthsScanned: months };
+  const atLeast = (t: number) => daily.filter((v) => v >= t).length;
+  return {
+    monthsScanned: months,
+    daysWithHrData: n,
+    currentSetMaxHr: await getUserMaxHr(),
+    singleHighestDailyPeak: daily[0],          // likely a glitch if far above the rest
+    top12DailyPeaks: daily.slice(0, 12),       // eyeball outliers vs the cluster
+    robustObservedMaxHr: robustPeak(daily),    // the auto-anchor value (reached ≥2 days)
+    daysReaching: { '>=180': atLeast(180), '>=185': atLeast(185), '>=190': atLeast(190), '>=195': atLeast(195), '>=200': atLeast(200), '>=205': atLeast(205) },
+    note: 'daily discreteMax, glitch-filtered >220. A peak hit on ≥2 days is real; a lone high day is a spike. Wrist HR can UNDER-read at true max, so this is a floor.',
+  };
+}
+
+/**
  * Our own metric per day, keyed to the same component keys as the Bevel catalogue
  * (bevelScales). Values are in the SAME canonical units the Bevel store uses
  * (durations & clock times in minutes, energy kcal, etc.) so they line up 1:1.
@@ -3542,11 +3855,20 @@ export async function fetchOurDailyComponents(
   const end  = toDate ?? new Date();
   const from = new Date(end.getTime() - months * 30 * 86_400_000);
 
+  // Baseline-dependent metrics (recovery's 60-day z-scores, sleep's ~90-day personal goal + 7-night
+  // bank) must see a FIXED lookback, else the SAME date scores a point or two differently on a 9-day
+  // screen vs a 3-month screen (the baseline is truncated to the fetched window). Compute sleep +
+  // recovery + strain over a padded window and slice back to [from,end] below, so a given day's
+  // recovery/sleep/bank is window-INVARIANT. (Steps/energy are per-day sums → already invariant;
+  // CTL/ATL already warm 120 days independent of the window.)
+  const BASELINE_PAD_MONTHS = 3;
+  const effMonths = months + BASELINE_PAD_MONTHS;
+
   const [bio, sessions, strain, recovery, steps, active, basal, exercise] = await Promise.all([
-    fetchSleepBiometrics(months, end),
-    fetchSleepHistory(months, end),
-    fetchStrainHistory(months, end),
-    fetchRecoveryHistory(months, end),
+    fetchSleepBiometrics(effMonths, end),
+    fetchSleepHistory(effMonths, end),
+    fetchStrainHistory(effMonths, end),
+    fetchRecoveryHistory(effMonths, end),
     dailyCumulativeSum(HKQuantityTypeIdentifier.stepCount, 'count', from, end),
     fetchDailyActiveEnergy(from, end),
     dailyCumulativeSum(HKQuantityTypeIdentifier.basalEnergyBurned, 'kcal', from, end),
@@ -3589,7 +3911,7 @@ export async function fetchOurDailyComponents(
     if (total > 0) day(d).totalEnergy = Math.round(total);
   }
 
-  // Sleep Bank: rolling 7-night recency-weighted balance of (asleep − dynamic need).
+  // Sleep Bank: rolling 7-night balance of (asleep − personal median need) — oscillates ±~3h around 0 like Bevel.
   const strainByDate = new Map(strain.map(s => [s.date, s.value]));
   const nights = [...sessions]
     .sort((a, b) => a.date.localeCompare(b.date))
@@ -3609,13 +3931,22 @@ export async function fetchOurDailyComponents(
 
   // Cardio Load (ATL) + CTL + TSB per day — HR-TRIMP basis (Bevel-style), for the
   // history viewer + export / cross-model verification. Warm 120 days before the window.
-  const clLoad = await fetchDailyCardioTrimp(new Date(from.getTime() - CARDIO_WARM_DAYS * 86_400_000), end, await getUserMaxHr());
-  for (const dl of computeTrainingLoadSeries(clLoad, from, end)) {
+  const clWarmFrom = new Date(from.getTime() - CARDIO_WARM_DAYS * 86_400_000);
+  const [clLoad, clFloor] = await Promise.all([
+    fetchDailyCardioTrimp(clWarmFrom, end, await getEffectiveMaxHr()),
+    fetchActivityFloorByDay(clWarmFrom, end),
+  ]);
+  for (const dl of computeTrainingLoadSeries(clLoad, from, end, clFloor)) {
     const r = day(dl.date);
     r.cardioLoad = Math.round(dl.atl * 10) / 10;
     r.ctl = Math.round(dl.ctl * 10) / 10;
     r.tsb = Math.round(dl.tsb * 10) / 10;
   }
+
+  // Drop the baseline-pad days that sat BEFORE the requested window — they only existed to give
+  // recovery/sleep a full fixed-length lookback; the caller asked for [from, end].
+  const fromKey = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-${String(from.getDate()).padStart(2, '0')}`;
+  for (const d of Object.keys(out)) if (d < fromKey) delete out[d];
 
   return out;
 }
@@ -3654,13 +3985,15 @@ export async function fetchSleepBiometrics(
   const rawSleep = await safeQuery(
     () => (HealthKit.queryCategorySamples as any)(
       HKCategoryTypeIdentifier.sleepAnalysis,
-      { filter: { startDate: since, endDate: endDate }, ascending: true, limit: 10_000 }
+      // descending → the 10k cap drops the oldest nights on long windows, not the newest; re-sorted ascending below
+      { filter: { startDate: since, endDate: endDate }, ascending: false, limit: 10_000 }
     ),
     [] as any[]
   );
   const sessions = groupIntoSessions(
-    (rawSleep as any[]).map((s: any) => ({
+    sortByStartAsc(rawSleep as any[]).map((s: any) => ({
       startDate: s.startDate, endDate: s.endDate, value: s.value as number,
+      source: s.sourceRevision?.source?.bundleIdentifier ?? s.sourceRevision?.source?.name ?? '',
     }))
   );
   if (sessions.length === 0) return [];

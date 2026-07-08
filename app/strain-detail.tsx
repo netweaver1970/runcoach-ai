@@ -8,7 +8,7 @@ import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
-import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, computeWorkoutLoad } from '../src/services/trainingLoad';
+import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, computeWorkoutLoad, trainingDayKey } from '../src/services/trainingLoad';
 import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, CoachPlan } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
@@ -16,8 +16,19 @@ import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
+import { KpiTabs } from '../src/components/KpiTabs';
+import { DayNav } from '../src/components/DayNav';
+import { cached } from '../src/services/detailCache';
 import { pushWorkoutToWatch, watchModuleAvailable } from '../src/services/watchWorkout';
 import { getPowerZones } from '../src/services/claude';
+
+/** Label + colour for a strain score on a PAST day (the readiness band lives on today's DayStrain only). */
+function strainVisual(v: number): { label: string; color: string } {
+  if (v >= 60) return { label: 'High',     color: '#e74c3c' };
+  if (v >= 35) return { label: 'Moderate', color: '#f39c12' };
+  if (v >= 20) return { label: 'Light',    color: '#27ae60' };
+  return { label: 'Rest', color: '#3498db' };
+}
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -91,7 +102,10 @@ export default function StrainDetailScreen() {
   // full month (longer history sparklines).
   const loadHistory = useCallback((months: number, isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoadingH(true);
-    Promise.all([fetchOurDailyComponents(months), fetchDailyDurationHistory()])
+    // Cache the fast (default) load so tab-switches don't re-query HealthKit; pull-to-refresh bypasses it.
+    const compsP = isRefresh ? fetchOurDailyComponents(months) : cached(`comps:${months}`, () => fetchOurDailyComponents(months));
+    const durP   = isRefresh ? fetchDailyDurationHistory()      : cached('dur', () => fetchDailyDurationHistory());
+    Promise.all([compsP, durP])
       .then(([c, d]) => { setComps(c); setDur(d); })
       .catch(() => {})
       .finally(() => { setLoadingH(false); setRefreshing(false); });
@@ -110,14 +124,18 @@ export default function StrainDetailScreen() {
   // Sub-KPI values for the VIEWED day (target is defined below; this closure runs in render).
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
-  const real   = strain?.real ?? 0;
-  const status = strain ? strainStatus(strain) : { label: '—', color: '#888' };
-
   // The coach plan is built for the VIEWED day (the `date` param), not just today.
   const dates      = Object.keys(comps).sort();
   const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === toDateKey(new Date());
+
+  // Strain value + status: today's DayStrain (str, with the readiness band) applies ONLY when the viewed
+  // day IS today — the day-swipe keeps rec/str params, so without this gate a past day rendered TODAY's
+  // hero number and readiness band. Past days render from the stored per-day components.
+  const strainToday = targetIsToday ? strain : null;
+  const real   = strainToday?.real ?? Math.round((target.strainScore as number) ?? 0);
+  const status = strainToday ? strainStatus(strainToday) : strainVisual(real);
   // "est." readiness: viewing today but there's no overnight recovery for last night (watch not worn)
   // → the recovery/readiness shown is the last-known estimate, not today's. (History days have data.)
   const realTodayKey = toDateKey(new Date());
@@ -146,7 +164,7 @@ export default function StrainDetailScreen() {
   const planHeatFactor = heatStrainFactor(targetIsToday && weather
     ? { tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity } : null);
   const runLoad         = watchWorkout ? estimateWorkoutLoad(watchWorkout) : 0;
-  const projectedStrain = watchWorkout ? strainFromLoad((strain?.trimp ?? 0) + runLoad * planHeatFactor) : real;
+  const projectedStrain = watchWorkout ? strainFromLoad((strainToday?.trimp ?? 0) + runLoad * planHeatFactor) : real;
   const runStrain       = Math.max(0, projectedStrain - real);
 
   // Rolling progression cap as of the viewed day, honouring the user's % + basis settings.
@@ -169,11 +187,11 @@ export default function StrainDetailScreen() {
   // Single source of truth for the displayed band + drivers: the readiness carried on
   // the viewed day's DayStrain — the ring, hero, this card and the coach all agree.
   const readiness = {
-    readiness: strain?.readiness ?? 0,
-    acwr:      strain?.acwr ?? 0,
-    drivers:   strain?.drivers ?? [],
-    safeLow:   strain?.safeLow ?? 0,
-    safeHigh:  strain?.safeHigh ?? 0,
+    readiness: strainToday?.readiness ?? 0,
+    acwr:      strainToday?.acwr ?? 0,
+    drivers:   strainToday?.drivers ?? [],
+    safeLow:   strainToday?.safeLow ?? 0,
+    safeHigh:  strainToday?.safeHigh ?? 0,
   };
 
   // Coach plan moved to app/daily-coach.tsx — this screen no longer loads/generates/pushes a plan.
@@ -188,9 +206,9 @@ export default function StrainDetailScreen() {
     loadSnapshotCache().then((snap: any) => {
       if (!snap) { setDayActs([]); return; }
       const maxHR = snap.estimatedMaxHR || 190;
-      const restHR = snap.todayRecovery?.restingHr ?? 50;
+      const restHR = snap.todayRecovery?.overnightHR || 50;
       const acts = (snap.activities ?? [])
-        .filter((a: any) => (a.date ?? '').slice(0, 10) === targetDate)
+        .filter((a: any) => a.date && trainingDayKey(a.date) === targetDate) // 4am boundary — matches the strain model's day attribution
         .map((a: any) => ({
           name: a.name || 'Activity', min: Math.round(a.durationMin || 0),
           load: computeWorkoutLoad(a, maxHR, restHR), hr: Math.round(a.avgHR || 0),
@@ -223,8 +241,8 @@ export default function StrainDetailScreen() {
         tsb:          target.tsb,
         acwr:         readiness.acwr || undefined,
         strainReal:   real,
-        advisableLow:  strain?.safeLow,
-        advisableHigh: strain?.safeHigh,
+        advisableLow:  strainToday?.safeLow,
+        advisableHigh: strainToday?.safeHigh,
         readiness:    readiness.readiness,
         drivers:      readiness.drivers,
         recentStrain: strainHistUpTo.slice(-10),
@@ -313,6 +331,8 @@ export default function StrainDetailScreen() {
           <Text style={s.historyLink}>History ›</Text>
         </TouchableOpacity>
       </View>
+      <KpiTabs current="strain" params={{ rec, str, date }} />
+      <DayNav date={date} />
 
       <View style={{ flex: 1 }} {...swipe}>
       <ScrollView
@@ -329,15 +349,16 @@ export default function StrainDetailScreen() {
           <View style={{ flex: 1 }}>
             <Text style={[s.scoreLabel, { color: status.color }]}>{status.label.toUpperCase()}</Text>
             <Text style={s.scoreAdvice}>
-              {strain
-                ? `Today's strain ${real}% — Target ${strain.safeLow}–${strain.safeHigh}% given your recovery & form.`
+              {strainToday
+                ? `Today's strain ${real}% — Target ${strainToday.safeLow}–${strainToday.safeHigh}% given your recovery & form.`
                 : 'No strain data yet today.'}
             </Text>
           </View>
         </View>
 
-        {/* Readiness — multi-factor (recovery + sleep + form + ACWR + illness guards) */}
-        {!loadingH && dates.length > 0 && (
+        {/* Readiness — multi-factor (recovery + sleep + form + ACWR + illness guards). Today's snapshot only
+            (a day-swipe drops the DayStrain that carries the live readiness band). */}
+        {!loadingH && strainToday && (
           <View style={s.readyCard}>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
               <Text style={s.readyNum}>{recoveryStale ? '≈' : ''}{readiness.readiness}</Text>
@@ -347,7 +368,7 @@ export default function StrainDetailScreen() {
             <Text style={s.readyDrivers}>
               {recoveryStale ? '⚠️ Estimate — watch not worn overnight' : (readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range')}
             </Text>
-            <Text style={s.readyRange}>Target {strain?.safeLow ?? readiness.safeLow}–{strain?.safeHigh ?? readiness.safeHigh}% strain</Text>
+            <Text style={s.readyRange}>Target {strainToday?.safeLow ?? readiness.safeLow}–{strainToday?.safeHigh ?? readiness.safeHigh}% strain</Text>
             {tof && (
               <Text style={s.readyTof}>
                 7-day time on feet {tof.tof7d}m · +{capCtx?.capPct ?? 10}% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
@@ -411,14 +432,14 @@ export default function StrainDetailScreen() {
                   <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters} m</Text>
 
                   {/* Projected strain this session adds + today's resulting total vs the target band */}
-                  {strain && (
+                  {strainToday && (
                     <Text style={[s.projStrain, {
-                      color: projectedStrain > strain.safeHigh ? '#f39c12'
-                           : projectedStrain < strain.safeLow ? '#3498db' : '#27ae60',
+                      color: projectedStrain > strainToday.safeHigh ? '#f39c12'
+                           : projectedStrain < strainToday.safeLow ? '#3498db' : '#27ae60',
                     }]}>
                       📊 Adds ~{runStrain}% strain → today ≈ {projectedStrain}%
-                      {'  '}(target {strain.safeLow}–{strain.safeHigh}%
-                      {projectedStrain > strain.safeHigh ? ' · above' : projectedStrain < strain.safeLow ? ' · below' : ' · in band'})
+                      {'  '}(target {strainToday.safeLow}–{strainToday.safeHigh}%
+                      {projectedStrain > strainToday.safeHigh ? ' · above' : projectedStrain < strainToday.safeLow ? ' · below' : ' · in band'})
                     </Text>
                   )}
 

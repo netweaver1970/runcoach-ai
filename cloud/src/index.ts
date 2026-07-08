@@ -12,18 +12,19 @@
  * athletes (via coach_links) arrives in Milestone 2.
  */
 import { Hono, type Context } from 'hono';
-import { cors } from 'hono/cors';
 import type { AppEnv } from './types';
 import { requireAuth } from './middleware';
 import {
-  hashPassword, verifyPassword, signJwt, newRefreshToken, sha256Hex, newId,
+  hashPassword, verifyPassword, passwordNeedsRehash, signJwt, newRefreshToken, sha256Hex, newId,
 } from './crypto';
 
 const ACCESS_TTL = 60 * 60;            // 1 hour
 const REFRESH_TTL = 60 * 24 * 60 * 60; // 60 days (seconds)
 
 const app = new Hono<AppEnv>();
-app.use('*', cors());
+// No CORS middleware ON PURPOSE: the only clients are the native iOS app and CLI tools, which don't
+// send an Origin. The old blanket cors() (Access-Control-Allow-Origin: * on every route) let any
+// website script a logged-in browser session against this API. Add a narrow allowlist if a web UI ever ships.
 
 app.get('/', (c) => c.json({ ok: true, service: 'runcoach-api', version: 1 }));
 
@@ -32,13 +33,16 @@ function isEmail(s: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
 }
 
-async function issueTokens(c: Context<AppEnv>, userId: string, role: string) {
+async function issueTokens(c: Context<AppEnv>, userId: string, role: string, familyId?: string) {
   const accessToken = await signJwt({ sub: userId, role }, c.env.JWT_SECRET, ACCESS_TTL);
   const refreshToken = newRefreshToken();
   const now = Math.floor(Date.now() / 1000);
+  const id = newId();
+  // family_id ties every rotation of one login session together — replaying an already-rotated
+  // member of the family is proof of theft and revokes the whole family (see /auth/refresh).
   await c.env.DB.prepare(
-    'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).bind(newId(), userId, await sha256Hex(refreshToken), now + REFRESH_TTL, now).run();
+    'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at, family_id) VALUES (?, ?, ?, ?, ?, ?)',
+  ).bind(id, userId, await sha256Hex(refreshToken), now + REFRESH_TTL, now, familyId ?? id).run();
   return { accessToken, refreshToken, expiresIn: ACCESS_TTL };
 }
 
@@ -50,8 +54,36 @@ function chunkBind<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+// ── rate limiting (D1 fixed-window; fail-open so a missing table can't lock everyone out) ──────────
+const RL_CFG = {
+  login:  { limit: 10, windowSec: 15 * 60 },  // per ip:email
+  signup: { limit: 5,  windowSec: 60 * 60 },  // per ip
+  accept: { limit: 10, windowSec: 60 * 60 },  // per account — 10-char codes + 15-min expiry make brute force moot anyway
+} as const;
+async function rateLimited(c: Context<AppEnv>, scope: keyof typeof RL_CFG, key: string): Promise<boolean> {
+  const cfg = RL_CFG[scope];
+  const now = Math.floor(Date.now() / 1000);
+  const winStart = now - (now % cfg.windowSec);
+  try {
+    const row = await c.env.DB.prepare(
+      `INSERT INTO rate_limits (scope, key, window_start, count) VALUES (?, ?, ?, 1)
+       ON CONFLICT(scope, key) DO UPDATE SET
+         count = CASE WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.count + 1 ELSE 1 END,
+         window_start = excluded.window_start
+       RETURNING count`,
+    ).bind(scope, key, winStart).first<any>();
+    return (row?.count ?? 0) > cfg.limit;
+  } catch { return false; }
+}
+const clientIp = (c: Context<AppEnv>) => c.req.header('cf-connecting-ip') || 'unknown';
+
+// PBKDF2 work for a nonexistent email too, so login latency can't reveal whether an account exists.
+let dummyHashP: Promise<string> | null = null;
+const dummyHash = (pepper?: string) => (dummyHashP ??= hashPassword('timing-equalizer-not-a-real-account', pepper));
+
 // ── auth ───────────────────────────────────────────────────────────────────────
 app.post('/auth/signup', async (c) => {
+  if (await rateLimited(c, 'signup', clientIp(c))) return c.json({ error: 'too many attempts — try again later' }, 429);
   const body = (await c.req.json().catch(() => null)) as any;
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
@@ -67,7 +99,7 @@ app.post('/auth/signup', async (c) => {
   const now = Math.floor(Date.now() / 1000);
   await c.env.DB.prepare(
     'INSERT INTO users (id, email, pw_hash, role, name, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).bind(id, email, await hashPassword(password), role, name, now).run();
+  ).bind(id, email, await hashPassword(password, c.env.PW_PEPPER), role, name, now).run();
 
   const tokens = await issueTokens(c, id, role);
   return c.json({ user: { id, email, name, role }, ...tokens });
@@ -77,13 +109,25 @@ app.post('/auth/login', async (c) => {
   const body = (await c.req.json().catch(() => null)) as any;
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
+  if (await rateLimited(c, 'login', `${clientIp(c)}:${email}`)) {
+    return c.json({ error: 'too many attempts — try again later' }, 429);
+  }
   const row = await c.env.DB
     .prepare('SELECT id, email, pw_hash, role, name FROM users WHERE email = ?')
     .bind(email)
     .first<any>();
-  // Generic failure — never reveal whether the email exists.
-  const ok = row ? await verifyPassword(password, row.pw_hash) : false;
+  // Generic failure — and burn the SAME PBKDF2 work when the email doesn't exist, so response
+  // timing doesn't reveal which emails are registered (the message alone never did).
+  const ok = row
+    ? await verifyPassword(password, row.pw_hash, c.env.PW_PEPPER)
+    : (await verifyPassword(password, await dummyHash(c.env.PW_PEPPER)), false);
   if (!ok) return c.json({ error: 'invalid credentials' }, 401);
+  // Transparent upgrade: once PW_PEPPER is configured, legacy un-peppered hashes re-hash to the
+  // peppered format on the next successful login (the only moment we have the password).
+  if (passwordNeedsRehash(row.pw_hash, !!c.env.PW_PEPPER)) {
+    await c.env.DB.prepare('UPDATE users SET pw_hash = ? WHERE id = ?')
+      .bind(await hashPassword(password, c.env.PW_PEPPER), row.id).run().catch(() => {});
+  }
   const tokens = await issueTokens(c, row.id, row.role);
   return c.json({ user: { id: row.id, email: row.email, name: row.name, role: row.role }, ...tokens });
 });
@@ -94,21 +138,30 @@ app.post('/auth/refresh', async (c) => {
   if (!refreshToken) return c.json({ error: 'missing refreshToken' }, 400);
   const now = Math.floor(Date.now() / 1000);
   const row = await c.env.DB
-    .prepare('SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?')
+    .prepare('SELECT id, user_id, expires_at, family_id, used_at FROM refresh_tokens WHERE token_hash = ?')
     .bind(await sha256Hex(refreshToken))
     .first<any>();
   if (!row || row.expires_at < now) {
     if (row) await c.env.DB.prepare('DELETE FROM refresh_tokens WHERE id = ?').bind(row.id).run();
     return c.json({ error: 'invalid refresh token' }, 401);
   }
-  // Rotate: invalidate the used token, issue a fresh pair.
-  await c.env.DB.prepare('DELETE FROM refresh_tokens WHERE id = ?').bind(row.id).run();
+  // REUSE DETECTION (OAuth2 BCP): a token that was already rotated coming back means it was stolen
+  // (or the legit client replayed after theft) — revoke the ENTIRE family so the thief's chain dies too.
+  if (row.used_at != null) {
+    await c.env.DB.prepare('DELETE FROM refresh_tokens WHERE family_id = ? OR id = ?')
+      .bind(row.family_id ?? row.id, row.id).run();
+    return c.json({ error: 'invalid refresh token' }, 401);
+  }
+  // Rotate: MARK the used token (kept until expiry for reuse detection) and issue a fresh pair
+  // in the same family. Opportunistically purge expired rows to keep the table small.
+  await c.env.DB.prepare('UPDATE refresh_tokens SET used_at = ? WHERE id = ?').bind(now, row.id).run();
+  await c.env.DB.prepare('DELETE FROM refresh_tokens WHERE expires_at < ?').bind(now).run().catch(() => {});
   const user = await c.env.DB
     .prepare('SELECT id, email, name, role FROM users WHERE id = ?')
     .bind(row.user_id)
     .first<any>();
   if (!user) return c.json({ error: 'invalid refresh token' }, 401);
-  const tokens = await issueTokens(c, user.id, user.role);
+  const tokens = await issueTokens(c, user.id, user.role, row.family_id ?? row.id);
   return c.json({ user, ...tokens });
 });
 
@@ -120,6 +173,12 @@ app.post('/auth/logout', requireAuth, async (c) => {
       .bind(await sha256Hex(String(body.refreshToken)), c.get('userId'))
       .run();
   }
+  return c.json({ ok: true });
+});
+
+// Kill every session (all refresh-token families) for the caller — e.g. after a suspected leak.
+app.post('/auth/revoke-all', requireAuth, async (c) => {
+  await c.env.DB.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').bind(c.get('userId')).run();
   return c.json({ ok: true });
 });
 
@@ -203,7 +262,7 @@ function safeParse(s: unknown) {
 // Athletes generate a short invite code; a coach redeems it. The coach can then read
 // (only) that athlete's recent runs + daily metrics. Either party can unlink.
 const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O/1/I
-function inviteCode(len = 6): string {
+function inviteCode(len = 10): string {
   const r = crypto.getRandomValues(new Uint8Array(len));
   let s = '';
   for (let i = 0; i < len; i++) s += INVITE_ALPHABET[r[i] % INVITE_ALPHABET.length];
@@ -217,20 +276,31 @@ async function hasAcceptedLink(c: Context<AppEnv>, coachId: string, athleteId: s
 }
 
 // Athlete generates (or re-fetches) a pending invite code to hand to a coach.
+const INVITE_TTL_SEC = 15 * 60;
 app.post('/links/invite', requireAuth, async (c) => {
   const athleteId = c.get('userId');
-  const existing = await c.env.DB
-    .prepare("SELECT invite_code FROM coach_links WHERE athlete_id = ? AND coach_id IS NULL AND status = 'pending' ORDER BY created_at DESC LIMIT 1")
-    .bind(athleteId).first<any>();
-  if (existing?.invite_code) return c.json({ code: existing.invite_code });
   const now = Math.floor(Date.now() / 1000);
+  const existing = await c.env.DB
+    .prepare("SELECT id, invite_code, code_expires_at FROM coach_links WHERE athlete_id = ? AND coach_id IS NULL AND status = 'pending' ORDER BY created_at DESC LIMIT 1")
+    .bind(athleteId).first<any>();
+  // Re-serve only a still-valid code; an expired (or legacy no-expiry) pending row gets a FRESH code —
+  // the old behavior re-served the same 6-char code forever, an unbounded brute-force window.
+  if (existing?.invite_code && existing.code_expires_at != null && existing.code_expires_at > now) {
+    return c.json({ code: existing.invite_code, expiresAt: existing.code_expires_at });
+  }
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = inviteCode();
+    const expires = now + INVITE_TTL_SEC;
     try {
-      await c.env.DB.prepare(
-        "INSERT INTO coach_links (id, coach_id, athlete_id, status, invite_code, created_at) VALUES (?, NULL, ?, 'pending', ?, ?)",
-      ).bind(newId(), athleteId, code, now).run();
-      return c.json({ code });
+      if (existing?.id) {
+        await c.env.DB.prepare("UPDATE coach_links SET invite_code = ?, code_expires_at = ?, created_at = ? WHERE id = ?")
+          .bind(code, expires, now, existing.id).run();
+      } else {
+        await c.env.DB.prepare(
+          "INSERT INTO coach_links (id, coach_id, athlete_id, status, invite_code, created_at, code_expires_at) VALUES (?, NULL, ?, 'pending', ?, ?, ?)",
+        ).bind(newId(), athleteId, code, now, expires).run();
+      }
+      return c.json({ code, expiresAt: expires });
     } catch { /* unique collision — retry */ }
   }
   return c.json({ error: 'could not generate code' }, 500);
@@ -239,13 +309,15 @@ app.post('/links/invite', requireAuth, async (c) => {
 // Coach redeems an athlete's invite code.
 app.post('/links/accept', requireAuth, async (c) => {
   const coachId = c.get('userId');
+  if (await rateLimited(c, 'accept', coachId)) return c.json({ error: 'too many attempts — try again later' }, 429);
   const body = (await c.req.json().catch(() => null)) as any;
   const code = String(body?.code || '').trim().toUpperCase();
   if (!code) return c.json({ error: 'missing code' }, 400);
+  const now = Math.floor(Date.now() / 1000);
   const row = await c.env.DB
-    .prepare("SELECT id, athlete_id FROM coach_links WHERE invite_code = ? AND status = 'pending' AND coach_id IS NULL")
-    .bind(code).first<any>();
-  if (!row) return c.json({ error: 'invalid or already-used code' }, 404);
+    .prepare("SELECT id, athlete_id FROM coach_links WHERE invite_code = ? AND status = 'pending' AND coach_id IS NULL AND code_expires_at IS NOT NULL AND code_expires_at > ?")
+    .bind(code, now).first<any>();
+  if (!row) return c.json({ error: 'invalid, expired, or already-used code' }, 404);
   if (row.athlete_id === coachId) return c.json({ error: "you can't coach your own account" }, 400);
   await c.env.DB.prepare("UPDATE coach_links SET coach_id = ?, status = 'accepted' WHERE id = ?")
     .bind(coachId, row.id).run();

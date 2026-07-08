@@ -107,7 +107,24 @@ const LAMBDA_ATL = 1 - Math.exp(-1 / TAU_ATL);
 const LAMBDA_CTL = 1 - Math.exp(-1 / TAU_CTL);
 
 function dayKey(iso: string): string {
-  return iso.slice(0, 10);
+  // LOCAL calendar date — slicing the ISO string took the UTC date, which in UTC+2 shifted every
+  // cursor/lookup key a day back (the CTL/ATL series never contained "today" and loads landed a day late).
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso.slice(0, 10);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * Training-day attribution (Bevel-style): the LOCAL calendar date of (t − 4h), so an overnight walk or
+ * run finishing after midnight counts toward the PREVIOUS day's strain — a new training day starts at
+ * 04:00 local, not midnight.
+ */
+export function trainingDayKey(t: number | string | Date): string {
+  const ms = typeof t === 'number' ? t : new Date(t as any).getTime();
+  const d = new Date(ms - 4 * 3_600_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 /** Convert daily active energy (kcal) to a training-load unit (keeps CTL in a familiar range). */
@@ -131,6 +148,7 @@ export function computeTrainingLoadSeries(
   loadByDay: Map<string, number>,
   fromDate: Date,
   toDate: Date,
+  floorByDay?: Map<string, number>,   // per-day activityFloorTrimp — lifts rest/unlogged days off ~0 (Bevel parity)
 ): DailyLoad[] {
   // Determine the warm-up start: earliest day with load, but no later than fromDate.
   const dayKeys = [...loadByDay.keys()].sort();
@@ -153,7 +171,10 @@ export function computeTrainingLoadSeries(
 
   while (cursor.getTime() <= end.getTime()) {
     const k = dayKey(cursor.toISOString());
-    const load = loadByDay.get(k) ?? 0;
+    // NEAT/activity floor: a rest or unlogged-walk day whose HR-window TRIMP is ~0 still carries load
+    // (Bevel scores it via energy/steps). max() so a real workout day — where cardio TRIMP dominates —
+    // is untouched. Without this the 42-day CTL was dragged down by zeroed rest days.
+    const load = Math.max(loadByDay.get(k) ?? 0, floorByDay?.get(k) ?? 0);
 
     if (first) {
       // Seed both EWMAs at the first day's load to limit ramp-up artefacts
@@ -278,17 +299,34 @@ export interface CardioLoad {
   hint:   string;
 }
 
+// Cardio Status is DIRECTIONAL inside the optimal band (Bevel: "Productive = ratio trending toward
+// the upper end"). A flat ATL:CTL ratio at ~1.0 pins you in "Maintaining" forever; but a ratio that's
+// CLIMBING back up after a deload is a productive rebuild even below 1.0. So within 0.8–1.3 we split
+// by the ratio's recent slope, not by the 1.0 line. (Bevel's own acute/chronic ratio can't be
+// reproduced from our daily HR-TRIMP — see the 2026-07-08 fit — so we mirror its INTENT, not its number.)
+const TREND_WINDOW = 14;   // days over which "building vs fading" is read
+const TREND_EPS    = 0.03; // ratio change beyond ±this = rising / falling; within = flat
+
+/** Change in the ATL:CTL ratio over the trailing `window`, ending at `index` (0 if too little history). */
+export function ratioTrend(series: { atl: number; ctl: number }[], index: number, window = TREND_WINDOW): number {
+  const j = index - window;
+  if (index < 0 || index >= series.length || j < 0) return 0;
+  const r = (k: number) => series[k].ctl > 0 ? series[k].atl / series[k].ctl : 0;
+  return Math.round((r(index) - r(j)) * 1000) / 1000;
+}
+
 /**
- * Bevel-style training status from the ATL/CTL ratio (optimal band ≈ 0.8–1.3):
- *   ≥1.5 → Overtraining · 1.3–1.5 → Fatigued · 1.0–1.3 → Productive (sweet spot) ·
- *   0.8–1.0 → Maintaining · <0.8 → Detraining (losing stimulus).
- * Peaking is rare + special: a STRONG taper (ATL well below CTL, TSB ≥ 30% of CTL) on a
- * BUILT base (CTL ≥ 18) — fresh and race-ready, not just "any low-load day".
+ * Training status from the ATL/CTL ratio + its DIRECTION (`trend` = ratioTrend). Bands:
+ *   ≥1.5 Overtraining · 1.3–1.5 Fatigued · <0.8 Detraining (or Peaking on a tapered built base).
+ * Inside 0.8–1.3: RISING (or already ≥1.0) → Productive (building); FLAT/falling → Maintaining.
+ * `trend` omitted → falls back to the old level-only split (≥1.0 = Productive).
  */
-export function cardioLoadStatus(atl: number, ctl: number, tsb = 0): CardioLoad {
+export function cardioLoadStatus(atl: number, ctl: number, tsb = 0, trend?: number): CardioLoad {
   const ratio  = ctl > 0 ? atl / ctl : 0;
   const bandLo = Math.round(0.8 * ctl * 10) / 10;
   const bandHi = Math.round(1.3 * ctl * 10) / 10;
+  const rising  = trend != null && trend >  TREND_EPS;   // ratio climbing = building fitness
+  const falling = trend != null && trend < -TREND_EPS;
   let label: string, color: string, hint: string;
   if (ctl <= 0) {
     label = 'Building'; color = '#7f8c8d'; hint = 'Not enough history yet — keep logging activity to set your baseline.';
@@ -296,10 +334,17 @@ export function cardioLoadStatus(atl: number, ctl: number, tsb = 0): CardioLoad 
     label = 'Overtraining'; color = '#e74c3c'; hint = 'Acute load far above your fitness baseline — high overtraining risk; recover now.';
   } else if (ratio >= 1.3) {
     label = 'Fatigued';     color = '#e84393'; hint = 'Recent load is outpacing your fitness — fatigue building; ease off to absorb it.';
-  } else if (ratio >= 1.0) {
-    label = 'Productive';   color = '#27ae60'; hint = 'Load slightly above baseline — the sweet spot for building fitness.';
-  } else if (ratio >= 0.8) {
-    label = 'Maintaining';  color = '#2ecc71'; hint = 'Load roughly matches your baseline — holding fitness steady.';
+  } else if (ratio >= 0.8) {           // optimal band — DIRECTION decides
+    if (ratio >= 1.0 || rising) {
+      label = 'Productive'; color = '#27ae60';
+      hint = (rising && ratio < 1.0)
+        ? 'Load climbing back above your baseline — rebuilding fitness (the sweet spot).'
+        : 'Load above your baseline — building fitness (the sweet spot).';
+    } else {
+      label = 'Maintaining'; color = '#2ecc71';
+      hint = falling ? 'Load easing within the optimal band — holding fitness.'
+                     : 'Load steady around your baseline — holding fitness.';
+    }
   } else if (ctl >= 18 && tsb >= 0.30 * ctl) {
     label = 'Peaking';      color = '#3498db'; hint = 'Fresh on a built base — tapered and primed for a race or key session.';
   } else {
@@ -354,21 +399,19 @@ export interface SleepBankResult { date: string; needed: number; balance: number
 export function computeSleepBankSeries(
   nights: SleepBankNight[], baseGoalMin: number,
 ): SleepBankResult[] {
+  // Personal nightly NEED = median asleep over the real nights (≥2h). Measuring the bank against THIS — not a
+  // fixed/idealised goal — makes it oscillate around zero (surplus AND debt), matching Bevel, instead of
+  // showing chronic debt just because the athlete sleeps less than an 8h ideal. Falls back to baseGoalMin
+  // when there are too few nights to form a stable median. (The old model measured vs a high goal AND fed the
+  // running debt back into "needed", which biased it ever more negative — that's what pinned it at ~−10h.)
+  const real = nights.map(n => n.asleepMin).filter(m => m >= 120).sort((a, b) => a - b);
+  const need = real.length >= 5 ? real[Math.floor(real.length / 2)] : baseGoalMin;
   const out: SleepBankResult[] = [];
-  const balances: number[] = [];
-  let bank = 0;
-  for (const n of nights) {
-    const needed  = computeSleepNeeded(baseGoalMin, n.dayStrain, bank, n.efficiency);
-    const balance = n.asleepMin - needed;
-    balances.push(balance);
-    const last7 = balances.slice(-7);
-    let wsum = 0, wtot = 0;
-    for (let k = 0; k < last7.length; k++) {
-      const w = Math.pow(0.8, last7.length - 1 - k); // most recent weighted highest
-      wsum += w * last7[k]; wtot += w;
-    }
-    bank = Math.round(wsum / wtot);
-    out.push({ date: n.date, needed, balance: Math.round(balance), bank });
+  for (let i = 0; i < nights.length; i++) {
+    // Rolling 7-night SUM of (asleep − need), skipping no-data nights → a ±~3h swing like Bevel's Sleep Bank.
+    const window = nights.slice(Math.max(0, i - 6), i + 1).filter(n => n.asleepMin >= 120);
+    const bank = Math.round(window.reduce((s, n) => s + (n.asleepMin - need), 0));
+    out.push({ date: nights[i].date, needed: need, balance: Math.round(nights[i].asleepMin - need), bank });
   }
   return out;
 }
@@ -551,8 +594,8 @@ export function strainFromTrimp(trimp: number): number {
 // Blend two activity signals and take whichever indicates MORE activity, so both
 // general-movement days (active energy) and exercise-heavy/low-burn days (Apple
 // exercise minutes — e.g. a long easy session) score. Tuned toward Bevel's ~26 mean.
-const ENERGY_TRIMP_K = 0.030; // TRIMP per active kcal
-const EXMIN_TRIMP    = 0.60;  // TRIMP per Apple exercise minute
+const ENERGY_TRIMP_K = 0.030; // TRIMP per active kcal — fits Bevel's rest/easy-day Cardio Load (07-08 paired export)
+const EXMIN_TRIMP    = 0.30;  // TRIMP per Apple exercise minute — 0.60 overshot (bias +4.4 vs Bevel); 0.30 → bias +1.2
 export function activityFloorTrimp(activeEnergyKcal: number, exerciseMin: number): number {
   return Math.max(
     Math.max(0, activeEnergyKcal) * ENERGY_TRIMP_K,

@@ -27,6 +27,7 @@ import {
   saveSnapshotCache,
   loadSnapshotCache,
 } from '../src/services/healthkit';
+import { warmDetailCache, clearDetailCache } from '../src/services/detailCache';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation, getOnboardingDone } from '../src/services/claude';
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, shrinkWantsQualityToday, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
@@ -44,8 +45,10 @@ const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' :
 const SCAN_MARKER = `${Constants.expoConfig?.version ?? '0'}|s1`;
 const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
-import { tsbStatus, strainStatus, cardioLoadStatus, activityCategory } from '../src/services/trainingLoad';
+import { tsbStatus, strainStatus, cardioLoadStatus, ratioTrend, activityCategory } from '../src/services/trainingLoad';
+import { recordActuals } from '../src/services/forecastLog';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
+import { requestNotificationPermissions } from '../src/services/notifications';
 import { trySyncSnapshot, fetchCoachPlanForDate } from '../src/services/cloudSync';
 import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
 import { maybeAutoRecalibrate, seedPowerZonesFromRuns } from '../src/services/zones';
@@ -323,6 +326,12 @@ export default function HomeScreen() {
       if (__DEV__) console.log(`[scan] ${light ? 'light' : 'full'} ${months}mo · ${snap.runs.length} runs · ${scanMs}ms`, scanSteps);
       setSnapshot(snap);
       saveSnapshotCache(snap).catch(() => {});
+      // Fill the realised side of the forecast-accuracy log (only dates the plan already predicted).
+      recordActuals((snap.trainingLoad ?? []).map(d => ({ date: d.date, ctl: d.ctl, atl: d.atl, tsb: d.tsb, load: d.load }))).catch(() => {});
+      // Pre-warm the KPI-detail disk cache so opening Strain/Recovery/Sleep is instant. A FULL scan
+      // invalidates it first (fresh history); a light scan just tops it up (respects the TTL).
+      if (!light) clearDetailCache();
+      warmDetailCache().catch(() => {});
       // Cloud sync (opt-in): push derived data to the coach cloud if signed in. Fire-and-forget.
       trySyncSnapshot(snap).catch(() => {});
       // Body Battery (non-blocking) → cache it for an instant next-launch render, and push
@@ -417,6 +426,9 @@ export default function HomeScreen() {
   // Wake the app on new sleep data (HealthKit observer) → auto-prepare the day view.
   // Wake on a new run → recalibrate the Power & HR Zones; also catch up on foreground.
   useEffect(() => {
+    // Ensure notification permission up front — the morning auto-flow schedules a local notification from
+    // the background sleep observer; without permission it would be silently dropped.
+    requestNotificationPermissions().catch(() => {});
     startSleepObserver(syncMonthsRef.current);
     startWorkoutObserver(syncMonthsRef.current);
     maybeAutoRecalibrate().catch(() => {});
@@ -1050,7 +1062,7 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
   const latest = series[series.length - 1];
   if (!latest) return null;
   const status = tsbStatus(latest.tsb);
-  const cl = cardioLoadStatus(latest.atl, latest.ctl, latest.tsb); // Bevel-style zone
+  const cl = cardioLoadStatus(latest.atl, latest.ctl, latest.tsb, ratioTrend(series, series.length - 1)); // direction-aware zone
 
   // Mini 30-day CTL sparkline
   const spark = series.slice(-30);

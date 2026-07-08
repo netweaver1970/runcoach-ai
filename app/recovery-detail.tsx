@@ -9,6 +9,17 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
+import { KpiTabs } from '../src/components/KpiTabs';
+import { DayNav } from '../src/components/DayNav';
+import { cached } from '../src/services/detailCache';
+
+/** Colour + label for a recovery score when viewing a PAST day (rec's own values are only for today). */
+function recoveryVisual(score: number): { color: string; label: string } {
+  if (score >= 75) return { color: '#27ae60', label: 'Well recovered' };
+  if (score >= 55) return { color: '#2ecc71', label: 'Adequate' };
+  if (score >= 35) return { color: '#f39c12', label: 'Compromised' };
+  return { color: '#e74c3c', label: 'Low' };
+}
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
@@ -43,11 +54,14 @@ export default function RecoveryDetailScreen() {
   const dateLbl = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' }) : '';
   const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
   const recovery = rec ? JSON.parse(rec) as DailyRecovery : null;
+  // The rich rec-only breakdown (z-scores, score build-up) is only available for TODAY's snapshot. A
+  // day-swipe navigates with just `date` (rec dropped) → render the day's score + sub-KPIs from `comps`.
+  const useRec = !!recovery && !date;
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [loadingH, setLoadingH] = useState(true);
   useEffect(() => {
-    fetchOurDailyComponents(1).then(setComps).catch(() => {}).finally(() => setLoadingH(false));
+    cached('comps:3', () => fetchOurDailyComponents(3)).then(setComps).catch(() => {}).finally(() => setLoadingH(false));
   }, []);
   const hist = useMemo(
     () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
@@ -55,25 +69,44 @@ export default function RecoveryDetailScreen() {
   );
   // Sub-KPI values for the VIEWED day (the `date` param), not just today.
   const dates = Object.keys(comps).sort();
-  const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : '');
-  const target = comps[targetDate] ?? {};
+  const viewedDate = (date && comps[date]) ? date : (date || (dates.length ? dates[dates.length - 1] : ''));
+  const target = comps[viewedDate] ?? {};
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
-  if (!recovery) {
+  // Score + colour/label: rec when viewing today, else the viewed day's stored components.
+  const recoveryScore = useRec ? recovery!.recoveryScore : Math.round((target.recoveryScore as number) ?? 0);
+  const { color, label } = useRec
+    ? { color: recovery!.color, label: recovery!.label }
+    : recoveryVisual(recoveryScore);
+  const bd            = useRec ? recovery!.breakdown : undefined;
+  const weightedRMSSD = useRec ? recovery!.weightedRMSSD : 0;
+  const baseline7Day  = useRec ? recovery!.baseline7Day : 0;
+  const overnightHR   = useRec ? recovery!.overnightHR : 0;
+  const sleep         = useRec ? recovery!.sleep : undefined;
+  const trend         = useRec ? recovery!.trend : undefined;
+
+  const hasData = useRec || Object.keys(target).length > 0;
+  if (!hasData) {
     return (
       <SafeAreaView style={s.container}>
-        <View style={s.center}><Text style={s.emptyText}>No recovery data available.</Text></View>
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
+            <Text style={s.backText}>‹ Back</Text>
+          </TouchableOpacity>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={s.title}>Recovery Detail</Text>
+            <Text style={s.headerDate}>{dayLabel}</Text>
+          </View>
+          <View style={{ width: 60 }} />
+        </View>
+        <KpiTabs current="recovery" params={{ rec, str, date }} />
+        <View style={s.center} {...swipe}>
+          <Text style={s.emptyText}>{loadingH ? 'Loading…' : 'No recovery data for this day.'}</Text>
+        </View>
       </SafeAreaView>
     );
   }
-
-  const {
-    recoveryScore, color, label, trend,
-    weightedRMSSD, baseline7Day,
-    overnightHR,
-    sleep, breakdown: bd,
-  } = recovery;
 
   const trendSymbol = trend === 'rising' ? '↑ Rising' : trend === 'falling' ? '↓ Falling' : '→ Stable';
   const trendColor  = trend === 'rising' ? '#27ae60' : trend === 'falling' ? '#c0392b' : '#888';
@@ -94,6 +127,8 @@ export default function RecoveryDetailScreen() {
           <Text style={s.historyLink}>History ›</Text>
         </TouchableOpacity>
       </View>
+      <KpiTabs current="recovery" params={{ rec, str, date }} />
+      <DayNav date={date} />
 
       <View style={{ flex: 1 }} {...swipe}>
       <ScrollView contentContainerStyle={s.scroll}>
@@ -133,6 +168,8 @@ export default function RecoveryDetailScreen() {
         </View>
         <View style={{ height: 14 }} />
 
+        {/* Detailed breakdown (z-scores, score build-up, last night's sleep) — today's snapshot only. */}
+        {useRec && (<>
         {/* HRV — true RMSSD vs 60-day personal baseline (z-score) */}
         <Section title="Heart Rate Variability">
           <Row
@@ -217,6 +254,7 @@ export default function RecoveryDetailScreen() {
             <Row label="Wake time"      value={new Date(sleep.wakeTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} />
           </Section>
         )}
+        </>)}
 
       </ScrollView>
       </View>

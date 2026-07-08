@@ -12,8 +12,9 @@ import {
   StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent, PanResponder,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { fetchTrainingLoadHistory } from '../src/services/healthkit';
-import { tsbStatus, cardioLoadStatus } from '../src/services/trainingLoad';
+import * as Clipboard from 'expo-clipboard';
+import { fetchTrainingLoadHistory, buildTrainingLoadCalibration } from '../src/services/healthkit';
+import { tsbStatus, cardioLoadStatus, ratioTrend } from '../src/services/trainingLoad';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DailyLoad } from '../src/types';
 
@@ -83,6 +84,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   // Downsample to ≤120 points for render performance (CTL/ATL/TSB are smooth)
   const stride = Math.max(1, Math.ceil(data.length / 120));
   const pts = data.filter((_, i) => i % stride === 0 || i === data.length - 1);
+  const trendByDate = new Map(data.map((d, i) => [d.date, ratioTrend(data, i)])); // ratio slope per day (full series)
 
   // Scale across all three series + the optimal-load band top (1.3×CTL); force 0 in so TSB zero shows
   const allVals = pts.flatMap(d => [d.ctl, d.atl, d.tsb, d.ctl * 1.3]);
@@ -152,9 +154,9 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
         {renderLine('ctl', CTL_COLOR)}
         {renderLine('atl', ATL_COLOR)}
         {renderLine('tsb', TSB_COLOR, 2)}
-        {/* Cardio-status dots on the ATL (load) line */}
+        {/* Cardio-status dots on the ATL (load) line — trend from the FULL daily series (by date) */}
         {pts.map((d, i) => {
-          const st = cardioLoadStatus(d.atl, d.ctl, d.tsb);
+          const st = cardioLoadStatus(d.atl, d.ctl, d.tsb, trendByDate.get(d.date));
           return (
             <View key={`st-${i}`} style={{
               position: 'absolute', left: xOf(i) - 3.5, top: toY(d.atl) - 3.5,
@@ -204,10 +206,23 @@ export default function TrainingLoadScreen() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [innerW, setInnerW]       = useState(0);
+  const [copyState, setCopyState] = useState<'idle' | 'working' | 'done'>('idle');
 
   const periodMs = PERIOD_MONTHS[period] * 30 * 86_400_000;
   const toDate   = new Date(Date.now() - pageOffset * periodMs);
   const fromDate = new Date(toDate.getTime() - periodMs);
+
+  const copyCalibration = useCallback(async () => {
+    setCopyState('working');
+    try {
+      const json = await buildTrainingLoadCalibration(PERIOD_MONTHS[period], toDate);
+      await Clipboard.setStringAsync(json);
+      setCopyState('done');
+      setTimeout(() => setCopyState('idle'), 2000);
+    } catch {
+      setCopyState('idle');
+    }
+  }, [period, pageOffset]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -235,11 +250,11 @@ export default function TrainingLoadScreen() {
   const cardioBreakdown = (() => {
     const counts = new Map<string, { color: string; days: number }>();
     let total = 0;
-    for (const d of data) {
-      const st = cardioLoadStatus(d.atl, d.ctl, d.tsb);
+    data.forEach((d, i) => {
+      const st = cardioLoadStatus(d.atl, d.ctl, d.tsb, ratioTrend(data, i));
       const e = counts.get(st.label) ?? { color: st.color, days: 0 };
       e.days += 1; counts.set(st.label, e); total += 1;
-    }
+    });
     const ORDER = ['Building', 'Detraining', 'Maintaining', 'Peaking', 'Productive', 'Fatigued', 'Overtraining'];
     return total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
       label: l, color: counts.get(l)!.color, days: counts.get(l)!.days,
@@ -375,6 +390,14 @@ export default function TrainingLoadScreen() {
             </Text>
           </View>
 
+          {/* Calibration export — daily load/CTL/ATL/TSB + model params → clipboard, for cross-checking vs Bevel / HealthFit */}
+          <TouchableOpacity style={s.copyBtn} onPress={copyCalibration} disabled={copyState === 'working'}>
+            <Text style={s.copyBtnText}>
+              {copyState === 'done' ? '✓ Copied to clipboard' : copyState === 'working' ? 'Preparing…' : '⧉ Copy calibration data'}
+            </Text>
+          </TouchableOpacity>
+          <Text style={s.copyHint}>Copies this period's daily load, CTL/ATL/TSB and model params to compare against Bevel Cardio Load / HealthFit Fitness-Fatigue.</Text>
+
         </ScrollView>
       )}
     </SafeAreaView>
@@ -467,6 +490,13 @@ const makeS = (c: Palette) => StyleSheet.create({
   },
   explainerTitle: { fontSize: 14, fontWeight: '700', color: c.text, marginBottom: 6 },
   explainerBody: { fontSize: 12, color: c.textSub, lineHeight: 19 },
+
+  copyBtn: {
+    backgroundColor: c.surface, borderRadius: 10, paddingVertical: 12, alignItems: 'center',
+    borderWidth: 1, borderColor: c.border, marginBottom: 6,
+  },
+  copyBtnText: { fontSize: 14, fontWeight: '700', color: c.accent },
+  copyHint: { fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 16, paddingHorizontal: 8, lineHeight: 15 },
 
   listHeader: {
     fontSize: 12, fontWeight: '700', color: c.textSub,

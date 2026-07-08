@@ -14,10 +14,11 @@ import {
 } from '../src/services/trainingLoad';
 import { getMorningForecast, DayForecast } from '../src/services/weather';
 import { getRaceWeekPlan, RaceWeek, fmtTime } from '../src/services/racePlan';
+import { recordForecast, recordActuals } from '../src/services/forecastLog';
 
 type Row = WeekPlanDay & {
   strain: number; trimp: number; ctl: number; atl: number; tsb: number;
-  adjMin: number; heat: number; capped: boolean; tsbTrim: boolean; fc?: DayForecast; label: string; adjKm?: number;
+  adjMin: number; heat: number; capped: boolean; tsbTrim: boolean; floorRest: boolean; taperRest: boolean; fc?: DayForecast; label: string; adjKm?: number;
 };
 
 // Derive the displayed label FROM the actual synthesized + cap-trimmed structure, so it always
@@ -75,7 +76,7 @@ export default function WeekPlan() {
   const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number } | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
-  const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number } | null>(null);
+  const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number; floorRestDays: number; taperDays: number; minTSB: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
   const [periodLabel, setPeriodLabel] = useState('');
   const [raceWeek, setRaceWeek] = useState<RaceWeek | null>(null);
@@ -142,74 +143,108 @@ export default function WeekPlan() {
       while (tof.length < 14) tof.unshift(0);                 // pad if short
       tof.splice(0, tof.length - 14);                          // keep the last 14 (offsets today-13…today)
 
-      // Walk the week day-by-day: heat-cut → volume cap → TSB floor — projecting CTL/ATL/TSB forward as
-      // we go, so the form floor (minTSB) can trim a session that would otherwise push fatigue too deep.
+      // Project CTL/ATL/TSB forward. Two passes:
+      //   1. Per-day TSB floor — "protect the long, cap the rest". Only the LONG is protected THROUGH the floor
+      //      (its own day may dip, held at ≥ LONG_FLOOR); every other day yields — trimmed to hold form ≥ minTSB,
+      //      RESTED if even a minimal dose would breach it.
+      //   2. Taper — a per-day floor still lets a run the DAY BEFORE the long leave form at −10, so the protected
+      //      long then compounds far past the floor (that's what drove it to −20). So if the long still dips more
+      //      than LONG_DIP_MARGIN below minTSB, REST the run days immediately before it (up to 2) to bank
+      //      freshness, re-projecting until the long's dip is shallow. This is the "tighten the days around the
+      //      long" the user asked for. Race mode fully bypasses (the LLM owns that block's load).
       const minTSB = await getMinTSB();
       const La = 1 - Math.exp(-1 / 7), Lc = 1 - Math.exp(-1 / 42);   // ATL/CTL EWMA weights (τ 7 / 42)
-      let ctl = ctl0, atl = atl0, cappedDays = 0;
-      const builtRows: Row[] = days.map((d) => {
-        const fc = fxBy.get(d.date);
-        const heat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
-        const heatMin = d.intensity === 'rest' ? 0 : Math.max(8, Math.round(d.runMinutes / heat));
-        const j = tof.length;
-        const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0); // 7 days ending a week ago
-        const prior6 = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
-        const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct) - prior6)) : heatMin;
-        // Shrink-to-fit force-placed this short quality on its day. It bypasses the VOLUME cap (that's the
-        // whole point — hold the structure over the +cap% ToF ceiling), but it must STILL respect the TSB
-        // FLOOR: the volume cap limits weekly VOLUME, the form floor limits acute FATIGUE (a safety limit
-        // shrink shouldn't blow through — that's what drove form to −15). So a forced day is trimmed toward
-        // minTSB like any other, but is NEVER rested — it holds a real (if short) quality touch (FORCED_MIN)
-        // so the week keeps its shape. Race mode still fully bypasses (the LLM owns that block's load).
-        const FORCED_MIN = 15;
-        const LONG_FLOOR = 45;   // the LONG is the priority session — the TSB floor may shorten intervals/tempo
-                                 // (down to FORCED_MIN) but must NEVER trim the long into a recovery jog.
-        const isLongDay = d.forced && d.kind === 'long';
-        const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
+      const MIN_QUALITY = 15;      // a quality trimmed shorter than this isn't worth holding → rest instead
+      const LONG_FLOOR = 45;       // the long is never trimmed into a recovery jog, even below the floor
+      const LONG_DIP_MARGIN = 3;   // the protected long may sit up to this far below minTSB before we taper into it
+      const tof0 = [...tof];       // snapshot of actual ToF history — each projection pass replays from the same base
 
-        // TSB floor: trim the run so the projected form (ctl'−atl') doesn't fall below minTSB — except the
-        // long, which is protected at LONG_FLOOR (its day may dip a little deeper; that's the cost of the long).
-        let mins = volMin;
-        if (mins > 0 && !raceMode) {
-          const floor = isLongDay ? LONG_FLOOR : (d.forced ? FORCED_MIN : 20);
-          const tMax = (ctl * (1 - Lc) - atl * (1 - La) - minTSB) / (La - Lc); // max trimp that holds TSB ≥ floor
-          for (let k = 0; k < 5 && mins >= floor; k++) {
-            const tr = estimateDayTrimp(d.intensity, mins, cal);
-            if (tr <= tMax) break;
-            const next = Math.floor(mins * Math.max(0, tMax / tr));
-            mins = next < mins ? next : mins - 5;                 // ensure progress toward the floor
+      const walk = (taperSet: Set<number>): { rows: Row[]; cappedDays: number } => {
+        const tofW = [...tof0];
+        let ctl = ctl0, atl = atl0, cappedDays = 0;
+        const rows = days.map((d, i) => {
+          const fc = fxBy.get(d.date);
+          const heat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
+          const heatMin = d.intensity === 'rest' ? 0 : Math.max(8, Math.round(d.runMinutes / heat));
+          const j = tofW.length;
+          const ref7   = tofW.slice(j - 13, j - 6).reduce((a, b) => a + b, 0); // 7 days ending a week ago
+          const prior6 = tofW.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
+          const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct) - prior6)) : heatMin;
+          const isLongDay = d.forced && d.kind === 'long';
+          const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
+
+          let mins = volMin;
+          let floorRested = false;
+          let taperRested = false;
+          if (taperSet.has(i) && !isLongDay) {                     // pass 2: taper into the long → rest to bank freshness
+            mins = 0; taperRested = true;
+          } else if (mins > 0 && !raceMode) {
+            const floor = isLongDay ? LONG_FLOOR : MIN_QUALITY;
+            const tMax = (ctl * (1 - Lc) - atl * (1 - La) - minTSB) / (La - Lc); // max trimp that holds TSB ≥ minTSB
+            // Trim toward the floor while the session would push form below minTSB (never trimming below the floor).
+            for (let k = 0; k < 6 && mins > floor; k++) {
+              const tr = estimateDayTrimp(d.intensity, mins, cal);
+              if (tr <= tMax) break;
+              const next = Math.floor(mins * Math.max(0, tMax / tr));
+              mins = next < mins ? Math.max(floor, next) : Math.max(floor, mins - 5); // progress, but hold the floor
+            }
+            // If even the floored dose STILL breaches minTSB, the long is protected (holds LONG_FLOOR, accepts the
+            // dip) while every other day yields and RESTS — so the floor genuinely holds on all but the long's day.
+            if (estimateDayTrimp(d.intensity, mins, cal) > tMax) {
+              if (isLongDay) mins = LONG_FLOOR;
+              else { mins = 0; floorRested = true; }
+            }
           }
-          if (mins < floor) mins = d.forced ? floor : 0;         // forced: hold its floor (long stays long); else rest
+          const isRun = mins > 0;
+          const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
+          const volCapped = isRun && !d.forced && volMin < heatMin; // trimmed by the volume cap
+          const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor (forced days too now)
+          tofW.push(mins);
+
+          const wk = !isRun ? null
+            : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any), coach.powerZones);
+          const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
+          const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins);
+          const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;
+          const trimp = estimateDayTrimp(intensity, mins, cal);
+
+          atl += La * (trimp - atl);
+          ctl += Lc * (trimp - ctl);
+          if (volCapped || tsbTrim) cappedDays++;
+          const adjKm = (coach.loadUnit === 'km' && coach.paceMinPerKm && mins > 0)
+            ? Math.round((mins / coach.paceMinPerKm) * 10) / 10 : undefined;
+          return {
+            ...d, intensity, structure, label, fc, heat, adjKm,
+            adjMin: mins, capped: volCapped, tsbTrim, floorRest: floorRested, taperRest: taperRested, strain, trimp,
+            ctl: Math.round(ctl * 10) / 10, atl: Math.round(atl * 10) / 10, tsb: Math.round((ctl - atl) * 10) / 10,
+          };
+        });
+        return { rows, cappedDays };
+      };
+
+      const taperSet = new Set<number>();
+      let res = walk(taperSet);
+      const longIdx = days.findIndex(d => d.forced && d.kind === 'long');
+      if (longIdx > 0) {
+        for (let back = 1; back <= 2 && (longIdx - back) >= 0; back++) {
+          if (res.rows[longIdx].tsb >= minTSB - LONG_DIP_MARGIN) break; // long's dip already shallow enough
+          if (res.rows[longIdx - back].intensity === 'rest') continue;  // already easy/rest → nothing to bank here
+          taperSet.add(longIdx - back);
+          res = walk(taperSet);
         }
-        const isRun = mins > 0;
-        const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
-        const volCapped = isRun && !d.forced && volMin < heatMin; // trimmed by the volume cap
-        const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor (forced days too now)
-        tof.push(mins);
-
-        const wk = !isRun ? null
-          : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any), coach.powerZones);
-        const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
-        const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins);
-        const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;
-        const trimp = estimateDayTrimp(intensity, mins, cal);
-
-        atl += La * (trimp - atl);
-        ctl += Lc * (trimp - ctl);
-        if (volCapped || tsbTrim) cappedDays++;
-        const adjKm = (coach.loadUnit === 'km' && coach.paceMinPerKm && mins > 0)
-          ? Math.round((mins / coach.paceMinPerKm) * 10) / 10 : undefined;
-        return {
-          ...d, intensity, structure, label, fc, heat, adjKm,
-          adjMin: mins, capped: volCapped, tsbTrim, strain, trimp,
-          ctl: Math.round(ctl * 10) / 10, atl: Math.round(atl * 10) / 10, tsb: Math.round((ctl - atl) * 10) / 10,
-        };
-      });
+      }
+      const builtRows = res.rows;
       setRows(builtRows);
+      // Log the projected trajectory (+ today's realised load) so projected-vs-realised TSB can be
+      // calibrated later — the −10 form gate over-projects fatigue vs what materialises.
+      recordForecast(builtRows, todayKey).catch(() => {});
+      recordActuals(tl.map(d => ({ date: d.date, ctl: d.ctl, atl: d.atl, tsb: d.tsb, load: d.load }))).catch(() => {});
       // Chart context: actual CTL/ATL for the last ~21 days (today is the last point → the seed).
       setHist(tl.slice(-21).map(d => ({ ctl: d.ctl, atl: d.atl })));
       const forcedDays = days.filter(d => d.forced).length;
-      setWeekCap({ capPct, cappedDays, forcedDays });
+      const floorRestDays = builtRows.filter(r => r.floorRest).length;
+      const taperDays = builtRows.filter(r => r.taperRest).length;
+      setWeekCap({ capPct, cappedDays: res.cappedDays, forcedDays, floorRestDays, taperDays, minTSB });
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to build the week plan.');
     } finally {
@@ -287,7 +322,9 @@ export default function WeekPlan() {
                     {!!r.fc && <Text style={s.dayWx}>{'   '}{r.fc.apparentC}°·{r.fc.humidity}%</Text>}
                   </Text>
                   <Text style={s.struct} numberOfLines={3}>
-                    {r.intensity === 'rest' ? 'Rest' : r.structure}
+                    {r.intensity === 'rest'
+                      ? (r.taperRest ? 'Rest — tapering into tomorrow’s long' : r.floorRest ? 'Rest — held to your form floor' : 'Rest')
+                      : r.structure}
                     {r.adjKm != null && r.intensity !== 'rest' ? `  ·  ${r.adjKm} km` : ''}
                     {reduced ? `  → ${r.adjMin}min ${r.tsbTrim ? '(form)' : r.capped ? '(cap)' : '(heat)'}` : ''}
                   </Text>
@@ -302,13 +339,13 @@ export default function WeekPlan() {
             );
           })}
 
-          <Text style={[s.footer, !!weekCap && (weekCap.cappedDays > 0 || weekCap.forcedDays > 0) && { color: '#e67e22' }]}>
+          <Text style={[s.footer, !!weekCap && (weekCap.cappedDays > 0 || weekCap.floorRestDays > 0 || weekCap.taperDays > 0) && { color: '#e67e22' }]}>
             {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min (work) this week
-            {weekCap ? (weekCap.forcedDays > 0
-              ? `  ·  ${weekCap.forcedDays} quality held on its day, shortened — over the +${weekCap.capPct}%/wk cap (shrink-to-fit)`
+            {weekCap ? ((weekCap.floorRestDays + weekCap.taperDays) > 0
+              ? `  ·  ${weekCap.floorRestDays + weekCap.taperDays} day${(weekCap.floorRestDays + weekCap.taperDays) === 1 ? '' : 's'} rested for your ${weekCap.minTSB} TSB floor${weekCap.taperDays > 0 ? ' + long taper' : ''} (long protected)`
               : weekCap.cappedDays > 0
-                ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the +${weekCap.capPct}%/wk cap or TSB floor`
-                : `  ·  within the +${weekCap.capPct}%/wk cap + TSB floor ✓`) : ''}
+                ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the +${weekCap.capPct}%/wk cap or ${weekCap.minTSB} TSB floor`
+                : `  ·  within the +${weekCap.capPct}%/wk cap + ${weekCap.minTSB} TSB floor ✓`) : ''}
           </Text>
 
           {genAt && (

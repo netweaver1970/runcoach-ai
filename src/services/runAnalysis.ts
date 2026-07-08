@@ -11,7 +11,7 @@
 import * as FileSystem from 'expo-file-system';
 import * as Notifications from 'expo-notifications';
 import { HealthSnapshot, RunWorkout } from '../types';
-import { callLLM } from './llm';
+import { callLLM, extractJsonObject } from './llm';
 import { agentComplete } from './agent';
 import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadPrescriptionAt, CoachPlan } from './coach';
@@ -138,10 +138,10 @@ export async function analyzeRun(
   const raw = await agentComplete({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userMsg }], maxTokens: 950, snap });
 
   let verdict = '', headline = '', full = '';
-  const match = raw.match(/\{[\s\S]*\}/);
+  const match = extractJsonObject(raw);
   if (match) {
     try {
-      const o = JSON.parse(match[0]);
+      const o = JSON.parse(match);
       verdict  = String(o.verdict ?? '').trim();
       headline = String(o.headline ?? '').trim();
       full     = String(o.full ?? '').trim();

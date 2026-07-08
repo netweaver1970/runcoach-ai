@@ -41,7 +41,7 @@ export default function AccountScreen() {
   const submit = async () => {
     const url = baseUrl.trim();
     if (!url) { Alert.alert('Server URL needed', 'Enter your Cloudflare Worker URL first.'); return; }
-    if (!/^https?:\/\//i.test(url)) { Alert.alert('Invalid URL', 'The server URL should start with https://'); return; }
+    if (!/^https:\/\//i.test(url)) { Alert.alert('Invalid URL', 'The server URL must start with https:// (plain http would send your password and health data unencrypted).'); return; }
     if (!email.trim() || !password) { Alert.alert('Missing details', 'Enter your email and password.'); return; }
     if (mode === 'signup' && password.length < 8) { Alert.alert('Weak password', 'Use at least 8 characters.'); return; }
     if (mode === 'signup' && password !== confirm) { Alert.alert("Passwords don't match", 'Re-enter the same password in both fields.'); return; }

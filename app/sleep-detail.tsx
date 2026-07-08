@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator,
@@ -7,8 +7,12 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery, SleepSession } from '../src/types';
 import { fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory, computeSleepScore } from '../src/services/healthkit';
 import { computeSleepBankSeries, computeSleepNeeded } from '../src/services/trainingLoad';
-import { useThemedStyles, Palette } from '../src/theme';
+import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
+import { KpiTabs } from '../src/components/KpiTabs';
+import { DayNav } from '../src/components/DayNav';
+import { SleepStagesCard } from '../src/components/SleepStages';
+import { cached } from '../src/services/detailCache';
 import { computePersonalSleepGoal, loadPersonalSleepGoal } from '../src/services/bevelCalibration';
 
 const SLEEP_COLOR = '#8e44ad';
@@ -198,6 +202,7 @@ export default function SleepDetailScreen() {
   const dayLabel = dateLbl || new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
   const router   = useRouter();
   const s = useThemedStyles(makeS);
+  const { c: pal } = useTheme();
   const swipe = useDetailSwipe('/sleep-detail', { rec, str, date });
   const recovery = rec ? JSON.parse(rec) as DailyRecovery : null;
 
@@ -209,10 +214,10 @@ export default function SleepDetailScreen() {
 
   useEffect(() => {
     Promise.all([
-      fetchSleepHistory(3),
-      fetchOvernightHRHistory(3),
+      cached('sleep:3', () => fetchSleepHistory(3)),
+      cached('dip:3', () => fetchOvernightHRHistory(3)),
       loadPersonalSleepGoal(),
-      fetchStrainHistory(3),
+      cached('strain:3', () => fetchStrainHistory(3)),
     ]).then(([sessions, dipData, savedGoal, strainHist]) => {
       setHistory(sessions);
       setHrDipH(dipData.map(d => d.value));
@@ -223,7 +228,31 @@ export default function SleepDetailScreen() {
     }).catch(() => {}).finally(() => setLoadingH(false));
   }, []);
 
-  if (!recovery || !recovery.sleep) {
+  // ── Which day are we viewing? ───────────────────────────────────────────────
+  // A `date` (from a left/right day-swipe) selects a past night from history; otherwise show today's
+  // snapshot (rec). The screen is fully date-driven off `history`, so any day renders.
+  const recDate    = recovery?.sleep?.date;
+  const viewedDate = date || recDate || (history.length ? history[history.length - 1].date : '');
+  const isToday    = !date || date === recDate;
+  const sleep: SleepSession | null =
+    (recovery?.sleep && isToday) ? recovery.sleep : (history.find(h => h.date === viewedDate) ?? null);
+
+  // Heavy, memoised so a day-swipe re-render doesn't recompute them each time. historyUpTo ends at the
+  // viewed day; scoreHistory is O(n²) (per-night score over a growing window); bankSeries sorts for a median.
+  const historyUpTo = useMemo(() => history.filter(h => h.date <= viewedDate), [history, viewedDate]);
+  const scoreHistory = useMemo(
+    () => historyUpTo.map((sn, i) => computeSleepScore(sn, 0, 0, historyUpTo.slice(0, i + 1)).score),
+    [historyUpTo],
+  );
+  const bankSeries = useMemo(() => {
+    const nights = historyUpTo.map(sn => {
+      const inBed = sn.totalMinutes + sn.awakeMinutes;
+      return { date: sn.date, asleepMin: sn.totalMinutes, dayStrain: strainByDate.get(sn.date) ?? 0, efficiency: inBed > 0 ? sn.totalMinutes / inBed : 1 };
+    });
+    return computeSleepBankSeries(nights, sleepGoalMin);
+  }, [historyUpTo, strainByDate, sleepGoalMin]);
+
+  if (!sleep) {
     return (
       <SafeAreaView style={s.container}>
         <View style={s.header}>
@@ -236,57 +265,49 @@ export default function SleepDetailScreen() {
           </View>
           <View style={{ width: 60 }} />
         </View>
-        <View style={s.center}>
-          <Text style={s.emptyText}>No sleep data for last night.</Text>
+        <KpiTabs current="sleep" params={{ rec, str, date }} />
+        <View style={s.center} {...swipe}>
+          <Text style={s.emptyText}>{loadingH ? 'Loading…' : 'No sleep data for this day.'}</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  const { sleepScore = 0, overnightHR, overnightHRBaseline, sleep } = recovery;
-
-  // HR dip %
+  // HR-aware only for today (rec carries overnight/daytime HR); past days are HR-neutral like the sparklines.
+  const overnightHR         = isToday && recovery ? recovery.overnightHR : 0;
+  const overnightHRBaseline = isToday && recovery ? recovery.overnightHRBaseline : 0;
   const hrDipPct =
     overnightHR > 0 && overnightHRBaseline > 0
       ? ((overnightHRBaseline - overnightHR) / overnightHRBaseline) * 100
       : 0;
 
+  const sleepScore  = (isToday && recovery)
+    ? (recovery.sleepScore ?? 0)
+    : computeSleepScore(sleep, 0, 0, historyUpTo).score;
+
   const todayKPIs = getSubKPIs(sleep, hrDipPct);
 
-  // Build per-KPI history arrays from fetched sessions (oldest → newest)
-  const totalHistory    = history.map(s => s.totalMinutes);
-  const awakeHistory    = history.map(s => s.awakeMinutes);
-  const deepHistory     = history.map(s => s.deepMinutes);
-  const remHistory      = history.map(s => s.remMinutes);
-  const coreHistory     = history.map(s => s.coreMinutes);
-  const effHistory      = history.map(s => {
+  // Per-KPI history arrays END at the viewed day so sparklines/mean/sd reflect "up to this date".
+  const totalHistory    = historyUpTo.map(s => s.totalMinutes);
+  const awakeHistory    = historyUpTo.map(s => s.awakeMinutes);
+  const deepHistory     = historyUpTo.map(s => s.deepMinutes);
+  const remHistory      = historyUpTo.map(s => s.remMinutes);
+  const coreHistory     = historyUpTo.map(s => s.coreMinutes);
+  const effHistory      = historyUpTo.map(s => {
     const inBed = s.totalMinutes + s.awakeMinutes;
     return inBed > 0 ? (s.totalMinutes / inBed) * 100 : 0;
   });
-  // New 5-pillar model for the sparkline (HR-dip neutral for history) + the live breakdown.
-  const scoreHistory    = history.map((sn, i) => computeSleepScore(sn, 0, 0, history.slice(0, i + 1)).score);
-  const breakdown       = computeSleepScore(sleep, overnightHR, overnightHRBaseline, history);
+  // Sparkline ends on the value actually shown (HR-aware today, else the same neutral value).
+  const scoreSpark      = scoreHistory.length ? [...scoreHistory.slice(0, -1), sleepScore] : [sleepScore];
+  const breakdown       = computeSleepScore(sleep, overnightHR, overnightHRBaseline, historyUpTo);
 
-  // Sleep Bank (Bevel-style): rolling 7-night recency-weighted balance of
-  // (Time Asleep − dynamic Sleep Needed). Sleep Needed = goal + strain tax + debt + efficiency.
-  const bankNights = history.map(sn => {
-    const inBed = sn.totalMinutes + sn.awakeMinutes;
-    return {
-      date:       sn.date,
-      asleepMin:  sn.totalMinutes,
-      dayStrain:  strainByDate.get(sn.date) ?? 0,
-      efficiency: inBed > 0 ? sn.totalMinutes / inBed : 1,
-    };
-  });
-  const bankSeries   = computeSleepBankSeries(bankNights, sleepGoalMin);
+  // Sleep Bank + tonight's Sleep Needed, evaluated as of the viewed day.
   const bankHistory  = bankSeries.map(b => b.bank);
   const sleepBankMin = bankHistory.length > 0 ? bankHistory[bankHistory.length - 1] : 0;
-
-  // Tonight's projected Sleep Needed: today's strain + current debt drive it up.
-  const todayStrain = strainByDate.get(sleep.date)
-    ?? (bankNights.length > 0 ? bankNights[bankNights.length - 1].dayStrain : 0);
-  const recentEff   = bankNights.length > 0 ? bankNights[bankNights.length - 1].efficiency : 1;
-  const sleepNeeded = computeSleepNeeded(sleepGoalMin, todayStrain, sleepBankMin, recentEff);
+  const inBedNow     = sleep.totalMinutes + sleep.awakeMinutes;
+  const recentEff    = inBedNow > 0 ? sleep.totalMinutes / inBedNow : 1;
+  const todayStrain  = strainByDate.get(sleep.date) ?? 0;
+  const sleepNeeded  = computeSleepNeeded(sleepGoalMin, todayStrain, sleepBankMin, recentEff);
 
   const scoreColor = sleepScore >= 75 ? '#27ae60' : sleepScore >= 55 ? '#2ecc71' : sleepScore >= 35 ? '#f39c12' : '#e74c3c';
 
@@ -305,6 +326,8 @@ export default function SleepDetailScreen() {
         </View>
         <View style={{ width: 60 }} />
       </View>
+      <KpiTabs current="sleep" params={{ rec, str, date }} />
+      <DayNav date={date} />
 
       <View style={{ flex: 1 }} {...swipe}>
       <ScrollView contentContainerStyle={s.scroll}>
@@ -357,8 +380,11 @@ export default function SleepDetailScreen() {
           </View>
         )}
 
+        {/* Sleep Stages (Bevel-style hypnogram + rings + share) */}
+        <SleepStagesCard session={sleep} sleepNeededMin={sleepNeeded} palette={pal} />
+
         {/* Sub-KPI section */}
-        <Text style={s.sectionTitle}>SLEEP METRICS</Text>
+        <Text style={[s.sectionTitle, { marginTop: 18 }]}>SLEEP METRICS</Text>
         <View style={s.kpiList}>
 
           {/* Sleep Score history */}
@@ -366,7 +392,7 @@ export default function SleepDetailScreen() {
             label="Sleep Score"
             value={String(sleepScore)}
             unit="/ 100"
-            history={[...scoreHistory, sleepScore]}
+            history={scoreSpark}
             higherIsBetter
             color={SLEEP_COLOR}
             onPress={() => navTo('sleep-score')}

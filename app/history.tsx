@@ -18,9 +18,10 @@ import {
   fetchStrainHistory,
   fetchRecoveryHistory,
   fetchOurDailyComponents,
+  computeSleepScore,
 } from '../src/services/healthkit';
 import { WeeklyMileage, TimelineEvent } from '../src/types';
-import { cardioLoadStatus } from '../src/services/trainingLoad';
+import { cardioLoadStatus, ratioTrend, computeSleepBankSeries } from '../src/services/trainingLoad';
 import { loadEvents, saveEvent, deleteEvent } from '../src/services/timelineEvents';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
@@ -111,6 +112,11 @@ function fmtSignedMin(v: number): string {
     return `${sign}${h}:${String(mm).padStart(2, '0')}`;
   }
   return `${sign}${abs}`;
+}
+
+/** Format signed minutes as plain ±MM (no HH:MM) — clearer for Sleep Bank than a clock-looking value */
+function fmtSignedMinPlain(v: number): string {
+  return `${v >= 0 ? '+' : '-'}${Math.abs(Math.round(v))}`;
 }
 
 /**
@@ -746,14 +752,18 @@ export default function HistoryScreen() {
         if (histType === 'cardio-load') {
           const counts = new Map<string, { color: string; days: number }>();
           const byDate: Record<string, { lo: number; hi: number; color: string }> = {};
+          // Date-ordered so the ratio trend (direction) is well-defined per day.
+          const ordered = Object.entries(comps)
+            .filter(([, c]) => c.cardioLoad !== undefined)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([date, c]) => ({ date, atl: c.cardioLoad as number, ctl: c.ctl ?? 0, tsb: c.tsb ?? 0 }));
           let total = 0;
-          for (const [date, c] of Object.entries(comps)) {
-            if (c.cardioLoad === undefined) continue;
-            const st = cardioLoadStatus(c.cardioLoad, c.ctl ?? 0, c.tsb ?? 0);
-            byDate[date] = { lo: st.bandLo, hi: st.bandHi, color: st.color };
+          ordered.forEach((row, i) => {
+            const st = cardioLoadStatus(row.atl, row.ctl, row.tsb, ratioTrend(ordered, i));
+            byDate[row.date] = { lo: st.bandLo, hi: st.bandHi, color: st.color };
             const e = counts.get(st.label) ?? { color: st.color, days: 0 };
             e.days += 1; counts.set(st.label, e); total += 1;
-          }
+          });
           setCardioByDate(byDate);
           const ORDER = ['Building', 'Detraining', 'Maintaining', 'Peaking', 'Productive', 'Fatigued', 'Overtraining'];
           setCardioStatus(total === 0 ? [] : ORDER.filter(l => counts.has(l)).map(l => ({
@@ -771,6 +781,13 @@ export default function HistoryScreen() {
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (SLEEP_TYPES.has(histType)) {
         const sessions = await fetchSleepHistory(months, endDate);
+        // Sleep Score + Sleep Bank use the SAME calibrated engine the coach + recovery use
+        // (computeSleepScore / computeSleepBankSeries), so every surface agrees. The score history is
+        // HR-neutral (dip component neutral) — exactly like the sleep-detail sparkline; per-night overnight
+        // HR isn't loaded here, and today's detail card shows the HR-aware score.
+        const bankSeries = histType === 'sleep-bank'
+          ? computeSleepBankSeries(sessions.map(s => ({ date: s.date, asleepMin: s.totalMinutes, dayStrain: 0, efficiency: 1 })), 420)
+          : null;
         const daily = sessions.map((s, i, arr) => {
           let value = 0;
           if (histType === 'sleep-total') value = s.totalMinutes;
@@ -781,23 +798,9 @@ export default function HistoryScreen() {
             const inBed = s.totalMinutes + s.awakeMinutes;
             value = inBed > 0 ? Math.round(s.totalMinutes / inBed * 100) : 0;
           } else if (histType === 'sleep-score') {
-            const inBed = s.totalMinutes + s.awakeMinutes;
-            const eff   = inBed > 0 ? (s.totalMinutes / inBed) * 100 : 0;
-            const scores = {
-              total: Math.min(100, s.totalMinutes / 480 * 100),
-              deep:  Math.min(100, s.deepMinutes / 60 * 100),
-              rem:   Math.min(100, s.remMinutes / 90 * 100),
-              eff:   Math.min(100, eff / 90 * 100),
-              cont:  inBed > 0 ? Math.min(100, (1 - s.awakeMinutes / inBed) / 0.95 * 100) : 100,
-            };
-            value = Math.round(
-              scores.total * 0.40 + scores.deep * 0.13 + scores.rem * 0.12 +
-              scores.eff * 0.15 + 50 * 0.10 + scores.cont * 0.10
-            );
+            value = computeSleepScore(s, 0, 0, arr.slice(0, i + 1)).score;
           } else if (histType === 'sleep-bank') {
-            // Rolling 7-night cumulative balance vs 8h (480 min) goal
-            const window = arr.slice(Math.max(0, i - 6), i + 1);
-            value = window.reduce((sum, w) => sum + w.totalMinutes, 0) - window.length * 480;
+            value = bankSeries![i].bank;
           }
           return { label: s.date, fullDate: s.date, value };
         });
@@ -869,8 +872,9 @@ export default function HistoryScreen() {
   const fmtStat = (v: number) => {
     if (isTime) return fmtMin(v);
     if (histType === 'vo2') return period !== '1M' ? v.toFixed(1) : fmtVal(v);
-    if (isSleepMin) return fmtMin(v);
-    if (histType === 'sleep-bank') return fmtSignedMin(v);
+    if (histType === 'sleep-total') return fmtMin(v);          // Time Asleep stays HH:MM (naturally hours)
+    if (isSleepMin) return fmtInt(v);                          // Deep / REM / Awake → plain minutes (less confusing)
+    if (histType === 'sleep-bank') return fmtSignedMinPlain(v);// Sleep Bank → plain signed minutes
     if (histType === 'sleep-hrdip') return v.toFixed(1);
     return fmtVal(v);
   };
@@ -1070,11 +1074,11 @@ export default function HistoryScreen() {
               showAllValues={showAllValues}
               prevData={chartPrevData}
               cumulative={cumulativeMode && isSummable}
-              isTime={isTime || isSleepMin}
+              isTime={isTime || histType === 'sleep-total'}
               valueLabelStep={valueLabelStep}
               fmtFn={
                 histType === 'vo2' && period !== '1M' ? fmtOneDecimal :
-                histType === 'sleep-bank'             ? fmtSignedMin :
+                histType === 'sleep-bank'             ? fmtSignedMinPlain :
                 histType === 'sleep-hrdip'            ? fmtOneDecimal :
                 undefined
               }

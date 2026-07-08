@@ -3,7 +3,7 @@ import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, K
 import { callLLM, getActiveApiKey } from './llm';
 import { agentComplete } from './agent';
 import { buildTimelineContext } from './timelineEvents';
-import { tsbStatus, ctlRamp } from './trainingLoad';
+import { tsbStatus, ctlRamp, trainingDayKey } from './trainingLoad';
 
 // Legacy constant — kept so existing imports don't break; actual model comes from llm.ts config.
 const API_KEY_KEY = 'anthropic_api_key';
@@ -207,6 +207,89 @@ export async function getUserMaxHr(): Promise<number> {
 }
 export async function setUserMaxHr(bpm: number): Promise<void> {
   await SecureStore.setItemAsync(MAX_HR_KEY, String(Math.round(bpm)));
+}
+
+// Observed max HR — a robust, glitch-filtered peak derived from HealthKit during scans (see
+// computeRobustObservedMaxHr). Cached so getEffectiveMaxHr can auto-anchor without a live HK query.
+const OBSERVED_MAX_HR_KEY = 'observed_max_hr';
+export async function setObservedMaxHr(bpm: number): Promise<void> {
+  try { if (bpm >= 150 && bpm <= 220) await SecureStore.setItemAsync(OBSERVED_MAX_HR_KEY, String(Math.round(bpm))); } catch { /* ignore */ }
+}
+export async function getObservedMaxHr(): Promise<number> {
+  try {
+    const raw = await SecureStore.getItemAsync(OBSERVED_MAX_HR_KEY);
+    const n = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(n) && n >= 150 && n <= 220 ? n : 0;
+  } catch { return 0; }
+}
+
+/**
+ * The max HR the load engine (TRIMP / strain / CTL) should use. Priority:
+ *   1. the user's explicit Settings value (always wins),
+ *   2. the robust OBSERVED peak from their own data (auto-anchor — the sensible default),
+ *   3. the age-predicted estimate (Tanaka) if age is known,
+ *   4. a last-resort 190.
+ * Callers used to improvise this per-site with a raw observed peak floored at 185/190 — which pulled
+ * in sensor glitches and diverged between sites. A user-SET value now also flows to zones/body-battery
+ * via snap.estimatedMaxHR (see healthkit snapshot), so the set max governs the whole app; when UNSET,
+ * the load engine uses this resolver while zones fall back to the run-classifier's observed estimate.
+ */
+export async function getEffectiveMaxHr(): Promise<number> {
+  const set = await getUserMaxHr();
+  if (set > 0) return set;
+  const obs = await getObservedMaxHr();
+  if (obs > 0) return obs;
+  const { age } = await getUserProfile();
+  if (age && age > 0) return estimateMaxHr(age);
+  return 190;
+}
+
+// ── Date-keyed max HR ────────────────────────────────────────────────────────────
+// When the user changes their max HR we ask whether to RECOMPUTE ALL history at the new value
+// (correcting a wrong number) or apply it FROM NOW (a genuine change over time — e.g. max drifts down
+// with age). "From now" records a per-date segment so each historical day is scored against the max
+// that was in force then; "recalculate" clears the segments so one value covers everything.
+export interface MaxHrSegment { from: string; maxHR: number; } // 'from' = YYYY-MM-DD inclusive
+const MAX_HR_HISTORY_KEY = 'max_hr_history_v1';
+export async function getMaxHrHistory(): Promise<MaxHrSegment[]> {
+  try {
+    const raw = await SecureStore.getItemAsync(MAX_HR_HISTORY_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr)
+      ? arr.filter((s: any) => s && typeof s.from === 'string' && s.maxHR >= 150 && s.maxHR <= 220)
+           .sort((a: MaxHrSegment, b: MaxHrSegment) => a.from.localeCompare(b.from))
+      : [];
+  } catch { return []; }
+}
+async function saveMaxHrHistory(segs: MaxHrSegment[]): Promise<void> {
+  try { await SecureStore.setItemAsync(MAX_HR_HISTORY_KEY, JSON.stringify(segs)); } catch { /* ignore */ }
+}
+
+/** Change max HR and recompute the ENTIRE history at the new value (correcting a wrong max). */
+export async function setMaxHrRecalcAll(bpm: number): Promise<void> {
+  await setUserMaxHr(bpm);
+  await saveMaxHrHistory([]); // no date-keying → every day resolves to the single current max
+}
+/** Change max HR from TODAY forward, leaving past days on the prior max (a genuine change over time). */
+export async function setMaxHrFromNow(bpm: number): Promise<void> {
+  const prior = await getEffectiveMaxHr();          // max in force up to now
+  const today = trainingDayKey(Date.now());         // 4am-boundary day key — matches the load engine's day keys
+  const hist  = await getMaxHrHistory();
+  const segs  = hist.length ? hist : [{ from: '2000-01-01', maxHR: prior }]; // seed the whole past with the prior max
+  const next  = segs.filter((s) => s.from !== today);
+  next.push({ from: today, maxHR: Math.round(bpm) });
+  next.sort((a, b) => a.from.localeCompare(b.from));
+  await saveMaxHrHistory(next);
+  await setUserMaxHr(bpm);                            // today's zones / effective max = new value
+}
+/** Per-day max-HR resolver from the segments; falls back to `fallback` (0 = caller's engine default). */
+export function buildMaxHrResolver(history: MaxHrSegment[], fallback: number): (day: string) => number {
+  if (history.length === 0) return () => fallback;
+  return (day: string) => {
+    let m = history[0].maxHR;              // days before the first segment take the earliest max
+    for (const seg of history) { if (seg.from <= day) m = seg.maxHR; else break; }
+    return m;
+  };
 }
 
 // ── Onboarding / welcome flow ──────────────────────────────────────────────────

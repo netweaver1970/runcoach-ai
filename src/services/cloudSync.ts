@@ -54,7 +54,8 @@ export async function syncSnapshot(snap: HealthSnapshot): Promise<SyncResult> {
   // CTL/ATL/TSB from the training-load series, EACH day enriched with its recovery / strain /
   // sleep / HRV / RHR from the daily components — so a coach sees the FULL history, not just today
   // (the cloud schema already stores these per day). Today's row prefers the live readings.
-  const today = dayKey(new Date().toISOString());
+  const d0 = new Date();
+  const today = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, '0')}-${String(d0.getDate()).padStart(2, '0')}`; // LOCAL — the UTC slice stamped post-midnight syncs onto yesterday's row
   const rec = snap.todayRecovery;
   const comps = await fetchOurDailyComponents(1).catch(() => ({} as Record<string, any>));
   const dayRows = (snap.trainingLoad || []).map((d: DailyLoad) => {

@@ -10,6 +10,7 @@
     "db:migrate": "wrangler d1 migrations apply runcoach --remote",
     "db:migrate:local": "wrangler d1 migrations apply runcoach --local",
     "secret:jwt": "wrangler secret put JWT_SECRET",
+    "secret:pepper": "wrangler secret put PW_PEPPER",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

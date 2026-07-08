@@ -10,7 +10,7 @@
 import * as FileSystem from 'expo-file-system';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
-import HealthKit from '@kingstinct/react-native-healthkit';
+import HealthKit, { subscribeToChanges, enableBackgroundDelivery, UpdateFrequency } from '@kingstinct/react-native-healthkit';
 import { HealthSnapshot } from '../types';
 import { fetchHealthSnapshot, saveSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot, deterministicCoachPlan, saveCachedPlan, CoachPlan } from './coach';
@@ -32,6 +32,10 @@ function planStructure(plan: CoachPlan | null): string {
   return `${plan.intensity} ${plan.runMinutes}min`;
 }
 
+const localDate = (): string => {
+  const d = new Date(); const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 const AUTO_KEY = 'dayview_auto_v1';
 const SLEEP_ID = 'HKCategoryTypeIdentifierSleepAnalysis';
 const marker   = (date: string) => `${FileSystem.documentDirectory}dayview-${date}.json`;
@@ -61,7 +65,26 @@ export interface DayViewResult {
  * cached KPIs, pre-generate + cache the coach plan, and (optionally) notify. Pass a
  * freshly-loaded `snap` to reuse it instead of re-fetching.
  */
+// The sleep observer can fire twice in quick succession as the night finalises; without this guard two
+// concurrent runs both pass the "already prepared" check (the marker isn't written yet) and BOTH notify →
+// the duplicate morning notification. Serialise: a run in flight makes a concurrent one a no-op (force
+// bypasses, so the manual Settings trigger always works).
+let dayViewInFlight = false;
 export async function maybeRunDayView(opts: {
+  months: number; snap?: HealthSnapshot | null; force?: boolean; notify?: boolean;
+}): Promise<DayViewResult> {
+  if (dayViewInFlight && !opts.force) {
+    return { ran: false, date: localDate(), reason: 'already running' };
+  }
+  dayViewInFlight = true;
+  try {
+    return await runDayView(opts);
+  } finally {
+    dayViewInFlight = false;
+  }
+}
+
+async function runDayView(opts: {
   months: number; snap?: HealthSnapshot | null; force?: boolean; notify?: boolean;
 }): Promise<DayViewResult> {
   // ── Profiling: time the whole automatic path (scan → deterministic plan → watch push) so the debug
@@ -76,7 +99,7 @@ export async function maybeRunDayView(opts: {
   const scanMs = opts.snap ? 0 : Date.now() - scanStart;
   saveSnapshotCache(snap).catch(() => {}); // fresh KPIs for the home to read instantly
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDate(); // LOCAL — the UTC slice was yesterday between 00:00–02:00 local
   const rec = snap.todayRecovery;
   if (!rec || !rec.sleep) {
     logTimings(false, { reason: 'night not yet determined', scanMs });
@@ -131,11 +154,15 @@ export async function maybeRunDayView(opts: {
   // new numbers as soon as they're known (the morning HealthKit-observer wake also triggers this).
   trySyncSnapshot(snap).catch(() => {});
 
-  try {
-    await FileSystem.writeAsStringAsync(marker(date), JSON.stringify({
-      date, at: new Date().toISOString(), recovery: rec.recoveryScore, sleepScore: rec.sleepScore, headline,
-    }));
-  } catch { /* ignore */ }
+  // Mark the day prepared ONLY when the plan calc succeeded — a marker written on failure made
+  // dayViewDoneFor(date) true and permanently suppressed that morning's retry + notification.
+  if (planOk) {
+    try {
+      await FileSystem.writeAsStringAsync(marker(date), JSON.stringify({
+        date, at: new Date().toISOString(), recovery: rec.recoveryScore, sleepScore: rec.sleepScore, headline,
+      }));
+    } catch { /* ignore */ }
+  }
 
   // Notify ONLY on a successful plan calc (the whole point of the morning prep), and only after the
   // watch push above resolved. Concise: the two morning KPIs (recovery + readiness — strain is ~0 after
@@ -158,40 +185,45 @@ export async function maybeRunDayView(opts: {
 }
 
 // ─── HealthKit observer: wake on new sleep data ────────────────────────────────
-let observerId: string | null = null;
+// NOTE (v9 API): `enableBackgroundDelivery` takes the UpdateFrequency ENUM, NOT the string 'immediate'. The
+// old `enableBackgroundDelivery?.(id, 'immediate')` threw/failed on the typed native bridge, and because it
+// ran BEFORE subscribeToChanges inside the same try, the catch swallowed it and the observer never
+// registered → the app was never woken in the background → the morning auto-notification never fired. Pass
+// the enum. `subscribeToChanges` returns a queryId string; unsubscribe via `unsubscribeQueries([id])`.
+let sleepQueryId: string | null = null;
 
 export async function startSleepObserver(months: number): Promise<void> {
-  if (observerId) return;
+  if (sleepQueryId) return;
   try {
-    await (HealthKit as any).enableBackgroundDelivery?.(SLEEP_ID, 'immediate');
-    observerId = (HealthKit as any).subscribeToChanges?.(SLEEP_ID, () => {
+    await enableBackgroundDelivery(SLEEP_ID as any, UpdateFrequency.immediate);
+    sleepQueryId = subscribeToChanges(SLEEP_ID as any, () => {
       isAutoDayViewEnabled().then(on => { if (on) maybeRunDayView({ months, notify: true }).catch(() => {}); });
-    }) ?? null;
+    });
   } catch { /* observer unavailable — the foreground trigger still covers it */ }
 }
 
 export function stopSleepObserver(): void {
-  try { if (observerId) (HealthKit as any).unsubscribeQueries?.([observerId]); } catch { /* ignore */ }
-  observerId = null;
+  try { if (sleepQueryId) HealthKit.unsubscribeQueries([sleepQueryId]); } catch { /* ignore */ }
+  sleepQueryId = null;
 }
 
 // ─── HealthKit observer: recalibrate zones + analyse the run when one lands ─────
-let workoutObsId: string | null = null;
+let workoutQueryId: string | null = null;
 const WORKOUT_ID = 'HKWorkoutTypeIdentifier';
 
 export async function startWorkoutObserver(months = 3): Promise<void> {
-  if (workoutObsId) return;
+  if (workoutQueryId) return;
   try {
-    await (HealthKit as any).enableBackgroundDelivery?.(WORKOUT_ID, 'immediate');
-    workoutObsId = (HealthKit as any).subscribeToChanges?.(WORKOUT_ID, () => {
+    await enableBackgroundDelivery(WORKOUT_ID as any, UpdateFrequency.immediate);
+    workoutQueryId = subscribeToChanges(WORKOUT_ID as any, () => {
       maybeAutoRecalibrate().catch(() => {});
       // Auto-generate a prescription-aware analysis of the just-finished run + notify.
       maybeAnalyzeLatestRun({ months, notify: true }).catch(() => {});
-    }) ?? null;
+    });
   } catch { /* observer unavailable — the foreground trigger still covers it */ }
 }
 
 export function stopWorkoutObserver(): void {
-  try { if (workoutObsId) (HealthKit as any).unsubscribeQueries?.([workoutObsId]); } catch { /* ignore */ }
-  workoutObsId = null;
+  try { if (workoutQueryId) HealthKit.unsubscribeQueries([workoutQueryId]); } catch { /* ignore */ }
+  workoutQueryId = null;
 }
