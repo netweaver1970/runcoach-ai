@@ -731,13 +731,16 @@ export default function HistoryScreen() {
         const r = await fetchRestingHRHistory(months, endDate);
         const daily = r.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
-      } else if (histType === 'strain') {
-        const v = await fetchStrainHistory(months, endDate);
-        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
-        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
-      } else if (histType === 'recovery') {
-        const v = await fetchRecoveryHistory(months, endDate);
-        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+      } else if (histType === 'strain' || histType === 'recovery') {
+        // Strain / recovery are the SAME values the per-day components store holds (strainScore /
+        // recoveryScore) — read the store (instant, cached, incremental) instead of recomputing the whole
+        // window from HealthKit on every timeframe switch.
+        const comps = await fetchOurDailyComponents(months, endDate);
+        const key = histType === 'strain' ? 'strainScore' : 'recoveryScore';
+        const daily = Object.entries(comps)
+          .filter(([, c]) => c[key] !== undefined)
+          .map(([date, c]) => ({ label: date, fullDate: date, value: c[key] }))
+          .sort((a, b) => a.fullDate.localeCompare(b.fullDate));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (histType in COMPONENT_KEY) {
         // Sub-metric (exercise duration, daytime HR, energy, steps, resp rate, SpO₂, cardio load)

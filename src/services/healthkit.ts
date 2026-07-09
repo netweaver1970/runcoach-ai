@@ -3314,12 +3314,22 @@ function workDrillsTotals(w: any, regime: AccountingMode = 'work'): { seconds: n
     }
   }
   const inc = (s: { label: string }) => !TOF_EXCLUDE_PHASE.test(s.label);
-  const workSec = segs.reduce((sum, s) => sum + (inc(s) ? s.durationSec : 0), 0);
-  const workM   = segs.reduce((sum, s) => sum + (inc(s) ? s.distanceM  : 0), 0);
-  // A STRUCTURED run whose raw HK step labels all resolve to excluded phases (warm/cool/recover/…) would
-  // sum to 0 — e.g. a tempo whose work block isn't literally tagged "Work" (the snapshot path fixes this via
-  // relabelByPhases; this raw path doesn't). Don't drop the whole run's time-on-feet: fall back to the total,
-  // matching the zero-segment guard above. Without this the coach reads todayDone≈0 and re-prescribes a done run.
+  let workSec = segs.reduce((sum, s) => sum + (inc(s) ? s.durationSec : 0), 0);
+  let workM   = segs.reduce((sum, s) => sum + (inc(s) ? s.distanceM  : 0), 0);
+  // A structured prescribed run (e.g. a tempo) whose raw HK step labels ALL resolve to excluded phases sums
+  // to 0 here — the run-list/home path fixes this via the prescribed-phase relabel, but that means a per-run
+  // plan-log read (slow on the hot ToF path → laggy navigation). Recover work CHEAPLY by POSITION instead:
+  // short first/last = warm-up/cool-down (excluded), everything else = work. No I/O. Then the budget counts
+  // the ~same work minutes the run list shows, without the file reads.
+  if (workSec === 0 && segs.length >= 2) {
+    const valid = segs.map((s) => s.distanceM).filter((d) => d > 0);
+    const threshold = valid.length >= 2 ? [...valid].sort((a, b) => a - b)[Math.floor(valid.length / 2)] * 0.65 : 0;
+    const isEnd = (s: { distanceM: number }, i: number) =>
+      threshold > 0 && s.distanceM > 0 && s.distanceM < threshold && (i === 0 || i === segs.length - 1);
+    workSec = segs.reduce((sum, s, i) => sum + (isEnd(s, i) ? 0 : s.durationSec), 0);
+    workM   = segs.reduce((sum, s, i) => sum + (isEnd(s, i) ? 0 : s.distanceM),  0);
+  }
+  // Last resort: still 0 → count the total rather than dropping the run's time-on-feet entirely.
   if (workSec === 0) return { seconds: totalSec, meters: totalM };
   return { seconds: workSec, meters: workM };
 }
@@ -3852,7 +3862,9 @@ export async function analyzeMaxHr(months = 24): Promise<any> {
  * (durations & clock times in minutes, energy kcal, etc.) so they line up 1:1.
  * Components we don't compute (e.g. sleepBank) are simply absent.
  */
-export async function fetchOurDailyComponents(
+// RAW compute — expensive (HealthKit queries + baseline z-scores over a padded window). Call the cached
+// `fetchOurDailyComponents` below instead; this is the miss-path it delegates to.
+async function computeDailyComponents(
   months: number,
   toDate?: Date,
 ): Promise<Record<string, Record<string, number>>> {
@@ -3952,6 +3964,74 @@ export async function fetchOurDailyComponents(
   const fromKey = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-${String(from.getDate()).padStart(2, '0')}`;
   for (const d of Object.keys(out)) if (d < fromKey) delete out[d];
 
+  return out;
+}
+
+// ─── Persistent, incrementally-updated per-day store ──────────────────────────
+// Every day's components are WINDOW-INVARIANT (computeDailyComponents pads the baseline), so a given date
+// scores the same regardless of the requested window. That lets us compute each day ONCE, keep it on disk,
+// and serve any timeframe by SLICING — instead of re-querying months of HealthKit on every KPI view /
+// timeframe switch (the "regenerating the graphs" lag). Coverage EXPANDS as larger windows are requested;
+// once/day the recent ~15 days are recomputed (only very-recent days shift as new data lands — older days'
+// baselines/EWMAs are fixed). Repeat views + already-covered timeframe switches on the same day = instant.
+interface DcStore { updatedDay: string; coveredFrom: string; days: Record<string, Record<string, number>> }
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v1.json';
+let dcMem: DcStore | null = null;
+let dcLoadP: Promise<DcStore> | null = null;
+let dcRefreshing: Promise<void> | null = null;
+async function dcLoad(): Promise<DcStore> {
+  if (dcMem) return dcMem;
+  if (!dcLoadP) dcLoadP = (async () => {
+    try { dcMem = JSON.parse(await FileSystem.readAsStringAsync(DC_FILE)) as DcStore; }
+    catch { dcMem = { updatedDay: '', coveredFrom: '9999-99-99', days: {} }; }
+    if (!dcMem.days) dcMem = { updatedDay: '', coveredFrom: '9999-99-99', days: {} };
+    return dcMem;
+  })();
+  return dcLoadP;
+}
+let dcWriteTimer: ReturnType<typeof setTimeout> | null = null;
+function dcPersist(): void {
+  if (dcWriteTimer) return;
+  dcWriteTimer = setTimeout(() => {
+    dcWriteTimer = null;
+    if (dcMem) FileSystem.writeAsStringAsync(DC_FILE, JSON.stringify(dcMem)).catch(() => {});
+  }, 600);
+}
+const dcKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+/** Cache-first per-day components: serve from the disk store, computing only a missing window or the recent
+ *  days (once/day). Same signature + return shape as the raw compute, so every caller benefits unchanged. */
+export async function fetchOurDailyComponents(
+  months: number,
+  toDate?: Date,
+): Promise<Record<string, Record<string, number>>> {
+  const end     = toDate ?? new Date();
+  const fromKey = dcKey(new Date(end.getTime() - months * 30 * 86_400_000));
+  const endKey  = dcKey(end);
+  const store   = await dcLoad();
+  const gap   = Object.keys(store.days).length === 0 || store.coveredFrom > fromKey;
+  const stale = store.updatedDay !== dcKey(new Date());
+  if (gap) {
+    // Data is MISSING for the requested window → must compute it before slicing (blocks once per new,
+    // larger timeframe). Computing the whole window fills the gap AND refreshes the recent days.
+    const fresh = await computeDailyComponents(months, end);
+    for (const d in fresh) store.days[d] = fresh[d];
+    if (fromKey < store.coveredFrom) store.coveredFrom = fromKey;
+    store.updatedDay = dcKey(new Date());
+    dcPersist();
+  } else if (stale && !dcRefreshing) {
+    // Covered, but the recent days are a day old. Serve them NOW (they barely move overnight) and refresh
+    // just the last ~0.5 months in the BACKGROUND — so the FIRST KPI view / timeframe switch of the day is
+    // INSTANT and the fresh values land for the next read. Single-flighted so only one refresh runs.
+    dcRefreshing = computeDailyComponents(0.5, end).then((fresh) => {
+      const s = dcMem!;
+      for (const d in fresh) s.days[d] = fresh[d];
+      s.updatedDay = dcKey(new Date());
+      dcPersist();
+    }).catch(() => {}).finally(() => { dcRefreshing = null; });
+  }
+  const out: Record<string, Record<string, number>> = {};
+  for (const d in store.days) if (d >= fromKey && d <= endKey) out[d] = store.days[d];
   return out;
 }
 

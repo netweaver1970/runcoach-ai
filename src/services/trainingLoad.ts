@@ -565,7 +565,10 @@ export function estimateWorkoutLoad(w: {
   warmupMeters?: number; drillsMinutes?: number; cooldownMeters?: number;
   blocks?: { repeats?: number; workMinutes?: number; restMinutes?: number; hrZone?: string }[];
 }): number {
-  let load = (((w.warmupMeters ?? 0) + (w.cooldownMeters ?? 0)) / 170) * SESSION_ZONE_W.Z1; // ~170 m/min easy
+  // 0 = OPEN goal (athlete-controlled) — estimate it as a nominal ~600 m easy jog so an open warm-up/cool-down
+  // still contributes its real load (a literal 0 would under-count the session's strain).
+  const nominalM = (m?: number) => (m == null ? 0 : m > 0 ? m : 600);
+  let load = ((nominalM(w.warmupMeters) + nominalM(w.cooldownMeters)) / 170) * SESSION_ZONE_W.Z1; // ~170 m/min easy
   load += (w.drillsMinutes ?? 0) * SESSION_ZONE_W.Z2;
   for (const b of w.blocks ?? []) {
     const zw = SESSION_ZONE_W[b.hrZone ?? 'Z2'] ?? 1;

@@ -419,7 +419,7 @@ export default function StrainDetailScreen() {
               {watchWorkout && (
                 <View style={s.workoutBox}>
                   <Text style={s.workoutTitle}>⌚ WATCH WORKOUT · {watchWorkout.name}</Text>
-                  <Text style={s.workoutStep}>1. Warm-up {watchWorkout.warmupMeters} m</Text>
+                  <Text style={s.workoutStep}>1. Warm-up {watchWorkout.warmupMeters > 0 ? `${watchWorkout.warmupMeters} m` : 'open'}</Text>
                   {watchWorkout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {watchWorkout.drillsMinutes} min</Text>}
                   {watchWorkout.blocks.map((b, idx) => (
                     <Text key={idx} style={s.workoutStep}>
@@ -429,7 +429,7 @@ export default function StrainDetailScreen() {
                       {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){b.label ? ` · ${b.label}` : ''}
                     </Text>
                   ))}
-                  <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters} m</Text>
+                  <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters > 0 ? `${watchWorkout.cooldownMeters} m` : 'open'}</Text>
 
                   {/* Projected strain this session adds + today's resulting total vs the target band */}
                   {strainToday && (

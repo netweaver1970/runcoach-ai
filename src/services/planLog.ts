@@ -44,7 +44,7 @@ export async function readPlanLog(date: string): Promise<PlanLogEntry[]> {
 export function flattenPhases(w?: WatchWorkout | null): string[] {
   if (!w) return [];
   const out: string[] = [];
-  if ((w.warmupMeters ?? 0) > 0)  out.push('Warmup');
+  if (w.warmupMeters != null)     out.push('Warmup');   // 0 = open goal → still a warm-up phase on the watch
   if ((w.drillsMinutes ?? 0) > 0) out.push('Drills');
   for (const b of w.blocks ?? []) {
     const reps = Math.max(1, b.repeats ?? 1);
@@ -53,7 +53,7 @@ export function flattenPhases(w?: WatchWorkout | null): string[] {
       if ((b.restMinutes ?? 0) > 0 && i < reps - 1) out.push('Recovery');
     }
   }
-  if ((w.cooldownMeters ?? 0) > 0) out.push('Cooldown');
+  if (w.cooldownMeters != null) out.push('Cooldown');   // 0 = open goal → still a cool-down phase on the watch
   return out;
 }
 

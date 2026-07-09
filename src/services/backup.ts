@@ -31,6 +31,7 @@ const STATIC_SECURE_KEYS = [
   'athlete_status_v1',            // overall status (Active/Sick/Injured/On a break) + until
   'shrink_to_fit_v1', 'periodization_v1', 'min_tsb', // coach cycle/shape settings
   'long_run_style_v1',            // long run: whole / auto-split / opt-in (per-date opt-in flags are transient → excluded)
+  'warmup_meters_v1', 'cooldown_meters_v1', 'drills_minutes_v1', // workout structure (0 metres = open goal)
   'plan_mode_v1', 'race_config_v1', // leisure vs race + race config
   'agentic_mode_v1',              // agentic (tool-using) coach toggle
   'onboarding_done_v1', 'user_profile_v1', // onboarding + age/sex profile

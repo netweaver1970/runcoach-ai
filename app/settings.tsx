@@ -41,7 +41,7 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
 import { getPlanMode, setPlanMode, getRaceConfig, setRaceConfig, PlanMode } from '../src/services/racePlan';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -103,6 +103,10 @@ export default function SettingsScreen() {
   const [accMode, setAccModeState] = useState<AccountingMode>('work');
   const [coachMode, setCoachModeState] = useState<CoachingMode>('self');
   const [longRunStyle, setLongRunStyleState] = useState<LongRunStyle>('long');
+  const [warmupM, setWarmupM] = useState('');
+  const [cooldownM, setCooldownM] = useState('');
+  const [drillsMin, setDrillsMin] = useState('4');
+  const [structSaved, setStructSaved] = useState(false);
   const [maxHr, setMaxHr] = useState('');
   const [maxHrSaved, setMaxHrSaved] = useState(false);
   const [aiWeeks, setAiWeeksState] = useState(String(DEFAULT_AI_WEEKS));
@@ -158,6 +162,11 @@ export default function SettingsScreen() {
     getAccountingMode().then(setAccModeState);
     getCoachingMode().then(setCoachModeState);
     getLongRunStyle().then(setLongRunStyleState);
+    getWorkoutStructure().then(st => {
+      setWarmupM(st.warmupMeters > 0 ? String(st.warmupMeters) : '');
+      setCooldownM(st.cooldownMeters > 0 ? String(st.cooldownMeters) : '');
+      setDrillsMin(String(st.drillsMinutes));
+    });
     getUserMaxHr().then(h => setMaxHr(h > 0 ? String(h) : ''));
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
@@ -263,6 +272,17 @@ export default function SettingsScreen() {
     await setMinTSB(n);
     setMinTsbSaved(true);
     setTimeout(() => setMinTsbSaved(false), 2000);
+  };
+
+  const handleSaveStructure = async () => {
+    const pm = (s: string) => { const v = parseInt(s, 10); return isNaN(v) || v < 0 ? 0 : v; };  // blank / <0 → 0 = open
+    const wu = pm(warmupM), cd = pm(cooldownM), dr = pm(drillsMin);
+    await setWorkoutStructure({ warmupMeters: wu, cooldownMeters: cd, drillsMinutes: dr });
+    // Invalidate today's cached plan so its watch workout regenerates with the new wrapper immediately,
+    // instead of the change only showing on the next day's plan.
+    await clearTodayPlanCache().catch(() => {});
+    setWarmupM(wu > 0 ? String(wu) : ''); setCooldownM(cd > 0 ? String(cd) : ''); setDrillsMin(String(dr));
+    setStructSaved(true); setTimeout(() => setStructSaved(false), 1500);
   };
 
   const handleSaveMaxHr = async () => {
@@ -826,6 +846,47 @@ export default function SettingsScreen() {
              : longRunStyle === 'auto' ? 'Coach may split it on hot, low-readiness, or over-budget days — never in a race peak.'
              : 'Only split when you turn it on for that day (a toggle appears on the Daily Coach on long-run days).'}
           </Text>
+        </Section>
+
+        <Section title="Workout Structure" cat="zones">
+          <Text style={styles.hint}>
+            The warm-up, cool-down and drills that wrap every prescribed run — on the watch and in the plan.
+            Leave warm-up / cool-down blank for an OPEN goal (you end it yourself with the lap button); or enter
+            a distance in metres. Drills is a short form-work block after the warm-up (0 to skip).
+          </Text>
+          <View style={styles.row}>
+            <Text style={[styles.hint, { flex: 1, marginBottom: 0 }]}>Warm-up</Text>
+            <TextInput
+              style={[styles.input, { width: 96, marginBottom: 0, textAlign: 'right' }]}
+              value={warmupM} onChangeText={setWarmupM}
+              placeholder="open" placeholderTextColor="#bbb" keyboardType="number-pad" returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>m</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={[styles.hint, { flex: 1, marginBottom: 0 }]}>Cool-down</Text>
+            <TextInput
+              style={[styles.input, { width: 96, marginBottom: 0, textAlign: 'right' }]}
+              value={cooldownM} onChangeText={setCooldownM}
+              placeholder="open" placeholderTextColor="#bbb" keyboardType="number-pad" returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>m</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={[styles.hint, { flex: 1, marginBottom: 0 }]}>Drills</Text>
+            <TextInput
+              style={[styles.input, { width: 96, marginBottom: 0, textAlign: 'right' }]}
+              value={drillsMin} onChangeText={setDrillsMin}
+              placeholder="4" placeholderTextColor="#bbb" keyboardType="number-pad" returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>min</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.btn, structSaved && styles.btnSuccess, { marginTop: 12 }]}
+            onPress={handleSaveStructure}
+          >
+            <Text style={styles.btnText}>{structSaved ? '✓ Saved' : 'Save'}</Text>
+          </TouchableOpacity>
         </Section>
 
         <Section title="Max Heart Rate" cat="zones">

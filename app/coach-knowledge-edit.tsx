@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, SafeAreaView,
-  ActivityIndicator, Alert, Keyboard, Platform, useWindowDimensions,
+  ActivityIndicator, Alert, Platform, useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
@@ -30,36 +30,14 @@ export default function CoachKnowledgeEditScreen() {
   const [proposed, setProposed] = useState(false);
   const builtin = isBuiltinId(id ?? '');
 
-  // ── Keyboard-aware editing ──────────────────────────────────────────────────
-  // The content field can be longer than the screen, so we cap its height to the space ABOVE the
-  // keyboard while typing. That makes the native text view scroll internally (it always keeps the
-  // caret visible), instead of growing under the keyboard where the cursor would be hidden.
+  // ── Editing ─────────────────────────────────────────────────────────────────
+  // Give the content field a STABLE height (a fixed fraction of the screen) rather than chasing the live
+  // keyboard height. Tracking the keyboard frame resized the box every time the keyboard loaded/resized —
+  // and a heavy 3rd-party keyboard (SwiftKey) resizes in stages over a couple seconds — which reflowed the
+  // buttons and shrank the box a beat after opening (the "jump"). A fixed height never resizes; the native
+  // text view scrolls internally, and automaticallyAdjustKeyboardInsets keeps the caret + buttons reachable.
   const { height: winH } = useWindowDimensions();
-  const [kbH, setKbH] = useState(0);
-  const scrollRef = useRef<ScrollView>(null);
-  const contentY = useRef(0);
-
-  useEffect(() => {
-    // keyboardWillChangeFrame tracks show / hide / resize, so the editor adapts to whatever
-    // keyboard is loaded (taller emoji/3rd-party keyboards included).
-    const onFrame = (e: any) => {
-      const screenY = e?.endCoordinates?.screenY;
-      setKbH(typeof screenY === 'number' ? Math.max(0, winH - screenY) : (e?.endCoordinates?.height ?? 0));
-    };
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const sub1 = Keyboard.addListener(showEvt, onFrame);
-    const sub2 = Keyboard.addListener(hideEvt, () => setKbH(0));
-    return () => { sub1.remove(); sub2.remove(); };
-  }, [winH]);
-
-  // Cap height to the room above the keyboard (≈150px reserves the header + safe-area + a margin).
-  const editorH = kbH > 0 ? Math.max(150, winH - kbH - 150) : undefined;
-
-  const onContentFocus = () => {
-    // Slide the editor up to just below the header so the whole capped box sits above the keyboard.
-    setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, contentY.current - 6), animated: true }), 60);
-  };
+  const editorH = Math.max(200, Math.round(winH * 0.34));
 
   useEffect(() => {
     (async () => {
@@ -148,7 +126,6 @@ export default function CoachKnowledgeEditScreen() {
       </View>
 
       <ScrollView
-        ref={scrollRef}
         contentContainerStyle={s.scroll}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
@@ -166,15 +143,13 @@ export default function CoachKnowledgeEditScreen() {
           <Text style={s.label}>CONTENT (markdown)</Text>
           {proposed && <Text style={s.proposeNote}>✨ AI proposal — unsaved. Tap Save to keep, or edit/Back to discard.</Text>}
           <TextInput
-            style={[s.input, s.contentInput, editorH != null && { height: editorH, minHeight: 0 }]}
+            style={[s.input, s.contentInput, { height: editorH, minHeight: 0 }]}
             value={content}
             onChangeText={setContent}
             multiline
             scrollEnabled
             textAlignVertical="top"
             autoCapitalize="sentences"
-            onLayout={e => { contentY.current = e.nativeEvent.layout.y; }}
-            onFocus={onContentFocus}
             placeholder="Write coaching rules, exercises, drills, schedule…"
             placeholderTextColor="#999"
           />

@@ -81,10 +81,10 @@ export interface WatchWorkoutBlock {
 }
 export interface WatchWorkout {
   name:          string;        // weekday slot, e.g. "Mon" — overwrites that day's workout
-  warmupMeters:  number;        // always 600
+  warmupMeters:  number;        // metres; 0 = OPEN goal (athlete-controlled) — from WorkoutStructure config
   drillsMinutes: number;        // small drills block after warmup (0 to skip)
   blocks:        WatchWorkoutBlock[];
-  cooldownMeters: number;       // always 600
+  cooldownMeters: number;       // metres; 0 = OPEN goal — from WorkoutStructure config
 }
 
 export interface CoachPlan {
@@ -233,8 +233,9 @@ Produce the runner's DAILY OUTLOOK as the OUTCOME of the rules applied to all th
 
 WATCH WORKOUT: if you prescribe a RUN (intensity easy/moderate/hard, not rest), also design a structured \
 "workout" object for the Apple Watch that pushes today's strain to the UPPER end of the target band \
-(near strainHigh): a 600m warmup, a short drills block (drillsMinutes, ~3–5 min, 0 to skip), one or more \
-work blocks (reps × workMinutes, with restMinutes recovery), and a 600m cooldown. Choose reps/durations so total \
+(near strainHigh): one or more work blocks (reps × workMinutes, with restMinutes recovery). The warm-up, \
+cool-down and drills that wrap the work are applied AUTOMATICALLY from the athlete's own settings — design \
+ONLY the work blocks (warmupMeters/cooldownMeters/drillsMinutes you send are ignored). Choose reps/durations so total \
 running stays ≤ tofBudgetTodayMin yet reaches the upper band. The HR ZONE + duration + structure are the DRIVING \
 facts: set each block's hrZone (Z1–Z5) and the matching powerLowWatts/powerHighWatts by reading them straight \
 from the "Power & HR Zones" table in the COACHING KNOWLEDGE above (that table is calibrated from real runs — use \
@@ -286,12 +287,15 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
     };
   }).filter((b: WatchWorkoutBlock) => b.workMinutes > 0);
   if (blocks.length === 0) return null;
+  // Warm-up / cool-down / drills come from the athlete's WorkoutStructure config (0 = open goal) — a
+  // structural preference that OVERRIDES whatever the LLM proposed for those wrapper phases.
+  const st = workoutStructureCache;
   return {
     name,
-    warmupMeters:  600,
-    drillsMinutes: Math.max(0, Math.min(8, num(o.drillsMinutes) ?? 4)),  // drills are SHORT form-work, never the main set
+    warmupMeters:  st.warmupMeters,
+    drillsMinutes: st.drillsMinutes,
     blocks,
-    cooldownMeters: 600,
+    cooldownMeters: st.cooldownMeters,
   };
 }
 
@@ -354,7 +358,7 @@ export function synthesizeWorkout(
   pz?: CoachSnapshot['powerZones'],
   kind?: 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery',
 ): WatchWorkout {
-  // Reserve ~6 min for the 600m warm-up + 600m cool-down; the rest is work.
+  // Reserve ~6 min for the warm-up + cool-down (open or distance); the rest is work.
   const workBudget = Math.max(8, (runMinutes || 35) - 6);
   // TYPE-aware structure — the session TYPE, not just the effort tier, decides the shape (so a Long
   // run is a long Z2 run, a Tempo is sustained Z3, only Intervals are short Z4 reps). Falls back to
@@ -369,8 +373,9 @@ export function synthesizeWorkout(
   } else { // long / easy / recovery → ONE continuous aerobic block at Z2
     blocks = [{ repeats: 1, workMinutes: Math.min(150, workBudget), restMinutes: 0, hrZone: 'Z2', label: t === 'long' ? 'long' : 'aerobic' }];
   }
-  const drills = 4;  // a short drills block on EVERY run, incl. easy — the runner's coaching files ask for it
-  return ensureBlockPower({ name, warmupMeters: 600, drillsMinutes: drills, blocks, cooldownMeters: 600 }, pz)!;
+  // Warm-up / cool-down (0 = open) + drills length are the athlete's configured structure (WorkoutStructure).
+  const st = workoutStructureCache;
+  return ensureBlockPower({ name, warmupMeters: st.warmupMeters, drillsMinutes: st.drillsMinutes, blocks, cooldownMeters: st.cooldownMeters }, pz)!;
 }
 
 // Concise one-line structure for the daily plan, e.g. "3× 10min @ 180–205W" or "60min @ 205W".
@@ -979,6 +984,45 @@ export async function setLongRunStyle(v: LongRunStyle): Promise<void> {
   try { await SecureStore.setItemAsync(LONG_RUN_STYLE_KEY, v); } catch { /* ignore */ }
 }
 
+// ── Workout structure (warm-up / cool-down / drills) ──────────────────────────
+// The athlete's fixed session shell that wraps every prescribed run. warmup/cooldown are in METRES where
+// **0 = OPEN goal** (athlete-controlled, ended with the watch lap button — the watch already runs these as
+// open steps; 0 just makes the app say "Open" and skip a distance target). drills = minutes (0 to skip).
+// These are structural preferences the athlete owns — applied to every workout, overriding the LLM.
+export interface WorkoutStructure { warmupMeters: number; cooldownMeters: number; drillsMinutes: number; }
+export const DEFAULT_WORKOUT_STRUCTURE: WorkoutStructure = { warmupMeters: 0, cooldownMeters: 0, drillsMinutes: 4 };
+const WARMUP_KEY = 'warmup_meters_v1', COOLDOWN_KEY = 'cooldown_meters_v1', DRILLS_KEY = 'drills_minutes_v1';
+// Synchronously-readable snapshot for the sync workout builders (synthesizeWorkout / parseWorkout). Kept in
+// sync with storage by refreshWorkoutStructure(), called in assembleCoachSnapshot before any plan is built.
+let workoutStructureCache: WorkoutStructure = { ...DEFAULT_WORKOUT_STRUCTURE };
+export function workoutStructureSync(): WorkoutStructure { return workoutStructureCache; }
+export async function getWorkoutStructure(): Promise<WorkoutStructure> {
+  const n = (raw: string | null, def: number) => { const v = Number(raw); return raw != null && Number.isFinite(v) && v >= 0 ? Math.round(v) : def; };
+  try {
+    const [w, c, d] = await Promise.all([
+      SecureStore.getItemAsync(WARMUP_KEY), SecureStore.getItemAsync(COOLDOWN_KEY), SecureStore.getItemAsync(DRILLS_KEY),
+    ]);
+    return {
+      warmupMeters:   n(w, DEFAULT_WORKOUT_STRUCTURE.warmupMeters),
+      cooldownMeters: n(c, DEFAULT_WORKOUT_STRUCTURE.cooldownMeters),
+      drillsMinutes:  n(d, DEFAULT_WORKOUT_STRUCTURE.drillsMinutes),
+    };
+  } catch { return { ...DEFAULT_WORKOUT_STRUCTURE }; }
+}
+export async function refreshWorkoutStructure(): Promise<WorkoutStructure> {
+  workoutStructureCache = await getWorkoutStructure();
+  return workoutStructureCache;
+}
+export async function setWorkoutStructure(v: Partial<WorkoutStructure>): Promise<void> {
+  const clamp = (x: number) => String(Math.max(0, Math.round(x)));
+  try {
+    if (v.warmupMeters   != null) await SecureStore.setItemAsync(WARMUP_KEY,   clamp(v.warmupMeters));
+    if (v.cooldownMeters != null) await SecureStore.setItemAsync(COOLDOWN_KEY, clamp(v.cooldownMeters));
+    if (v.drillsMinutes  != null) await SecureStore.setItemAsync(DRILLS_KEY,   clamp(v.drillsMinutes));
+  } catch { /* ignore */ }
+  await refreshWorkoutStructure();
+}
+
 // Per-DATE opt-in flag for the 'optin' long-run style (transient day flags — not backed up).
 const longSplitKey = (d: string) => `long_split_optin_${d}`;
 export async function getLongSplitOptIn(d: string): Promise<boolean> {
@@ -1251,6 +1295,9 @@ export async function buildCapContext(
  * the on-demand plan and the auto-prepared plan are identical.
  */
 export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[]): Promise<CoachSnapshot> {
+  // Refresh the sync-readable workout-structure cache so synthesizeWorkout / parseWorkout (both sync) see
+  // the athlete's current warm-up / cool-down / drills config before any plan or watch workout is built.
+  // Awaited in parallel below (the throwaway slot) so it's settled before the caller builds a workout.
   const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
@@ -1261,6 +1308,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     getAthleteStatus(),
     loadEvents(),
     loadSupplements(),
+    refreshWorkoutStructure().catch(() => DEFAULT_WORKOUT_STRUCTURE),
   ]);
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};

@@ -146,10 +146,33 @@ A running log of prescribed runs, newest first. \`✅ executed\` once the run is
 day, \`⬜ planned\` until then. Prune old entries freely — this is just a training record.
 `;
 
+const DEFAULT_TRAINING_MODEL = `# Training Model (how this app's numbers work — read before answering budget questions)
+
+## Volume: the rolling time-on-feet (ToF) budget
+- Every running minute is deducted from a ROLLING +cap% 7-day time-on-feet budget. The rule: the trailing 7-day ToF total must stay ≤ (1 + cap%) × the ToF total of the 7 days BEFORE that. When a run won't fit, it is deferred to a later day.
+- ToF counts WORK minutes (the run's work + drills, excluding warm-up / cool-down / recovery jogs) under the default "work" accounting regime — not raw elapsed time. So a structured tempo counts its work block, not the whole session.
+- CRITICAL — it is a SLIDING window RECOMPUTED EVERY DAY, not a fixed pool:
+  - Today's "remaining ≤ X min" is ONLY today's allowance. It is NOT a shared allowance for the next few days.
+  - Each day the ceiling moves (the "previous 7 days" that sets the cap slides forward) AND the oldest day rolls off the trailing window (which frees budget back up).
+  - So NEVER answer a multi-day question by subtracting a future day's run from today's remaining (e.g. "89 minus Thursday minus Friday"). That double-counts and ignores roll-off — it is WRONG.
+  - For "does today's/tomorrow's run eat into a later run's budget", read the 7-DAY PLAN (get_week_plan): it already forward-projects this rolling cap day by day, so if a later day shows a full-length run, it ALREADY fits. Also use get_plan_context's next-run projection (when the next meaningful run fits as days roll off).
+
+## Load & readiness
+- CTL = fitness (Banister EWMA, tau about 42d), ATL = fatigue (tau about 7d), TSB = CTL minus ATL = form. ACWR = ATL/CTL (safe about 0.8 to 1.3).
+- Readiness is recovery-anchored (HRV/RHR/sleep/resp/SpO2) and gates quality: green (>=60) allows a full session; below that it is eased to easy. Daily STRAIN is a TRIMP-based % kept inside an advisable band set by recovery + form.
+
+## Prescription rules
+- COMPLETION-AWARE: once today's prescribed session is done, no 2nd run is prescribed — recover. A 2nd run only ever completes a genuinely cut-short session, and only if every cap/TSB/heat/recovery gate still has room; it is always easy, never a 2nd quality session.
+- Long runs may be delivered as two easy-Z2 parts (heat / injury / leisure). Heat trims prescribed minutes.
+
+## Always ground answers in live data
+Use get_plan_context for today's plan + the live ToF budget + load/readiness; get_week_plan for the forward schedule; get_prescription_history for adherence. Cite the real numbers — never invent or hand-derive a budget.`;
+
 interface DefaultDef { id: string; title: string; description: string; content: string; }
 const DEFAULTS: DefaultDef[] = [
   { id: 'athlete-profile',   title: 'Athlete Profile',       description: 'Personal physiology + goals the coach should tailor to', content: DEFAULT_PROFILE },
   { id: 'coaching-rules',    title: 'Coaching Rules',        description: 'Core injury-first rules the coach must follow', content: DEFAULT_RULES },
+  { id: 'training-model',    title: 'Training Model',        description: 'How the ToF budget (rolling window) + load/readiness model work — so the coach answers budget questions correctly', content: DEFAULT_TRAINING_MODEL },
   { id: 'strength-exercises', title: 'Strength Exercises',   description: 'Preferred leg/hip/foot strength work',         content: DEFAULT_STRENGTH },
   { id: 'pre-run-drills',    title: 'Pre-Run Drills',        description: 'Dynamic warm-up drills before every run',      content: DEFAULT_DRILLS },
   { id: 'running-schedule',  title: 'Weekly Schedule',       description: 'Preferred structured running week',            content: DEFAULT_SCHEDULE },

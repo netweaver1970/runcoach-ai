@@ -66,7 +66,8 @@ export function formatPrescription(plan: CoachPlan | null): string {
 
   const w = plan.workout;
   if (w) {
-    const struct: string[] = [`Warm-up ${w.warmupMeters}m`];
+    const wuLabel = (m: number) => (m > 0 ? `${m}m` : 'open');   // 0 = open goal (athlete-controlled)
+    const struct: string[] = [`Warm-up ${wuLabel(w.warmupMeters)}`];
     if (w.drillsMinutes > 0) struct.push(`Drills ${w.drillsMinutes} min`);
     for (const b of w.blocks) {
       const zone = b.hrZone ? ` @${b.hrZone}` : '';
@@ -75,7 +76,7 @@ export function formatPrescription(plan: CoachPlan | null): string {
       const lbl  = b.label ? ` — ${b.label}` : '';
       struct.push(`${b.repeats}× ${b.workMinutes}min${zone}${pw}${rest}${lbl}`);
     }
-    struct.push(`Cool-down ${w.cooldownMeters}m`);
+    struct.push(`Cool-down ${wuLabel(w.cooldownMeters)}`);
     lines.push(`Planned structure (the watch workout pushed this morning):\n  ${struct.join('\n  ')}`);
   }
   return lines.join('\n');

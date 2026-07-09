@@ -433,7 +433,7 @@ export default function DailyCoachScreen() {
               {watchWorkout && (
                 <View style={s.workoutBox}>
                   <Text style={s.workoutTitle}>⌚ WATCH WORKOUT · {watchWorkout.name}</Text>
-                  <Text style={s.workoutStep}>1. Warm-up {watchWorkout.warmupMeters} m</Text>
+                  <Text style={s.workoutStep}>1. Warm-up {watchWorkout.warmupMeters > 0 ? `${watchWorkout.warmupMeters} m` : 'open'}</Text>
                   {watchWorkout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {watchWorkout.drillsMinutes} min</Text>}
                   {watchWorkout.blocks.map((b, idx) => (
                     <Text key={idx} style={s.workoutStep}>
@@ -443,7 +443,7 @@ export default function DailyCoachScreen() {
                       {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){b.label ? ` · ${b.label}` : ''}
                     </Text>
                   ))}
-                  <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters} m</Text>
+                  <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters > 0 ? `${watchWorkout.cooldownMeters} m` : 'open'}</Text>
 
                   {/* Projected strain this session adds + today's resulting total vs the target band */}
                   {strain && (
@@ -488,7 +488,7 @@ export default function DailyCoachScreen() {
                   <Text style={s.coachSession}>
                     {plan.secondSession.runMinutes} min easy Z2 · leave ~{plan.secondSession.earliestAfterHrs ?? 4}h after Part 1.
                   </Text>
-                  <Text style={s.workoutStep}>1. Warm-up {plan.secondSession.workout.warmupMeters} m</Text>
+                  <Text style={s.workoutStep}>1. Warm-up {plan.secondSession.workout.warmupMeters > 0 ? `${plan.secondSession.workout.warmupMeters} m` : 'open'}</Text>
                   {plan.secondSession.workout.drillsMinutes > 0 && <Text style={s.workoutStep}>2. Drills {plan.secondSession.workout.drillsMinutes} min</Text>}
                   {plan.secondSession.workout.blocks.map((b, idx) => (
                     <Text key={idx} style={s.workoutStep}>
@@ -497,7 +497,7 @@ export default function DailyCoachScreen() {
                       {b.powerLowWatts && b.powerHighWatts ? ` ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
                     </Text>
                   ))}
-                  <Text style={s.workoutStep}>Cool-down {plan.secondSession.workout.cooldownMeters} m</Text>
+                  <Text style={s.workoutStep}>Cool-down {plan.secondSession.workout.cooldownMeters > 0 ? `${plan.secondSession.workout.cooldownMeters} m` : 'open'}</Text>
                   <TouchableOpacity
                     style={s.watchBtn}
                     disabled={part2Sending}

@@ -78,11 +78,15 @@ export async function recordActuals(
   } catch { /* never break a scan */ }
 }
 
-/** Paired points (both projected and realised present), oldest first — for the calibration dump. */
+/** Paired points (both projected and realised present), oldest first — for the calibration dump. Excludes
+ *  the current (still-elapsing) day: its "actual" is only the partial day-so-far, so pairing it against a
+ *  full-day projection reads as a huge spurious miss (e.g. projLoad 12 vs actLoad 1 at 07:00). */
 export async function getForecastPairs(): Promise<ForecastPoint[]> {
   try {
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     return Object.values(await read())
-      .filter((p) => p.projTSB != null && p.actTSB != null)
+      .filter((p) => p.projTSB != null && p.actTSB != null && p.date < todayKey)
       .sort((a, b) => a.date.localeCompare(b.date));
   } catch { return []; }
 }

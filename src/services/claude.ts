@@ -3,6 +3,7 @@ import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, K
 import { callLLM, getActiveApiKey } from './llm';
 import { agentComplete } from './agent';
 import { buildTimelineContext } from './timelineEvents';
+import { buildKnowledgePrompt } from './coachFiles';
 import { tsbStatus, ctlRamp, trainingDayKey } from './trainingLoad';
 
 // Legacy constant — kept so existing imports don't break; actual model comes from llm.ts config.
@@ -580,18 +581,13 @@ Rules: cite real numbers, 2–4 sentences per section, skip sections with no dat
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
 
-// Coaching intelligence: how THIS app models training (so the coach reads the same numbers the plan does and
-// never invents them) + the program-design principles it should reason from. Fetch live numbers with the tools.
-const COACH_KNOWLEDGE = `## How this app models training (fetch the live numbers with get_plan_context — never guess them)
-- TIME-ON-FEET BUDGET: every running minute (any zone) is deducted from a rolling +cap% 7-day budget — the trailing-7-day total must stay ≤ (1+cap%)× the total of the 7 days before it. When a run won't fit, it's deferred; "today ≤ X min" is the remaining budget. This is the master volume guardrail.
-- LOAD: CTL (fitness, Banister EWMA τ≈42d), ATL (fatigue, τ≈7d), TSB = CTL−ATL (form). ACWR = ATL/CTL (safe ~0.8–1.3). Readiness is recovery-anchored (HRV/RHR/sleep) and gates quality (green ≥60 → full session; below → eased to easy). Daily STRAIN is a TRIMP-based % kept inside an advisable band set by recovery + form.
-- RULES: completion-aware — once the athlete has done today's prescribed session, no 2nd run is prescribed (recover); a 2nd run only to complete a genuinely cut-short session and only if every cap/TSB/heat/recovery gate still has room. Long runs may be split into two easy Z2 parts (heat/injury/leisure). Heat trims prescribed minutes.
-
-## Program-design principles to reason from
+// Program-design principles the coach reasons from (the app-mechanics / ToF-budget model now lives in the
+// editable "Training Model" coaching file, injected via `knowledge` below — single editable source).
+const PROGRAM_DESIGN = `## Program-design principles to reason from
 - Polarised ~80/20: most volume easy (Z1–Z2), a minority hard; keep easy easy and hard hard. Recovery is where adaptation happens — don't stack quality days back-to-back.
-- Periodise: progressive overload (~≤10%/wk volume) in build weeks, then a deload; keep ACWR in the safe zone. Specificity + consistency beat heroics.
+- Periodise: progressive overload (~≤10%/wk volume) in build weeks, then a deload; keep ACWR in the safe zone (~0.8–1.3). Specificity + consistency beat heroics.
 - Session purpose: long run → aerobic durability/fat-oxidation; tempo/threshold → lactate clearance; intervals (Z4–5) → VO2/economy; easy → volume + recovery. Taper into races. Sleep/HRV/RHR trends flag under-recovery before performance drops.
-Use the tools to ground every claim in the athlete's actual budget, plan, history and KPIs; cite the numbers.`;
+Ground every claim in the athlete's actual budget/plan/history/KPIs via the tools — cite the numbers, never invent them.`;
 
 function buildChatSystemPrompt(
   snap:          HealthSnapshot,
@@ -599,6 +595,7 @@ function buildChatSystemPrompt(
   localContext?: string,   // e.g. "Location: Brussels · Thu 17 Apr 2026 13:04"
   aiWeeks = 10,
   runContext?:   string,   // invisible run-analysis data injected from the detail screen
+  knowledge?:    string,   // the athlete's editable coaching files (schedule, zones, rules, Training Model, …)
 ): string {
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
@@ -611,8 +608,8 @@ function buildChatSystemPrompt(
   let prompt = `You are a personal running coach in a runner's iPhone app. ${timeHeader}.
 Concise answers, phone-friendly. Cite numbers. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
-${COACH_KNOWLEDGE}
-
+${PROGRAM_DESIGN}
+${knowledge && knowledge.trim() ? `\n## The athlete's coaching files (their own editable setup — schedule, zones, rules, Training Model). Follow these; the Training Model file explains how the ToF budget & load model work.\n${knowledge.trim()}\n` : ''}
 ${buildDataBlock(snap, maxRuns)}`;
 
   if (memoryNote && memoryNote.trim()) {
@@ -812,8 +809,11 @@ export async function getChatResponse(
 
   // Agentic mode (when enabled + Anthropic) lets the model pull specific runs/metrics via tools; otherwise
   // this is the existing single-shot call. The snapshot is still passed as baseline context either way.
+  // The athlete's editable coaching files (incl. the Training Model) are injected so the coach reasons from
+  // the SAME knowledge the daily plan uses — one editable source of truth.
+  const knowledge = await buildKnowledgePrompt().catch(() => '');
   return agentComplete({
-    system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext),
+    system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, knowledge),
     messages:  history,
     maxTokens: 1024,
     snap,
