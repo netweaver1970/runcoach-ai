@@ -5,7 +5,7 @@ import { callLLM, callLLMTools, agenticSupported } from './llm';
 // coach.ts pulls in claude.ts (getPowerZones) and claude.ts pulls in this file (agentComplete) → a require
 // cycle. It's safe: every use of these imports is inside a tool `run` callback (call-time), never at module
 // load, so the live bindings are fully initialised by the time they run.
-import { assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getWeekPlan, formatWorkoutStructure } from './coach';
+import { assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getWeekPlan, formatWorkoutStructure, loadPrescriptionAt } from './coach';
 import { computeBodyBattery } from './bodyBattery';
 import { buildKnowledgePrompt } from './coachFiles';
 
@@ -95,7 +95,7 @@ const TOOLS: AgentTool[] = [
   {
     name: 'get_run_detail',
     description:
-      'Detailed breakdown of ONE run: per-km splits (pace, HR, power), structured segments (warmup / work / recovery / cooldown with duration, HR and distance), and HR/power summary stats. Identify the run by uuid (from query_runs) or by date (YYYY-MM-DD). Defaults to the most recent run if neither is given.',
+      'Detailed breakdown of ONE run: per-km splits (pace, HR, power), structured segments (warmup / work / recovery / cooldown with duration, HR and distance), HR/power summary stats, AND `prescribed_at_start` = the plan that was live WHEN THIS RUN STARTED. To judge a run against its prescription, ALWAYS use `prescribed_at_start` from here — NOT get_plan_context (that returns TODAY\'s CURRENT plan, which often flips to "rest/recover" AFTER a run finishes, so using it makes a completed session look like it "ran on a rest day"). Identify the run by uuid (from query_runs) or by date (YYYY-MM-DD). Defaults to the most recent run if neither is given.',
     input_schema: {
       type: 'object',
       properties: {
@@ -109,14 +109,23 @@ const TOOLS: AgentTool[] = [
         : date ? runs.find(r => day(r.date) === day(String(date)))
         : runs[0];
       if (!run) return { error: 'No matching run found. Call query_runs to see available runs.' };
+      // The prescription that was LIVE WHEN THIS RUN STARTED (from the plan-log), so a run is judged against
+      // the morning's plan — not today's current plan, which may have flipped to "rest/recover" after it.
+      const rxPlan = await loadPrescriptionAt(day(run.date), new Date(run.date).getTime()).catch(() => null);
+      const prescribed_at_start = rxPlan ? {
+        session: rxPlan.session, intensity: rxPlan.intensity, prescribed_run_min: rxPlan.runMinutes,
+        target_strain_pct: `${rxPlan.strainLow}-${rxPlan.strainHigh}`, rationale: rxPlan.rationale || null,
+        structure: rxPlan.workout ? formatWorkoutStructure(rxPlan.workout) : null,
+      } : 'No plan was in effect when this run started (run beat the day\'s plan) — judge it on its own merits; do NOT call it a rest-day violation.';
       let detail;
       try { detail = await fetchWorkoutDetail(run.date, run.duration); }
-      catch (e: any) { return { ...runSummary(run), note: 'Intra-run detail unavailable: ' + (e?.message ?? 'fetch failed') }; }
+      catch (e: any) { return { ...runSummary(run), prescribed_at_start, note: 'Intra-run detail unavailable: ' + (e?.message ?? 'fetch failed') }; }
       const stat = (arr: { v: number }[]) => arr.length
         ? { avg: Math.round(arr.reduce((s, x) => s + x.v, 0) / arr.length), max: Math.round(Math.max(...arr.map(x => x.v))), min: Math.round(Math.min(...arr.map(x => x.v))) }
         : null;
       return {
         ...runSummary(run),
+        prescribed_at_start,
         km_splits: (detail.kmSplits ?? []).map(k => ({ km: k.km, pace_per_km: paceStr(k.paceSecs), avg_hr: k.avgHR || null, avg_power_w: k.avgPower || null })),
         segments: (detail.activities ?? []).map(a => ({ phase: a.label, min: round((a.netDurationSec ?? 0) / 60, 1), avg_hr: a.avgHR || null, distance_m: a.distanceM ? Math.round(a.distanceM) : null })),
         hr_stats: stat(detail.hr ?? []),
@@ -172,7 +181,7 @@ const TOOLS: AgentTool[] = [
   {
     name: 'get_plan_context',
     description:
-      "The live coaching state for TODAY — call this for ANY question about the plan, the volume budget, or how a run affects things (never guess these numbers). Returns today's prescription, the ROLLING 7-DAY TIME-ON-FEET BUDGET (minutes used vs the +cap% ceiling and how much is left today — every running minute is deducted from it), CTL/ATL/TSB, readiness & its drivers, today's strain vs the advisable band, ACWR, the next meaningful-run day, current Body Battery, and weather/heat.",
+      "The live coaching state for TODAY — call this for ANY question about the plan, the volume budget, or how a run affects things (never guess these numbers). Returns today's CURRENT prescription, the ROLLING 7-DAY TIME-ON-FEET BUDGET (minutes used vs the +cap% ceiling and how much is left today — every running minute is deducted from it), CTL/ATL/TSB, readiness & its drivers, today's strain vs the advisable band, ACWR, the next meaningful-run day, current Body Battery, and weather/heat. NOTE: this is the CURRENT plan — after a run finishes it may read 'rest/recover' (session done). To judge a run that was ALREADY done, use get_run_detail's `prescribed_at_start`, NOT this.",
     input_schema: { type: 'object', properties: {} },
     run: async (_input, ctx) => {
       const cs = await coachSnap(ctx);

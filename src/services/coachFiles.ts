@@ -192,13 +192,17 @@ export async function recordPrescription(date: string, structure: string): Promi
     const lines  = raw.split('\n');
     const detail = structure?.trim() || 'rest';
     const at     = lines.findIndex(l => l.startsWith(`- ${date} `));
-    const done   = at >= 0 && lines[at].includes('✅');
-    const line   = `- ${date} · ${detail} · ${done ? '✅ executed' : '⬜ planned'}`;
     if (at >= 0) {
-      lines[at] = line;
+      // Don't let a same-day "rest" downgrade erase a real run already logged for the day. The
+      // completion-aware plan flips to "session done → recover" (a rest plan) AFTER the run, and saving
+      // that must NOT clobber the morning's long/quality prescription in this human-readable history.
+      const existingIsRest = lines[at].startsWith(`- ${date} · rest · `);
+      if (detail === 'rest' && !existingIsRest) return;
+      const done = lines[at].includes('✅');
+      lines[at]  = `- ${date} · ${detail} · ${done ? '✅ executed' : '⬜ planned'}`;
     } else {
       const first = lines.findIndex(isEntry);
-      lines.splice(first >= 0 ? first : lines.length, 0, line);
+      lines.splice(first >= 0 ? first : lines.length, 0, `- ${date} · ${detail} · ⬜ planned`);
     }
     let n = 0;
     const capped = lines.filter(l => !isEntry(l) || ++n <= HISTORY_CAP);

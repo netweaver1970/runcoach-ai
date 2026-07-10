@@ -60,12 +60,16 @@ const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
 // integrated curve tracks Bevel within ~1.5% RMSE across the day. The DRAIN_TIME_* constants below are
 // no longer applied (timeMult = 1) but retained for the debug dump.
 //   drain/h = DRAIN_BASE − DRAIN_STRESS_K·S
-const DRAIN_BASE      = 0.7;   // /h awake intercept. RE-FIT 2026-07-05 vs a full 16h paired Bevel energy export
-const DRAIN_STRESS_K  = 0.07;  // (both anchored at 77 @07:30): our drain was FAR too stress-sensitive — at S=90
-                               // it drained −9.5/h vs Bevel −4.5/h, ending the day at 33 vs Bevel 49. Bevel's
-                               // drain is gentle & near-linear (ΔE/h ≈ −0.05·S). Slope 0.129→0.07, break-even
-                               // ≈10. (Our daytime stress also now overshoots at peaks after DAY_STRESS_SCALE;
-                               // the gentler slope compensates. Night charge branch untouched.)
+const DRAIN_BASE      = 0.5;   // /h awake intercept. RE-FIT 2026-07-09 vs a same-day paired Bevel export (6-min
+const DRAIN_STRESS_K  = 0.10;  // energy+stress) + our bb dump. The 07-05 gentling (below) OVER-corrected: we then
+                               // UNDER-drained — ours ended ~63 vs Bevel 44 (drained −17 vs −32) with our stress
+                               // TRACKING Bevel's (spikes align, ~30 mean). Two faults at 0.7/0.07: break-even S≈10
+                               // let us hold/charge through the calm midday (our stress dips to 8–15) while Bevel keeps
+                               // draining; slope too shallow at peaks. This is the MIRROR of the June over-drain (33 vs
+                               // 49). Bumped BASE 0.7→0.5 (break-even ≈5, drains through calm like Bevel) + K 0.07→0.10
+                               // (steeper at peaks) → integrates to ≈Bevel −32. CONFIRM against a 2nd paired day.
+                               // (Prior 07-05 note: old 0.129 over-drained — at S=90 −9.5/h vs Bevel −4.5/h, ended 33
+                               // vs 49 — so slope 0.129→0.07, break-even ≈10; that swung too far the other way.)
 // AWAKE REST-CHARGE (Garmin/Bevel behaviour): lying/sitting STILL at low stress is genuine recovery, so the
 // battery CHARGES even awake — a calm awake morning in bed recovers (Bevel does; our sleep-gated model
 // didn't once Apple Health ended the sleep session). Gated on STILLNESS (≈no steps) so up-and-about calm

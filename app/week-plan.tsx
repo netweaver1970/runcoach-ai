@@ -102,7 +102,7 @@ export default function WeekPlan() {
       const loadByDate = new Map(tl.map(d => [d.date, d.load]));
       const cal: TrimpRates = snap.trimpRates ?? calibrateTrimpRates((snap.runs ?? []).map(r => ({
         intensity: labelToIntensity(r.label),
-        minutes: ((r as any).workDuration ?? r.duration) / 60,
+        minutes: r.duration / 60,   // TOTAL run minutes (match the projection's run-minute basis) — NOT work-only, which inflated the rate ~1.8× (see healthkit.ts)
         dayLoad: loadByDate.get(r.date.slice(0, 10)) ?? 0,
         daysAgo: (Date.now() - new Date(r.date).getTime()) / 86_400_000,
       })));

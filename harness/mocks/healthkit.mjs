@@ -4,5 +4,7 @@ export async function fetchOurDailyComponents() { return null; }
 export async function fetchDailyDurationHistory() { return []; }
 export async function fetchDailyWorkDistanceHistory() { return []; }
 export async function loadSnapshotCache() { return null; }
+export function buildHeartbeatQualityMap() { return new Map(); }   // bodyBattery.ts imports (never called on the deterministic path)
+export function isGoodHRVSample() { return true; }
 export function extractWeatherTempC() { return undefined; }
 export async function fetchWorkoutDetail() { return { hr: [], power: [], pace: [], totalMs: 0, activities: [], kmSplits: [], pauseIntervals: [] }; }

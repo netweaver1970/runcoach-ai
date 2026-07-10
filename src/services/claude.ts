@@ -815,7 +815,7 @@ export async function getChatResponse(
   return agentComplete({
     system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, knowledge),
     messages:  history,
-    maxTokens: 1024,
+    maxTokens: 2500,   // was 1024 — the detailed run analysis (multi-section + tables) was truncated mid-output. This is a CEILING, not a target: short chats still cost only what they emit.
     snap,
   });
 }

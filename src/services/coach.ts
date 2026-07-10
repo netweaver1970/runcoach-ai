@@ -12,7 +12,7 @@ import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from '
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
-import { getPowerZones } from './claude';
+import { getPowerZones, getLongRunMinutes } from './claude';
 import { ensureZonesFile } from './zones';
 import { activityCategory, heatStrainFactor } from './trainingLoad';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
@@ -444,6 +444,31 @@ export function parseWeeklyTemplate(text: string): Record<number, WeekKind> {
   return out;
 }
 
+// ── PROGRESSIVE OVERLOAD, per session TYPE (no jumps) ─────────────────────────
+// Each session type ramps its duration from WHERE IT RECENTLY WAS, capped at +cap%/week, toward its target.
+// Weekday ≈ type (the schedule fixes Mon=intervals, Fri=long, …), so we baseline each day's ramp on the recent
+// MAX time-on-feet for that weekday. This stops the coach jumping a type straight to its full target (the
+// "daunting" week) — it climbs over several weeks and self-holds at target once reached (the min() cap). The
+// same +cap% ToF ceiling drives it, so it's one knob. The LONG additionally never jumps > LONG_STEP_MAX min/wk
+// (a %-cap alone lets a big long jump too far — a joint-protecting backstop, dormant at 10%).
+const RAMP_LONG_STEP_MAX = 10;
+function buildTypeRamp(recentTof: { date: string; min: number }[] | undefined, capPct: number) {
+  // Baseline = the MOST RECENT session on each weekday (weekday ≈ type). recentTof is chronological, so the
+  // last non-zero entry per weekday wins → a clean +cap% off where you actually were last, not a past peak.
+  const byDow = new Map<number, number>();
+  for (const e of (recentTof ?? [])) {
+    const dw = new Date(e.date + 'T00:00:00').getDay();
+    if ((e.min ?? 0) > 0) byDow.set(dw, e.min);
+  }
+  return (dow: number, fullBase: number, isLong: boolean): number => {
+    const recent = byDow.get(dow) ?? 0;
+    if (recent <= 0) return Math.min(fullBase, isLong ? 45 : 30);   // no recent history → conservative first dose
+    let cap = recent * (1 + capPct / 100);
+    if (isLong) cap = Math.min(cap, recent + RAMP_LONG_STEP_MAX);   // long: absolute per-week jump backstop
+    return Math.min(fullBase, Math.round(cap));
+  };
+}
+
 export async function getWeekPlan(
   snap: CoachSnapshot,
   forecast?: { date: string; apparentC: number; humidity: number; description: string }[],
@@ -452,6 +477,7 @@ export async function getWeekPlan(
   if (await raceActive()) { const rw = await getRaceWeekPlan(snap); if (rw) return rw.days; }
   const today = new Date(snap.date + 'T00:00:00');
   const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
+  const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, capPct);   // per-type progressive-overload cap (no jumps)
   const periodization = await getPeriodization();  // build/deload cycle modulates each week's cap multiplier
   const MEANINGFUL = 20;
   const shrink = await getShrinkToFit();  // ON → a cap-blocked quality SHRINKS to fit its day instead of deferring
@@ -482,9 +508,23 @@ export async function getWeekPlan(
   const SHRINK_TARGET = 28; // shrink-to-fit: cap tempo/intervals at ~this (≤30 min) so the week stays short + balanced
   const LONG_MIN = 45;      // shrink-to-fit: the long run is PROTECTED — never shrunk below this (keeps it a "long")
   const EASY_RESERVE = 35;  // headroom kept on a flex day before spending budget on an easy jog
+  const EASY_MAX  = 60;     // PROGRESSIVE GROWTH: an easy/flex day GROWS toward the available budget (aerobic
+  const EASY_BASE = 35;     // volume) instead of a fixed jog — capped per-day so no single day spikes. The
+  const QRESERVE  = 55;     // +cap% rolling cap + the green gate keep it controlled; QRESERVE is budget held
+  //                           back per still-unplaced quality session so easy growth NEVER starves the week's
+  //                           quality (incl. the long — verified in the harness: without it the long got squeezed out).
+  const longTargetMin = await getLongRunMinutes().catch(() => 75);  // athlete's configured long-run length (not hardcoded 65)
+  // Grow an easy day to spend the SPARE budget (after reserving for quality still to place) up to EASY_MAX,
+  // when green; hold at EASY_BASE when run-down or when there's no genuine surplus (never below EASY_BASE, so
+  // it's always a real easy run — and never worse than the pre-growth fixed 35).
+  const easyGrow = (allowance: number) => {
+    if (!green) return EASY_BASE;
+    const reserve = Math.max(0, Qtotal - qPlaced) * QRESERVE;
+    return Math.min(EASY_MAX, Math.max(EASY_BASE, Math.round(allowance - reserve)));
+  };
   const isQuality = (k: WeekKind) => k === 'intervals' || k === 'tempo' || k === 'long';
   const resolveQuality = (k: WeekKind): [CoachIntensity, number] =>
-    k === 'intervals' ? ['hard', 45] : k === 'long' ? ['moderate', 65] : ['moderate', 50];
+    k === 'intervals' ? ['hard', 45] : k === 'long' ? ['moderate', longTargetMin] : ['moderate', 50];
   const qName = (k: WeekKind) => k === 'intervals' ? 'Intervals' : k === 'tempo' ? 'Tempo' : k === 'long' ? 'Long run' : 'Run';
   // Goal: fit ALL the week's quality TYPES (intervals + tempo + long) inside the rolling cap. Count
   // them; while any are still pending, recovery/flex days REST to BANK budget rather than burn it on an
@@ -535,14 +575,18 @@ export async function getWeekPlan(
       }
     } else if (deferred.length && green && allowance >= QMIN && spaced) {              // SHUFFLE: reschedule a deferred quality here (incl. the weekend)
       const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
-    } else if (kind === 'easy') { intensity = 'easy'; base = 35; placed = 'easy'; }
+    } else if (kind === 'easy') { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
     else if (kind === 'rest')   { intensity = 'rest'; base = 0; }
-    else { // flex (recovery run or rest): rest to BANK budget while quality is still pending, else easy jog
-      const bank = green && qPlaced < Qtotal && allowance < QMIN + EASY_RESERVE;
-      if (bank || allowance < MEANINGFUL) { intensity = 'rest'; banked = bank; }
-      else { intensity = 'easy'; base = 32; placed = 'easy'; }
+    else { // flex: MOP UP the spare budget with easy volume rather than banking it by resting. easyGrow already
+      // reserves for pending quality (so easy can't starve the long/intervals), and the runner can always skip
+      // or shorten — better to OFFER the aerobic volume than hoard it. Rest only when the budget is truly spent.
+      if (allowance < MEANINGFUL) { intensity = 'rest'; }
+      else { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
     }
     if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
+    // PROGRESSIVE OVERLOAD: ramp this day's TYPE from where it recently was (+cap%/week), so it climbs toward
+    // its target instead of jumping there. Applies to every run type (long gets the extra +10min/wk backstop).
+    if (intensity !== 'rest') base = typeRamp(d.getDay(), base, placed === 'long');
 
     let capRest = false;
     // HARD cap gate (safety) — but shrink-to-fit's force-placed quality keeps its day even over budget.
@@ -708,6 +752,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const green    = (snap.readiness ?? 60) >= 60;
   const heatBudget = snap.tofBudgetTodayMin != null ? Math.round(snap.tofBudgetTodayMin / heatFactor) : undefined;
   const budget   = heatBudget ?? snap.tofBudgetTodayMin ?? 45;
+  const longTargetMin = await getLongRunMinutes().catch(() => 75);  // the athlete's configured long-run length
 
   type SK = 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery';
   const toSK = (k: string | undefined, it: CoachIntensity): SK =>
@@ -751,14 +796,16 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     if (green) { intensity = 'moderate'; sk = 'tempo'; base = 50; }
     else { intensity = 'easy'; sk = 'easy'; base = 35; eased = 'readiness low, so tempo dropped to easy Z2'; }
   } else if (kind === 'long') {
-    if (green) { intensity = 'moderate'; sk = 'long'; base = 65; }
+    if (green) { intensity = 'moderate'; sk = 'long'; base = longTargetMin; }   // the athlete's configured long-run length, not a hardcoded 65
     else { intensity = 'easy'; sk = 'easy'; base = 40; eased = 'readiness low, so the long run is just easy Z2'; }
   } else if (kind === 'easy') {
-    intensity = 'easy'; sk = 'easy'; base = 35;
+    // GROW easy volume toward the day's budget when green (progressive base-building); min(budget,base) below
+    // caps it. Hold at 35 when run-down. Matches the week plan's easyGrow so the daily card agrees with it.
+    intensity = 'easy'; sk = 'easy'; base = green ? 60 : 35;
   } else if (kind === 'rest') {
     intensity = 'rest'; sk = 'recovery'; base = 0;
   } else { // flex
-    intensity = 'easy'; sk = 'recovery'; base = 32;
+    intensity = 'easy'; sk = 'recovery'; base = green ? 60 : 32;
   }
   let heatCut = false;
   if (intensity === 'hard' && (apparentC ?? 0) >= 24) { intensity = 'moderate'; sk = 'tempo'; heatCut = true; }
@@ -777,6 +824,13 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     };
   }
 
+  // PROGRESSIVE OVERLOAD: ramp this session's TYPE from its recent duration (+cap%/week) before capping to
+  // budget — matches the 7-day plan's per-type ramp so a type climbs to target instead of jumping (the slot
+  // path is already ramped, so this is idempotent there; it's the no-slot fallback that needs it).
+  if (!honorDirect) {   // intensity is already non-rest here (rest returned earlier)
+    const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT);
+    base = typeRamp(new Date(snap.date + 'T00:00:00').getDay(), base, sk === 'long');
+  }
   // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
   // only today's heat eases it — so the daily card matches the 7-day plan instead of re-capping to rest.
   const totalMin = Math.max(8, honorDirect ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));

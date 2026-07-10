@@ -1773,7 +1773,12 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     label === 'Intervals' ? 'hard' : (label === 'Tempo' || label === 'LongRun') ? 'moderate' : 'easy';
   const trimpRates = calibrateTrimpRates(runs.map(r => ({
     intensity: runIntensity(r.label),
-    minutes:   ((r as any).workDuration ?? r.duration) / 60,
+    // TOTAL run minutes, NOT workDuration: the 7-day-plan projection prescribes in run-minutes (time-on-feet),
+    // so the rate must be dayLoad ÷ those same minutes. Dividing by work-only minutes (~0.6× the run) inflated
+    // the rate ~1.8× → the projection over-stated every run's load → phantom deep-negative TSB days (it trimmed
+    // a full long to fit a −16 floor it would never actually reach). Fixed 2026-07-10 from Geert's paired data
+    // (runs load ~1.0 TRIMP/run-min, but the rate read 1.77/min).
+    minutes:   r.duration / 60,
     dayLoad:   trimpLoadByDate.get(r.date.slice(0, 10)) ?? 0,
     daysAgo:   (now.getTime() - new Date(r.date).getTime()) / 86_400_000,
   })));
@@ -3974,8 +3979,9 @@ async function computeDailyComponents(
 // timeframe switch (the "regenerating the graphs" lag). Coverage EXPANDS as larger windows are requested;
 // once/day the recent ~15 days are recomputed (only very-recent days shift as new data lands — older days'
 // baselines/EWMAs are fixed). Repeat views + already-covered timeframe switches on the same day = instant.
-interface DcStore { updatedDay: string; coveredFrom: string; days: Record<string, Record<string, number>> }
+interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string, Record<string, number>> }
 const DC_FILE = FileSystem.documentDirectory + 'daily-components-v1.json';
+const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;
 let dcLoadP: Promise<DcStore> | null = null;
 let dcRefreshing: Promise<void> | null = null;
@@ -3983,8 +3989,9 @@ async function dcLoad(): Promise<DcStore> {
   if (dcMem) return dcMem;
   if (!dcLoadP) dcLoadP = (async () => {
     try { dcMem = JSON.parse(await FileSystem.readAsStringAsync(DC_FILE)) as DcStore; }
-    catch { dcMem = { updatedDay: '', coveredFrom: '9999-99-99', days: {} }; }
-    if (!dcMem.days) dcMem = { updatedDay: '', coveredFrom: '9999-99-99', days: {} };
+    catch { dcMem = DC_EMPTY(); }
+    if (!dcMem.days) dcMem = DC_EMPTY();
+    if (typeof dcMem.updatedAt !== 'number') dcMem.updatedAt = 0;  // migrate the old {updatedDay} shape → force a refresh
     return dcMem;
   })();
   return dcLoadP;
@@ -4009,26 +4016,42 @@ export async function fetchOurDailyComponents(
   const fromKey = dcKey(new Date(end.getTime() - months * 30 * 86_400_000));
   const endKey  = dcKey(end);
   const store   = await dcLoad();
-  const gap   = Object.keys(store.days).length === 0 || store.coveredFrom > fromKey;
-  const stale = store.updatedDay !== dcKey(new Date());
+  const nowMs   = Date.now();
+  const todayK  = dcKey(new Date());
+  const gap     = Object.keys(store.days).length === 0 || store.coveredFrom > fromKey;
+  const ageStale = nowMs - store.updatedAt > 10 * 60_000;   // >10 min old → refresh recent (intraday drift)
+  // TODAY is the one day that is NOT window-invariant — its recovery/sleep land only after the night
+  // completes. If the requested range includes today and today's recovery hasn't been computed yet, the
+  // stored row is a pre-sleep PLACEHOLDER (e.g. a scan ran just after midnight). Serving that froze the
+  // coach/detail at "no data" → false watch-not-worn + gutted plan. So while today is incomplete we RECOMPUTE
+  // and BLOCK, never serve the placeholder. (ageStale-gated so a genuine watch-off day only recomputes ~once
+  // per 10 min instead of on every read.)
+  const wantsToday      = endKey >= todayK;
+  const todayIncomplete = wantsToday && (store.days[todayK]?.recoveryScore == null);
+  const refreshRecent = async () => {
+    const fresh = await computeDailyComponents(0.5, end);
+    const s = dcMem!;
+    for (const d in fresh) s.days[d] = fresh[d];
+    s.updatedAt = Date.now();
+    dcPersist();
+  };
   if (gap) {
     // Data is MISSING for the requested window → must compute it before slicing (blocks once per new,
     // larger timeframe). Computing the whole window fills the gap AND refreshes the recent days.
     const fresh = await computeDailyComponents(months, end);
     for (const d in fresh) store.days[d] = fresh[d];
     if (fromKey < store.coveredFrom) store.coveredFrom = fromKey;
-    store.updatedDay = dcKey(new Date());
+    store.updatedAt = nowMs;
     dcPersist();
-  } else if (stale && !dcRefreshing) {
-    // Covered, but the recent days are a day old. Serve them NOW (they barely move overnight) and refresh
-    // just the last ~0.5 months in the BACKGROUND — so the FIRST KPI view / timeframe switch of the day is
-    // INSTANT and the fresh values land for the next read. Single-flighted so only one refresh runs.
-    dcRefreshing = computeDailyComponents(0.5, end).then((fresh) => {
-      const s = dcMem!;
-      for (const d in fresh) s.days[d] = fresh[d];
-      s.updatedDay = dcKey(new Date());
-      dcPersist();
-    }).catch(() => {}).finally(() => { dcRefreshing = null; });
+  } else if (todayIncomplete && ageStale) {
+    // BLOCK on the recompute — correctness: today's recovery must reflect the completed night before we
+    // return it to the plan. Single-flighted so concurrent callers share one recompute.
+    if (!dcRefreshing) dcRefreshing = refreshRecent().catch(() => {}).finally(() => { dcRefreshing = null; });
+    await dcRefreshing;
+  } else if (ageStale && !dcRefreshing) {
+    // Today already complete (or not requested); refresh the recent window in the BACKGROUND to catch
+    // intraday strain/step drift (recovery won't change — the night's done), so reads stay instant.
+    dcRefreshing = refreshRecent().catch(() => {}).finally(() => { dcRefreshing = null; });
   }
   const out: Record<string, Record<string, number>> = {};
   for (const d in store.days) if (d >= fromKey && d <= endKey) out[d] = store.days[d];

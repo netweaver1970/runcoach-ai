@@ -205,8 +205,8 @@ export function computeTrainingLoadSeries(
 
 // ─── Forward projection (7-day plan) ─────────────────────────────────────────
 // Rough per-MINUTE Banister TRIMP by session intensity, so a planned run → a daily
-// cardio-TRIMP estimate we can roll CTL/ATL forward with. + ~8 easy min for warm-up/
-// cool-down. Rest = a daily-living baseline (steps), so CTL/ATL don't crash on rest days.
+// cardio-TRIMP estimate we can roll CTL/ATL forward with. Rest = a daily-living baseline
+// (steps), so CTL/ATL don't crash on rest days.
 export interface TrimpRates { easy: number; moderate: number; hard: number }
 const DEFAULT_TRIMP_RATES: TrimpRates = { easy: 1.3, moderate: 2.0, hard: 2.8 };
 const REST_DAY_TRIMP = 12;
@@ -214,7 +214,12 @@ const REST_DAY_TRIMP = 12;
 export function estimateDayTrimp(intensity: string, runMinutes: number, rates: TrimpRates = DEFAULT_TRIMP_RATES): number {
   if (intensity === 'rest' || runMinutes <= 0) return REST_DAY_TRIMP;
   const perMin = intensity === 'hard' ? rates.hard : intensity === 'moderate' ? rates.moderate : rates.easy;
-  return Math.round(runMinutes * perMin + 8 * rates.easy);
+  // NO warm-up fudge: the CALIBRATED rate is dayLoad÷runMinutes (the whole day's TRIMP over the run's
+  // minutes), so runMinutes·perMin ALREADY reconstructs the full day's load incl. warm-up/cool-down + NEAT.
+  // The old `+ 8·easy` double-counted → the projection over-stated fatigue and showed negative-TSB days that
+  // never materialised (realised TSB came in ~2× shallower). Fixed 2026-07-10 (Geert: "predicts negatives
+  // that never happen"). Default-rate (no run data) users lose a small warm-up allowance — acceptable.
+  return Math.round(runMinutes * perMin);
 }
 
 // Continuous ROLLING calibration of per-intensity TRIMP/min from the runner's OWN runs: for each
