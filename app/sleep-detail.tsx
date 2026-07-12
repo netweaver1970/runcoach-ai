@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator,
+  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery, SleepSession } from '../src/types';
@@ -212,21 +212,25 @@ export default function SleepDetailScreen() {
   const [sleepGoalMin, setSleepGoalMin] = useState(FALLBACK_SLEEP_GOAL);
   const [loadingH, setLoadingH]     = useState(true);
 
-  useEffect(() => {
-    Promise.all([
-      cached('sleep:3', () => fetchSleepHistory(3)),
-      cached('dip:3', () => fetchOvernightHRHistory(3)),
+  const [refreshing, setRefreshing] = useState(false);
+  // force → bypass the detail cache's TTL (ttl 0) so a late-syncing night (a gap on yesterday) is re-read.
+  const load = useCallback((force = false) => {
+    const ttl = force ? 0 : undefined;
+    return Promise.all([
+      cached('sleep:3', () => fetchSleepHistory(3), ttl),
+      cached('dip:3', () => fetchOvernightHRHistory(3), ttl),
       loadPersonalSleepGoal(),
-      cached('strain:3', () => fetchStrainHistory(3)),
+      cached('strain:3', () => fetchStrainHistory(3), ttl),
     ]).then(([sessions, dipData, savedGoal, strainHist]) => {
       setHistory(sessions);
       setHrDipH(dipData.map(d => d.value));
       setStrainByDate(new Map(strainHist.map(x => [x.date, x.value])));
-      // Personal sleep goal (Sleep Bank / Needed): stored value, else 90-day median.
       const goal = savedGoal ?? computePersonalSleepGoal(sessions);
       setSleepGoalMin(goal > 0 ? goal : FALLBACK_SLEEP_GOAL);
-    }).catch(() => {}).finally(() => setLoadingH(false));
+    }).catch(() => {});
   }, []);
+  useEffect(() => { load().finally(() => setLoadingH(false)); }, [load]);
+  const onRefresh = useCallback(() => { setRefreshing(true); load(true).finally(() => setRefreshing(false)); }, [load]);
 
   // ── Which day are we viewing? ───────────────────────────────────────────────
   // A `date` (from a left/right day-swipe) selects a past night from history; otherwise show today's
@@ -330,7 +334,8 @@ export default function SleepDetailScreen() {
       <DayNav date={date} />
 
       <View style={{ flex: 1 }} {...swipe}>
-      <ScrollView contentContainerStyle={s.scroll}>
+      <ScrollView contentContainerStyle={s.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
 
         {/* Score hero */}
         <View style={[s.hero, { borderColor: SLEEP_COLOR }]}>

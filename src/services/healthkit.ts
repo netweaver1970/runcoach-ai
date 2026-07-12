@@ -4045,6 +4045,7 @@ const dcKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padSta
 export async function fetchOurDailyComponents(
   months: number,
   toDate?: Date,
+  force = false,   // user-initiated (pull-to-refresh): recompute the recent window NOW, ignoring the age gate
 ): Promise<Record<string, Record<string, number>>> {
   const end     = toDate ?? new Date();
   const fromKey = dcKey(new Date(end.getTime() - months * 30 * 86_400_000));
@@ -4077,9 +4078,10 @@ export async function fetchOurDailyComponents(
     if (fromKey < store.coveredFrom) store.coveredFrom = fromKey;
     store.updatedAt = nowMs;
     dcPersist();
-  } else if (todayIncomplete && ageStale) {
-    // BLOCK on the recompute — correctness: today's recovery must reflect the completed night before we
-    // return it to the plan. Single-flighted so concurrent callers share one recompute.
+  } else if (force || (todayIncomplete && ageStale)) {
+    // BLOCK on the recompute: either the user pulled to refresh (force), or today's recovery must reflect
+    // the completed night before we return it. Recomputes the recent window (~15 days) so a gap on
+    // yesterday (e.g. its overnight data synced after the last scan) fills in. Single-flighted.
     if (!dcRefreshing) dcRefreshing = refreshRecent().catch(() => {}).finally(() => { dcRefreshing = null; });
     await dcRefreshing;
   } else if (ageStale && !dcRefreshing) {

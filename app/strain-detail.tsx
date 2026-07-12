@@ -103,7 +103,7 @@ export default function StrainDetailScreen() {
   const loadHistory = useCallback((months: number, isRefresh = false) => {
     if (isRefresh) setRefreshing(true); else setLoadingH(true);
     // Cache the fast (default) load so tab-switches don't re-query HealthKit; pull-to-refresh bypasses it.
-    const compsP = isRefresh ? fetchOurDailyComponents(months) : cached(`comps:${months}`, () => fetchOurDailyComponents(months));
+    const compsP = isRefresh ? fetchOurDailyComponents(months, undefined, true) : cached(`comps:${months}`, () => fetchOurDailyComponents(months));
     const durP   = isRefresh ? fetchDailyDurationHistory()      : cached('dur', () => fetchDailyDurationHistory());
     Promise.all([compsP, durP])
       .then(([c, d]) => { setComps(c); setDur(d); })

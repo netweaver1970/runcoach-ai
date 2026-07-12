@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator,
+  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery } from '../src/types';
@@ -56,9 +56,14 @@ export default function RecoveryDetailScreen() {
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [loadingH, setLoadingH] = useState(true);
-  useEffect(() => {
-    cached('comps:3', () => fetchOurDailyComponents(3)).then(setComps).catch(() => {}).finally(() => setLoadingH(false));
-  }, []);
+  const [refreshing, setRefreshing] = useState(false);
+  // force → recompute the store's recent window NOW (fills a gap whose overnight data synced late) and
+  // bypass the detail cache's TTL (ttl 0). Pull down on the screen to trigger it.
+  const loadComps = useCallback((force = false) =>
+    cached('comps:3', () => fetchOurDailyComponents(3, undefined, force), force ? 0 : undefined)
+      .then(setComps).catch(() => {}), []);
+  useEffect(() => { loadComps().finally(() => setLoadingH(false)); }, [loadComps]);
+  const onRefresh = useCallback(() => { setRefreshing(true); loadComps(true).finally(() => setRefreshing(false)); }, [loadComps]);
   const hist = useMemo(
     () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
     [comps],
@@ -127,7 +132,8 @@ export default function RecoveryDetailScreen() {
       <DayNav date={date} />
 
       <View style={{ flex: 1 }} {...swipe}>
-      <ScrollView contentContainerStyle={s.scroll}>
+      <ScrollView contentContainerStyle={s.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={color} />}>
 
         {/* Score hero */}
         <View style={[s.hero, { borderColor: color }]}>
