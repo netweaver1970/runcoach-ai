@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import { shareJson } from '../src/shareJson';
 import { fetchTrainingLoadHistory, buildTrainingLoadCalibration } from '../src/services/healthkit';
 import { tsbStatus, cardioLoadStatus, ratioTrend } from '../src/services/trainingLoad';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -224,6 +225,13 @@ export default function TrainingLoadScreen() {
     }
   }, [period, pageOffset]);
 
+  // Share the same calibration dump as a file (AirDrop / Save to Files) —
+  // Universal Clipboard iPhone→Mac is flaky, so a file is the reliable path.
+  const shareCalibration = useCallback(async () => {
+    const json = await buildTrainingLoadCalibration(PERIOD_MONTHS[period], toDate);
+    await shareJson(json, 'training-load-calibration.json', 'Training Load calibration');
+  }, [period, pageOffset]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -390,12 +398,18 @@ export default function TrainingLoadScreen() {
             </Text>
           </View>
 
-          {/* Calibration export — daily load/CTL/ATL/TSB + model params → clipboard, for cross-checking vs Bevel / HealthFit */}
-          <TouchableOpacity style={s.copyBtn} onPress={copyCalibration} disabled={copyState === 'working'}>
-            <Text style={s.copyBtnText}>
-              {copyState === 'done' ? '✓ Copied to clipboard' : copyState === 'working' ? 'Preparing…' : '⧉ Copy calibration data'}
-            </Text>
-          </TouchableOpacity>
+          {/* Calibration export — daily load/CTL/ATL/TSB + model params, for cross-checking vs Bevel / HealthFit.
+              Copy → clipboard; Share → file (AirDrop / Save to Files), since Universal Clipboard is flaky. */}
+          <View style={s.copyRow}>
+            <TouchableOpacity style={[s.copyBtn, { flex: 1, marginBottom: 0 }]} onPress={copyCalibration} disabled={copyState === 'working'}>
+              <Text style={s.copyBtnText}>
+                {copyState === 'done' ? '✓ Copied to clipboard' : copyState === 'working' ? 'Preparing…' : '⧉ Copy calibration data'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.copyBtn, { marginBottom: 0, paddingHorizontal: 16 }]} onPress={shareCalibration}>
+              <Text style={s.copyBtnText}>⇪ Share</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={s.copyHint}>Copies this period's daily load, CTL/ATL/TSB and model params to compare against Bevel Cardio Load / HealthFit Fitness-Fatigue.</Text>
 
         </ScrollView>
@@ -495,6 +509,7 @@ const makeS = (c: Palette) => StyleSheet.create({
     backgroundColor: c.surface, borderRadius: 10, paddingVertical: 12, alignItems: 'center',
     borderWidth: 1, borderColor: c.border, marginBottom: 6,
   },
+  copyRow: { flexDirection: 'row', gap: 8, alignItems: 'stretch', marginBottom: 6 },
   copyBtnText: { fontSize: 14, fontWeight: '700', color: c.accent },
   copyHint: { fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 16, paddingHorizontal: 8, lineHeight: 15 },
 

@@ -55,6 +55,7 @@ export default function DailyCoachScreen() {
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
   const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
+  const [repAdj, setRepAdj] = useState<number | null>(null); // user override of interval rep count (interval days)
   // Sync zones (mirrors the calibrated file → getPowerZones) BEFORE reading, so a re-synthesized
   // adjusted workout carries real watts even on the first launch after install.
   useEffect(() => { ensureZonesFile().then(() => getPowerZones()).then(setPowerZones).catch(() => {}); }, []);
@@ -137,17 +138,38 @@ export default function DailyCoachScreen() {
   // (covers stale cached plans + LLM omissions, so the watch box always appears on run days).
   // runAdj lets the user nudge the prescribed run minutes ± before pushing to the watch.
   const baseRunMin   = plan?.runMinutes ?? 0;
-  const effRunMin    = Math.max(0, runAdj ?? baseRunMin);
+  // Interval sessions are adjusted by REP COUNT, not minutes ("adjust duration" makes no sense for
+  // intervals) — the ± edits the work block's rep count and the run duration is DERIVED from it
+  // (base ± Δreps × per-rep minutes). Every other session keeps the minute-based ± (runAdj).
+  const wkBlocks     = plan?.workout?.blocks ?? [];
+  const isIntervalRun = plan?.sessionKind === 'intervals' && plan.intensity !== 'rest' && wkBlocks.length > 0;
+  const ivIdx        = isIntervalRun
+    ? Math.max(0, wkBlocks.findIndex(b => (b.repeats ?? 0) >= 2 || /interval/i.test(b.label ?? '')))
+    : -1;
+  const ivBlock      = ivIdx >= 0 ? wkBlocks[ivIdx] : null;
+  const baseReps     = ivBlock?.repeats ?? 0;
+  const effReps      = isIntervalRun ? Math.max(1, Math.min(20, repAdj ?? baseReps)) : baseReps;
+  const perRepMin    = ivBlock ? (ivBlock.workMinutes + ivBlock.restMinutes) : 5;
+
+  const effRunMin    = Math.max(0,
+    isIntervalRun ? baseRunMin + (effReps - baseReps) * perRepMin
+                  : (runAdj ?? baseRunMin));
   // Distance-basis display: derive km from the plan's km↔min ratio (the ± adjust stays minute-based).
   const kmPerMin     = plan?.runKm != null && plan.runMinutes ? plan.runKm / plan.runMinutes : null;
   const effKm        = kmPerMin != null ? Math.round(effRunMin * kmPerMin * 10) / 10 : null;
   const effDose      = effKm != null ? `${effKm} km` : `${effRunMin}m`;
+  const edited       = runAdj != null || repAdj != null;
   const watchWorkout = plan && plan.intensity !== 'rest'
-    ? ((runAdj != null || !plan.workout)
-        ? mergeWorkoutPower(
-            synthesizeWorkout(plan.intensity, effRunMin, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones),
-            plan.workout)   // re-synth on ± adjust: inherit the original plan's per-zone watts (duration-only change)
-        : plan.workout)
+    ? (isIntervalRun
+        // reps edit: keep the coach's per-zone watts, only change the rep count on the work block
+        ? (repAdj != null
+            ? { ...plan.workout!, blocks: wkBlocks.map((b, i) => i === ivIdx ? { ...b, repeats: effReps } : b) }
+            : plan.workout!)
+        : ((runAdj != null || !plan.workout)
+            ? mergeWorkoutPower(
+                synthesizeWorkout(plan.intensity, effRunMin, weekdaySlot(new Date(targetDate + 'T00:00:00')), powerZones),
+                plan.workout)   // re-synth on ± adjust: inherit the original plan's per-zone watts (duration-only change)
+            : plan.workout))
     : null;
 
   // Projected strain the prescribed (or adjusted) run will add → today's resulting total vs the band.
@@ -191,6 +213,7 @@ export default function DailyCoachScreen() {
     staleRegenRef.current = false;
     setPlan(null);
     setRunAdj(null);
+    setRepAdj(null);
     setCacheChecked(false);
     loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); setCacheChecked(true); });
   }, [targetDate]);
@@ -457,25 +480,46 @@ export default function DailyCoachScreen() {
                     </Text>
                   )}
 
-                  {/* Adjust the prescribed run time, then push the edited session to the watch */}
-                  <View style={s.adjustRow}>
-                    <Text style={s.adjustLabel}>Adjust run</Text>
-                    <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(Math.max(5, effRunMin - 5))}>
-                      <Text style={s.adjustBtnText}>−5</Text>
-                    </TouchableOpacity>
-                    <Text style={s.adjustVal}>{effDose}{runAdj != null ? ` · was ${baseRunMin}m` : ''}</Text>
-                    <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(effRunMin + 5)}>
-                      <Text style={s.adjustBtnText}>+5</Text>
-                    </TouchableOpacity>
-                    {runAdj != null && (
-                      <TouchableOpacity onPress={() => setRunAdj(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                        <Text style={s.adjustReset}>reset</Text>
+                  {/* Interval days adjust REP COUNT (a duration ± makes no sense for intervals); every other
+                      day adjusts run minutes. Then push the edited session to the watch. */}
+                  {isIntervalRun ? (
+                    <View style={s.adjustRow}>
+                      <Text style={s.adjustLabel}>Adjust reps</Text>
+                      <TouchableOpacity style={s.adjustBtn} onPress={() => setRepAdj(Math.max(1, effReps - 1))}>
+                        <Text style={s.adjustBtnText}>−1</Text>
                       </TouchableOpacity>
-                    )}
-                  </View>
+                      <Text style={s.adjustVal}>
+                        {effReps}×{ivBlock?.workMinutes}min · {effDose}{repAdj != null ? ` · was ${baseReps}` : ''}
+                      </Text>
+                      <TouchableOpacity style={s.adjustBtn} onPress={() => setRepAdj(Math.min(20, effReps + 1))}>
+                        <Text style={s.adjustBtnText}>+1</Text>
+                      </TouchableOpacity>
+                      {repAdj != null && (
+                        <TouchableOpacity onPress={() => setRepAdj(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                          <Text style={s.adjustReset}>reset</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ) : (
+                    <View style={s.adjustRow}>
+                      <Text style={s.adjustLabel}>Adjust run</Text>
+                      <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(Math.max(5, effRunMin - 5))}>
+                        <Text style={s.adjustBtnText}>−5</Text>
+                      </TouchableOpacity>
+                      <Text style={s.adjustVal}>{effDose}{runAdj != null ? ` · was ${baseRunMin}m` : ''}</Text>
+                      <TouchableOpacity style={s.adjustBtn} onPress={() => setRunAdj(effRunMin + 5)}>
+                        <Text style={s.adjustBtnText}>+5</Text>
+                      </TouchableOpacity>
+                      {runAdj != null && (
+                        <TouchableOpacity onPress={() => setRunAdj(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                          <Text style={s.adjustReset}>reset</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  )}
 
                   <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
-                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : runAdj != null ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
+                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>

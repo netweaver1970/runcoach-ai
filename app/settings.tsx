@@ -40,6 +40,8 @@ import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
+import { buildDebugExportJson } from '../src/services/debugExport';
+import { shareJson } from '../src/shareJson';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
 import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
@@ -114,6 +116,7 @@ export default function SettingsScreen() {
   const [coachMemory, setCoachMemory] = useState('');
   const [memorySaved, setMemorySaved] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [dumping, setDumping] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [dayViewAuto, setDayViewAuto] = useState(true);
   const [preparing, setPreparing] = useState(false);
@@ -1261,7 +1264,7 @@ export default function SettingsScreen() {
               try {
                 const snap = await loadSnapshotCache();
                 if (!snap) { Alert.alert('No data yet', 'Open the Home screen once to load your health data, then export.'); return; }
-                const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
+                const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
                 const [shrink, per, planMode, minTSB, schedule, cachedPlan, weekCache, scanTimings, autoTimings] = await Promise.all([
                   getShrinkToFit(), getPeriodization(), getPlanMode(), getMinTSB(),
                   readKnowledgeContent('running-schedule').catch(() => ''),
@@ -1473,6 +1476,31 @@ export default function SettingsScreen() {
             {exporting
               ? <ActivityIndicator size="small" color="#fff" />
               : <Text style={styles.btnText}>↑  Export snapshot</Text>}
+          </TouchableOpacity>
+
+          <Text style={[styles.hint, { marginTop: 16 }]}>
+            Create a single consolidated debug dump (body battery, coach state, training load,
+            settings) for analysis. API keys and account tokens are stripped before it leaves the
+            device; the dump is labelled with your account so it's identifiable when shared.
+          </Text>
+          <TouchableOpacity
+            style={[styles.btnSecondary, dumping && { opacity: 0.6 }]}
+            disabled={dumping}
+            onPress={async () => {
+              setDumping(true);
+              try {
+                const json = await buildDebugExportJson();
+                await shareJson(json, `runcoach-debug-${new Date().toISOString().split('T')[0]}.json`, 'RunCoachAI debug dump');
+              } catch (err: any) {
+                Alert.alert('Debug dump failed', err?.message ?? String(err));
+              } finally {
+                setDumping(false);
+              }
+            }}
+          >
+            {dumping
+              ? <ActivityIndicator size="small" color={c.accent} />
+              : <Text style={styles.btnTextSecondary}>🧪  Create debug dump</Text>}
           </TouchableOpacity>
         </Section>
 

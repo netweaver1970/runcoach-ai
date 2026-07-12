@@ -3117,9 +3117,9 @@ export async function fetchStrainHistory(
 
 
 /**
- * Daily Recovery-score history (0-100). Recomputes the recovery score per night
- * from nightly (sleep-weighted) RMSSD + resting HR, using the same scoring
- * function as the live card. Fetches an extra month for the rolling baseline.
+ * Daily Recovery-score history (0-100). Recomputes each night with the FULL model — weighted RMSSD +
+ * overnight sleep HR + sleep score + respiratory rate — identical to the live card / snapshot, so the
+ * store, detail view, history and trends all read one number per day. Fetches extra for the baselines.
  */
 export async function fetchRecoveryHistory(
   months: number,
@@ -3128,28 +3128,62 @@ export async function fetchRecoveryHistory(
   const end       = toDate ?? new Date();
   const fromKey   = toDateStr(new Date(end.getTime() - months * 30 * 86_400_000).toISOString());
 
-  const [hrv, rhr] = await Promise.all([
-    fetchHRVHistory(months + 1, end),        // nightly weighted RMSSD
-    fetchRestingHRHistory(months + 1, end),  // Apple resting HR (overnight proxy)
+  // FULL recovery model — identical to the live card / snapshot (was HRV + Apple-resting-HR only, which
+  // dropped the sleep + respiratory-rate terms and used the wrong HR source, so the store's recovery
+  // disagreed with the home's for the same day). Fetch the same overnight biometrics + sleep the store
+  // uses so every consumer (home, detail, history, trends) reads ONE number per day.
+  const [hrv, bio, sessions] = await Promise.all([
+    fetchHRVHistory(months + 1, end),          // nightly weighted RMSSD
+    fetchSleepBiometrics(months + 1, end),     // per-night overnight SLEEP HR + respiratory rate
+    fetchSleepHistory(months + 1, end),        // sleep sessions → per-night sleep score
   ]);
   if (hrv.length === 0) return [];
 
-  const rhrByDate = new Map<string, number>();
-  for (const r of rhr) rhrByDate.set(r.date, r.value);
-
+  const bioByDate = new Map(bio.map((b) => [b.date, b]));
+  // Overnight SLEEP HR (matches the live card — Apple's resting HR lags a day and mis-correlates).
   const nightly: NightlyHRV[] = hrv
-    .map(h => ({ date: h.date, weightedRMSSD: h.value, overnightHR: rhrByDate.get(h.date) ?? 0, samples: [] }))
+    .map((h) => ({ date: h.date, weightedRMSSD: h.value, overnightHR: bioByDate.get(h.date)?.overnightHR ?? 0, samples: [] }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const out: { date: string; value: number }[] = [];
+  const rrSoFar: number[] = [];   // rolling RR history → per-night baseline (window-invariant)
   for (let i = 0; i < nightly.length; i++) {
-    if (nightly[i].date < fromKey) continue;
-    // In this path nightly[].overnightHR IS Apple resting HR (from rhrByDate), so it's the right metric.
-    const restVals = nightly.slice(0, i + 1).map((n) => n.overnightHR).filter((v) => v > 0);
-    const { score } = computeRecoveryScore(nightly[i].weightedRMSSD, nightly[i].overnightHR, nightly.slice(0, i), restVals);
-    if (score > 0) out.push({ date: nightly[i].date, value: score });
+    const d  = nightly[i].date;
+    const bd = bioByDate.get(d);
+    const rr = bd?.respiratoryRate ?? 0;
+    if (rr > 0) rrSoFar.push(rr);
+    const rrBaseline = rrSoFar.length >= 10 ? [...rrSoFar].sort((a, b) => a - b)[Math.floor(rrSoFar.length / 2)] : 0;
+    if (d < fromKey) continue;
+    const sess = sessions.find((x) => x.date === d);
+    const sleepScore = sess
+      ? computeSleepScore(sess, bd?.overnightHR ?? 0, bd?.daytimeHR ?? 0, sessions.filter((x) => x.date <= d)).score
+      : 0;
+    const restVals = nightly.slice(0, i).map((n) => n.overnightHR).filter((v) => v > 0); // history BEFORE today, like the snapshot
+    const { score } = computeRecoveryScore(
+      nightly[i].weightedRMSSD, nightly[i].overnightHR, nightly.slice(0, i), restVals,
+      sleepScore, rr, rrBaseline,
+    );
+    if (score > 0) out.push({ date: d, value: score });
   }
   return out;
+}
+
+/**
+ * ALL workouts (any type) over the last N months as ActivitySummary[], newest first. Unlike the main
+ * snapshot's 35-day `activities`, this reaches the full synced window — for the coach's activity-impact
+ * analysis (per-session strain vs next-day recovery). Not HR-nudged (kcal drives the load for non-runs).
+ */
+export async function fetchActivityHistory(months: number, toDate?: Date): Promise<ActivitySummary[]> {
+  const endDate = toDate ?? new Date();
+  const since   = new Date(endDate.getTime() - Math.max(1, months) * 30 * 86_400_000);
+  const raw: any[] = await (HealthKit.queryWorkoutSamples as any)({
+    filter: { startDate: since, endDate: endDate },
+    limit: 1000,
+    ascending: false,
+    energyUnit: 'kcal',
+    distanceUnit: 'm',
+  }).catch(() => []);
+  return mapWorkoutsToActivities(raw).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 export async function fetchWeeklyMileageHistory(months: number, toDate?: Date): Promise<WeeklyMileage[]> {

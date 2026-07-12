@@ -108,7 +108,7 @@ export default function WeekPlan() {
       })));
       setRates(cal);
 
-      const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
+      const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
       const forecast = await getMorningForecast(7);
       const fxBy = new Map(forecast.map(f => [f.date, f]));
 
@@ -201,8 +201,12 @@ export default function WeekPlan() {
           const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor (forced days too now)
           tofW.push(mins);
 
+          // Match the daily plan's true-work-minutes cap so the week's interval/tempo days render the same
+          // ramped structure (intervals +1 rep, tempo +cap%) rather than an uncapped synthesis.
+          const rqw = d.kind === 'intervals' ? coach.recentQualityWork?.intervals
+                    : d.kind === 'tempo'     ? coach.recentQualityWork?.tempo : undefined;
           const wk = !isRun ? null
-            : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any), coach.powerZones);
+            : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any, rqw, coach.loadCapPct), coach.powerZones);
           const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
           const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins);
           const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;

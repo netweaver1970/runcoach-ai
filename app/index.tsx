@@ -232,7 +232,7 @@ export default function HomeScreen() {
       // Seed power zones from the athlete's own runs if still unconfigured → watt targets appear on the
       // plan + watch immediately (before/without LLM calibration). No-op once zones exist.
       const seeded = await seedPowerZonesFromRuns(snap.runs).catch(() => false);
-      const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
+      const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
 
       // ── Coach mode: use the prescription the coach wrote in the cloud ─────────
       if (mode === 'coach') {

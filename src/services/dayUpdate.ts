@@ -134,7 +134,7 @@ async function runDayView(opts: {
     // Seed power zones from the athlete's runs if still unconfigured → the pushed workout carries watt
     // targets even when the background observer fires before the home has ever run. No-op once configured.
     await seedPowerZonesFromRuns(snap.runs).catch(() => {});
-    const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities);
+    const cs = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
     const planStart = Date.now();
     const plan = await deterministicCoachPlan(cs);
     planMs = Date.now() - planStart;

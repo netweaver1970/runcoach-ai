@@ -17,7 +17,7 @@ import { ensureZonesFile } from './zones';
 import { activityCategory, heatStrainFactor } from './trainingLoad';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
-import { DayStrain, ActivitySummary } from '../types';
+import { DayStrain, ActivitySummary, RunWorkout } from '../types';
 
 export interface CoachSnapshot {
   date:          string;
@@ -33,6 +33,10 @@ export interface CoachSnapshot {
                             // recovery/hrv/sleep/readiness fields are the last KNOWN values, not today's
   recentStrain?: number[];                 // last ~10 days, oldest→newest
   recentRuns?:   { date: string; km: number; type: string }[];
+  // Most-recent WORK minutes per quality type (the true intensity dose) → the gradual, per-type work ramp
+  // in synthesizeWorkout. Distinct from recentTimeOnFeet (which for intervals over-counts the work with
+  // recovery jogs + warm-up/cool-down, so a ToF ramp alone can't cap the actual interval work).
+  recentQualityWork?: { intervals?: number; tempo?: number };
   // Time-on-feet (running minutes) — drives the alternation + rolling-volume rules.
   recentTimeOnFeet?: { date: string; min: number }[]; // last ~14 days (0 = no run)
   tof7d?:            number;   // trailing 7-day running minutes (completed days only)
@@ -357,6 +361,8 @@ export function synthesizeWorkout(
   intensity: CoachIntensity, runMinutes: number, name: string,
   pz?: CoachSnapshot['powerZones'],
   kind?: 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery',
+  recentWorkMin?: number,   // most-recent same-TYPE session's WORK minutes → gradual TRUE-work-minutes ramp
+  capPct?: number,          // rolling increase cap % (tempo continuous work; intervals grow +1 rep/session)
 ): WatchWorkout {
   // Reserve ~6 min for the warm-up + cool-down (open or distance); the rest is work.
   const workBudget = Math.max(8, (runMinutes || 35) - 6);
@@ -364,12 +370,25 @@ export function synthesizeWorkout(
   // run is a long Z2 run, a Tempo is sustained Z3, only Intervals are short Z4 reps). Falls back to
   // the intensity when no kind is given (legacy callers like the daily plan's fallback).
   const t = kind ?? (intensity === 'hard' ? 'intervals' : intensity === 'moderate' ? 'tempo' : 'easy');
+  const pct = capPct ?? DEFAULT_LOAD_CAP_PCT;
   let blocks: WatchWorkoutBlock[];
   if (t === 'intervals') {
-    const reps = Math.max(4, Math.min(8, Math.round(workBudget / 5)));
-    blocks = [{ repeats: reps, workMinutes: 3, restMinutes: 2, hrZone: 'Z4', label: 'intervals' }];
+    const WORK_MIN = 3;
+    let reps = Math.max(4, Math.min(8, Math.round(workBudget / 5)));
+    // TRUE-WORK-MINUTES ramp: intervals grow by AT MOST +1 rep vs the most-recent interval session. A %
+    // cap can't move a discrete rep (4×3→5×3 is +25%), so +1 rep/session is the gradual "no huge jumps"
+    // step — it climbs a rep at a time over the weeks and self-holds once the base stops rising. No
+    // interval history → the base-derived reps (floor 4) as the first dose.
+    if (recentWorkMin != null && recentWorkMin > 0) {
+      const recentReps = Math.max(1, Math.round(recentWorkMin / WORK_MIN));
+      reps = Math.min(reps, recentReps + 1);
+    }
+    blocks = [{ repeats: reps, workMinutes: WORK_MIN, restMinutes: 2, hrZone: 'Z4', label: 'intervals' }];
   } else if (t === 'tempo') {
-    blocks = [{ repeats: 1, workMinutes: workBudget, restMinutes: 0, hrZone: 'Z3', label: 'tempo' }]; // ONE continuous threshold block — no jog gaps
+    // Continuous threshold work → the % cap applies cleanly off the most-recent tempo's WORK minutes.
+    let work = workBudget;
+    if (recentWorkMin != null && recentWorkMin > 0) work = Math.min(work, Math.round(recentWorkMin * (1 + pct / 100)));
+    blocks = [{ repeats: 1, workMinutes: Math.max(8, work), restMinutes: 0, hrZone: 'Z3', label: 'tempo' }]; // ONE continuous threshold block — no jog gaps
   } else { // long / easy / recovery → ONE continuous aerobic block at Z2
     blocks = [{ repeats: 1, workMinutes: Math.min(150, workBudget), restMinutes: 0, hrZone: 'Z2', label: t === 'long' ? 'long' : 'aerobic' }];
   }
@@ -876,7 +895,13 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   }
 
   const runKm      = snap.loadUnit === 'km' && snap.paceMinPerKm ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
-  const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk), snap.powerZones);
+  // TRUE-work-minutes ramp: quality types cap their work off the most-recent same-type session (intervals
+  // grow +1 rep, tempo +cap%). honorDirect (user forced today's slot/duration) skips the ramp entirely.
+  const recentWork = honorDirect ? undefined
+    : sk === 'intervals' ? snap.recentQualityWork?.intervals
+    : sk === 'tempo'     ? snap.recentQualityWork?.tempo
+    : undefined;
+  const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk, recentWork, capPct), snap.powerZones);
   const structure  = formatWorkoutStructure(workout);
   const dose       = runKm != null ? `${runKm} km` : `${runMinutes} min`;  // display unit follows the cap basis
   const label = sk === 'intervals' ? 'Intervals' : sk === 'tempo' ? 'Tempo' : sk === 'long' ? (secondSession ? 'Long run (Part 1 of 2)' : 'Long run') : base <= 30 ? 'Recovery run' : 'Easy Z2';
@@ -1348,7 +1373,7 @@ export async function buildCapContext(
  * Single source used by both the Strain screen and the background day-view updater, so
  * the on-demand plan and the auto-prepared plan are identical.
  */
-export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[]): Promise<CoachSnapshot> {
+export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[], runs?: RunWorkout[]): Promise<CoachSnapshot> {
   // Refresh the sync-readable workout-structure cache so synthesizeWorkout / parseWorkout (both sync) see
   // the athlete's current warm-up / cool-down / drills config before any plan or watch workout is built.
   // Awaited in parallel below (the throwaway slot) so it's settled before the caller builds a workout.
@@ -1407,6 +1432,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     drivers:      strain?.drivers,
     recentStrain: strainHist.slice(-10),
     recentTimeOnFeet:  tof.series14,
+    recentQualityWork: buildRecentQualityWork(runs),
     tof7d:             tof.tof7d,
     tofPrev7d:         tof.tofPrev7d,
     tofBudgetTodayMin: budgetMin,            // run-minutes budget (distance cap → converted via pace)
@@ -1432,6 +1458,19 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     athleteStatusUntil: status.until,
     timelineContext:    buildTimelineContext(events, status, date) + buildSupplementContext(supps, 7, date),
   };
+}
+
+// The most-recent WORK minutes for each quality type — the true intensity dose the coach ramps from.
+// Uses the run's classified label + its work-segment duration (seconds → minutes), NOT time-on-feet.
+function buildRecentQualityWork(runs?: RunWorkout[]): CoachSnapshot['recentQualityWork'] {
+  if (!runs?.length) return undefined;
+  const newest = [...runs].sort((a, b) => (b.date > a.date ? 1 : -1)); // newest first
+  const lastWork = (label: string): number | undefined => {
+    const r = newest.find(x => x.label === label && (x.workDuration ?? 0) > 0);
+    return r ? Math.round((r.workDuration as number) / 60) : undefined;
+  };
+  const iv = lastWork('Intervals'), tp = lastWork('Tempo');
+  return (iv != null || tp != null) ? { intervals: iv, tempo: tp } : undefined;
 }
 
 // Last ~14 days of NON-run sessions, newest first — fatigue the coach should weigh.

@@ -7,19 +7,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
-import { fetchOurDailyComponents } from '../src/services/healthkit';
+import { fetchOurDailyComponents, scoreToLabel, scoreToColor } from '../src/services/healthkit';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { KpiTabs } from '../src/components/KpiTabs';
 import { DayNav } from '../src/components/DayNav';
 import { cached } from '../src/services/detailCache';
-
-/** Colour + label for a recovery score when viewing a PAST day (rec's own values are only for today). */
-function recoveryVisual(score: number): { color: string; label: string } {
-  if (score >= 75) return { color: '#27ae60', label: 'Well recovered' };
-  if (score >= 55) return { color: '#2ecc71', label: 'Adequate' };
-  if (score >= 35) return { color: '#f39c12', label: 'Compromised' };
-  return { color: '#e74c3c', label: 'Low' };
-}
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
@@ -78,7 +70,7 @@ export default function RecoveryDetailScreen() {
   const recoveryScore = useRec ? recovery!.recoveryScore : Math.round((target.recoveryScore as number) ?? 0);
   const { color, label } = useRec
     ? { color: recovery!.color, label: recovery!.label }
-    : recoveryVisual(recoveryScore);
+    : { color: scoreToColor(recoveryScore), label: scoreToLabel(recoveryScore) }; // same canonical mapping as home
   const bd            = useRec ? recovery!.breakdown : undefined;
   const weightedRMSSD = useRec ? recovery!.weightedRMSSD : 0;
   const baseline7Day  = useRec ? recovery!.baseline7Day : 0;

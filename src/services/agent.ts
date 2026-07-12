@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
-import { HealthSnapshot, RunWorkout } from '../types';
-import { fetchWorkoutDetail, fetchOurDailyComponents } from './healthkit';
+import { HealthSnapshot, RunWorkout, ActivitySummary } from '../types';
+import { fetchWorkoutDetail, fetchOurDailyComponents, fetchActivityHistory } from './healthkit';
+import { computeWorkoutLoad, strainFromLoad, activityCategory, activityName } from './trainingLoad';
 import { callLLM, callLLMTools, agenticSupported } from './llm';
 // coach.ts pulls in claude.ts (getPowerZones) and claude.ts pulls in this file (agentComplete) → a require
 // cycle. It's safe: every use of these imports is inside a tool `run` callback (call-time), never at module
@@ -29,6 +30,7 @@ interface AgentCtx {
   snap: HealthSnapshot;
   _cs?: Promise<any>;     // memoised CoachSnapshot (plan/ToF-budget/load context) — assembled once per turn
   _comps?: Promise<any>;  // memoised daily-components map (recovery/strain/sleep/... history)
+  _acts?: Promise<ActivitySummary[]>;  // memoised full-window activity history (deeper than snap.activities)
 }
 interface AgentTool {
   name: string;
@@ -41,12 +43,16 @@ interface AgentTool {
 // band, next-run projection, weather) — the SAME snapshot the daily plan is built from. Memoised so several
 // tools in one turn don't recompute it (assembleCoachSnapshot is imported statically; safe — call-time only).
 async function coachSnap(ctx: AgentCtx): Promise<any> {
-  return (ctx._cs ??= assembleCoachSnapshot(ctx.snap.strain ?? null, ctx.snap.activities));
+  return (ctx._cs ??= assembleCoachSnapshot(ctx.snap.strain ?? null, ctx.snap.activities, ctx.snap.runs));
 }
 // Per-day KPI components (recovery/strain/sleep score/sleep bank/resting HR·HRV/resp rate/SpO₂/CTL/ATL/TSB),
 // ~4 months, window-invariant. Memoised per turn.
 async function dailyComps(ctx: AgentCtx): Promise<Record<string, Record<string, number>>> {
   return (ctx._comps ??= fetchOurDailyComponents(4));
+}
+// Full-window workout history (all types) — deeper than the snapshot's 35-day `activities`. Memoised per turn.
+async function activityHistory(ctx: AgentCtx): Promise<ActivitySummary[]> {
+  return (ctx._acts ??= fetchActivityHistory(4));
 }
 const toKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
@@ -90,6 +96,44 @@ const TOOLS: AgentTool[] = [
       if (since_days) { const cut = Date.now() - Number(since_days) * 864e5; runs = runs.filter(r => new Date(r.date).getTime() >= cut); }
       runs = runs.slice(0, Math.max(1, Math.min(Number(limit) || 10, 30)));
       return { count: runs.length, runs: runs.map(runSummary) };
+    },
+  },
+  {
+    name: 'query_activities',
+    description:
+      "List the athlete's NON-RUN sessions (dancing, cycling, strength, walks, swims, HIIT, yoga, rowing…) as rows: date, type, duration, per-session STRAIN %, kcal, avg HR, AND the NEXT-DAY recovery score (the morning AFTER the session — the recovery the session cost). This is the tool for ANALYSING HOW AN ACTIVITY TYPE IMPACTS RECOVERY — e.g. 'how does dancing affect my next-day recovery?', or gauging a session planned for tonight. Filter by `type` to isolate one activity (e.g. dance) then compare its strain/duration against the next-day recovery column. For RUNNING workouts use query_runs instead. Depth follows the synced history (~4 months).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', description: 'Filter by activity type, matched loosely, e.g. "Dance", "Cycling", "Strength", "Walk", "Swim", "HIIT", "Yoga", "Rowing". Omit for all non-run activities.' },
+        since_days: { type: 'number', description: 'Only include sessions within this many days. Omit for all available history.' },
+        limit: { type: 'number', description: 'Max rows to return (default 30, max 100).' },
+      },
+    },
+    run: async ({ type, since_days, limit }, ctx) => {
+      let acts = (await activityHistory(ctx)).filter(a => activityCategory(a.activityType) !== 'Run'); // runs → query_runs
+      if (type) { const q = String(type).toLowerCase(); acts = acts.filter(a => activityName(a.activityType).toLowerCase().includes(q) || (a.name ?? '').toLowerCase().includes(q)); }
+      if (since_days) { const cut = Date.now() - Number(since_days) * 864e5; acts = acts.filter(a => new Date(a.date).getTime() >= cut); }
+      acts = acts.slice(0, Math.max(1, Math.min(Number(limit) || 30, 100)));
+      const comps = await dailyComps(ctx);
+      // The impact shows in the recovery measured the MORNING AFTER the session (date + 1 day), keyed local.
+      const nextRecovery = (iso: string): number | null => {
+        const d = new Date(iso); d.setDate(d.getDate() + 1);
+        const v = comps[toKey(d)]?.recoveryScore;
+        return v != null ? Math.round(v) : null;
+      };
+      return {
+        count: acts.length,
+        activities: acts.map(a => ({
+          date: day(a.date),
+          type: activityName(a.activityType),
+          duration_min: Math.round(a.durationMin),
+          strain_pct: strainFromLoad(computeWorkoutLoad(a)),
+          kcal: a.kcal || null,
+          avg_hr: a.avgHR || null,
+          next_day_recovery: nextRecovery(a.date),
+        })),
+      };
     },
   },
   {
@@ -284,6 +328,8 @@ const TOOLS_HINT =
   '• get_metric_series — daily history for hrv, resting_hr, vo2max, sleep, ctl_atl_tsb, recovery, strain, ' +
   'sleep_score, sleep_bank, respiratory_rate, spo2.\n' +
   '• query_runs / get_run_detail — list/filter runs; one run\'s km-splits + segments + HR/power.\n' +
+  '• query_activities — NON-run sessions (dance/bike/strength/swim…) with per-session strain + NEXT-DAY recovery; ' +
+  'the tool for "how does <activity> affect my recovery?" and planning around a session tonight.\n' +
   '• get_coaching_files — the athlete\'s OWN weekly schedule, Power/HR zones, drills & profile (call before ' +
   'designing/critiquing a program or discussing zones/paces).\n' +
   'Chain tools freely (e.g. get_plan_context then get_week_plan) before answering. Keep the final answer concise and cite the numbers you pulled.';

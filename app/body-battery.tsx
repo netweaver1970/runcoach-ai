@@ -5,6 +5,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as Clipboard from 'expo-clipboard';
+import { shareJson } from '../src/shareJson';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import {
   computeBodyBattery, BodyBattery, BatteryPoint, saveBodyBatteryCache,
@@ -122,28 +123,44 @@ export default function BodyBatteryScreen() {
             </Text>
             <Text style={[s.note, { fontStyle: 'italic' }]}>Our estimate — being calibrated against Bevel.</Text>
 
-            <TouchableOpacity
-              style={s.debugBtn}
-              onPress={async () => {
-                await Clipboard.setStringAsync(JSON.stringify(data.debug));
-                setCopied(true); setTimeout(() => setCopied(false), 2500);
-              }}
-            >
-              <Text style={s.debugBtnText}>{copied ? '✓ Copied — paste it to the coach' : '⧉ Copy calibration data'}</Text>
-            </TouchableOpacity>
-
-            {data.correlation && (
+            <View style={s.debugRow}>
               <TouchableOpacity
-                style={s.debugBtn}
+                style={[s.debugBtn, { flex: 1 }]}
                 onPress={async () => {
-                  await Clipboard.setStringAsync(JSON.stringify(data.correlation));
-                  setCopiedCorr(true); setTimeout(() => setCopiedCorr(false), 2500);
+                  await Clipboard.setStringAsync(JSON.stringify(data.debug));
+                  setCopied(true); setTimeout(() => setCopied(false), 2500);
                 }}
               >
-                <Text style={s.debugBtnText}>
-                  {copiedCorr ? '✓ Copied — paste it to the coach' : '⧉ Copy correlation data (sleep structure + buckets)'}
-                </Text>
+                <Text style={s.debugBtnText}>{copied ? '✓ Copied — paste it to the coach' : '⧉ Copy calibration data'}</Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                style={s.shareBtn}
+                onPress={() => shareJson(data.debug, 'bodybattery-calibration.json', 'Body Battery calibration')}
+              >
+                <Text style={s.debugBtnText}>⇪ Share</Text>
+              </TouchableOpacity>
+            </View>
+
+            {data.correlation && (
+              <View style={s.debugRow}>
+                <TouchableOpacity
+                  style={[s.debugBtn, { flex: 1 }]}
+                  onPress={async () => {
+                    await Clipboard.setStringAsync(JSON.stringify(data.correlation));
+                    setCopiedCorr(true); setTimeout(() => setCopiedCorr(false), 2500);
+                  }}
+                >
+                  <Text style={s.debugBtnText}>
+                    {copiedCorr ? '✓ Copied — paste it to the coach' : '⧉ Copy correlation data (sleep structure + buckets)'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={s.shareBtn}
+                  onPress={() => shareJson(data.correlation, 'bodybattery-correlation.json', 'Body Battery correlation')}
+                >
+                  <Text style={s.debugBtnText}>⇪ Share</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
             {/* Calibration anchor (dev): force the level to a known value and re-integrate. */}
@@ -393,6 +410,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   note: { fontSize: 12.5, color: c.textSub, lineHeight: 18, marginBottom: 8 },
   debugBtn: { marginTop: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center' },
   debugBtnText: { fontSize: 14, fontWeight: '600', color: c.textSub },
+  debugRow: { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
+  shareBtn: { marginTop: 8, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
   anchorCard: { marginTop: 16, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt },
   anchorTitle: { fontSize: 14, fontWeight: '800', color: c.text, marginBottom: 6 },
   anchorRow: { flexDirection: 'row', gap: 10, marginTop: 6 },

@@ -70,6 +70,9 @@ line(JSON.stringify({
   nextRunLabel: plan.nextRunLabel,
   nextRunInDays: plan.nextRunInDays,
   shrinkForced: plan.shrinkForced ?? false,
+  sessionKind: plan.sessionKind,
+  workout: plan.workout ? coach.formatWorkoutStructure(plan.workout) : null,
+  blocks: plan.workout?.blocks?.map((b: any) => `${b.repeats}×${b.workMinutes}m/${b.restMinutes}m ${b.hrZone ?? ''}`),
 }, null, 2));
 
 line('\n=== 7-DAY PLAN — getWeekPlan ===');
