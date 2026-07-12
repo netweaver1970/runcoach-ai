@@ -48,7 +48,11 @@ export default function RecoveryDetailScreen() {
   const recovery = rec ? JSON.parse(rec) as DailyRecovery : null;
   // The rich rec-only breakdown (z-scores, score build-up) is only available for TODAY's snapshot. A
   // day-swipe navigates with just `date` (rec dropped) → render the day's score + sub-KPIs from `comps`.
-  const useRec = !!recovery && !date;
+  // Use the live snapshot's recovery (rec) whenever the viewed day IS today — the home passes date=today
+  // alongside rec, so the old `!date` test made TODAY fall through to the cached store (which lagged the
+  // snapshot → home 44 vs detail 50). Only a PAST day (date != today) reads the components store.
+  const todayKey = (() => { const n = new Date(); const p = (x: number) => String(x).padStart(2, '0'); return `${n.getFullYear()}-${p(n.getMonth() + 1)}-${p(n.getDate())}`; })();
+  const useRec = !!recovery && (!date || date === todayKey);
 
   const [comps, setComps] = useState<Record<string, Record<string, number>>>({});
   const [loadingH, setLoadingH] = useState(true);

@@ -4014,7 +4014,7 @@ async function computeDailyComponents(
 // once/day the recent ~15 days are recomputed (only very-recent days shift as new data lands — older days'
 // baselines/EWMAs are fixed). Repeat views + already-covered timeframe switches on the same day = instant.
 interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string, Record<string, number>> }
-const DC_FILE = FileSystem.documentDirectory + 'daily-components-v1.json';
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v2.json'; // v2: recovery model unified (full sleep+RR) → discard v1's old-model cached scores
 const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;
 let dcLoadP: Promise<DcStore> | null = null;
