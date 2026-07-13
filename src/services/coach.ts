@@ -272,7 +272,7 @@ export function weekdayName(dateKey?: string): string {
 // not a second structure. The LLM sometimes writes a verbose "8× 3min @ …W, 90s reco" label that then
 // duplicated + contradicted the computed line (worst after a rep ± edit: computed 6× vs a stale label 8×).
 // Strip anything structure-like (digits / × / @ / units / recovery words) down to a canonical zone tag.
-function cleanBlockLabel(raw: any, zone?: string): string | undefined {
+export function cleanBlockLabel(raw: any, zone?: string): string | undefined {
   const s = raw ? String(raw).trim() : '';
   if (!s) return undefined;
   if (/\d|×|@|\bmin\b|\bW\b|reco|recover|float|jog/i.test(s)) {
