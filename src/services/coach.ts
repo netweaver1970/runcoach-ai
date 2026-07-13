@@ -398,10 +398,11 @@ export function synthesizeWorkout(
     }
     blocks = [{ repeats: reps, workMinutes: WORK_MIN, restMinutes: 2, hrZone: 'Z4', label: 'intervals' }];
   } else if (t === 'tempo') {
-    // Continuous threshold work → the % cap applies cleanly off the most-recent tempo's WORK minutes.
-    let work = workBudget;
-    if (recentWorkMin != null && recentWorkMin > 0) work = Math.min(work, Math.round(recentWorkMin * (1 + pct / 100)));
-    blocks = [{ repeats: 1, workMinutes: Math.max(8, work), restMinutes: 0, hrZone: 'Z3', label: 'tempo' }]; // ONE continuous threshold block — no jog gaps
+    // Continuous threshold: the tempo work IS the session (minus warm-up/cool-down/drills). Gradual growth
+    // already comes from the ToF ramp on the SESSION length (buildTypeRamp) — a second cap on recent tempo
+    // WORK fought it and, with an under-read recentTempoWork (16 min for a 37-min tempo), left an 18-min
+    // tempo inside a 41-min run. So fill the budget; recentWorkMin is an intervals-only knob.
+    blocks = [{ repeats: 1, workMinutes: Math.max(8, workBudget), restMinutes: 0, hrZone: 'Z3', label: 'tempo' }]; // ONE continuous threshold block — no jog gaps
   } else { // long / easy / recovery → ONE continuous aerobic block at Z2
     blocks = [{ repeats: 1, workMinutes: Math.min(150, workBudget), restMinutes: 0, hrZone: 'Z2', label: t === 'long' ? 'long' : 'aerobic' }];
   }
