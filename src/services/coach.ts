@@ -14,7 +14,7 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDista
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes } from './claude';
 import { ensureZonesFile } from './zones';
-import { activityCategory, heatStrainFactor } from './trainingLoad';
+import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache } from './trainingLoad';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
 import { DayStrain, ActivitySummary, RunWorkout } from '../types';
@@ -513,6 +513,7 @@ export async function getWeekPlan(
   const periodization = await getPeriodization();  // build/deload cycle modulates each week's cap multiplier
   const MEANINGFUL = 20;
   const shrink = await getShrinkToFit();  // ON → a cap-blocked quality SHRINKS to fit its day instead of deferring
+  const maxRunDays = await getMaxRunDays();  // cap the easy/flex mop-up so volume concentrates (default 5)
   // The forward week lays out the INTENDED structure. EVERY day here is tomorrow-or-later (today + 1 + i),
   // so TODAY's single readiness reading must NOT gate the whole week — doing so collapsed every quality day
   // (intervals/tempo/long) to Z2 whenever today happened to be red, AND made shrink-to-fit a no-op (its
@@ -565,6 +566,7 @@ export async function getWeekPlan(
   let Qtotal = 0;
   for (let i = 0; i < 7; i++) if (isQuality(template[(today.getDay() + 1 + i) % 7])) Qtotal++;
   let qPlaced = 0;
+  let runDays = 0;                 // run days placed so far → caps the easy/flex mop-up at maxRunDays
   let lastQ = -99;                 // index of the last quality session placed (≥2 apart = spacing)
   const deferred: WeekKind[] = []; // quality kinds bumped by the cap, awaiting a later slot
   const out: WeekPlanDay[] = [];
@@ -607,12 +609,16 @@ export async function getWeekPlan(
       }
     } else if (deferred.length && green && allowance >= QMIN && spaced) {              // SHUFFLE: reschedule a deferred quality here (incl. the weekend)
       const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
-    } else if (kind === 'easy') { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
+    } else if (kind === 'easy') {
+      // Easy volume day — but only up to maxRunDays total (else REST so the week isn't a jog every day).
+      if (runDays < maxRunDays) { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
+    }
     else if (kind === 'rest')   { intensity = 'rest'; base = 0; }
     else { // flex: MOP UP the spare budget with easy volume rather than banking it by resting. easyGrow already
       // reserves for pending quality (so easy can't starve the long/intervals), and the runner can always skip
-      // or shorten — better to OFFER the aerobic volume than hoard it. Rest only when the budget is truly spent.
-      if (allowance < MEANINGFUL) { intensity = 'rest'; }
+      // or shorten — better to OFFER the aerobic volume than hoard it. Rest when the budget is spent OR the
+      // week already has maxRunDays runs (concentrate volume into fewer, meaningful days).
+      if (allowance < MEANINGFUL || runDays >= maxRunDays) { intensity = 'rest'; }
       else { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
     }
     if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
@@ -624,6 +630,7 @@ export async function getWeekPlan(
     // HARD cap gate (safety) — but shrink-to-fit's force-placed quality keeps its day even over budget.
     if (intensity !== 'rest' && allowance < MEANINGFUL && !forcePlaced) { intensity = 'rest'; capRest = true; }
     if (intensity === 'rest') placed = 'rest';
+    if (intensity !== 'rest') runDays++;   // count this run day toward the maxRunDays cap
     const runMinutes = intensity === 'rest' ? 0 : base;
     const heatMin = intensity === 'rest' ? 0 : Math.max(8, Math.round(runMinutes / heat));
     // Force-placed quality counts its REAL minutes (so later days' budgets — esp. the long — see the true
@@ -1082,6 +1089,33 @@ export async function setLongRunStyle(v: LongRunStyle): Promise<void> {
   try { await SecureStore.setItemAsync(LONG_RUN_STYLE_KEY, v); } catch { /* ignore */ }
 }
 
+// ── Heat sensitivity: how hard heat scales down running (see heatStrainFactor). Default SENSITIVE. ──
+const HEAT_SENS_KEY = 'heat_sensitivity_v1';
+export async function getHeatSensitivity(): Promise<number> {
+  try { const v = Number(await SecureStore.getItemAsync(HEAT_SENS_KEY)); return Number.isFinite(v) && v > 0 ? v : DEFAULT_HEAT_SENSITIVITY; }
+  catch { return DEFAULT_HEAT_SENSITIVITY; }
+}
+export async function setHeatSensitivity(v: number): Promise<void> {
+  const c = Math.max(0.5, Math.min(2.5, v));
+  try { await SecureStore.setItemAsync(HEAT_SENS_KEY, String(c)); } catch { /* ignore */ }
+  setHeatSensitivityCache(c);   // apply immediately for the sync heatStrainFactor
+}
+export async function refreshHeatSensitivity(): Promise<number> {
+  const v = await getHeatSensitivity(); setHeatSensitivityCache(v); return v;
+}
+
+// ── Max running DAYS per week: caps the easy/flex mop-up so volume concentrates into fewer, meaningful
+// days instead of a short jog every day (default 5). Quality days (intervals/tempo/long) always run. ──
+const MAX_RUN_DAYS_KEY = 'max_run_days_v1';
+export const DEFAULT_MAX_RUN_DAYS = 5;
+export async function getMaxRunDays(): Promise<number> {
+  try { const v = Number(await SecureStore.getItemAsync(MAX_RUN_DAYS_KEY)); return Number.isFinite(v) && v >= 1 && v <= 7 ? Math.round(v) : DEFAULT_MAX_RUN_DAYS; }
+  catch { return DEFAULT_MAX_RUN_DAYS; }
+}
+export async function setMaxRunDays(v: number): Promise<void> {
+  try { await SecureStore.setItemAsync(MAX_RUN_DAYS_KEY, String(Math.max(1, Math.min(7, Math.round(v))))); } catch { /* ignore */ }
+}
+
 // ── Workout structure (warm-up / cool-down / drills) ──────────────────────────
 // The athlete's fixed session shell that wraps every prescribed run. warmup/cooldown are in METRES where
 // **0 = OPEN goal** (athlete-controlled, ended with the watch lap button — the watch already runs these as
@@ -1407,6 +1441,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     loadEvents(),
     loadSupplements(),
     refreshWorkoutStructure().catch(() => DEFAULT_WORKOUT_STRUCTURE),
+    refreshHeatSensitivity().catch(() => DEFAULT_HEAT_SENSITIVITY),
   ]);
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};

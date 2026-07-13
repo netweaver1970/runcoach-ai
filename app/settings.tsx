@@ -43,7 +43,7 @@ import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { buildDebugExportJson } from '../src/services/debugExport';
 import { shareJson } from '../src/shareJson';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure } from '../src/services/coach';
+import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure, getHeatSensitivity, setHeatSensitivity, getMaxRunDays, setMaxRunDays, DEFAULT_MAX_RUN_DAYS } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
 import { getPlanMode, setPlanMode, getRaceConfig, setRaceConfig, PlanMode } from '../src/services/racePlan';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -86,6 +86,10 @@ export default function SettingsScreen() {
   const [longRunSaved, setLongRunSaved] = useState(false);
   const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
   const [capPctSaved, setCapPctSaved] = useState(false);
+  const [heatSens, setHeatSens] = useState('1.5');
+  const [heatSensSaved, setHeatSensSaved] = useState(false);
+  const [maxRunDays, setMaxRunDaysStr] = useState(String(DEFAULT_MAX_RUN_DAYS));
+  const [maxRunDaysSaved, setMaxRunDaysSaved] = useState(false);
   const [minTsb, setMinTsb] = useState(String(DEFAULT_MIN_TSB));
   const [minTsbSaved, setMinTsbSaved] = useState(false);
   const [capBasis, setCapBasisState] = useState<LoadCapBasis>('tof');
@@ -153,6 +157,8 @@ export default function SettingsScreen() {
     getPowerZones().then(setPowerZones);
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
     getLoadCapPct().then(p => setCapPct(String(p)));
+    getHeatSensitivity().then(h => setHeatSens(String(h)));
+    getMaxRunDays().then(d => setMaxRunDaysStr(String(d)));
     getMinTSB().then(v => setMinTsb(String(v)));
     getLoadCapBasis().then(setCapBasisState);
     getPeriodization().then(p => { setPeriodOn(p.on); setBuildW(String(p.buildWeeks)); setDeloadW(String(p.deloadWeeks)); setDropPct(String(p.deloadDropPct)); setAnchor(p.anchor); });
@@ -240,6 +246,29 @@ export default function SettingsScreen() {
     await setLoadCapPct(n);
     setCapPctSaved(true);
     setTimeout(() => setCapPctSaved(false), 2000);
+  };
+
+  const handleSaveHeatSens = async () => {
+    const v = parseFloat(heatSens.replace(',', '.'));
+    if (isNaN(v) || v < 0.5 || v > 2.5) {
+      Alert.alert('Invalid value', 'Enter a heat sensitivity between 0.5 (heat-tolerant) and 2.5 (very sensitive).');
+      return;
+    }
+    await setHeatSensitivity(v);
+    await clearTodayPlanCache().catch(() => {});   // heat feeds today's plan → recompute
+    setHeatSensSaved(true);
+    setTimeout(() => setHeatSensSaved(false), 2000);
+  };
+
+  const handleSaveMaxRunDays = async () => {
+    const n = parseInt(maxRunDays, 10);
+    if (isNaN(n) || n < 1 || n > 7) {
+      Alert.alert('Invalid value', 'Enter a max running days per week between 1 and 7.');
+      return;
+    }
+    await setMaxRunDays(n);
+    setMaxRunDaysSaved(true);
+    setTimeout(() => setMaxRunDaysSaved(false), 2000);
   };
 
   const handleSavePeriod = async (on?: boolean) => {
@@ -1001,6 +1030,56 @@ export default function SettingsScreen() {
               trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />
+          </View>
+        </Section>
+
+        {/* Weekly volume shape */}
+        <Section title="Weekly Volume" cat="zones">
+          <Text style={styles.hint}>
+            Max running days per week. The coach fits your quality sessions (intervals / tempo / long)
+            first, then fills easy volume up to this many days — so lowering it concentrates the week into
+            fewer, more meaningful runs instead of a short jog every day. Default 5.
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={maxRunDays}
+              onChangeText={setMaxRunDaysStr}
+              placeholder="5"
+              placeholderTextColor="#bbb"
+              keyboardType="number-pad"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>days / wk</Text>
+            <TouchableOpacity
+              style={[styles.btn, maxRunDaysSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={handleSaveMaxRunDays}
+            >
+              <Text style={styles.btnText}>{maxRunDaysSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.hint}>
+            Heat sensitivity — how hard warm/humid weather scales your runs down. 1.0 = the baseline model;
+            higher = a bigger cut in the heat (you run heavy in the heat, so the default is 1.5). Lower it
+            if you tolerate heat well. Affects the daily plan + the 7-day forecast.
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={heatSens}
+              onChangeText={setHeatSens}
+              placeholder="1.5"
+              placeholderTextColor="#bbb"
+              keyboardType="decimal-pad"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>× heat</Text>
+            <TouchableOpacity
+              style={[styles.btn, heatSensSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={handleSaveHeatSens}
+            >
+              <Text style={styles.btnText}>{heatSensSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
           </View>
         </Section>
 

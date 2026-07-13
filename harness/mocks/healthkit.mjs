@@ -8,3 +8,4 @@ export function buildHeartbeatQualityMap() { return new Map(); }   // bodyBatter
 export function isGoodHRVSample() { return true; }
 export function extractWeatherTempC() { return undefined; }
 export async function fetchWorkoutDetail() { return { hr: [], power: [], pace: [], totalMs: 0, activities: [], kmSplits: [], pauseIntervals: [] }; }
+export async function fetchActivityHistory() { return []; }   // agent.ts (query_activities) imports; never called on the deterministic path

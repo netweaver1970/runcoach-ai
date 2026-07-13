@@ -632,14 +632,24 @@ export function activityFloorTrimp(activeEnergyKcal: number, exerciseMin: number
 // duration; we never EXTEND past the plan — the volume cap governs length). Capped at 1.6×. Used to
 // inflate strain and to scale the prescribed run down (runMinutes ÷ factor). e.g. 24°C/77% → ~1.24,
 // but 14°C/85% → 1.0 (perfect — no toning down).
+// How hard heat hits THIS athlete: a multiplier on the whole heat penalty above 18°C. 1.0 = the baseline
+// physiological model; >1 for the heat-sensitive (Geert), <1 for the heat-tolerant. Default is SENSITIVE.
+// Kept as a sync cache (heatStrainFactor is sync + called all over); coach.ts owns the SecureStore setting
+// and refreshes this via setHeatSensitivityCache() before building any plan.
+export const DEFAULT_HEAT_SENSITIVITY = 1.5;
+let heatSensitivity = DEFAULT_HEAT_SENSITIVITY;
+export function setHeatSensitivityCache(v: number): void { heatSensitivity = Math.max(0.3, Math.min(3, v)); }
+export function heatSensitivitySync(): number { return heatSensitivity; }
+
 export function heatStrainFactor(w?: { tempC?: number; apparentC?: number; humidity?: number } | null): number {
   if (!w) return 1;
   const t = w.apparentC ?? w.tempC;
   if (t == null) return 1;
-  let f = 1 + Math.max(0, t - 18) * 0.025;                           // temperature: ~+2.5%/°C above 18°C
+  const s = heatSensitivity;
+  let f = 1 + Math.max(0, t - 18) * 0.025 * s;                       // temperature: ~+2.5%/°C above 18°C, × sensitivity
   const humidGate = Math.max(0, Math.min(1, (t - 18) / 6));          // humidity matters only when warm: 0 ≤18°C → full ≥24°C
-  if ((w.humidity ?? 0) > 55) f += ((w.humidity ?? 0) - 55) * 0.004 * humidGate;
-  return Math.min(1.6, Math.round(f * 100) / 100);
+  if ((w.humidity ?? 0) > 55) f += ((w.humidity ?? 0) - 55) * 0.004 * s * humidGate;
+  return Math.min(1.3 + 0.3 * s, Math.round(f * 100) / 100);         // ceiling scales with sensitivity (1.6 at s=1, 1.75 at 1.5)
 }
 
 export function computeDayStrain(
