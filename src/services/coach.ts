@@ -268,6 +268,19 @@ export function weekdayName(dateKey?: string): string {
 }
 
 // Validate/clamp the LLM's workout into a safe WatchWorkout (or null on rest/garbage).
+// A block's label is a SHORT tag ("intervals", "tempo", "VO2") shown AFTER the computed structure line —
+// not a second structure. The LLM sometimes writes a verbose "8× 3min @ …W, 90s reco" label that then
+// duplicated + contradicted the computed line (worst after a rep ± edit: computed 6× vs a stale label 8×).
+// Strip anything structure-like (digits / × / @ / units / recovery words) down to a canonical zone tag.
+function cleanBlockLabel(raw: any, zone?: string): string | undefined {
+  const s = raw ? String(raw).trim() : '';
+  if (!s) return undefined;
+  if (/\d|×|@|\bmin\b|\bW\b|reco|recover|float|jog/i.test(s)) {
+    return zone === 'Z4' || zone === 'Z5' ? 'intervals' : zone === 'Z3' ? 'tempo' : undefined;
+  }
+  return s.slice(0, 24);
+}
+
 function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWorkout | null {
   if (intensity === 'rest' || !o || typeof o !== 'object') return null;
   const rawBlocks = Array.isArray(o.blocks) ? o.blocks : [];
@@ -287,7 +300,7 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
       hrZone: zone,
       powerLowWatts:  downgraded ? undefined : watts(b?.powerLowWatts),
       powerHighWatts: downgraded ? undefined : watts(b?.powerHighWatts),
-      label: b?.label ? String(b.label).slice(0, 40) : undefined,
+      label: cleanBlockLabel(b?.label, zone),
     };
   }).filter((b: WatchWorkoutBlock) => b.workMinutes > 0);
   if (blocks.length === 0) return null;

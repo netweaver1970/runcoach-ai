@@ -488,8 +488,8 @@ export default function DailyCoachScreen() {
                       <TouchableOpacity style={s.adjustBtn} onPress={() => setRepAdj(Math.max(1, effReps - 1))}>
                         <Text style={s.adjustBtnText}>−1</Text>
                       </TouchableOpacity>
-                      <Text style={s.adjustVal}>
-                        {effReps}×{ivBlock?.workMinutes}min · {effDose}{repAdj != null ? ` · was ${baseReps}` : ''}
+                      <Text style={s.adjustVal} numberOfLines={1}>
+                        {effReps}×{ivBlock?.workMinutes}min{repAdj != null ? ` · was ${baseReps}` : ''}
                       </Text>
                       <TouchableOpacity style={s.adjustBtn} onPress={() => setRepAdj(Math.min(20, effReps + 1))}>
                         <Text style={s.adjustBtnText}>+1</Text>
@@ -704,11 +704,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
-  adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' },
+  adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   adjustLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   adjustBtn:   { backgroundColor: c.surface, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: c.border },
   adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
-  adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center' },
+  adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center', flexShrink: 1 },
   adjustReset: { fontSize: 12, color: c.accent, fontWeight: '600' },
   projStrain:  { fontSize: 13, fontWeight: '700', marginTop: 8 },
   watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
