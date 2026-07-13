@@ -12,9 +12,9 @@ import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from '
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
 import { getLocalWeather } from './weather';
-import { getPowerZones, getLongRunMinutes } from './claude';
+import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
-import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache } from './trainingLoad';
+import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp } from './trainingLoad';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
 import { DayStrain, ActivitySummary, RunWorkout } from '../types';
@@ -37,6 +37,9 @@ export interface CoachSnapshot {
   // in synthesizeWorkout. Distinct from recentTimeOnFeet (which for intervals over-counts the work with
   // recovery jogs + warm-up/cool-down, so a ToF ramp alone can't cap the actual interval work).
   recentQualityWork?: { intervals?: number; tempo?: number };
+  // Most-recent measured WORK-segment Banister TRIMP per quality type — the realised LOAD the quality dose
+  // ramps from when the cap basis is 'trimp' (work-HR + work-duration, so recovery jogs don't dilute it).
+  recentQualityTrimp?: { intervals?: number; tempo?: number; long?: number };
   // Time-on-feet (running minutes) — drives the alternation + rolling-volume rules.
   recentTimeOnFeet?: { date: string; min: number }[]; // last ~14 days (0 = no run)
   tof7d?:            number;   // trailing 7-day running minutes (completed days only)
@@ -44,7 +47,7 @@ export interface CoachSnapshot {
   tofBudgetTodayMin?: number;  // max running MINUTES today under the rolling cap (distance cap → via pace)
   tofNextRunLabel?:  string;   // when a meaningful-length run next fits the cap, e.g. "Thu 26 Jun"
   tofNextRunInDays?: number;   // days until that — 0 = today's budget already allows it
-  loadCapBasis?:     'tof' | 'distance'; // what the +X% cap is measured on
+  loadCapBasis?:     'tof' | 'distance' | 'trimp'; // what the +X% cap is measured on
   loadCapPct?:       number;   // the rolling increase cap % (default 10)
   loadBudgetToday?:  number;   // remaining budget today in loadUnit
   loadUnit?:         'min' | 'km';
@@ -78,7 +81,8 @@ export interface WatchWorkoutBlock {
   repeats:     number;          // how many work+recovery reps
   workMinutes: number;          // work-interval duration
   restMinutes: number;          // recovery duration (0 = continuous)
-  hrZone?:     string;          // driving HR zone: Z1–Z5
+  hrZone?:     string;          // driving HR zone: Z1–Z5 (the WORK effort)
+  recoveryZone?: string;        // the RECOVERY effort between reps: Z1 = jog/standing, Z3 = float — a load lever
   powerLowWatts?:  number;      // power window mapped from the HR zone (lower bound, watts)
   powerHighWatts?: number;      // upper bound, watts
   label?:      string;          // e.g. "tempo", "VO2"
@@ -112,6 +116,7 @@ export interface CoachPlan {
                              // before overnight HRV/sleep lands; refresh once it crosses the green (≥60) gate
   shrinkForced?: boolean;    // shrink-to-fit placed this quality on its day OVER the cap → skip the budget/cap refresh checks
   sessionKind?: SessionKind; // canonical type → drives the honest UI label (not the workout's hardest zone)
+  prescribedLoad?: number;   // derived readout: the session's prescribed Banister TRIMP (impact), incl. warm-up/cool-down
   secondSession?: {          // present ONLY on a split long run — the day's Part 2 (a later easy/Z2 run)
     runMinutes: number;
     workout: WatchWorkout | null;
@@ -370,20 +375,92 @@ export function mergeWorkoutPower(target: WatchWorkout | null, source?: WatchWor
 
 // Fallback structured session when the LLM prescribes a run but omits the workout JSON.
 // Maps the intensity to an HR zone + the matching watt window from the athlete's zones.
+// ── Interval / tempo VARIETY, load-normalized ─────────────────────────────────
+// The interval SHAPE rotates week to week (work zone, recovery TYPE, rep length) — for training variety and to
+// stress different systems — but every variant is sized so its prescribedTrimp equals the plain default's, so
+// changing the shape never silently changes how HARD the session is. TRIMP is the equalising currency: a short
+// Z5 set with a Z3 float and a longer Z4 set with a jog recovery land at the SAME load, just fewer minutes for
+// the sharper one. (Recovery DURATION isn't a load lever — see trainingLoad.prescribedTrimp — so variety comes
+// from work zone + recovery TYPE, both of which move load; the minutes budget stays the guardrail.)
+interface IntervalArchetype { work: number; workZone: string; rest: number; recoveryZone: string; label: string; }
+const INTERVAL_ARCHETYPES: IntervalArchetype[] = [
+  { work: 3,   workZone: 'Z4', rest: 2,   recoveryZone: 'Z1', label: 'intervals' },        // 0 — the classic default (unchanged)
+  { work: 3,   workZone: 'Z5', rest: 2,   recoveryZone: 'Z1', label: 'VO₂ intervals' },    // 1 — higher intensity
+  { work: 4,   workZone: 'Z4', rest: 1.5, recoveryZone: 'Z1', label: 'cruise intervals' }, // 2 — longer threshold reps
+  { work: 3,   workZone: 'Z5', rest: 1.5, recoveryZone: 'Z3', label: 'VO₂ · float reco' }, // 3 — active (float) recovery
+  { work: 1.5, workZone: 'Z5', rest: 1,   recoveryZone: 'Z1', label: 'short–sharp reps' }, // 4 — speed / neuromuscular
+];
+
+type StructShell = { warmupMeters: number; drillsMinutes: number; cooldownMeters: number };
+const loadOf = (blocks: WatchWorkoutBlock[], st: StructShell): number =>
+  prescribedTrimp({ warmupMeters: st.warmupMeters, drillsMinutes: st.drillsMinutes, blocks, cooldownMeters: st.cooldownMeters });
+
+// Rep count for a rotated interval archetype whose prescribedTrimp best matches `targetLoad`, bounded by the
+// minutes guardrail (reps × (work+rest) ≤ workBudget) and a sane 3–12. A sharper (Z5) variant needs fewer reps
+// to reach the same load → it comes out SHORTER in minutes but equal in impact. That's the point.
+function intervalBlocksForLoad(seed: number, targetLoad: number, workBudget: number, st: StructShell): WatchWorkoutBlock[] {
+  const a = INTERVAL_ARCHETYPES[((seed % INTERVAL_ARCHETYPES.length) + INTERVAL_ARCHETYPES.length) % INTERVAL_ARCHETYPES.length];
+  const per = a.work + a.rest;
+  const maxReps = Math.max(3, Math.min(12, Math.floor((workBudget + a.rest) / per)));   // +rest: the last rep needs no trailing recovery
+  let best = 3, bestErr = Infinity;
+  for (let r = 3; r <= maxReps; r++) {
+    const err = Math.abs(loadOf([{ repeats: r, workMinutes: a.work, restMinutes: a.rest, hrZone: a.workZone, recoveryZone: a.recoveryZone }], st) - targetLoad);
+    if (err < bestErr) { bestErr = err; best = r; }
+  }
+  return [{ repeats: best, workMinutes: a.work, restMinutes: a.rest, hrZone: a.workZone, recoveryZone: a.recoveryZone, label: a.label }];
+}
+
+// Tempo variety: alternate the plain continuous Z3 threshold with broken "cruise intervals" (Z4 reps + a short
+// Z2 float) sized to the SAME load — rep length searched to match, rep count from the budget.
+function tempoCruiseForLoad(targetLoad: number, workBudget: number, st: StructShell): WatchWorkoutBlock[] {
+  const reps = workBudget >= 28 ? 3 : 2;
+  const rest = 2;                                                    // Z2 float between cruise reps
+  const maxWork = Math.max(4, Math.floor((workBudget - (reps - 1) * rest) / reps));
+  let best = Math.min(12, maxWork), bestErr = Infinity;
+  for (let wmin = 4; wmin <= Math.min(12, maxWork); wmin++) {
+    const err = Math.abs(loadOf([{ repeats: reps, workMinutes: wmin, restMinutes: rest, hrZone: 'Z4', recoveryZone: 'Z2' }], st) - targetLoad);
+    if (err < bestErr) { bestErr = err; best = wmin; }
+  }
+  return [{ repeats: reps, workMinutes: best, restMinutes: rest, hrZone: 'Z4', recoveryZone: 'Z2', label: 'cruise intervals' }];
+}
+
+// Continuous-Z3 tempo whose length best matches `targetLoad` ('trimp' basis), bounded by the minutes guardrail.
+function tempoContinuousForLoad(targetLoad: number, workBudget: number, st: StructShell): WatchWorkoutBlock[] {
+  const hi = Math.max(8, Math.round(workBudget));
+  let best = Math.min(hi, 20), bestErr = Infinity;
+  for (let wmin = 8; wmin <= hi; wmin++) {
+    const err = Math.abs(loadOf([{ repeats: 1, workMinutes: wmin, restMinutes: 0, hrZone: 'Z3', recoveryZone: 'Z2' }], st) - targetLoad);
+    if (err < bestErr) { bestErr = err; best = wmin; }
+  }
+  return [{ repeats: 1, workMinutes: best, restMinutes: 0, hrZone: 'Z3', recoveryZone: 'Z2', label: 'tempo' }];
+}
+
+// Deterministic week index (fixed Monday epoch, stable within a week) → rotates session variety so consecutive
+// interval/tempo WEEKS differ. mondayOf/PERIODIZATION_EPOCH are declared later but resolved at call time.
+export function variantSeedFor(dateKey: string): number {
+  const d = new Date(dateKey + 'T00:00:00');
+  if (isNaN(d.getTime())) return 0;
+  return Math.max(0, Math.round((mondayOf(d).getTime() - PERIODIZATION_EPOCH.getTime()) / (7 * 86_400_000)));
+}
+
 export function synthesizeWorkout(
   intensity: CoachIntensity, runMinutes: number, name: string,
   pz?: CoachSnapshot['powerZones'],
   kind?: 'intervals' | 'tempo' | 'long' | 'easy' | 'recovery',
   recentWorkMin?: number,   // most-recent same-TYPE session's WORK minutes → gradual TRUE-work-minutes ramp
-  capPct?: number,          // rolling increase cap % (tempo continuous work; intervals grow +1 rep/session)
+  capPct?: number,          // rolling increase cap % (kept for signature compat; ramp lives in buildTypeRamp)
+  variantSeed?: number,     // rotates the interval/tempo SHAPE (0 / even = classic default); load held constant
+  targetLoad?: number,      // 'trimp' basis: the quality dose is sized to THIS Banister load (minutes stay the guardrail)
 ): WatchWorkout {
+  // Warm-up / cool-down (0 = open) + drills length are the athlete's configured structure (WorkoutStructure).
+  const st = workoutStructureCache;
   // Reserve ~6 min for the warm-up + cool-down (open or distance); the rest is work.
   const workBudget = Math.max(8, (runMinutes || 35) - 6);
   // TYPE-aware structure — the session TYPE, not just the effort tier, decides the shape (so a Long
-  // run is a long Z2 run, a Tempo is sustained Z3, only Intervals are short Z4 reps). Falls back to
+  // run is a long Z2 run, a Tempo is sustained Z3, only Intervals are short Z4/Z5 reps). Falls back to
   // the intensity when no kind is given (legacy callers like the daily plan's fallback).
   const t = kind ?? (intensity === 'hard' ? 'intervals' : intensity === 'moderate' ? 'tempo' : 'easy');
-  const pct = capPct ?? DEFAULT_LOAD_CAP_PCT;
+  const seed = variantSeed ?? 0;
   let blocks: WatchWorkoutBlock[];
   if (t === 'intervals') {
     const WORK_MIN = 3;
@@ -396,23 +473,51 @@ export function synthesizeWorkout(
       const recentReps = Math.max(1, Math.round(recentWorkMin / WORK_MIN));
       reps = Math.min(reps, recentReps + 1);
     }
-    blocks = [{ repeats: reps, workMinutes: WORK_MIN, restMinutes: 2, hrZone: 'Z4', label: 'intervals' }];
+    // The DEFAULT dose sets this session's TARGET LOAD; every rotated variant is sized to match it, so the
+    // progression (load) is identical whatever shape the week is. In 'trimp' mode the target comes straight
+    // from the load ramp (targetLoad, sized within the minutes guardrail); otherwise it's the +1-rep minutes
+    // dose expressed as load.
+    const defBlocks: WatchWorkoutBlock[] = targetLoad != null
+      ? intervalBlocksForLoad(0, targetLoad, workBudget, st)          // load drives the dose (default shape, sized to load)
+      : [{ repeats: reps, workMinutes: WORK_MIN, restMinutes: 2, hrZone: 'Z4', recoveryZone: 'Z1', label: 'intervals' }];
+    const target = targetLoad ?? loadOf(defBlocks, st);
+    blocks = (seed % INTERVAL_ARCHETYPES.length === 0)
+      ? defBlocks                                                     // variant 0 = the classic shape, EXACTLY as before ('tof' seed 0)
+      : intervalBlocksForLoad(seed, target, workBudget, st);
   } else if (t === 'tempo') {
-    // Continuous threshold: the tempo work IS the session (minus warm-up/cool-down/drills). Gradual growth
-    // already comes from the ToF ramp on the SESSION length (buildTypeRamp) — a second cap on recent tempo
-    // WORK fought it and, with an under-read recentTempoWork (16 min for a 37-min tempo), left an 18-min
-    // tempo inside a 41-min run. So fill the budget; recentWorkMin is an intervals-only knob.
-    blocks = [{ repeats: 1, workMinutes: Math.max(8, workBudget), restMinutes: 0, hrZone: 'Z3', label: 'tempo' }]; // ONE continuous threshold block — no jog gaps
+    // Continuous threshold: the tempo work IS the session (minus warm-up/cool-down/drills). In 'tof' mode the
+    // length is the ToF ramp (buildTypeRamp); in 'trimp' mode it's sized to targetLoad (≤ minutes guardrail).
+    // Odd weeks swap in broken cruise intervals at the SAME load for variety.
+    const defBlocks: WatchWorkoutBlock[] = targetLoad != null
+      ? tempoContinuousForLoad(targetLoad, workBudget, st)
+      : [{ repeats: 1, workMinutes: Math.max(8, workBudget), restMinutes: 0, hrZone: 'Z3', recoveryZone: 'Z2', label: 'tempo' }];
+    const target = targetLoad ?? loadOf(defBlocks, st);
+    blocks = (seed % 2 === 0)
+      ? defBlocks                                                     // even weeks = ONE continuous threshold block
+      : tempoCruiseForLoad(target, workBudget, st);                   // odd weeks = broken cruise intervals, same load
   } else { // long / easy / recovery → ONE continuous aerobic block at Z2
     blocks = [{ repeats: 1, workMinutes: Math.min(150, workBudget), restMinutes: 0, hrZone: 'Z2', label: t === 'long' ? 'long' : 'aerobic' }];
   }
-  // Warm-up / cool-down (0 = open) + drills length are the athlete's configured structure (WorkoutStructure).
-  const st = workoutStructureCache;
   return ensureBlockPower({ name, warmupMeters: st.warmupMeters, drillsMinutes: st.drillsMinutes, blocks, cooldownMeters: st.cooldownMeters }, pz)!;
 }
 
-// Concise one-line structure for the daily plan, e.g. "3× 10min @ 180–205W" or "60min @ 205W".
-// Work blocks only (warm-up/cool-down are implied); power range if present, else HR zone.
+// 'trimp' basis: the quality dose ramps on LOAD — +cap%/week off the most-recent measured same-type WORK
+// TRIMP (or a nominal first dose). Returns undefined for non-quality types or a non-trimp basis, so intervals
+// + tempo become load-driven while easy/long/recovery stay minutes-driven (the volume guardrail). The minutes
+// budget still ceilings whatever load this asks for (synthesizeWorkout sizes within workBudget).
+const NOMINAL_QUALITY_LOAD: Record<string, number> = { intervals: 70, tempo: 75 };
+function qualityTargetLoad(snap: CoachSnapshot, sk: string, capPct: number): number | undefined {
+  if (snap.loadCapBasis !== 'trimp' || (sk !== 'intervals' && sk !== 'tempo')) return undefined;
+  const recent = sk === 'intervals' ? snap.recentQualityTrimp?.intervals : snap.recentQualityTrimp?.tempo;
+  const base = recent && recent > 0 ? recent : NOMINAL_QUALITY_LOAD[sk];
+  return Math.round(base * (1 + capPct / 100));
+}
+
+// Concise one-line structure for the daily plan, e.g. "3× 10min @ 180–205W + 2min jog" or "60min @ 205W".
+// Work blocks only (warm-up/cool-down are implied); power range if present, else HR zone; recovery TYPE
+// (jog / float) shown for multi-rep blocks so the week's variety is visible, not hidden in the zone number.
+const recoveryWord = (zone?: string): string =>
+  zone === 'Z3' || zone === 'Z2' ? 'float' : zone === 'Z0' ? 'walk' : 'jog';
 export function formatWorkoutStructure(w?: WatchWorkout | null): string {
   if (!w?.blocks?.length) return '';
   const fmtMin = (m: number) => (m % 1 === 0 ? `${m}` : m.toFixed(1));
@@ -421,7 +526,9 @@ export function formatWorkoutStructure(w?: WatchWorkout | null): string {
     const pwr = lo && hi ? (lo === hi ? ` @ ${lo}W` : ` @ ${lo}–${hi}W`)
               : b.hrZone ? ` @ ${b.hrZone}` : '';
     const rep = b.repeats > 1 ? `${b.repeats}× ${fmtMin(b.workMinutes)}min` : `${fmtMin(b.workMinutes)}min`;
-    return `${rep}${pwr}`;
+    const reco = b.repeats > 1 && b.restMinutes > 0
+      ? ` / ${fmtMin(b.restMinutes)}min ${recoveryWord(b.recoveryZone)}` : '';
+    return `${rep}${pwr}${reco}`;
   });
   return parts.join(' + ');
 }
@@ -922,8 +1029,20 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     : sk === 'intervals' ? snap.recentQualityWork?.intervals
     : sk === 'tempo'     ? snap.recentQualityWork?.tempo
     : undefined;
-  const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk, recentWork, capPct), snap.powerZones);
+  const variantSeed = variantSeedFor(snap.date);   // rotate the interval/tempo SHAPE week to week (load held constant)
+  // 'trimp' basis: the quality dose is LOAD-driven (+cap%/week off recent measured TRIMP), still ceilinged by
+  // the minutes guardrail. honorDirect (user/race forced today's minutes) skips it, like the work-minutes ramp.
+  const targetLoad = honorDirect ? undefined : qualityTargetLoad(snap, sk, capPct);
+  const workout    = ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, sk, recentWork, capPct, variantSeed, targetLoad), snap.powerZones);
+  // 'trimp' load-driven dose can be SHORTER than the minutes budget (a sharp session hits its load in fewer
+  // minutes) → report the REAL session length so "N min" + the ToF accounting match the structure actually
+  // pushed to the watch (warm-up/cool-down ≈ 6 min, mirroring synthesizeWorkout's workBudget reserve).
+  if (targetLoad != null && workout) {
+    const blocksMin = workout.blocks.reduce((s, b) => s + b.repeats * (b.workMinutes + b.restMinutes), 0);
+    runMinutes = Math.min(runMinutes, Math.max(8, Math.round(blocksMin) + 6));
+  }
   const structure  = formatWorkoutStructure(workout);
+  const prescribedLoad = workout ? prescribedTrimp(workout) : undefined;   // derived impact readout (TRIMP)
   const dose       = runKm != null ? `${runKm} km` : `${runMinutes} min`;  // display unit follows the cap basis
   const label = sk === 'intervals' ? 'Intervals' : sk === 'tempo' ? 'Tempo' : sk === 'long' ? (secondSession ? 'Long run (Part 1 of 2)' : 'Long run') : base <= 30 ? 'Recovery run' : 'Easy Z2';
   const headline =
@@ -946,7 +1065,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     strength: STRENGTH_DEFAULT, intensity, runMinutes, runKm,
     rationale: bandPhrase(strainReal, strainLow, strainHigh, driver) + heatNote,
     cautions: recoveryStale ? STALE_CAUTION : undefined, workout, shrinkForced: honorDirect,
-    sessionKind: sk, secondSession, ...stamp,
+    sessionKind: sk, secondSession, prescribedLoad, ...stamp,
   };
 }
 
@@ -1037,6 +1156,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       session:   (wellFormed && o.session) ? String(o.session).slice(0, 280) : basis.session, // rejected structure → deterministic session (matches the fallback workout)
       strength:  o.strength  ? String(o.strength).slice(0, 240)  : basis.strength,
       intensity, runMinutes, runKm, workout,
+      prescribedLoad: workout ? prescribedTrimp(workout) : undefined,   // derived readout — from the FINAL workout (LLM's or fallback)
       rationale: o.rationale ? String(o.rationale).slice(0, 400) : basis.rationale,
       cautions:  basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
       sessionKind,
@@ -1197,7 +1317,9 @@ export async function setShrinkToFit(on: boolean): Promise<void> {
   try { await SecureStore.setItemAsync(SHRINK_TO_FIT_KEY, on ? '1' : '0'); } catch { /* ignore */ }
 }
 
-export type LoadCapBasis = 'tof' | 'distance';
+// 'tof' = time-on-feet minutes · 'distance' = real-work km · 'trimp' = Banister load (quality dose ramps on
+// LOAD, minutes stay the volume guardrail). Default stays 'tof' until 'trimp' is validated on device.
+export type LoadCapBasis = 'tof' | 'distance' | 'trimp';
 const LOAD_CAP_PCT_KEY   = 'load_cap_pct';
 const LOAD_CAP_BASIS_KEY = 'load_cap_basis';
 export const DEFAULT_LOAD_CAP_PCT = 10;
@@ -1229,7 +1351,7 @@ export async function setLoadCapPct(pct: number): Promise<void> {
   try { await SecureStore.setItemAsync(LOAD_CAP_PCT_KEY, String(Math.round(pct))); } catch { /* ignore */ }
 }
 export async function getLoadCapBasis(): Promise<LoadCapBasis> {
-  try { return (await SecureStore.getItemAsync(LOAD_CAP_BASIS_KEY)) === 'distance' ? 'distance' : 'tof'; }
+  try { const v = await SecureStore.getItemAsync(LOAD_CAP_BASIS_KEY); return (v === 'distance' || v === 'trimp') ? v : 'tof'; }
   catch { return DEFAULT_LOAD_CAP_BASIS; }
 }
 export async function setLoadCapBasis(b: LoadCapBasis): Promise<void> {
@@ -1431,7 +1553,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   // Refresh the sync-readable workout-structure cache so synthesizeWorkout / parseWorkout (both sync) see
   // the athlete's current warm-up / cool-down / drills config before any plan or watch workout is built.
   // Awaited in parallel below (the throwaway slot) so it's settled before the caller builds a workout.
-  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps] = await Promise.all([
+  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps, maxHR] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
     getLocalWeather().catch(() => null),
@@ -1441,6 +1563,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     getAthleteStatus(),
     loadEvents(),
     loadSupplements(),
+    getEffectiveMaxHr().catch(() => 190),   // to normalise realised run HR → reserve for the quality LOAD ramp
     refreshWorkoutStructure().catch(() => DEFAULT_WORKOUT_STRUCTURE),
     refreshHeatSensitivity().catch(() => DEFAULT_HEAT_SENSITIVITY),
   ]);
@@ -1488,6 +1611,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     recentStrain: strainHist.slice(-10),
     recentTimeOnFeet:  tof.series14,
     recentQualityWork: buildRecentQualityWork(runs),
+    recentQualityTrimp: buildRecentQualityTrimp(runs, latest.restingHr ?? 50, maxHR),
     tof7d:             tof.tof7d,
     tofPrev7d:         tof.tofPrev7d,
     tofBudgetTodayMin: budgetMin,            // run-minutes budget (distance cap → converted via pace)
@@ -1526,6 +1650,24 @@ function buildRecentQualityWork(runs?: RunWorkout[]): CoachSnapshot['recentQuali
   };
   const iv = lastWork('Intervals'), tp = lastWork('Tempo');
   return (iv != null || tp != null) ? { intervals: iv, tempo: tp } : undefined;
+}
+
+// Most-recent measured WORK-segment Banister TRIMP per quality type — the realised LOAD the 'trimp'-basis
+// quality dose ramps from. Uses work-HR (falls back to whole-run avg) + work-duration (falls back to total),
+// so a hard interval session isn't diluted by its recovery jogs. rest/max needed to normalise HR → reserve.
+function buildRecentQualityTrimp(runs: RunWorkout[] | undefined, restHR: number, maxHR: number): CoachSnapshot['recentQualityTrimp'] {
+  if (!runs?.length || maxHR <= restHR) return undefined;
+  const newest = [...runs].sort((a, b) => (b.date > a.date ? 1 : -1));
+  const lastTrimp = (label: string): number | undefined => {
+    const r = newest.find(x => x.label === label && ((x.workHR ?? x.avgHeartRate ?? 0) > 0));
+    if (!r) return undefined;
+    const min = Math.round(((r.workDuration ?? r.duration) as number) / 60);
+    const hr  = r.workHR ?? r.avgHeartRate ?? 0;
+    const t = singleHrTrimp(min, hr, restHR, maxHR);
+    return t > 0 ? t : undefined;
+  };
+  const iv = lastTrimp('Intervals'), tp = lastTrimp('Tempo'), lg = lastTrimp('Long');
+  return (iv != null || tp != null || lg != null) ? { intervals: iv, tempo: tp, long: lg } : undefined;
 }
 
 // Last ~14 days of NON-run sessions, newest first — fatigue the coach should weigh.

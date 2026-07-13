@@ -582,6 +582,79 @@ export function estimateWorkoutLoad(w: {
   return load;
 }
 
+// ── Textbook PRESCRIBED Banister TRIMP (HR-kinetics simulation) ────────────────
+// The fixed run-MINUTES cap can't tell a dense Z5 set from an easy jog of equal length; zone-weighted
+// minutes (estimateWorkoutLoad) can weigh intensity but is DENSITY-BLIND — shorter recovery = fewer minutes
+// = LESS load, backwards. TRIMP fixes both, but only as the exponential Banister form integrated over the
+// session's HR TRAJECTORY, not a flat per-minute rate. So for a PLANNED session we simulate the HR curve
+// (first-order kinetics toward each block's target zone) and integrate the Banister impulse. This natively
+// prices the two levers the minutes-cap misses:
+//   • intensity — a Z5 rep sits near max HR, and the e^(1.92·HRr) term makes it worth far more/min than Z3.
+//   • density   — with short recovery the HR never decays back to the jog zone, so those minutes STILL cost;
+//                 tightening the recovery therefore RAISES the session TRIMP even though work minutes are equal.
+// Measured counterpart = computeStrainTrimp (the SAME 0.64/1.92 form over real HR samples) — so prescribed
+// and realised load live on ONE scale and can be reconciled from the Drive calibration dumps.
+// Normalised in HR-reserve space, so a session's TRIMP is defined by its ZONE structure, independent of the
+// athlete's own rest/max HR (those only convert zones→bpm for the watch). Only sex enters, via Banister's
+// coefficients (men 0.64/1.92, women 0.86/1.67).
+const ZONE_HRR: Record<string, number> = { Z0: 0.35, Z1: 0.50, Z2: 0.62, Z3: 0.72, Z4: 0.85, Z5: 0.93 };
+const TRIMP_TAU_RISE = 0.75;   // min — HR time-constant climbing toward a harder target (~45 s)
+const TRIMP_TAU_FALL = 1.10;   // min — HR decays a touch slower on recovery (~66 s) → density shows up
+const TRIMP_DT       = 0.25;   // min — 15 s integration step
+
+function banisterImpulse(hrr: number, sex: 'M' | 'F'): number {
+  const h = Math.max(0, Math.min(1, hrr));
+  const a = sex === 'F' ? 0.86 : 0.64, b = sex === 'F' ? 1.67 : 1.92;   // Banister's sex coefficients
+  return h * a * Math.exp(b * h);                                        // TRIMP per minute at this HR-reserve
+}
+
+interface TrimpSeg { hrr: number; min: number }
+
+/** Textbook prescribed Banister TRIMP for a structured session (see block comment above). */
+export function prescribedTrimp(w: {
+  warmupMeters?: number; drillsMinutes?: number; cooldownMeters?: number;
+  blocks?: { repeats?: number; workMinutes?: number; restMinutes?: number; hrZone?: string; recoveryZone?: string }[];
+}, sex: 'M' | 'F' = 'M'): number {
+  const nominalMin = (m?: number) => (m == null ? 0 : (m > 0 ? m : 600)) / 170;   // open goal → ~600 m easy jog; 170 m/min
+  const segs: TrimpSeg[] = [];
+  const wu = nominalMin(w.warmupMeters); if (wu > 0) segs.push({ hrr: ZONE_HRR.Z1, min: wu });
+  if ((w.drillsMinutes ?? 0) > 0) segs.push({ hrr: ZONE_HRR.Z2, min: w.drillsMinutes! });
+  for (const b of w.blocks ?? []) {
+    const work = ZONE_HRR[b.hrZone ?? 'Z2'] ?? ZONE_HRR.Z2;
+    const reco = ZONE_HRR[b.recoveryZone ?? 'Z1'] ?? ZONE_HRR.Z1;
+    for (let r = 0; r < (b.repeats ?? 1); r++) {
+      if ((b.workMinutes ?? 0) > 0) segs.push({ hrr: work, min: b.workMinutes! });
+      if ((b.restMinutes ?? 0) > 0) segs.push({ hrr: reco, min: b.restMinutes! });
+    }
+  }
+  const cd = nominalMin(w.cooldownMeters); if (cd > 0) segs.push({ hrr: ZONE_HRR.Z1, min: cd });
+  if (!segs.length) return 0;
+
+  // First-order HR kinetics toward each segment's target, integrating the Banister impulse per step.
+  let hrr = ZONE_HRR.Z0, trimp = 0;
+  for (const s of segs) {
+    let left = s.min;
+    while (left > 1e-6) {
+      const dt = Math.min(TRIMP_DT, left);
+      const tau = s.hrr > hrr ? TRIMP_TAU_RISE : TRIMP_TAU_FALL;
+      hrr += (s.hrr - hrr) * (1 - Math.exp(-dt / tau));
+      trimp += banisterImpulse(hrr, sex) * dt;
+      left -= dt;
+    }
+  }
+  return Math.round(trimp);
+}
+
+// MEASURED single-value Banister TRIMP for a run/segment from an average HR — the realised-load twin of
+// prescribedTrimp, used to seed the quality LOAD ramp from what the athlete actually DID. Feed it the
+// WORK-segment HR + duration (not the whole-run average) so interval recovery jogs don't dilute the
+// intensity — that dilution is exactly what collapsed the old calibrated rates to hard=moderate.
+export function singleHrTrimp(minutes: number, avgHR: number, restHR: number, maxHR: number, sex: 'M' | 'F' = 'M'): number {
+  if (minutes <= 0 || !avgHR || maxHR <= restHR) return 0;
+  const hrr = Math.max(0, Math.min(1, (avgHR - restHR) / (maxHR - restHR)));
+  return Math.round(minutes * banisterImpulse(hrr, sex));
+}
+
 // Passive strain = NON-WORKOUT steps (workout steps are "active" via HR). Linear, ≈ Bevel's steps/470.
 export function stepStrainLoad(nonWorkoutSteps: number): number {
   return STRAIN_STEP_GAMMA * Math.max(0, nonWorkoutSteps) / 1000;

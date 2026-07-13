@@ -8,7 +8,7 @@ import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
-import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor } from '../src/services/trainingLoad';
+import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp } from '../src/services/trainingLoad';
 import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
@@ -178,6 +178,10 @@ export default function DailyCoachScreen() {
   const runLoad         = watchWorkout ? estimateWorkoutLoad(watchWorkout) : 0;
   const projectedStrain = watchWorkout ? strainFromLoad((strainObj?.trimp ?? 0) + runLoad * planHeatFactor) : real;
   const runStrain       = Math.max(0, projectedStrain - real);
+  // Derived IMPACT readout: the session's prescribed Banister TRIMP (recomputed from the EDITED workout so it
+  // tracks the reps ± control live). This is the load currency — the tunable number that equalises varied
+  // interval shapes; minutes/strain above are the volume + daily-band views.
+  const sessionLoad     = watchWorkout ? prescribedTrimp(watchWorkout) : 0;
 
   // Rolling progression cap as of the viewed day, honouring the user's % + basis settings.
   const [capCtx, setCapCtx] = useState<CapContext | null>(null);
@@ -463,7 +467,7 @@ export default function DailyCoachScreen() {
                       {watchWorkout.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
                       {b.hrZone ? ` @ ${b.hrZone}` : ''}
                       {b.powerLowWatts && b.powerHighWatts ? ` ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
-                      {b.restMinutes > 0 ? ` + ${b.restMinutes}m easy` : ''}){cleanBlockLabel(b.label, b.hrZone) ? ` · ${cleanBlockLabel(b.label, b.hrZone)}` : ''}
+                      {b.restMinutes > 0 ? ` + ${b.restMinutes}m ${b.recoveryZone === 'Z3' || b.recoveryZone === 'Z2' ? 'float' : 'jog'}` : ''}){cleanBlockLabel(b.label, b.hrZone) ? ` · ${cleanBlockLabel(b.label, b.hrZone)}` : ''}
                     </Text>
                   ))}
                   <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters > 0 ? `${watchWorkout.cooldownMeters} m` : 'open'}</Text>
@@ -477,6 +481,16 @@ export default function DailyCoachScreen() {
                       📊 Adds ~{runStrain}% strain → today ≈ {projectedStrain}%
                       {'  '}(target {strain.safeLow}–{strain.safeHigh}%
                       {projectedStrain > strain.safeHigh ? ' · above' : projectedStrain < strain.safeLow ? ' · below' : ' · in band'})
+                    </Text>
+                  )}
+
+                  {/* Derived IMPACT readout — the prescribed Banister TRIMP; tracks the reps ± live. This is the
+                      currency that equalises the week's varied interval shapes (a short Z5/float set and a longer
+                      Z4/jog set at the same number are the same session, just different minutes). */}
+                  {sessionLoad > 0 && (
+                    <Text style={s.sessionLoad}>
+                      ⚡ Session load ~{sessionLoad}
+                      <Text style={s.sessionLoadHint}>  · TRIMP impact (shape-independent)</Text>
                     </Text>
                   )}
 
@@ -710,6 +724,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
   adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center', flexShrink: 1 },
   adjustReset: { fontSize: 12, color: c.accent, fontWeight: '600' },
+  sessionLoad:     { fontSize: 13, fontWeight: '700', color: c.text, marginTop: 4 },
+  sessionLoadHint: { fontSize: 11, fontWeight: '500', color: c.textSub },
   projStrain:  { fontSize: 13, fontWeight: '700', marginTop: 8 },
   watchMsg: { fontSize: 12, color: c.textSub, marginTop: 6, textAlign: 'center' },
   coachRationale: { fontSize: 13, color: c.textSub, lineHeight: 19 },

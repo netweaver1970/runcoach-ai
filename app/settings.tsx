@@ -997,23 +997,24 @@ export default function SettingsScreen() {
               <Text style={styles.btnText}>{minTsbSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
-          <View style={styles.switchRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.switchLabel}>Cap by real-work distance</Text>
-              <Text style={styles.switchSub}>
-                Off = time-on-feet minutes (default). On = real-work kilometres.
-              </Text>
+          <View style={{ marginTop: 4 }}>
+            <Text style={styles.switchLabel}>Progression basis</Text>
+            <Text style={styles.switchSub}>
+              What the weekly +cap% grows. Minutes = time-on-feet (default). TRIMP = Banister load, so a
+              session's intensity &amp; recovery type count — the quality dose ramps on load and shows on the
+              Daily Coach; minutes stay a volume guardrail. Distance = real-work km.
+            </Text>
+            <View style={[styles.providerTabs, { marginTop: 8 }]}>
+              {([['tof', 'Minutes'], ['trimp', 'TRIMP'], ['distance', 'Distance']] as [LoadCapBasis, string][]).map(([v, label]) => (
+                <TouchableOpacity
+                  key={v}
+                  style={[styles.providerTab, capBasis === v && styles.providerTabActive]}
+                  onPress={async () => { setCapBasisState(v); await setLoadCapBasis(v); }}
+                >
+                  <Text style={[styles.providerTabText, capBasis === v && styles.providerTabTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
-            <Switch
-              value={capBasis === 'distance'}
-              onValueChange={async (v) => {
-                const b: LoadCapBasis = v ? 'distance' : 'tof';
-                setCapBasisState(b);
-                await setLoadCapBasis(b);
-              }}
-              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
-              thumbColor="#fff"
-            />
           </View>
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
