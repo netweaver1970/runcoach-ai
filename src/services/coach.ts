@@ -987,14 +987,20 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       : Math.max(8, Math.min(basis.runMinutes, Math.round(Number(o.runMinutes)) || basis.runMinutes));
     const wkName = weekdayName(snap.date);
     // Keep the LLM's structure (it honours the coaching-file drills), but reject a malformed one — where
-    // the work blocks don't account for most of the run (e.g. the main work mislabeled as a giant drills
-    // block) — and fall back to the clean synthesized session (which also carries drills now).
+    // the interval BLOCKS (work + between-rep recovery) don't account for a reasonable share of the run
+    // (e.g. the main work mislabeled as a giant drills block) — and fall back to the clean synthesized
+    // session. Count work + recovery, NOT work alone: intervals are naturally low WORK-density (a 3×5min/
+    // 2min set is only 15 work min in a 44min run), so a work-only test wrongly rejected valid interval
+    // sets and swapped in a denser synthesized 8×3 — while the LLM's 3×5 PROSE stayed, so the two disagreed.
     const parsed = intensity === 'rest' ? null : parseWorkout(o.workout, intensity, wkName);
-    const workTotal = (parsed?.blocks ?? []).reduce((s, b) => s + b.workMinutes * b.repeats, 0);
-    const wellFormed = parsed != null && workTotal >= Math.max(8, runMinutes - (parsed.drillsMinutes ?? 0) - 6) * 0.5;
-    const workout = intensity === 'rest' ? null : ensureBlockPower(
-      wellFormed ? parsed : synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones),
-      snap.powerZones);
+    const blockTotal = (parsed?.blocks ?? []).reduce((s, b) => s + (b.workMinutes + b.restMinutes) * b.repeats, 0);
+    const wellFormed = parsed != null && blockTotal >= Math.max(8, runMinutes - (parsed.drillsMinutes ?? 0) - 6) * 0.5;
+    // wellFormed → the LLM's parsed structure (its prose describes it). Rejected → the DETERMINISTIC basis
+    // workout (ramp-capped) paired with basis.session below, so the prescribed prose + the watch structure
+    // can never disagree (was: synth workout + the LLM's now-stale prose → 3×5 prose vs 8×3 watch).
+    const workout = intensity === 'rest' ? null
+      : wellFormed ? ensureBlockPower(parsed, snap.powerZones)
+      : (basis.workout ?? ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones), snap.powerZones));
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
     // Canonical kind follows the FINAL (possibly eased) intensity so the label stays honest; a moderate
@@ -1007,7 +1013,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     return {
       ...basis,
       headline:  o.headline  ? String(o.headline).slice(0, 120)  : basis.headline,
-      session:   o.session   ? String(o.session).slice(0, 280)   : basis.session,
+      session:   (wellFormed && o.session) ? String(o.session).slice(0, 280) : basis.session, // rejected structure → deterministic session (matches the fallback workout)
       strength:  o.strength  ? String(o.strength).slice(0, 240)  : basis.strength,
       intensity, runMinutes, runKm, workout,
       rationale: o.rationale ? String(o.rationale).slice(0, 400) : basis.rationale,
