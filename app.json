@@ -24,7 +24,10 @@
           "remote-notification"
         ],
         "ITSAppUsesNonExemptEncryption": false,
-        "UIDesignRequiresCompatibility": true
+        "UIDesignRequiresCompatibility": true,
+        "CFBundleURLTypes": [
+          { "CFBundleURLSchemes": ["com.googleusercontent.apps.426250935929-7t0lbdluj8mb8cic52qpf8qc2filg8nh"] }
+        ]
       },
       "entitlements": {
         "com.apple.developer.healthkit": true,

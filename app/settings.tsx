@@ -42,6 +42,7 @@ import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { buildDebugExportJson } from '../src/services/debugExport';
 import { shareJson } from '../src/shareJson';
+import { connectDrive, disconnectDrive, isDriveConnected, uploadDebugToDrive } from '../src/services/googleDrive';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
 import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure, getHeatSensitivity, setHeatSensitivity, getMaxRunDays, setMaxRunDays, DEFAULT_MAX_RUN_DAYS } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
@@ -121,6 +122,8 @@ export default function SettingsScreen() {
   const [memorySaved, setMemorySaved] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [dumping, setDumping] = useState(false);
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [driveBusy, setDriveBusy] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [dayViewAuto, setDayViewAuto] = useState(true);
   const [preparing, setPreparing] = useState(false);
@@ -159,6 +162,7 @@ export default function SettingsScreen() {
     getLoadCapPct().then(p => setCapPct(String(p)));
     getHeatSensitivity().then(h => setHeatSens(String(h)));
     getMaxRunDays().then(d => setMaxRunDaysStr(String(d)));
+    isDriveConnected().then(setDriveConnected).catch(() => {});
     getMinTSB().then(v => setMinTsb(String(v)));
     getLoadCapBasis().then(setCapBasisState);
     getPeriodization().then(p => { setPeriodOn(p.on); setBuildW(String(p.buildWeeks)); setDeloadW(String(p.deloadWeeks)); setDropPct(String(p.deloadDropPct)); setAnchor(p.anchor); });
@@ -1579,8 +1583,48 @@ export default function SettingsScreen() {
           >
             {dumping
               ? <ActivityIndicator size="small" color={c.accent} />
-              : <Text style={styles.btnTextSecondary}>🧪  Create debug dump</Text>}
+              : <Text style={styles.btnTextSecondary}>🧪  Create debug dump (share)</Text>}
           </TouchableOpacity>
+
+          <Text style={[styles.hint, { marginTop: 16 }]}>
+            Or upload it straight to your own Google Drive (folder <Text style={{ fontWeight: '700' }}>runcoach-debug/latest.json</Text>),
+            where it can be read for analysis. The app only ever touches files it creates in your Drive.
+          </Text>
+          <View style={styles.row}>
+            <TouchableOpacity
+              style={[styles.btnSecondary, { flex: 1 }, driveBusy && { opacity: 0.6 }]}
+              disabled={driveBusy}
+              onPress={async () => {
+                setDriveBusy(true);
+                try {
+                  if (driveConnected) { await disconnectDrive(); setDriveConnected(false); }
+                  else { await connectDrive(); setDriveConnected(true); }
+                } catch (err: any) {
+                  Alert.alert('Google Drive', err?.message ?? String(err));
+                } finally { setDriveBusy(false); }
+              }}
+            >
+              <Text style={styles.btnTextSecondary}>{driveConnected ? '🔓 Disconnect Drive' : '🔗 Connect Drive'}</Text>
+            </TouchableOpacity>
+            {driveConnected && (
+              <TouchableOpacity
+                style={[styles.btn, { flex: 1, paddingHorizontal: 12 }, driveBusy && { opacity: 0.6 }]}
+                disabled={driveBusy}
+                onPress={async () => {
+                  setDriveBusy(true);
+                  try {
+                    const json = await buildDebugExportJson();
+                    await uploadDebugToDrive(json);
+                    Alert.alert('Uploaded', 'Debug dump saved to Drive → runcoach-debug/latest.json.');
+                  } catch (err: any) {
+                    Alert.alert('Upload failed', err?.message ?? String(err));
+                  } finally { setDriveBusy(false); }
+                }}
+              >
+                {driveBusy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnText}>↑ Upload</Text>}
+              </TouchableOpacity>
+            )}
+          </View>
         </Section>
 
         {/* Data info */}
