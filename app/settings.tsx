@@ -40,9 +40,9 @@ import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
-import { buildDebugExportJson } from '../src/services/debugExport';
+import { buildDebugExportJson, buildDebugSections } from '../src/services/debugExport';
 import { shareJson } from '../src/shareJson';
-import { connectDrive, disconnectDrive, isDriveConnected, uploadDebugToDrive } from '../src/services/googleDrive';
+import { connectDrive, disconnectDrive, isDriveConnected, uploadDebugSections } from '../src/services/googleDrive';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
 import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure, getHeatSensitivity, setHeatSensitivity, getMaxRunDays, setMaxRunDays, DEFAULT_MAX_RUN_DAYS } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
@@ -1614,9 +1614,9 @@ export default function SettingsScreen() {
                 onPress={async () => {
                   setDriveBusy(true);
                   try {
-                    const json = await buildDebugExportJson();
-                    await uploadDebugToDrive(json);
-                    Alert.alert('Uploaded', 'Debug dump saved to Drive → runcoach-debug/latest.json.');
+                    const sections = await buildDebugSections();
+                    const { names } = await uploadDebugSections(sections);
+                    Alert.alert('Uploaded', `Saved ${names.length} small files to Drive → runcoach-debug/ (${names.map(n => `${n}.json`).join(', ')}).`);
                   } catch (err: any) {
                     Alert.alert('Upload failed', err?.message ?? String(err));
                   } finally { setDriveBusy(false); }

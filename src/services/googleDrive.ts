@@ -98,11 +98,9 @@ async function findOrCreateFolder(token: string): Promise<string> {
   return created.id;
 }
 
-/** Upsert the redacted dump JSON to Drive's runcoach-debug/latest.json. Returns the folder link. */
-export async function uploadDebugToDrive(json: string): Promise<{ folderId: string }> {
-  const token = await validAccessToken();
-  const folderId = await findOrCreateFolder(token);
-  const q = encodeURIComponent(`name='${FILE}' and '${folderId}' in parents and trashed=false`);
+// Upsert one JSON file (by name) into the runcoach-debug folder — PATCH if it exists, else multipart create.
+async function upsertFile(token: string, folderId: string, name: string, json: string): Promise<void> {
+  const q = encodeURIComponent(`name='${name}' and '${folderId}' in parents and trashed=false`);
   const existing = await driveJson(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id)`, token);
   const id = existing.files?.[0]?.id;
   if (id) {
@@ -111,11 +109,30 @@ export async function uploadDebugToDrive(json: string): Promise<{ folderId: stri
     });
   } else {
     const boundary = 'rc' + Math.random().toString(36).slice(2);
-    const meta = JSON.stringify({ name: FILE, parents: [folderId] });
+    const meta = JSON.stringify({ name, parents: [folderId] });
     const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${json}\r\n--${boundary}--`;
     await driveJson('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', token, {
       method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body,
     });
   }
+}
+
+/** Upsert the redacted dump JSON to Drive's runcoach-debug/latest.json. Returns the folder link. */
+export async function uploadDebugToDrive(json: string): Promise<{ folderId: string }> {
+  const token = await validAccessToken();
+  const folderId = await findOrCreateFolder(token);
+  await upsertFile(token, folderId, FILE, json);
   return { folderId };
+}
+
+/**
+ * Upsert several SMALL topic-scoped files (runcoach-debug/<name>.json) in parallel — the fast path: a
+ * reader fetches just the section it needs (a few KB) instead of decoding the whole monolith. Returns
+ * the folder id + the names written.
+ */
+export async function uploadDebugSections(sections: { name: string; json: string }[]): Promise<{ folderId: string; names: string[] }> {
+  const token = await validAccessToken();
+  const folderId = await findOrCreateFolder(token);
+  await Promise.all(sections.map((s) => upsertFile(token, folderId, `${s.name}.json`, s.json)));
+  return { folderId, names: sections.map((s) => s.name) };
 }

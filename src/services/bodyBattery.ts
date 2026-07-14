@@ -48,11 +48,31 @@ const REST_STRESS   = 33;     // kept for the debug dump; Bevel sleep-stress ~25
 //   awake:  ΔE/h = DRAIN_BASE  − DRAIN_STRESS_K·S        (break-even at S≈32 — calm day holds/recharges)
 // Stage barely matters on its own (deep = core — energy ran straight through the deep block); the one
 // real stage effect is REM's autonomic stress SPIKE, which isn't real strain → cap S during REM.
-const CHARGE_BASE     = 16;    // /h charge intercept while asleep. (Reverted 13→16: the 13 was a mistake —
-                               // it matched Bevel's TAPERED late-night rate 4.4%/h, but Bevel's FULL-night
-                               // average is ~7.4%/h = +48 over the night, which CHARGE_BASE 16 gives. At 13
-                               // the charge (+35) couldn't replace the day's drain (−47) → battery spiralled to 6%.)
-const CHARGE_STRESS_K = 0.45;  // /h charge lost per stress unit (asleep)
+// ── ASLEEP CHARGE: ASYMPTOTIC TOWARD RECOVERY (the anchor) ────────────────────────────────────────────
+// REWRITTEN 2026-07-14 after a full paired Bevel export (bottom-up: HR/HRV verified identical to Bevel —
+// sleep HR 54.4 vs 54.3, HRV 44.7 vs 45.1 — and the awake drain-vs-stress curve already matched Bevel's
+// 0.5−0.1·S; so the fault was here, in the charge law).
+//
+// THE BUG: the old law was LINEAR and LEVEL-BLIND — charge/h = CHARGE_BASE − CHARGE_STRESS_K·stress, i.e. a
+// constant rate no matter how full the tank was. That makes the battery a FREE-RUNNING INTEGRATOR with NO
+// restoring force: charge and drain roughly balanced, so it kept whatever orbit history left it in. It had
+// sunk to a low orbit (5 → 71) and could never climb out — the morning read 68 while recovery said 100 and
+// Bevel 85, and the evening pinned at the floor (5) for 4+ hours, losing all information.
+//
+// THE FIX: charge ASYMPTOTICALLY toward a TARGET = the day's RECOVERY score. Fitting Bevel's own overnight
+// curve (36→85, 14 Jul) to rate = k·(T − E) gives k = 0.148/h and T = 102.9 ≈ the recovery score (97) — its
+// charge is fast when empty (~10/h at E=36) and tapers as it fills (~3/h at E=83). This is the missing
+// restoring force: however low the day drove it, a good night pulls it back to what recovery says you've
+// actually recovered — which is exactly what recovery MEANS. Sleep quality enters via the TARGET (recovery
+// already encodes HRV/sleep), so stress only modulates the RATE, and only on a genuinely disturbed night.
+const SLEEP_CHARGE_K     = 0.16;  // /h per point of (target − battery). Bevel fit 0.148; 0.16 converges a touch faster.
+const SLEEP_TARGET_MIN   = 40;    // never target below this (a terrible night still recovers something)
+const SLEEP_TARGET_FALLB = 85;    // when the recovery score isn't in the snapshot cache yet — still ANCHORED, never free-drift
+const SLEEP_STRESS_FREE  = 25;    // sleep stress below this costs nothing (typical night runs 15–24)
+const SLEEP_STRESS_K     = 0.02;  // rate lost per stress point ABOVE the free band (a disturbed night charges slower)
+const SLEEP_QUALITY_MIN  = 0.40;  // floor on that penalty — even a bad night charges
+const CHARGE_BASE     = 16;    // (legacy — no longer drives the rate; kept for the debug dump / A-B against old exports)
+const CHARGE_STRESS_K = 0.45;  // (legacy — as above)
 // Drain = PURE stress model, NO time-of-day factor (re-fit vs a full paired Bevel export 29 Jun 2026:
 // our drain was clock-shaped and over-drained the calm morning, sitting ~10% below Bevel all day). Bevel
 // holds energy flat through a low-stress morning and drains proportionally to stress above a break-even.
@@ -92,7 +112,11 @@ const WORKOUT_STRESS_CAP = 65; // (legacy) cap on workout drain-stress — super
 // ~−6/h, but a paired Bevel export showed a HR-130 run draining ~−13/h). So during a workout we drain on
 // HR intensity (%HRR) instead. Fit 30 Jun to two paired days: a HR-130 run (≈0.5 HRR) ≈ −13/h, an easy
 // walk (≈0.2 HRR) ≈ −5/h → ~27/h per unit HRR.
-const WORKOUT_DRAIN_PER_HRR = 27;
+// RE-FIT 2026-07-14 vs the paired Bevel export: 27 was ~50% too steep. Our workout bins drained −9.0/h at
+// mean HR 102 (HRR 0.36) while Bevel drained −6.25/h over the same morning run → per-HRR ≈ 17. Combined
+// with the anchored charge above, this lands the daily orbit at ≈ wake 82 / bottom 34 (Bevel: 85 / 36).
+// The old 27 was the single biggest drain term (−46 over the window) and is what pinned the evening at the floor.
+const WORKOUT_DRAIN_PER_HRR = 18;
 const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the spike doesn't starve charge
 // Z-SCORE STRESS INDEX (research-aligned, replaces the old HR-reserve + HRV-suppression + gate +
 // floor): stress = STRESS_BASE + (zHR − zHRV)·STRESS_SCALE, where z is THIS reading's deviation from
@@ -263,6 +287,13 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   const restHR = (rhrRaw as any[]).length ? Math.round((rhrRaw as any[]).at(-1).quantity) : 55;
   const maxHR  = (snap as any)?.estimatedMaxHR && (snap as any).estimatedMaxHR > 0 ? (snap as any).estimatedMaxHR : 190;
+  // THE ANCHOR: the overnight charge asymptotes toward the RECOVERY score — a fully-recovered night should
+  // wake with a full tank, because that is what recovery means. Recovery already encodes HRV + RHR + sleep,
+  // so sleep QUALITY enters here (via the target) rather than as a fudge on the charge rate. Read from the
+  // snapshot the module already loads (no caller change). No recovery yet → a fixed fallback target, so the
+  // battery is still ANCHORED and can never free-drift into a low orbit again.
+  const recoveryNow = Number((snap as any)?.recovery) || 0;
+  const chargeTarget = recoveryNow > 0 ? clamp(recoveryNow, SLEEP_TARGET_MIN, 100) : SLEEP_TARGET_FALLB;
 
   // ── HR helpers ──────────────────────────────────────────────────────────────
   const hrStatsNear = (t: number, win = 90_000): { mean: number; cv: number } | null => {
@@ -370,6 +401,15 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     .map(a => { const s = new Date(a.date).getTime(); return { s, e: s + (a.durationMin ?? 0) * 60_000 + WORKOUT_SETTLE_MS }; })
     .filter(w => Number.isFinite(w.s) && w.e > fromMs);
   const inWorkout = (t: number) => workoutWins.some(w => t >= w.s && t <= w.e);
+  // The +WORKOUT_SETTLE_MS tail above exists to keep post-exercise HR OUT OF THE STRESS CURVE. It must NOT
+  // also drain you at exercise intensity — you've stopped moving. Draining the settle window at the full
+  // %HRR workout rate was silently adding ~15 min of hard drain to EVERY session (2026-07-14 paired-Bevel
+  // finding: our workout bins totalled 5.1 h and −46 pts, a big part of what pinned the evening at the
+  // floor). So the DRAIN uses the exercise span only; the STRESS exclusion keeps the settle tail.
+  const exerciseWins = (((snap as any)?.activities ?? []) as any[])
+    .map(a => { const s = new Date(a.date).getTime(); return { s, e: s + (a.durationMin ?? 0) * 60_000 }; })
+    .filter(w => Number.isFinite(w.s) && w.e > fromMs);
+  const inExercise = (t: number) => exerciseWins.some(w => t >= w.s && t <= w.e);
 
   // ── Bin + integrate ──────────────────────────────────────────────────────────
   const binMs = BIN_MIN * 60_000;
@@ -408,7 +448,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const asleep = isAsleep(mid);
     const night = asleep || inSleepSession(mid); // asleep OR a micro-wake inside the night
     const stage = stageAt(mid);                  // HK stage 0..5 (-1 none)
-    const workout = inWorkout(mid);
+    const workout = inWorkout(mid);      // exercise + settle tail → freezes the STRESS curve
+    const exercising = inExercise(mid);  // exercise ONLY → drives the %HRR DRAIN (settle must not drain)
     // Circadian clock: the night→day transition (getting up) restarts time-since-wake; micro-wakes
     // inside the sleep session keep `night` true and don't reset it.
     if (!night && prevNight) wakeAt = mid;
@@ -453,9 +494,16 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const timeMult = 1;
     let ratePerHour: number;
     if (asleep) {
-      ratePerHour = Math.max(0, CHARGE_BASE - CHARGE_STRESS_K * (stage === 5 ? Math.min(stress, REM_STRESS_CAP) : stress));
-    } else if (workout) {
-      // Drain on HR intensity (%HRR) during a session — the stress-linear curve is far too gentle here.
+      // ASYMPTOTIC charge toward the RECOVERY target (see the SLEEP_CHARGE_K block above). Fast when the
+      // tank is low, tapering as it fills — and it ANCHORS the whole curve, so the battery can no longer
+      // drift into a permanent low orbit. REM's autonomic spike isn't real strain → cap it, as before.
+      const sSleep = stage === 5 ? Math.min(stress, REM_STRESS_CAP) : stress;
+      const quality = clamp(1 - SLEEP_STRESS_K * Math.max(0, sSleep - SLEEP_STRESS_FREE), SLEEP_QUALITY_MIN, 1);
+      ratePerHour = Math.max(0, SLEEP_CHARGE_K * quality * (chargeTarget - battery));
+    } else if (exercising) {
+      // Drain on HR intensity (%HRR) during the SESSION ITSELF — the stress-linear curve is far too gentle
+      // here. NOTE: `exercising`, not `workout` — the settle tail is for the stress exclusion only, and must
+      // fall through to the normal awake curve below (where a cooling-down HR drains gently, as it should).
       const hrr = clamp((avgHR - restHR) / Math.max(1, maxHR - restHR), 0, 1);
       ratePerHour = -WORKOUT_DRAIN_PER_HRR * hrr;
     } else {
@@ -559,7 +607,9 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     computedAt: now,
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
-        constants: { BIN_MIN, REST_STRESS, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, DRAIN_TIME_MMAX, DRAIN_TIME_DECAY, DRAIN_TIME_MMIN, WORKOUT_STRESS_CAP, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, DAY_STRESS_OFFSET, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
+        // The anchor actually used this run — verify the next paired export against these.
+        recoveryNow, chargeTarget,
+        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE_K, SLEEP_TARGET_MIN, SLEEP_TARGET_FALLB, SLEEP_STRESS_FREE, SLEEP_STRESS_K, SLEEP_QUALITY_MIN, WORKOUT_DRAIN_PER_HRR, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, DRAIN_TIME_MMAX, DRAIN_TIME_DECAY, DRAIN_TIME_MMIN, WORKOUT_STRESS_CAP, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, DAY_STRESS_OFFSET, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
         baselines: { dayBase, nightBase } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery

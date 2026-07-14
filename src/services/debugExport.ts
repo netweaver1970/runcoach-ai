@@ -101,3 +101,47 @@ export async function buildDebugExport(): Promise<DebugExport> {
 export async function buildDebugExportJson(): Promise<string> {
   return JSON.stringify(await buildDebugExport(), null, 2);
 }
+
+async function currentIdentity(): Promise<DebugIdentity> {
+  const user = await getCurrentUser().catch(() => null);
+  return user ? { id: user.id, email: user.email, name: user.name ?? null, role: user.role } : { anonymous: true };
+}
+
+/**
+ * COMPACT, TOPIC-SCOPED exports — one small file per concern (a few KB each) instead of one ~500 KB
+ * monolith. An off-device reader (Claude via the Drive link) fetches ONLY the section it needs and decodes
+ * it in one step — no giant base64 blob, no sub-agent to dig a section out. Chat history + full run lists
+ * are dropped; body-battery ships its ready-to-plot clock-time series (not the bulky raw debug traces).
+ */
+export async function buildDebugSections(): Promise<{ name: string; json: string }[]> {
+  const identity = await currentIdentity();
+  const stamp = (body: Record<string, unknown>) =>
+    JSON.stringify(redactSecrets({ app: 'RunCoachAI', kind: 'debug-section', exportedAt: new Date().toISOString(), identity, ...body }), null, 1);
+  const out: { name: string; json: string }[] = [];
+  const add = async (name: string, fn: () => Promise<unknown>) => {
+    try { out.push({ name, json: stamp({ section: name, data: await fn() }) }); }
+    catch (e: any) { out.push({ name, json: stamp({ section: name, error: String(e?.message ?? e) }) }); }
+  };
+
+  // FULL body-battery trace — the whole L0→L2 calibration chain in ONE small file (nothing trimmed): the
+  // summary + `series` (t-stamped battery/stress) + `debug` (per-bin hr + hrv (L0) + s/s0 (L1) + battery
+  // (L2), plus the HRV trust/reject trace and model constants/baselines) + `correlation` (t-stamped per-bin
+  // series + night stages). It's small on its own — only the monolith's runs/chat bulk is what's gone.
+  await add('bodybattery', async () => (await computeBodyBattery()) ?? null);
+  await add('trainingload', async () => JSON.parse(await buildTrainingLoadCalibration(4)));
+  await add('coach', async () => {
+    const snap = await loadSnapshotCache();
+    if (!snap) return null;
+    return assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
+  });
+  await add('settings', async () => {
+    const s = JSON.parse(await exportAllSettings(false));
+    // Drop ONLY the chat history (bulky + not calibration data); KEEP the real config files (schedule,
+    // zones, knowledge, plan logs…).
+    if (s && typeof s === 'object' && s.files && typeof s.files === 'object') {
+      for (const k of Object.keys(s.files)) if (/chat/i.test(k)) delete s.files[k];
+    }
+    return s;
+  });
+  return out;
+}
