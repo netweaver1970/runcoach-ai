@@ -4,7 +4,14 @@
  * by HRV (SDNN) when a TRUSTWORTHY reading is available; the battery (0–100) charges when
  * calm/asleep and discharges under stress/activity.
  *
- * HRV SELECTIVITY (important): the athlete runs an AFib-check app that logs many HRV
+ * HRV SELECTIVITY (important). NOTE (corrected 2026-07-14 by Geert): there is NO second app — ALL HRV comes
+ * from the Apple Watch. What's going on is that he enabled **AFib History in Apple Health**, which makes the
+ * WATCH ITSELF sample HRV far more often (~25 reads/night vs the usual 5–15). So the extra reads are genuine
+ * Apple Watch SDNN samples, just taken at more varied moments (incl. arousals/movement) — hence a wider,
+ * lower-skewed distribution, NOT third-party junk. The trust filter below is still right (it rejects reads
+ * taken while HR is elevated/erratic), but the old "junk app" framing was wrong and misled the 60-day
+ * baseline work. The stale wording is kept below only where it names the R-R gap behaviour.
+ * (was: the athlete runs an AFib-check app that logs many HRV
  * readings, some taken while moving (garbage). We only trust an HRV sample when:
  *   - its value is physiologically plausible (5–200 ms SDNN),
  *   - the Apple Watch heartbeat (R-R) series for that minute has no internal gaps
@@ -33,7 +40,9 @@ const ASLEEP = new Set([1, 3, 4, 5]); // asleepUnspecified/core/deep/REM (0=inBe
 const BIN_MIN = 5;            // 5-min bins → finer curve (drain rates are per-minute, so the
                              // battery is unchanged; STRESS_SMOOTH is set to hold the decay time)
 const WINDOW_H = 60;          // compute window (2+ nights so the seed washes out)
-const BASELINE_DAYS = 14;     // HRV baseline window
+// HRV baseline window. 14 → 60 DAYS (2026-07-14, Bevel parity — see the 60-day baseline block below).
+// HRV samples are sparse (a few dozen/day at most), so 60 days is still a cheap HealthKit query.
+const BASELINE_DAYS = 60;
 
 // Battery dynamics (per-minute), Bevel "Energy Bank" style: the battery charges ONLY while
 // asleep — but, like Bevel, the overnight charge is CAPPED BY RECOVERY: a poor-HRV night
@@ -124,8 +133,9 @@ const REM_STRESS_CAP  = 13;    // cap stress during REM (sleep-baseline) so the 
 // your typical → more stress. Self-normalizing, no per-person tuning. The night uses the night
 // baseline (so a low-HRV night reads as poor recovery) plus a sleep-stage bump.
 const STRESS_BASE   = 26;     // stress at "typical" (z = 0)
-const STRESS_SCALE  = 8.3;    // NIGHT stress pts per unit of (zHR − zHRV). Night already matches Bevel (paired
-                              // 2026-07-05: night mean ours 20.7 vs Bevel 21.2) — leave it.
+// NIGHT stress pts per unit of drive. RE-FIT 2026-07-14 against a paired Bevel night — see NIGHT_STRESS_BASE
+// below; this is the AMPLITUDE half of that fix and is NIGHT-ONLY (the day path uses DAY_STRESS_SCALE).
+const STRESS_SCALE  = 22;     // was 8.3 — the night curve was compressed to a 2.8-SD sliver vs Bevel's 7.3
 // DAY needs a STEEPER scale: paired vs Bevel our daytime stress was compressed (sat 15–23 while Bevel swings
 // 1–28) → calm moments read far too high (user saw 15 vs Bevel 2). Steepening around the pivot (BASE+OFFSET
 // ≈27.5) decompresses it: day mean → 17.2 (Bevel 17.1) and the calm floor drops toward Bevel's ~2-5. Night
@@ -153,7 +163,21 @@ const NIGHT_STAGE_SMOOTH = 0.35; // stress EWMA at night — fast enough that RE
 // Asleep charging hits 0 at stress ~32, so that phantom stress STARVED the overnight charge → barely
 // charged → battery hit 0 by afternoon. Fix: night stress = low anchor + ONLY genuine HR arousal
 // (beyond a margin) + a softened HRV term, hard-capped. Day stress is unchanged.
-const NIGHT_STRESS_BASE = 16;   // calm-sleep anchor
+// THE NIGHT-STRESS FLOOR — fixed 2026-07-14 (Geert spotted it in the curve; I had seen the same numbers and
+// waved them off as "slightly high, not the driver"). In calm deep sleep the arousal term → 0 and the HRV term
+// → 0, so night stress BOTTOMED OUT AT THE ANCHOR: it structurally could not express "deeply calm". Paired
+// against Bevel for the same night: our min was 11 and we spent 0/79 bins below 10; Bevel dipped to 1 and spent
+// 31/79 below 10. Our SD was 2.8 vs Bevel's 7.3 — a compressed sliver, not a curve.
+// Fix = lower the anchor AND raise the amplitude together (dropping the base alone would have fixed the floor
+// but under-shot the peaks, which already matched Bevel). Grid-fitted with the REAL formula (drive from raw
+// HR/HRV + STAGE_BUMP + EWMA + clamp), S searched to 60 so 22 is a true optimum, not a boundary hit:
+//   base 16 → 9, STRESS_SCALE 8.3 → 22   ⇒   RMSE vs Bevel 8.26 → 4.62
+//   mean 19.0 → 12.6 (Bevel 12.8) · min 11 → 2 (Bevel 1) · SD 2.8 → 5.4 (Bevel 7.3) · <10: 0/79 → 24/79 (Bevel 31/79)
+// NOTE: STAGE_BUMP stays ADDITIVE and unscaled (an early regression that recovered the drive from our emitted
+// stress would have silently rescaled it by 1.66× — that's why this was refit from the raw inputs instead).
+// The battery is UNAFFECTED: the anchored sleep charge only penalises stress above SLEEP_STRESS_FREE (25), and
+// the night now runs 2–26, so charge quality stays ~1. This is a stress-METRIC fidelity fix.
+const NIGHT_STRESS_BASE = 9;    // calm-sleep anchor (was 16 — that WAS the floor)
 const NIGHT_HR_MARGIN   = 6;    // bpm above the night HR mean before it counts as arousal
 const NIGHT_HR_SD_MIN   = 8;    // floor the (too-tight) night HR SD so normal sleep HR isn't "stress"
 const NIGHT_HRV_K       = 0.4;  // soften the HRV term at night (REM / transient dips aren't real stress)
@@ -257,7 +281,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   const q = (id: string, start: Date, unit: string, limit = 100_000) =>
     safe(() => (HealthKit.queryQuantitySamples as any)(id, { filter: { startDate: start, endDate: new Date(now) }, unit, ascending: true, limit }), [] as any[]);
 
-  const [hrRaw, hrvRaw, beatsRaw, rhrRaw, sleepRaw, hrvBaseRaw, stepRaw, snap] = await Promise.all([
+  const [hrRaw, hrvRaw, beatsRaw, rhrRaw, sleepRaw, hrvBaseRaw, stepRaw, snap, sleepBaseRaw] = await Promise.all([
     q(HR_ID, from, 'count/min'),
     q(HRV_ID, from, 'ms', 20_000),
     safe(() => (HealthKit as any).queryHeartbeatSeriesSamples({ filter: { startDate: from, endDate: new Date(now) }, ascending: true, limit: 5_000 }), [] as any[]),
@@ -266,6 +290,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     q(HRV_ID, baseFrom, 'ms', 50_000),
     q(STEP_ID, from, 'count', 50_000),
     loadSnapshotCache(),
+    // 60-day SLEEP windows — used ONLY to select which HRV reads belong in the long baseline (below).
+    safe(() => (HealthKit.queryCategorySamples as any)(SLEEP_ID, { filter: { startDate: baseFrom, endDate: new Date(now) }, ascending: true, limit: 40_000 }), [] as any[]),
   ]);
 
   // Steps as time-weighted samples (midpoint, steps/min) → movement gate for daytime stress.
@@ -292,7 +318,11 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   // so sleep QUALITY enters here (via the target) rather than as a fudge on the charge rate. Read from the
   // snapshot the module already loads (no caller change). No recovery yet → a fixed fallback target, so the
   // battery is still ANCHORED and can never free-drift into a low orbit again.
-  const recoveryNow = Number((snap as any)?.recovery) || 0;
+  // NB: the field is `todayRecovery.recoveryScore` — there is NO `snap.recovery`. The first cut read
+  // `(snap as any).recovery`, which is always undefined, so the anchor silently fell back to
+  // SLEEP_TARGET_FALLB for everyone and was never recovery-driven at all (caught in the 07-14 12:14 dump:
+  // recoveryNow 0 / chargeTarget 85). The `as any` cast is what hid it from the compiler.
+  const recoveryNow = Number((snap as any)?.todayRecovery?.recoveryScore) || 0;
   const chargeTarget = recoveryNow > 0 ? clamp(recoveryNow, SLEEP_TARGET_MIN, 100) : SLEEP_TARGET_FALLB;
 
   // ── HR helpers ──────────────────────────────────────────────────────────────
@@ -390,8 +420,114 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
           hrM: mean(reads.map(r => r.hr)), hrS: Math.max(BASE_SD_MIN, stdev(reads.map(r => r.hr))) }
       : fb;
   const fbBase = { hvM: hrvBaseline, hvS: 15, hrM: restHR, hrS: 6 };
-  const dayBase = mkBase(dayReads, fbBase);
-  const nightBase = mkBase(nightReads, dayBase); // too few night reads → fall back to the day baseline
+  const dayBase0 = mkBase(dayReads, fbBase);
+  const nightBase0 = mkBase(nightReads, dayBase0); // too few night reads → fall back to the day baseline
+
+  // ── 60-DAY HRV BASELINE (Bevel parity — THE SELF-NORMALISATION FIX) ─────────────────────────────────
+  // Asked Bevel directly (2026-07-14): "your baseline is a 60-day rolling average of your morning and sleep
+  // HRV readings." OURS was built from the SAME 60-HOUR window we score against — and a baseline computed
+  // from the very data you're measuring SELF-NORMALISES: a sustained condition (a heat wave, a hard training
+  // block) drifts INTO the baseline and becomes "your normal", so it disappears from the stress signal
+  // entirely. That is the long-chased heat-blindness ([[user_physiology]]). Bevel's 60-day window can't do
+  // that — a 5-day heat ramp is a small slice of 60 days, so it still reads as deviation.
+  // READ SELECTION — this, not the window length, is what actually sets the level. Evidence (07-14 dump):
+  // our 60-day baseline came out 41.8 while Bevel's 60-day is 45.4 — BUT our 60-HOUR baseline, which applies
+  // the FULL trust filter (HR context: rejects reads taken while moving/elevated), is 45.0 ≈ Bevel. Same
+  // HealthKit data. CORRECTED 2026-07-14 (Geert): there is NO second app — all HRV is Apple Watch; he turned
+  // on AFib History in Apple Health, which makes the WATCH sample ~25×/night instead of 5–15. So the extra
+  // reads are legitimate, just taken at more varied moments. Select the baseline reads by ACTUAL SLEEP
+  // WINDOWS over 60 days (cheap extra HK category query), falling back to a 22:00–09:00 clock split when
+  // sleep data is too thin (new user / watch not worn). NB sleep-window selection did NOT lift the baseline
+  // (41.8 → 40.4) — the denser reads sit inside sleep too. The real lever turned out to be the STATISTIC
+  // (pooled sample mean vs mean-of-nightly-means), below.
+  // SCOPE: this fixes the HRV channel (the dominant term — Bevel: "an inverse relationship between your
+  // current HRV and your baseline", HR only a modifier). HR mean/SD still come from the compute window
+  // because we have no dense 60-day HR context; the HR channel therefore remains window-normalised. That is
+  // the next lever if heat still under-reads.
+  const HRV_BASE_MIN_READS = 10;              // below this, keep the window baseline (a new user has no history)
+  const baseReads = (hrvBaseRaw as any[])
+    .map(s => ({ t: new Date(s.startDate).getTime(), v: s.quantity as number,
+                 src: (s.sourceRevision?.source?.name ?? s.sourceRevision?.source?.bundleIdentifier ?? 'unknown') as string }))
+    .filter(s => trustHRV(s.t, s.v, false).ok);   // plausibility only (no dense HR context over 60d)
+  // 60-day sleep SESSIONS (merge stage segments < 1h apart → ~one per night, so the lookup stays cheap).
+  const baseSleepSessions = (() => {
+    const wins = (sleepBaseRaw as any[])
+      .filter(s => ASLEEP.has(s.value))
+      .map(s => ({ s: new Date(s.startDate).getTime(), e: new Date(s.endDate).getTime() }))
+      .filter(w => Number.isFinite(w.s) && Number.isFinite(w.e))
+      .sort((a, b) => a.s - b.s);
+    const out: { s: number; e: number }[] = [];
+    for (const w of wins) {
+      const last = out[out.length - 1];
+      if (last && w.s - last.e <= SESSION_GAP_MS) last.e = Math.max(last.e, w.e);
+      else out.push({ ...w });
+    }
+    return out;
+  })();
+  const inBaseSleep = (t: number) => baseSleepSessions.some(w => t >= w.s && t <= w.e);
+  const restHour = (t: number) => { const h = new Date(t).getHours(); return h >= 22 || h < 9; };
+  // Prefer real sleep windows; fall back to the clock split only if we have almost no sleep history.
+  const useSleepWins = baseSleepSessions.length >= 10;
+  const isBaseNight = (t: number) => (useSleepWins ? inBaseSleep(t) : restHour(t));
+  const nightBaseVals = baseReads.filter(r => isBaseNight(r.t)).map(r => r.v);
+  const dayBaseVals   = baseReads.filter(r => !isBaseNight(r.t)).map(r => r.v);
+  // hvM = mean of NIGHTLY MEANS (one value per night, equal weight) — NOT a pooled sample mean.
+  // WHY (07-14): the pooled mean gave 40.4 vs Bevel's 45.4, and the 60-day read distribution is wildly
+  // wide + RIGHT-skewed (p10 21.4 · p50 36.2 · p90 64.5, mean 40.4 > median 36.2). Pooling lets ONE night
+  // that logged 60 junk reads outweigh a night that logged 8 good ones — Geert's AFib app logs ~25/night
+  // (Apple Watch: 5–15) and we CANNOT filter it by source (every sample reports as "SourceProxy" — the HK
+  // bridge doesn't surface the writing app) nor by time (it logs during sleep too). Averaging per-NIGHT
+  // means removes that weighting bias, and "a 60-day rolling average of your sleep HRV" is one-value-per-
+  // night anyway. hvS stays the POOLED within-read SD (it z-scores individual reads, so it must describe
+  // read-level spread, not night-to-night spread).
+  const nightlyMeans = (() => {
+    if (!useSleepWins) return [] as number[];
+    const byNight = new Map<number, number[]>();
+    for (const r of baseReads) {
+      const i = baseSleepSessions.findIndex(w => r.t >= w.s && r.t <= w.e);
+      if (i < 0) continue;
+      (byNight.get(i) ?? byNight.set(i, []).get(i)!).push(r.v);
+    }
+    return [...byNight.values()].filter(v => v.length >= 3).map(v => mean(v));
+  })();
+  // TREND-CORRECTED LEVEL (2026-07-14). A flat rolling MEAN of a RISING series sits ~half the window behind:
+  // Geert's nightly HRV is climbing (+0.10 ms/night — fitness returning after PFPS, plus a fresh
+  // CJC-1295/Ipamorelin batch, plus heat acclimatisation, all pushing the same way), so the 60-night mean
+  // (40.6) was measuring him against his ~30-days-ago self while he actually sits at 44.7. **3.0 of that
+  // 4.1 ms "elevation" was pure baseline LAG, not recovery.** That single bug explains: (a) recovery pinned
+  // near 100 (you look elevated every day while you keep improving), (b) our night stress UNDER-reading
+  // (a lagging baseline inflates zHRV, which suppresses stress), and (c) why Bevel's 45.4 beat our 40.6 —
+  // trend-corrected we get 43.6, so Bevel is recency-weighted, not a flat mean.
+  // It also resolves the real tension: we need the baseline to TRACK slow structural change (fitness) while
+  // still FLAGGING acute conditions (heat, illness). A flat window can't do both; a TREND LINE does — fitness
+  // moves the slope, a heat wave shows up as deviation FROM the slope.
+  // Guards: enough nights, a clamped slope, and a clamped correction, so noise can never run the level away.
+  const TREND_MIN_NIGHTS = 20;
+  const TREND_MAX_SLOPE  = 0.30;   // ms/night — beyond this it's noise, not a trend
+  const TREND_MAX_ADJ    = 8;      // ms — hard cap on how far the trend may move the level off the flat mean
+  const trendLevel = (perNight: number[], flat: number): number => {
+    if (perNight.length < TREND_MIN_NIGHTS) return flat;
+    const N = perNight.length;
+    const xs = perNight.map((_, i) => i);
+    const mx = mean(xs), my = mean(perNight);
+    const den = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
+    if (den <= 0) return flat;
+    const slope = clamp(xs.reduce((a, x, i) => a + (x - mx) * (perNight[i] - my), 0) / den, -TREND_MAX_SLOPE, TREND_MAX_SLOPE);
+    const today = (my - slope * mx) + slope * (N - 1);          // regression line AT TODAY, not its mean
+    return flat + clamp(today - flat, -TREND_MAX_ADJ, TREND_MAX_ADJ);
+  };
+  const hv60 = (vals: number[], fbM: number, fbS: number, perNight?: number[]) => {
+    if (vals.length < HRV_BASE_MIN_READS) return { hvM: fbM, hvS: fbS };  // fall back to the window baseline
+    const flat = (perNight && perNight.length >= 10) ? mean(perNight) : mean(vals);
+    return {
+      hvM: perNight && perNight.length ? trendLevel(perNight, flat) : flat,
+      // hvS stays the POOLED READ-level SD: it z-scores individual reads, and read-to-read spread (~17.8)
+      // dwarfs the trend's contribution, so detrending it would be noise-fitting.
+      hvS: Math.max(BASE_SD_MIN, stdev(vals)),
+    };
+  };
+  const dayBase   = { ...dayBase0,   ...hv60(dayBaseVals,   dayBase0.hvM,   dayBase0.hvS) };
+  const nightBase = { ...nightBase0, ...hv60(nightBaseVals, nightBase0.hvM, nightBase0.hvS, nightlyMeans) };
 
   // ── Workout windows (+ settle) ───────────────────────────────────────────────
   // During a workout and for ~15 min after, HR is exercise-driven (and still settling),
@@ -453,6 +589,9 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // Circadian clock: the night→day transition (getting up) restarts time-since-wake; micro-wakes
     // inside the sleep session keep `night` true and don't reset it.
     if (!night && prevNight) wakeAt = mid;
+    // Did we just cross the sleep boundary (either way)? Captured BEFORE prevNight is overwritten — the
+    // stress EWMA below must RESET on this flip (see the sleepFlip comment at the EWMA).
+    const sleepFlip = night !== prevNight;
     prevNight = night;
     const hoursAwake = night ? 0 : Math.max(0, (mid - wakeAt) / 3_600_000);
     if (n === 0 && !asleep) continue; // no data, awake → skip (gap)
@@ -473,7 +612,14 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // REM/stage transitions actually show (a slow weight smears the square wave flat). Workout +
     // settle FREEZES the EWMA (bin → gap).
     if (!workout) {
-      if (smStress == null) {
+      // RESET THE EWMA WHEN WE CROSS THE SLEEP BOUNDARY (2026-07-14). Falling asleep is a genuine STATE
+      // CHANGE — the awake stress must not bleed across it. It was: the evening's high stress (last awake bin
+      // 67) decayed into the night at 65%/bin, so the first asleep bins REPORTED 49 → 38 → 31 → 28 while the
+      // RAW night stress was already a correct, calm 17. That fake ~40-min ramp was the whole "high early-night
+      // stress" (Bevel read 10 there). Same on waking, so night stress can't bleed into the day.
+      // NOTE: the base 9 / scale 22 refit above was grid-fitted with a FRESH EWMA at sleep onset, so this reset
+      // is REQUIRED for that fit to hold — the two changes are coupled.
+      if (smStress == null || sleepFlip) {
         smStress = rawStress;
       } else {
         const alpha: number = night ? NIGHT_STAGE_SMOOTH : (rawStress > smStress ? 1 : STRESS_SMOOTH);
@@ -609,6 +755,37 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
         // The anchor actually used this run — verify the next paired export against these.
         recoveryNow, chargeTarget,
+        // 60-day HRV baseline vs the OLD 60h-window one. When these two diverge (heat wave, hard block) the
+        // old window baseline was self-normalising the condition away. Bevel's own 60-day value was 45.4.
+        hrvBase60: { day: dayBase.hvM, night: nightBase.hvM, nDay: dayBaseVals.length, nNight: nightBaseVals.length, days: BASELINE_DAYS,
+          sleepSessions: baseSleepSessions.length, selectedBy: useSleepWins ? 'sleep-windows' : 'clock' },
+        // WHY the 60-day baseline (40.4) sits below Bevel's (45.4) while our trust-filtered 60h reads give
+        // 45.0: we suspect a low-value SOURCE (the AFib app logs ~25 reads/night DURING sleep vs Apple
+        // Watch's 5–15). Name it instead of guessing: per-source count + mean over the 60-day SLEEP reads,
+        // plus the value distribution. If one source is clearly dragging the mean down, we filter it and the
+        // baseline should land at ~45 — at which point the base-9/scale-22 night fit holds again.
+        hrvSources: (() => {
+          const acc: Record<string, { n: number; mean: number }> = {};
+          for (const r of baseReads.filter(r => isBaseNight(r.t))) {
+            const e = (acc[r.src] ??= { n: 0, mean: 0 });
+            e.mean = (e.mean * e.n + r.v) / (e.n + 1); e.n++;
+          }
+          for (const k of Object.keys(acc)) acc[k].mean = Math.round(acc[k].mean * 10) / 10;
+          return acc;
+        })(),
+        // hvM is now the mean of NIGHTLY MEANS. Emit them so the next dump shows the per-night level and
+        // whether the pooled-vs-per-night statistic is what moved us off Bevel's 45.4.
+        hrvNightly: { n: nightlyMeans.length,
+          meanOfNightMeans: Math.round(mean(nightlyMeans.length ? nightlyMeans : [0]) * 10) / 10,
+          pooledMean: Math.round(mean(nightBaseVals.length ? nightBaseVals : [0]) * 10) / 10,
+          trendLevelUsed: Math.round(nightBase.hvM * 10) / 10,   // the LAG-CORRECTED level actually used
+          nights: nightlyMeans.map(v => Math.round(v * 10) / 10) },
+        hrvNightPct: (() => {
+          const v = [...nightBaseVals].sort((a, b) => a - b);
+          const p = (q: number) => v.length ? Math.round(v[Math.floor(q * (v.length - 1))] * 10) / 10 : 0;
+          return { p10: p(0.10), p25: p(0.25), p50: p(0.50), p75: p(0.75), p90: p(0.90) };
+        })(),
+        hrvBaseWindow: { day: dayBase0.hvM, night: nightBase0.hvM },
         constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE_K, SLEEP_TARGET_MIN, SLEEP_TARGET_FALLB, SLEEP_STRESS_FREE, SLEEP_STRESS_K, SLEEP_QUALITY_MIN, WORKOUT_DRAIN_PER_HRR, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, DRAIN_TIME_MMAX, DRAIN_TIME_DECAY, DRAIN_TIME_MMIN, WORKOUT_STRESS_CAP, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, DAY_STRESS_OFFSET, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
         baselines: { dayBase, nightBase } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why

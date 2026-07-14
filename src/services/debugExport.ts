@@ -128,6 +128,26 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
   // (L2), plus the HRV trust/reject trace and model constants/baselines) + `correlation` (t-stamped per-bin
   // series + night stages). It's small on its own — only the monolith's runs/chat bulk is what's gone.
   await add('bodybattery', async () => (await computeBodyBattery()) ?? null);
+  // RECOVERY AUDIT (read-only, 2026-07-14). computeRecoveryScore z-scores today against 60-day ROLLING MEANS
+  // of weightedRMSSD and Apple resting HR. For an IMPROVING athlete (Geert: fitness returning post-PFPS,
+  // HRV climbing +0.09 ms/night) a trailing mean sits ~half the window BEHIND, so BOTH terms inflate:
+  // zHRV = (today − laggingMean)/6.3 and zRHR = (laggingMean − today)/3.3 — a falling RHR inflates the second
+  // one the same way. Suspicion: recovery reads ~100 on nights that are only ~+0.3 SD above his own trend
+  // (i.e. utterly ordinary), which would mean it's scoring "fitter than your old self", not "recovered today".
+  // This section exports the raw inputs so the lag can be MEASURED (and a trend-corrected score compared)
+  // before anything that feeds the coach's green-light gate is touched.
+  await add('recovery', async () => {
+    const snap = await loadSnapshotCache();
+    if (!snap) return null;
+    return {
+      todayRecovery:     snap.todayRecovery,       // score + the transparent breakdown (z-terms)
+      recentNightlyHRV:  snap.recentNightlyHRV,    // per-night weightedRMSSD + overnightHR (the HRV baseline input)
+      nightlyLean:       snap.nightlyLean,         // lean nightly series (d/h/s)
+      hrv:               snap.hrv,                 // daily HRV series
+      restingHR:         snap.restingHR,           // daily Apple resting-HR series (the RHR baseline input)
+      recentSleep:       snap.recentSleep,
+    };
+  });
   await add('trainingload', async () => JSON.parse(await buildTrainingLoadCalibration(4)));
   await add('coach', async () => {
     const snap = await loadSnapshotCache();

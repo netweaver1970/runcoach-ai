@@ -721,9 +721,44 @@ function computeRecoveryScore(
   const cutoff = latest ? new Date(new Date(latest + 'T00:00:00Z').getTime() - 59 * 86_400_000).toISOString().slice(0, 10) : '';
   const recent = cutoff ? withData.filter((n) => n.date >= cutoff) : withData;
 
-  // HRV z — rolling mean, Bevel-fixed SD (6.3).
+  // HRV z — TREND-CORRECTED 60-day level, Bevel-fixed SD (6.3).
+  //
+  // WHY (2026-07-14, measured): a flat rolling MEAN of a RISING series sits ~half the window BEHIND. Geert's
+  // nightly HRV nearly DOUBLED over the window (25 → 47 ms — fitness returning after PFPS), so the 60-day
+  // mean (35.1) sat 4.0 ms BELOW his CURRENT norm (39.0). That handed him ~+0.6 SD of free zHRV every single
+  // day (worth ~7 recovery points) and pushed the score into its 100 cap (core 99 + sleep 7.1 − rr 1.1 = 105,
+  // clipped). Net: the score was partly measuring "fitter than your OLD self" rather than "recovered TODAY",
+  // and it had lost all resolution at the top. It bites hardest at the THRESHOLD — a genuinely mediocre night
+  // also collects those ~7 free points, so a true 60 reads ~67, right where the coach's green gate sits.
+  //
+  // FIX: evaluate the 60-day LINEAR TREND at TODAY instead of taking its mean. Fitness moves the SLOPE; a
+  // genuinely bad night still shows up as deviation FROM the slope — which is what a recovery score should
+  // say. Regress on DATE (not array index) so missing nights don't distort the slope.
+  // (Same correction applied to bodyBattery's HRV baseline. The RHR term below is deliberately LEFT ALONE:
+  // measured over the same window, resting HR is flat (slope 0.008 bpm/day) — no lag, so zRHR 1.5 is real.)
+  // Guards: enough nights + clamped slope + clamped adjustment, so noise can never run the level away.
+  const REC_TREND_MIN_NIGHTS = 20;
+  const REC_TREND_MAX_SLOPE  = 0.5;   // ms/day beyond this is noise, not a trend
+  const REC_TREND_MAX_ADJ    = 10;    // ms — hard cap on how far the trend may move the level off the flat mean
   let hrvMean = todayRMSSD, zHRV = 0;
-  if (recent.length >= 5) { hrvMean = mean(recent.map((n) => n.weightedRMSSD)); zHRV = (todayRMSSD - hrvMean) / REC_SD_HRV; }
+  if (recent.length >= 5) {
+    const flat = mean(recent.map((n) => n.weightedRMSSD));
+    hrvMean = flat;
+    if (recent.length >= REC_TREND_MIN_NIGHTS) {
+      const t0 = new Date(recent[0].date + 'T00:00:00Z').getTime();
+      const xs = recent.map((n) => (new Date(n.date + 'T00:00:00Z').getTime() - t0) / 86_400_000);
+      const ys = recent.map((n) => n.weightedRMSSD);
+      const mx = mean(xs), my = mean(ys);
+      const den = xs.reduce((s, x) => s + (x - mx) ** 2, 0);
+      if (den > 0) {
+        const rawSlope = xs.reduce((s, x, i) => s + (x - mx) * (ys[i] - my), 0) / den;
+        const slope = Math.max(-REC_TREND_MAX_SLOPE, Math.min(REC_TREND_MAX_SLOPE, rawSlope));
+        const atToday = (my - slope * mx) + slope * xs[xs.length - 1];   // the trend line AT TODAY, not its mean
+        hrvMean = flat + Math.max(-REC_TREND_MAX_ADJ, Math.min(REC_TREND_MAX_ADJ, atToday - flat));
+      }
+    }
+    zHRV = (todayRMSSD - hrvMean) / REC_SD_HRV;
+  }
 
   // RHR z — Apple resting HR, rolling mean, fixed SD (3.3); lower than baseline → positive.
   const rhrVals = restingHRHistory.filter((v) => v > 0).slice(-60);
@@ -4014,7 +4049,11 @@ async function computeDailyComponents(
 // once/day the recent ~15 days are recomputed (only very-recent days shift as new data lands — older days'
 // baselines/EWMAs are fixed). Repeat views + already-covered timeframe switches on the same day = instant.
 interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string, Record<string, number>> }
-const DC_FILE = FileSystem.documentDirectory + 'daily-components-v2.json'; // v2: recovery model unified (full sleep+RR) → discard v1's old-model cached scores
+// v3 (2026-07-14): the HRV baseline is now TREND-CORRECTED (regression at today, not a flat 60d mean) — the
+// flat mean lagged a rising HRV by ~4 ms and handed out ~7 free recovery points a day. Cached v2 scores were
+// computed with the old lagging baseline, so they MUST be discarded or the fix would be invisible.
+// v2: recovery model unified (full sleep+RR) → discarded v1's old-model cached scores.
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v3.json';
 const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;
 let dcLoadP: Promise<DcStore> | null = null;
