@@ -210,7 +210,11 @@ export default function SettingsScreen() {
     setCalibrating(true); setCalibMsg('');
     try {
       const res = await recalibrateZonesFromLastRun();
-      setCalibMsg(res.updated ? '✓ Zones refined from your last run (see “Power & HR Zones” in Coaching Knowledge)' : (res.reason ?? 'Nothing to update'));
+      // Pull the refined watts straight back into the inputs above. Recalibration writes both the
+      // coaching file AND getPowerZones, but this screen read them on mount — so the fields kept showing
+      // the pre-calibration numbers until you navigated away and back.
+      if (res.updated) await getPowerZones().then(setPowerZones).catch(() => {});
+      setCalibMsg(res.updated ? '✓ Zones refined from your last run — values above updated' : (res.reason ?? 'Nothing to update'));
     } catch (e: any) {
       setCalibMsg('Failed: ' + (e?.message ?? 'error'));
     } finally {
