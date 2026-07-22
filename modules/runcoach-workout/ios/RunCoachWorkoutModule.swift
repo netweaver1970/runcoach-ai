@@ -104,20 +104,41 @@ enum WorkoutPusher {
         let workMin = d(b["workMinutes"]) ?? 0
 
         // Power target → PowerRangeAlert (running power, watts).
-        var alert: (any WorkoutAlert)? = nil
-        if let lo = d(b["powerLowWatts"]), let hi = d(b["powerHighWatts"]), lo > 0, hi > 0 {
-          let lower = Measurement(value: min(lo, hi), unit: UnitPower.watts)
-          let upper = Measurement(value: max(lo, hi), unit: UnitPower.watts)
-          alert = PowerRangeAlert(target: lower...upper)
+        //
+        // ⚠️ CRASH GUARD (2026-07-18). WorkoutKit `fatalError`s with `unsupportedRange` on a ZERO-WIDTH
+        // range — and a Swift fatalError is a TRAP: it cannot be caught from JS, so it kills the whole
+        // process (signal 5). A plan whose block carried powerLowWatts == powerHighWatts (191...191, an
+        // LLM-supplied single power target rather than a band) therefore crash-LOOPED the app: the day's
+        // workout is auto-pushed to the watch on launch, so it died within seconds of every start, with
+        // no way in to clear it. Guarantee a minimum spread here, at the boundary, so NO upstream source
+        // (LLM, cached plan, coach prescription, hand-edit) can ever trap the process again.
+        func powerAlert(_ loKey: String, _ hiKey: String) -> (any WorkoutAlert)? {
+          guard let lo = d(b[loKey]), let hi = d(b[hiKey]), lo > 0, hi > 0 else { return nil }
+          let minSpread = 6.0                                  // watts — WorkoutKit needs a real band
+          var loV = min(lo, hi), hiV = max(lo, hi)
+          if hiV - loV < minSpread {
+            let mid = (loV + hiV) / 2
+            loV = max(1.0, mid - minSpread / 2)
+            hiV = loV + minSpread
+          }
+          return PowerRangeAlert(target: Measurement(value: loV, unit: UnitPower.watts)
+                                     ... Measurement(value: hiV, unit: UnitPower.watts))
         }
+        let alert = powerAlert("powerLowWatts", "powerHighWatts")
 
         let work = IntervalStep(.work, goal: workMin > 0 ? .time(workMin * 60, .seconds) : .open, alert: alert)
 
         let restMin = d(b["restMinutes"]) ?? 0
         if restMin > 0 {
+          // A FLOAT (Z2/Z3 recovery, flagged by its own recovery watt band) is running WORK at a lower
+          // effort — push it as a .work step so HealthKit records it as Work and its minutes land inside
+          // time-on-feet. A jog/walk rest has no band and stays .recovery, correctly outside the budget.
+          let floatAlert = powerAlert("recoveryLowWatts", "recoveryHighWatts")
+          let rec = floatAlert != nil
+            ? IntervalStep(.work,     goal: .time(restMin * 60, .seconds), alert: floatAlert)
+            : IntervalStep(.recovery, goal: .time(restMin * 60, .seconds))
           // Recovery belongs BETWEEN reps only — the cooldown follows the final rep, so
           // never append a dangling recovery after it. reps-1 work+recovery, then a bare work.
-          let rec = IntervalStep(.recovery, goal: .time(restMin * 60, .seconds))
           if reps > 1 { blocks.append(IntervalBlock(steps: [work, rec], iterations: reps - 1)) }
           blocks.append(IntervalBlock(steps: [work], iterations: 1))
         } else {

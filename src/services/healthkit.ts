@@ -47,7 +47,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp } from './trainingLoad';
+import { activityName, activityFactor, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp } from './trainingLoad';
 import { getForecastPairs } from './forecastLog';
 import { getLocalWeather } from './weather';
 import { computePersonalSleepGoal, computeAdjustedGoal } from './bevelCalibration';
@@ -1743,8 +1743,38 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     strainMaxHR,
     todayWindows,
   );
-  // Muscular load from today's strength/resistance workouts (HK types 20/50).
+  // NO-HR WORKOUT FALLBACK (2026-07-19). zoneStrainLoad integrates HR samples INSIDE each workout window,
+  // so a logged workout with no heart-rate data contributes exactly ZERO — a 68-min / 224-kcal walk read as
+  // no strain at all, while the Strain Buildup list showed it at 22 (that list uses the kcal-based
+  // computeWorkoutLoad). Geert: "the main strain number only contains the runs, not the walks, while it was
+  // calculated and shown." That's a DATA-AVAILABILITY artifact, not physiology — the walk was real work.
+  // The same reasoning already drives activityFloorTrimp for the CTL/ATL path; strain never got it.
+  // Fallback = durationMin × activityFactor(type), the SAME per-activity-type intensity constant
+  // computeWorkoutLoad uses when kcal is missing — no new magic number. Scale check: for a Z2 run the
+  // fallback (min × 1.0) equals what the HR path yields (min × Z2 weight 1), so the two agree.
+  // Strength types are EXCLUDED here — they're already counted in muscularLoad below (no double-count).
   const STRENGTH_TYPES = new Set([20, 50]);
+  const hrPts = (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number }));
+  // PER-ACTIVITY loads — strain is now summed per activity (see computeDayStrain), so each workout needs
+  // its OWN zone load rather than one lumped total. Falls back to duration × activityFactor when the
+  // workout carries no HR at all.
+  const activityLoads: number[] = [];
+  let noHrWorkoutLoad = 0;
+  for (const w of (loadWorkoutsRaw as any[])) {
+    if (trainingDayKey(toISOStr(w.startDate)) !== trainingDayKey(now)) continue;
+    if (STRENGTH_TYPES.has(w.workoutActivityType)) continue;
+    const ws = new Date(toISOStr(w.startDate)).getTime();
+    const we = ws + workoutDurationSec(w) * 1000;
+    const hasHr = hrPts.some(p => p.t >= ws && p.t <= we && p.hr > restHRForTrimp);
+    if (hasHr) {
+      activityLoads.push(zoneStrainLoad(hrPts, restHRForTrimp, strainMaxHR, [{ s: ws, e: we }]));
+    } else {
+      const fb = (workoutDurationSec(w) / 60) * activityFactor(w.workoutActivityType);
+      noHrWorkoutLoad += fb;
+      activityLoads.push(fb);
+    }
+  }
+
   let muscularLoad = 0;
   for (const w of (loadWorkoutsRaw as any[])) {
     if (!STRENGTH_TYPES.has(w.workoutActivityType)) continue;
@@ -1788,7 +1818,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(activeZoneLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor)
+    ? computeDayStrain(activeZoneLoad + noHrWorkoutLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor, activityLoads)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
@@ -3121,12 +3151,20 @@ export async function fetchStrainHistory(
   const STRENGTH = new Set([20, 50]);
   const muscularByDay = new Map<string, number>();
   const windowsByDay  = new Map<string, { s: number; e: number }[]>();
+  // Same windows, but keeping TYPE + duration so a no-HR workout can fall back to duration × activityFactor
+  // (see the no-HR fallback on the live path). History MUST use the identical model, or the 14-day strain
+  // BASELINE (built from this series) would sit below today's corrected value and skew the advisable band.
+  const actWinsByDay = new Map<string, { s: number; e: number; min: number; type: number }[]>();
   for (const w of (workouts as any[])) {
     const day = trainingDayKey(toISOStr(w.startDate));
     const ws  = new Date(toISOStr(w.startDate)).getTime();
     const win = { s: ws, e: ws + workoutDurationSec(w) * 1000 };
     if (!windowsByDay.has(day)) windowsByDay.set(day, []);
     windowsByDay.get(day)!.push(win);
+    if (!STRENGTH.has(w.workoutActivityType)) {   // strength is counted via muscularByDay — no double-count
+      if (!actWinsByDay.has(day)) actWinsByDay.set(day, []);
+      actWinsByDay.get(day)!.push({ ...win, min: workoutDurationSec(w) / 60, type: w.workoutActivityType });
+    }
     if (STRENGTH.has(w.workoutActivityType)) {
       muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
     }
@@ -3143,9 +3181,20 @@ export async function fetchStrainHistory(
   const out: { date: string; value: number }[] = [];
   for (const [day, samples] of byDay) {
     // Same model as today's live strain: workout HR-zone load (active) + non-workout steps (passive).
-    const zoneLoad = zoneStrainLoad(samples, restHR, maxForDay(day) || 190, windowsByDay.get(day) ?? []);
-    const rawLoad  = zoneLoad + stepStrainLoad(nwStepsByDay.get(day) ?? 0) + (muscularByDay.get(day) ?? 0);
-    out.push({ date: day, value: strainFromLoad(rawLoad) }); // 0-100 (Bevel %)
+    const dayMax = maxForDay(day) || 190;
+    // PER-ACTIVITY loads, identical to the live path: strain is summed per activity, not curved on the
+    // total (Bevel-verified additive). No-HR workouts fall back to duration × activityFactor.
+    const actLoads: number[] = [];
+    for (const w of (actWinsByDay.get(day) ?? [])) {
+      const hasHr = samples.some(p => p.t >= w.s && p.t <= w.e && p.hr > restHR);
+      actLoads.push(hasHr ? zoneStrainLoad(samples, restHR, dayMax, [{ s: w.s, e: w.e }])
+                          : w.min * activityFactor(w.type));
+    }
+    const musc = muscularByDay.get(day) ?? 0;
+    const actStrain = actLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L)), 0)
+                    + (musc > 0 ? strainFromLoad(musc) : 0);
+    const passiveStrain = strainFromLoad(stepStrainLoad(nwStepsByDay.get(day) ?? 0));
+    out.push({ date: day, value: Math.round(Math.max(actStrain, passiveStrain)) }); // Bevel % — UNCAPPED (a huge day may exceed 100)
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -4053,7 +4102,14 @@ interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string,
 // flat mean lagged a rising HRV by ~4 ms and handed out ~7 free recovery points a day. Cached v2 scores were
 // computed with the old lagging baseline, so they MUST be discarded or the fix would be invisible.
 // v2: recovery model unified (full sleep+RR) → discarded v1's old-model cached scores.
-const DC_FILE = FileSystem.documentDirectory + 'daily-components-v3.json';
+// v4 (2026-07-19): the strain model now counts NO-HR workouts (a phone-tracked walk used to score 0 because
+// zoneStrainLoad integrates HR inside the window). Cached v3 strainScores were computed WITHOUT them, so
+// they must be discarded — otherwise the history chart and the 14-day baseline would sit below today's
+// corrected value and skew the advisable band. (v3 was the recovery trend-baseline fix.)
+// v5 (2026-07-20): strain aggregation changed from "log of the summed load" to "sum of per-activity
+// strains" (Bevel's own breakdown proved it additive: 14+29+10 = its exact 53). Every cached v4 strain
+// was computed the old, multi-activity-compressing way, so they must be discarded.
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v5.json';
 const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;
 let dcLoadP: Promise<DcStore> | null = null;

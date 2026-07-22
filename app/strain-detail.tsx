@@ -526,9 +526,14 @@ export default function StrainDetailScreen() {
                   <Text style={[s.buildLoad, { color: status.color }]}>{a.load}</Text>
                 </View>
               ))}
+              {/* The per-activity loads above come from computeWorkoutLoad (energy-based, the CTL/ATL model);
+                  the headline strain comes from the HR-zone model. They are DIFFERENT models, so the old
+                  "total → strain" arrow claimed a causation that never held (and read as a bug when a no-HR
+                  walk showed a load but moved the strain by nothing). Show them side by side, not as a
+                  derivation. */}
               <View style={s.buildTotalRow}>
-                <Text style={s.buildTotalLabel}>Total load → strain</Text>
-                <Text style={s.buildTotalVal}>{dayActs.reduce((sum, a) => sum + a.load, 0)} → {real}%</Text>
+                <Text style={s.buildTotalLabel}>Activity load · today’s strain</Text>
+                <Text style={s.buildTotalVal}>{dayActs.reduce((sum, a) => sum + a.load, 0)} · {real}%</Text>
               </View>
             </View>
           </>

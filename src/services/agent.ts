@@ -6,7 +6,10 @@ import { callLLM, callLLMTools, agenticSupported } from './llm';
 // coach.ts pulls in claude.ts (getPowerZones) and claude.ts pulls in this file (agentComplete) → a require
 // cycle. It's safe: every use of these imports is inside a tool `run` callback (call-time), never at module
 // load, so the live bindings are fully initialised by the time they run.
-import { assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getWeekPlan, formatWorkoutStructure, loadPrescriptionAt } from './coach';
+import { assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getWeekPlan, formatWorkoutStructure, loadPrescriptionAt,
+         savePendingPrescription, buildProposedWorkout, ensureBlockPower } from './coach';
+import { addLifeEvent } from './timelineEvents';
+import { getPowerZones } from './claude';
 import { computeBodyBattery } from './bodyBattery';
 import { buildKnowledgePrompt } from './coachFiles';
 
@@ -315,6 +318,87 @@ const TOOLS: AgentTool[] = [
       return { coaching_files: text || 'No coaching files configured yet.' };
     },
   },
+  // ── WRITE TOOLS ────────────────────────────────────────────────────────────────────────────────────
+  // The chat coach was structurally read-only: it could diagnose an issue and design a sensible modified
+  // session, but nothing could reach the app — the insight died in the chat. These two close that loop.
+  // log_health_event writes DIRECTLY (recording that something hurts is harmless; LOSING it is the real
+  // risk — buildTimelineContext feeds the timeline into every future plan). propose_prescription only
+  // PROPOSES: the athlete approves it on the Daily Coach. Nothing reaches the watch un-reviewed.
+  {
+    name: 'log_health_event',
+    description:
+      "RECORD a health/life event to the athlete's timeline so EVERY future plan accounts for it — an injury or niggle (e.g. Achilles tendon soreness), illness, travel, or a notable life stressor. Call this AS SOON AS the athlete mentions such a thing; otherwise it is forgotten the moment this chat ends and tomorrow's plan will prescribe as if nothing is wrong. Writes immediately (no approval needed). For a niggle, ALSO tell the athlete they can set status to Injured if they want running suppressed entirely.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title:    { type: 'string', description: 'Short label, e.g. "Achilles tendon soreness (right)".' },
+        date:     { type: 'string', description: 'ISO date YYYY-MM-DD it started. Defaults to today.' },
+        category: { type: 'string', description: 'One of: injury, illness, travel, life, other.' },
+        note:     { type: 'string', description: 'Detail worth remembering — severity, what aggravates it, what the athlete and you agreed to change.' },
+      },
+      required: ['title'],
+    },
+    run: async ({ title, date, category, note }) => {
+      const d = (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) ? date : new Date().toISOString().slice(0, 10);
+      await addLifeEvent({ title: String(title).slice(0, 120), date: d, category: category ? String(category) : 'injury', note: note ? String(note).slice(0, 500) : undefined });
+      return { recorded: true, title, date: d, note: 'Saved to the timeline — it now feeds every future plan.' };
+    },
+  },
+  {
+    name: 'propose_prescription',
+    description:
+      "PROPOSE a replacement session for a given day. Use when you and the athlete have agreed the prescribed session should change (e.g. an Achilles niggle → capped power + WALK recoveries). This does NOT apply it: the athlete sees an Apply / Discard card on the Daily Coach, and only then does it reach the watch. Build `blocks` the way the watch workout works: each block is repeats × (workMinutes at hrZone, then restMinutes of recovery at recoveryZone). Use recoveryZone 'Z0'/'Z1' for a WALK/jog recovery, 'Z3' for a float. Recovery is capped at 5 min. Keep the session within the day's budget — check get_plan_context first.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        session:    { type: 'string', description: 'One-line prose the athlete reads, e.g. "Modified intervals — 3× 3min @ 240-260W, 2min walk recoveries".' },
+        rationale:  { type: 'string', description: 'WHY this differs from the original prescription (the clinical//training reason).' },
+        intensity:  { type: 'string', description: 'rest | easy | moderate | hard.' },
+        runMinutes: { type: 'number', description: 'Total time on feet for the session.' },
+        date:       { type: 'string', description: 'ISO YYYY-MM-DD. Defaults to today.' },
+        blocks: {
+          type: 'array',
+          description: 'Work blocks in order.',
+          items: {
+            type: 'object',
+            properties: {
+              repeats:      { type: 'number' },
+              workMinutes:  { type: 'number' },
+              restMinutes:  { type: 'number', description: 'Recovery between reps, minutes (max 5).' },
+              hrZone:       { type: 'string', description: 'Z1..Z5 for the WORK.' },
+              recoveryZone: { type: 'string', description: "Z0/Z1 = walk/jog recovery (rest — outside the time-on-feet budget). Z2/Z3 = FLOAT: easy running between reps, pushed to the watch as a WORK step at its own lower watts, so its minutes DO count toward the budget." },
+              powerLowWatts:  { type: 'number' },
+              powerHighWatts: { type: 'number' },
+              label:        { type: 'string' },
+            },
+          },
+        },
+      },
+      required: ['session', 'intensity', 'blocks'],
+    },
+    run: async ({ session, rationale, intensity, runMinutes, date, blocks }, ctx) => {
+      const d = (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) ? date : new Date().toISOString().slice(0, 10);
+      const it = ['rest', 'easy', 'moderate', 'hard'].includes(String(intensity)) ? String(intensity) as any : 'easy';
+      const mins = Math.max(0, Math.min(240, Number(runMinutes) || 0));
+      // Route through the SAME validation the LLM daily plan uses: zone clamping by intensity, restMinutes
+      // ≤5 (a hallucinated "30m jog" once ballooned a 35-min tempo to 122 min) and power-band widening
+      // (a zero-width band once crash-looped the app via WorkoutKit). Never trust raw model output here.
+      const pz = await getPowerZones().catch(() => undefined);
+      const wo = it === 'rest' ? null
+        : ensureBlockPower(buildProposedWorkout({ blocks }, it, 'Day'), pz);
+      await savePendingPrescription({
+        date: d, session: String(session).slice(0, 280),
+        rationale: rationale ? String(rationale).slice(0, 400) : undefined,
+        intensity: it, runMinutes: mins, workout: wo, source: 'chat-coach',
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        proposed: true, date: d,
+        structure: wo ? formatWorkoutStructure(wo) : 'rest',
+        note: 'PROPOSED only — tell the athlete to open the Daily Coach and tap Apply to make it today\'s session and send it to the watch.',
+      };
+    },
+  },
 ];
 
 const TOOLS_HINT =
@@ -332,7 +416,15 @@ const TOOLS_HINT =
   'the tool for "how does <activity> affect my recovery?" and planning around a session tonight.\n' +
   '• get_coaching_files — the athlete\'s OWN weekly schedule, Power/HR zones, drills & profile (call before ' +
   'designing/critiquing a program or discussing zones/paces).\n' +
-  'Chain tools freely (e.g. get_plan_context then get_week_plan) before answering. Keep the final answer concise and cite the numbers you pulled.';
+  'Chain tools freely (e.g. get_plan_context then get_week_plan) before answering. Keep the final answer concise and cite the numbers you pulled.\n' +
+  'You also have TWO WRITE tools — the chat is no longer read-only:\n' +
+  '• log_health_event — call this IMMEDIATELY when the athlete mentions an injury/niggle (e.g. Achilles), ' +
+  'illness, travel or a big life stressor. It writes straight to the timeline, which feeds EVERY future plan. ' +
+  'If you don\'t log it, it is forgotten when this chat ends and tomorrow\'s plan ignores it.\n' +
+  '• propose_prescription — when you and the athlete agree today\'s session should change, PROPOSE the new ' +
+  'one. It does NOT auto-apply: the athlete taps Apply on the Daily Coach, which then sends it to the watch. ' +
+  'Check get_plan_context first so the proposal respects the day\'s budget, and say plainly that it is ' +
+  'waiting for their approval.';
 
 /** Anthropic tool schemas (no run fn) sent to the API. */
 const toolSchemas = () => TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema }));

@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -52,6 +52,9 @@ export default function DailyCoachScreen() {
   const llm = useLLMReady();
   const [watchSending, setWatchSending] = useState(false);
   const [watchMsg, setWatchMsg] = useState<string | null>(null);
+  // Chat-coach PROPOSAL awaiting approval — never auto-applied (propose+review).
+  const [pending, setPending] = useState<PendingPrescription | null>(null);
+  const [pendBusy, setPendBusy] = useState(false);
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
   const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
@@ -220,6 +223,8 @@ export default function DailyCoachScreen() {
     setRepAdj(null);
     setCacheChecked(false);
     loadCachedPlan(targetDate).then(p => { if (p) setPlan(p); setCacheChecked(true); });
+    // A chat-coach PROPOSAL waiting for approval (propose_prescription). Never auto-applied.
+    loadPendingPrescription(targetDate).then(setPending).catch(() => setPending(null));
   }, [targetDate]);
 
   // Long-run style + this day's split opt-in (for the toggle shown on long-run days).
@@ -443,6 +448,43 @@ export default function DailyCoachScreen() {
               <Text style={s.coachRationale}>{plan.rationale}</Text>
               {plan.cautions ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
 
+              {/* PROPOSED by the chat coach — awaits an explicit tap. Nothing reaches the watch unreviewed. */}
+              {pending && targetIsToday && (
+                <View style={s.proposalCard}>
+                  <Text style={s.proposalTitle}>💬 Coach proposed a change</Text>
+                  <Text style={s.proposalSession}>{pending.session}</Text>
+                  {pending.rationale ? <Text style={s.proposalWhy}>{pending.rationale}</Text> : null}
+                  <Text style={s.proposalMeta}>
+                    {pending.intensity}{pending.runMinutes > 0 ? ` · ${pending.runMinutes} min` : ''}
+                    {pending.workout ? ` · ${formatWorkoutStructure(pending.workout)}` : ''}
+                  </Text>
+                  <View style={s.proposalBtns}>
+                    <TouchableOpacity
+                      style={[s.proposalApply, pendBusy && { opacity: 0.6 }]}
+                      disabled={pendBusy}
+                      onPress={async () => {
+                        setPendBusy(true);
+                        try {
+                          if (!plan) return;                       // need a base plan to merge onto
+                          const applied = await applyPendingPrescription(targetDate, plan);
+                          if (applied) { setPlan(applied); setPending(null); setWatchMsg('Applied — tap Send to Watch to push it.'); }
+                        } catch (e: any) { setPlanError(e?.message ?? 'Could not apply.'); }
+                        finally { setPendBusy(false); }
+                      }}
+                    >
+                      {pendBusy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.proposalApplyText}>✓ Apply</Text>}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={s.proposalDiscard}
+                      disabled={pendBusy}
+                      onPress={async () => { await clearPendingPrescription(targetDate); setPending(null); }}
+                    >
+                      <Text style={s.proposalDiscardText}>Discard</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
               {/* Opt-in split toggle — only on a long-run day when the Long-run style is "Opt-in". */}
               {isLongDay && longStyle === 'optin' && targetIsToday && (
                 <View style={s.splitRow}>
@@ -467,7 +509,9 @@ export default function DailyCoachScreen() {
                       {watchWorkout.drillsMinutes > 0 ? idx + 3 : idx + 2}. {b.repeats}× ({b.workMinutes}m work
                       {b.hrZone ? ` @ ${b.hrZone}` : ''}
                       {b.powerLowWatts && b.powerHighWatts ? ` ${b.powerLowWatts}–${b.powerHighWatts} W` : ''}
-                      {b.restMinutes > 0 ? ` + ${b.restMinutes}m ${b.recoveryZone === 'Z3' || b.recoveryZone === 'Z2' ? 'float' : 'jog'}` : ''}){cleanBlockLabel(b.label, b.hrZone) ? ` · ${cleanBlockLabel(b.label, b.hrZone)}` : ''}
+                      {b.restMinutes > 0 ? ` + ${b.restMinutes}m ${b.recoveryLowWatts ? 'float' : 'jog'}` : ''}
+                      {b.restMinutes > 0 && b.recoveryLowWatts && b.recoveryHighWatts
+                        ? ` ${b.recoveryLowWatts}–${b.recoveryHighWatts} W` : ''}){cleanBlockLabel(b.label, b.hrZone) ? ` · ${cleanBlockLabel(b.label, b.hrZone)}` : ''}
                     </Text>
                   ))}
                   <Text style={s.workoutStep}>Cool-down {watchWorkout.cooldownMeters > 0 ? `${watchWorkout.cooldownMeters} m` : 'open'}</Text>
@@ -724,6 +768,16 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
   adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center', flexShrink: 1 },
   adjustReset: { fontSize: 12, color: c.accent, fontWeight: '600' },
+  proposalCard:    { backgroundColor: c.bg, borderRadius: 12, borderWidth: 1, borderColor: c.accent, padding: 12, marginTop: 10, marginBottom: 4 },
+  proposalTitle:   { fontSize: 13, fontWeight: '800', color: c.accent, marginBottom: 4 },
+  proposalSession: { fontSize: 14, fontWeight: '600', color: c.text, lineHeight: 20 },
+  proposalWhy:     { fontSize: 12, color: c.textSub, marginTop: 4, lineHeight: 17 },
+  proposalMeta:    { fontSize: 12, color: c.textSub, marginTop: 6 },
+  proposalBtns:    { flexDirection: 'row', gap: 10, marginTop: 10, alignItems: 'center' },
+  proposalApply:   { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 18 },
+  proposalApplyText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  proposalDiscard: { paddingVertical: 8, paddingHorizontal: 12 },
+  proposalDiscardText: { color: c.textSub, fontWeight: '600', fontSize: 13 },
   sessionLoad:     { fontSize: 13, fontWeight: '700', color: c.text, marginTop: 4 },
   sessionLoadHint: { fontSize: 11, fontWeight: '500', color: c.textSub },
   projStrain:  { fontSize: 13, fontWeight: '700', marginTop: 8 },

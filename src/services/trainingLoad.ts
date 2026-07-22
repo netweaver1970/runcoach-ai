@@ -559,7 +559,12 @@ export function zoneStrainBreakdown(
 // Logarithmic squash: RawLoad → 0-100 strain (diminishing returns near the top, Bevel-style).
 export function strainFromLoad(rawLoad: number): number {
   if (rawLoad <= 0) return 0;
-  return Math.min(100, Math.round(STRAIN_LOAD_A * Math.log(1 + STRAIN_LOAD_B * rawLoad)));
+  // UNCAPPED (2026-07-20, Geert: "I don't think there's a hard cap at 100 in Bevel either"). The doc on
+  // computeDayStrain always said "Uncapped — extreme efforts can exceed 100", but this Math.min(100,…)
+  // silently contradicted it. A genuinely huge day SHOULD read >100 rather than flat-lining at the ceiling
+  // and losing the information. The strain RING clamps its fill separately (ArcRing: Math.min(1, …)), so
+  // the arc stays full while the NUMBER stays truthful.
+  return Math.round(STRAIN_LOAD_A * Math.log(1 + STRAIN_LOAD_B * rawLoad));
 }
 
 // Estimate a watch workout's strain LOAD (pre-heat) from its blocks + warmup/drills/cooldown,
@@ -598,6 +603,15 @@ export function estimateWorkoutLoad(w: {
 // athlete's own rest/max HR (those only convert zones→bpm for the watch). Only sex enters, via Banister's
 // coefficients (men 0.64/1.92, women 0.86/1.67).
 const ZONE_HRR: Record<string, number> = { Z0: 0.35, Z1: 0.50, Z2: 0.62, Z3: 0.72, Z4: 0.85, Z5: 0.93 };
+
+/**
+ * A between-rep recovery at Z2/Z3 is a FLOAT — genuine running work at a lower effort, not a rest.
+ * That distinction is load-bearing: the watch pushes a float as a WORK step (so HealthKit records it as
+ * Work) and time-on-feet counts work+drills only, so a float booked as "recovery" would silently vanish
+ * from the volume budget. Z0/Z1 = walk/standing/jog rest → genuine recovery, excluded as before.
+ * Lives here, next to ZONE_HRR, so coach.ts and planLog.ts share ONE definition of "float".
+ */
+export const isFloatZone = (zone?: string): boolean => zone === 'Z2' || zone === 'Z3';
 const TRIMP_TAU_RISE = 0.75;   // min — HR time-constant climbing toward a harder target (~45 s)
 const TRIMP_TAU_FALL = 1.10;   // min — HR decays a touch slower on recovery (~66 s) → density shows up
 const TRIMP_DT       = 0.25;   // min — 15 s integration step
@@ -733,12 +747,27 @@ export function computeDayStrain(
   passiveLoad = 0,       // small passive-movement term (active energy / steps proxy)
   range?: AdvisableRange,
   heatFactor = 1,
+  activityLoads?: number[], // PER-ACTIVITY zone loads → additive strain (see below). Omit = legacy behaviour.
 ): DayStrain {
-  // Zone-weighted active load + a small passive-movement term + strength, inflated by heat, then a
-  // SIGMOID squash → bounded 0-100 (Bevel-style). Calm/sleep HR sits below zone 1, so it's excluded
-  // for free: the score starts near zero in the morning and gets harder to push near the top.
+  // ── AGGREGATION: SUM PER-ACTIVITY STRAINS, don't curve the total (Bevel-verified 2026-07-20) ──────────
+  // strainFromLoad is LOGARITHMIC, so applying it to the SUMMED load compresses multi-activity days:
+  // ln(a+b) < ln(a)+ln(b). A walk done third in the day lost half its value (15 standalone → 7 marginal),
+  // which read as "the walk isn't counted".
+  // Bevel's own per-activity breakdown for 19 Jul settles it: Walk 14 + Run 29 + Run 10 = **53, its exact
+  // total** → Bevel is ADDITIVE. And our per-activity numbers already match it (15/14, 27/29, 8/10, sum 50
+  // vs 53) — so the PARTS were right and only the aggregation was wrong. Curving the total gave 43.
+  // PASSIVE is a FLOOR, not an addend: Bevel's total equals the activity sum exactly (no separate passive
+  // term on an activity day), while a rest day should still score its non-workout movement.
   const rawLoad = (Math.max(0, activeLoad) + Math.max(0, passiveLoad) + Math.max(0, muscularLoad)) * heatFactor;
-  const real = strainFromLoad(rawLoad);
+  let real: number;
+  if (activityLoads && activityLoads.length > 0) {
+    const actStrain = activityLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L) * heatFactor), 0);
+    const muscStrain = muscularLoad > 0 ? strainFromLoad(Math.max(0, muscularLoad) * heatFactor) : 0;
+    const passiveStrain = passiveLoad > 0 ? strainFromLoad(Math.max(0, passiveLoad) * heatFactor) : 0;
+    real = Math.round(Math.max(actStrain + muscStrain, passiveStrain));   // uncapped — see strainFromLoad
+  } else {
+    real = strainFromLoad(rawLoad);   // legacy: no per-activity breakdown available
+  }
 
   const r = range ?? advisableStrainRange({ recovery: recovery > 0 ? recovery : undefined, tsb });
   return {

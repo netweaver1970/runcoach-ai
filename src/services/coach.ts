@@ -14,7 +14,7 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDista
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
-import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp } from './trainingLoad';
+import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone } from './trainingLoad';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
 import { DayStrain, ActivitySummary, RunWorkout } from '../types';
@@ -85,6 +85,8 @@ export interface WatchWorkoutBlock {
   recoveryZone?: string;        // the RECOVERY effort between reps: Z1 = jog/standing, Z3 = float — a load lever
   powerLowWatts?:  number;      // power window mapped from the HR zone (lower bound, watts)
   powerHighWatts?: number;      // upper bound, watts
+  recoveryLowWatts?:  number;   // FLOAT only (Z2/Z3 recovery): its own, lower power window — the float goes to
+  recoveryHighWatts?: number;   // the watch as a WORK step at these watts, so it counts as work, not rest
   label?:      string;          // e.g. "tempo", "VO2"
 }
 export interface WatchWorkout {
@@ -115,6 +117,7 @@ export interface CoachPlan {
   genReadiness?: number;     // readiness (0–100) when generated — morning plans use STALE (yesterday's) readiness
                              // before overnight HRV/sleep lands; refresh once it crosses the green (≥60) gate
   shrinkForced?: boolean;    // shrink-to-fit placed this quality on its day OVER the cap → skip the budget/cap refresh checks
+  coachEdited?: boolean;     // the athlete APPROVED a chat-coach proposal → never auto-regenerate over it (only ↻ Regenerate)
   sessionKind?: SessionKind; // canonical type → drives the honest UI label (not the workout's hardest zone)
   prescribedLoad?: number;   // derived readout: the session's prescribed Banister TRIMP (impact), incl. warm-up/cool-down
   secondSession?: {          // present ONLY on a split long run — the day's Part 2 (a later easy/Z2 run)
@@ -132,6 +135,10 @@ export interface CoachPlan {
 const TEMP_DRIFT_C = 4;
 const STRAIN_DRIFT = 10;
 export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean {
+  // An APPROVED chat-coach edit is the athlete's deliberate choice (e.g. Achilles → walk recoveries, capped
+  // power). Weather/readiness drift must NOT silently regenerate it away — that would undo a modification
+  // made for an injury without the athlete noticing. Only an explicit ↻ Regenerate replaces it.
+  if (plan.coachEdited) return false;
   const nowTemp = snap.weather?.apparentC ?? snap.weather?.tempC;
   // A plan from before conditions-tracking has no genTempC — refresh it once so it
   // picks up the current weather (and gets stamped for future drift checks).
@@ -248,12 +255,15 @@ ONLY the work blocks (warmupMeters/cooldownMeters/drillsMinutes you send are ign
 running stays ≤ tofBudgetTodayMin yet reaches the upper band. The HR ZONE + duration + structure are the DRIVING \
 facts: set each block's hrZone (Z1–Z5) and the matching powerLowWatts/powerHighWatts by reading them straight \
 from the "Power & HR Zones" table in the COACHING KNOWLEDGE above (that table is calibrated from real runs — use \
-its watt ranges, do not invent them). If no zones table is present, omit power. If intensity is "rest", set \
+its watt ranges, do not invent them). If no zones table is present, omit power. Set each multi-rep block's \
+recoveryZone: "Z0"/"Z1" for a walk/jog rest, "Z2"/"Z3" for a FLOAT (easy running between reps). A float is \
+counted as WORK — it goes to the watch as a work step at its own lower watts and its minutes count toward \
+tofBudgetTodayMin — so only choose it when you intend that extra running. If intensity is "rest", set \
 workout to null (no watch workout).`;
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
 {"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string,\
-"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"hrZone":"Z1".."Z5","powerLowWatts":number,"powerHighWatts":number,"label":string}],"cooldownMeters":600}}. \
+"workout":null OR {"warmupMeters":600,"drillsMinutes":number,"blocks":[{"repeats":number,"workMinutes":number,"restMinutes":number,"hrZone":"Z1".."Z5","recoveryZone":"Z0".."Z3","powerLowWatts":number,"powerHighWatts":number,"label":string}],"cooldownMeters":600}}. \
 Be concise and skimmable — no filler. headline ≤ 7 words (the outlook); session ≤ 25 words \
 (type, run minutes, run/walk or alternation if relevant); runMinutes = prescribed running time-on-feet \
 (≤ tofBudgetTodayMin); strength ≤ 22 words (just the named exercises × sets/reps); rationale ≤ 22 words \
@@ -301,8 +311,14 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
     return {
       repeats:     Math.max(1, Math.min(30, Math.round(num(b?.repeats) ?? 1))),
       workMinutes: Math.max(0.5, Math.min(120, num(b?.workMinutes) ?? 5)),
-      restMinutes: Math.max(0, Math.min(30, num(b?.restMinutes) ?? 0)),
+      // Recovery between reps is a jog/float — ≤5 min, ever. The old ceiling of 30 let an LLM "30m jog"
+      // hallucination through, turning a 35-min tempo into a 122-min session (2026-07-15).
+      restMinutes: Math.max(0, Math.min(5, num(b?.restMinutes) ?? 0)),
       hrZone: zone,
+      // Recovery TYPE survives the parse (it was silently dropped, so an LLM/chat-proposed float
+      // arrived as a default Z1 jog): walk/jog rest vs float changes both the load AND, since a float
+      // is pushed as a work step, whether those minutes count toward time-on-feet. Never above Z3.
+      recoveryZone: typeof b?.recoveryZone === 'string' && /^Z[0-3]$/.test(b.recoveryZone) ? b.recoveryZone : undefined,
       powerLowWatts:  downgraded ? undefined : watts(b?.powerLowWatts),
       powerHighWatts: downgraded ? undefined : watts(b?.powerHighWatts),
       label: cleanBlockLabel(b?.label, zone),
@@ -319,6 +335,16 @@ function parseWorkout(o: any, intensity: CoachIntensity, name: string): WatchWor
     blocks,
     cooldownMeters: st.cooldownMeters,
   };
+}
+
+/**
+ * Public wrapper over parseWorkout for the CHAT COACH's proposals. Deliberately reuses the exact same
+ * validation the LLM daily plan goes through — zone clamped to the session rating, restMinutes ≤ 5,
+ * repeats/workMinutes bounded, warm-up/cool-down/drills taken from the athlete's own WorkoutStructure —
+ * so a proposal can never smuggle in something the daily path would have rejected.
+ */
+export function buildProposedWorkout(o: any, intensity: CoachIntensity, name: string): WatchWorkout | null {
+  return parseWorkout(o, intensity, name);
 }
 
 // Map an HR zone (Z1–Z5) to its watt window from the athlete's power zones.
@@ -340,12 +366,38 @@ function zoneToWatts(zone: string | undefined, pz?: CoachSnapshot['powerZones'])
 
 // Guarantee every work block carries a power window so the watch can give in-band cues.
 // Fills missing watts from the block's HR zone (defaulting to Z2) using the power zones.
+// Minimum watt spread for a power band. WorkoutKit TRAPS (fatalError: unsupportedRange) on a ZERO-WIDTH
+// range, which kills the whole process — see the crash guard in RunCoachWorkoutModule.swift. That guard is
+// the real backstop; this keeps a degenerate band from being STORED in a cached plan in the first place
+// (an LLM handing back one power target as both bounds, e.g. 191/191, is what caused the 2026-07-18 loop).
+const MIN_WATT_SPREAD = 6;
+function widenPower(lo?: number, hi?: number): [number | undefined, number | undefined] {
+  if (lo == null || hi == null || !(lo > 0) || !(hi > 0)) return [lo, hi];
+  let l = Math.min(lo, hi), h = Math.max(lo, hi);
+  if (h - l < MIN_WATT_SPREAD) { const mid = (l + h) / 2; l = Math.max(1, Math.round(mid - MIN_WATT_SPREAD / 2)); h = l + MIN_WATT_SPREAD; }
+  return [l, h];
+}
+
 export function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['powerZones']): WatchWorkout | null {
   if (!w) return w;
   w.blocks = w.blocks.map(b => {
-    if (b.powerLowWatts && b.powerHighWatts) return b;
-    const [lo, hi] = zoneToWatts(b.hrZone ?? 'Z2', pz);
-    return { ...b, powerLowWatts: b.powerLowWatts ?? lo, powerHighWatts: b.powerHighWatts ?? hi };
+    let out = b;
+    if (b.powerLowWatts && b.powerHighWatts) {
+      const [l, h] = widenPower(b.powerLowWatts, b.powerHighWatts);
+      if (l !== b.powerLowWatts || h !== b.powerHighWatts) out = { ...b, powerLowWatts: l, powerHighWatts: h };
+    } else {
+      const [lo, hi] = zoneToWatts(b.hrZone ?? 'Z2', pz);
+      const [l, h] = widenPower(b.powerLowWatts ?? lo, b.powerHighWatts ?? hi);
+      out = { ...b, powerLowWatts: l, powerHighWatts: h };
+    }
+    // A FLOAT recovery (Z2/Z3) is running work at a lower effort, so it needs its OWN watt window —
+    // the watch pushes it as a work step with this band. A jog/walk rest (Z0/Z1) gets no band: it stays
+    // a WorkoutKit .recovery step and, correctly, stays outside time-on-feet.
+    if (out.restMinutes > 0 && isFloatZone(out.recoveryZone)) {
+      const [rl, rh] = widenPower(...zoneToWatts(out.recoveryZone, pz));
+      if (rl && rh) out = { ...out, recoveryLowWatts: rl, recoveryHighWatts: rh };
+    }
+    return out;
   });
   return w;
 }
@@ -364,11 +416,23 @@ export function mergeWorkoutPower(target: WatchWorkout | null, source?: WatchWor
       anyPow = anyPow ?? [b.powerLowWatts, b.powerHighWatts];
       if (b.hrZone) byZone.set(b.hrZone, [b.powerLowWatts, b.powerHighWatts]);
     }
+    // The float's own band is zone-keyed too — a Z2 float and a Z2 work block share watts.
+    if (b.recoveryLowWatts && b.recoveryHighWatts && b.recoveryZone)
+      byZone.set(b.recoveryZone, [b.recoveryLowWatts, b.recoveryHighWatts]);
   }
   target.blocks = target.blocks.map(b => {
-    if (b.powerLowWatts && b.powerHighWatts) return b;
-    const m = (b.hrZone && byZone.get(b.hrZone)) || anyPow;
-    return m ? { ...b, powerLowWatts: m[0], powerHighWatts: m[1] } : b;
+    let out = b;
+    if (!(b.powerLowWatts && b.powerHighWatts)) {
+      const m = (b.hrZone && byZone.get(b.hrZone)) || anyPow;
+      if (m) out = { ...out, powerLowWatts: m[0], powerHighWatts: m[1] };
+    }
+    // Without this the float loses its band → it would push as a plain .recovery step and drop out
+    // of time-on-feet, silently, just because the athlete nudged the minutes.
+    if (out.restMinutes > 0 && isFloatZone(out.recoveryZone) && !(out.recoveryLowWatts && out.recoveryHighWatts)) {
+      const m = byZone.get(out.recoveryZone!);
+      if (m) out = { ...out, recoveryLowWatts: m[0], recoveryHighWatts: m[1] };
+    }
+    return out;
   });
   return target;
 }
@@ -526,8 +590,11 @@ export function formatWorkoutStructure(w?: WatchWorkout | null): string {
     const pwr = lo && hi ? (lo === hi ? ` @ ${lo}W` : ` @ ${lo}–${hi}W`)
               : b.hrZone ? ` @ ${b.hrZone}` : '';
     const rep = b.repeats > 1 ? `${b.repeats}× ${fmtMin(b.workMinutes)}min` : `${fmtMin(b.workMinutes)}min`;
+    const rlo = b.recoveryLowWatts, rhi = b.recoveryHighWatts;
+    // A float carries its own (lower) watt band — show it, so the session reads as work at two efforts.
+    const recoPwr = rlo && rhi ? ` @ ${rlo}–${rhi}W` : '';
     const reco = b.repeats > 1 && b.restMinutes > 0
-      ? ` / ${fmtMin(b.restMinutes)}min ${recoveryWord(b.recoveryZone)}` : '';
+      ? ` / ${fmtMin(b.restMinutes)}min ${recoveryWord(b.recoveryZone)}${recoPwr}` : '';
     return `${rep}${pwr}${reco}`;
   });
   return parts.join(' + ');
@@ -1102,12 +1169,21 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     const ceiling = basis.intensity === 'rest'
       ? `\n\nMANDATORY: today is a REST day (the 7-day plan + rolling volume cap leave no running budget). Return intensity "rest", runMinutes 0, workout null, and a recovery/strength-focused headline + session.`
       : `\n\nPRESCRIBED CEILING — the 7-day plan + today's recovery/heat have ALREADY set today to intensity "${basis.intensity}", about ${basis.runMinutes} min. You MUST honour this as a CEILING: stay at or BELOW it (you may go easier/shorter if today's data warrants), but NEVER prescribe a harder intensity or more minutes — good recovery or cool weather must not inflate the run, as that eats the rest of the week. Within the ceiling, design the session per the COACHING KNOWLEDGE above: open warm-up, a short DRILLS block if the runner's files call for it (they may, even on easy runs), the work, and an open cool-down.`;
-    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}`;
+    // SHRINK-TO-FIT / RACE force-placement: the deterministic basis DELIBERATELY held a (shortened) quality
+    // session on its scheduled day even though the rolling cap is nearly spent — banking budget elsewhere.
+    // The model only sees `tofBudgetTodayMin` (e.g. 14 min) + "cap reached" and reasonably concludes REST,
+    // which then fights the app: on 2026-07-22 it returned rest, the rest→easy floor made it `easy`, its
+    // (absent) structure was rejected, and the card ended up "Z2 · Z4 259-265W · Cap hit — rest today".
+    // Telling it about the force-placement removes the contradiction at SOURCE rather than papering over it.
+    const forced = basis.shrinkForced
+      ? `\n\nIMPORTANT — TODAY'S SESSION IS DELIBERATELY FORCE-PLACED. The rolling volume cap is nearly spent, but the app has INTENTIONALLY held this shortened quality session on its scheduled day (shrink-to-fit) and banked budget elsewhere in the week. A low tofBudgetTodayMin therefore does NOT mean today is a rest day: do NOT return intensity "rest", and do NOT write that the cap forces rest today. Honour the prescribed session (you may still ease it slightly if today's recovery genuinely warrants).`
+      : '';
+    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}${forced}`;
     const txt = await callLLM({
       system,
       // Feed the LLM the SAME next-run the basis resolved from the 7-day plan (may be tomorrow's shrink-to-fit
       // run), so its prose doesn't state the raw cap date (e.g. "run Saturday") while the card shows Friday.
-      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes } }) }],
+      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes, forcePlaced: !!basis.shrinkForced } }) }],
       maxTokens: 1200,
       temperature: 0.2,
     });
@@ -1125,6 +1201,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     const intensity: CoachIntensity = (basis.intensity !== 'rest' && eased === 'rest') ? 'easy' : eased;
     const runMinutes = intensity === 'rest' ? 0
       : Math.max(8, Math.min(basis.runMinutes, Math.round(Number(o.runMinutes)) || basis.runMinutes));
+    // Did we override the model's own call? (the rest→easy floor, or the cap at the basis). If so, its
+    // prose describes a session we are NOT prescribing and must not be shown.
+    const overrodeLlm = intensity !== llmIntensity;
     const wkName = weekdayName(snap.date);
     // Keep the LLM's structure (it honours the coaching-file drills), but reject a malformed one — where
     // the interval BLOCKS (work + between-rep recovery) don't account for a reasonable share of the run
@@ -1134,13 +1213,45 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     // sets and swapped in a denser synthesized 8×3 — while the LLM's 3×5 PROSE stayed, so the two disagreed.
     const parsed = intensity === 'rest' ? null : parseWorkout(o.workout, intensity, wkName);
     const blockTotal = (parsed?.blocks ?? []).reduce((s, b) => s + (b.workMinutes + b.restMinutes) * b.repeats, 0);
-    const wellFormed = parsed != null && blockTotal >= Math.max(8, runMinutes - (parsed.drillsMinutes ?? 0) - 6) * 0.5;
+    // The LLM may only go EASIER/SHORTER than the basis — NEVER inflate the session past the prescribed
+    // volume. wellFormed now has BOTH bounds: reject a too-SHORT structure (under-specified) AND a too-LONG
+    // one (2026-07-15: a hallucinated "30m jog" ballooned a 35-min tempo to a 122-min, load-137 session).
+    // Either way → fall back to the deterministic basis workout (the short tempo the athlete already had).
+    const workRef = Math.max(8, runMinutes - (parsed?.drillsMinutes ?? 0) - 6);   // work-minutes the session budgets
+    const wellFormed = parsed != null && blockTotal >= workRef * 0.5 && blockTotal <= workRef * 1.5 + 6;
+
     // wellFormed → the LLM's parsed structure (its prose describes it). Rejected → the DETERMINISTIC basis
     // workout (ramp-capped) paired with basis.session below, so the prescribed prose + the watch structure
     // can never disagree (was: synth workout + the LLM's now-stale prose → 3×5 prose vs 8×3 watch).
+    // ⚠️ The fallback workout MUST match the FINAL intensity. `basis.workout` was built for the BASIS
+    // intensity, so reusing it after the session was EASED welds a hard structure onto an easy label.
+    // That produced the 2026-07-22 card: the LLM correctly said "rest — cap hit", the rest→easy floor
+    // above turned that into `easy`, its (absent) rest-day structure failed wellFormed, and we fell back
+    // to the basis's Z4 259–265 W intervals — so the home showed "Z2 · 2× 4min @ 259–265W · Z4" under a
+    // headline reading "Cap hit — rest today". Three sources, three different intensities.
+    // When the intensity moved, SYNTHESIZE for the intensity we actually landed on.
+    const easedOff = intensity !== basis.intensity;
     const workout = intensity === 'rest' ? null
       : wellFormed ? ensureBlockPower(parsed, snap.powerZones)
-      : (basis.workout ?? ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones), snap.powerZones));
+      : (basis.workout && !easedOff) ? basis.workout
+      : ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones), snap.powerZones);
+    // PROSE must describe the session we ACTUALLY prescribe. Three cases:
+    //  • kept the model's structure AND its intensity  → its words are accurate.
+    //  • rejected the structure but intensity is unchanged → the basis words match the basis workout.
+    //  • we EASED off the basis / overrode the model  → NEITHER fits (the model wrote for its session, the
+    //    basis for the harder one), so describe the final workout ourselves. Without this the home read
+    //    "Cap hit — rest today" (model) or "Good to go — intervals day" (basis) over an easy Z2 run.
+    // NOTE: easing off the basis does NOT by itself invalidate the model's words — if we HONOURED its
+    // intensity choice (overrodeLlm=false) it wrote for the session we're actually giving. Only an
+    // OVERRIDE (or a rejected structure) makes its prose stale.
+    const useLlmProse   = wellFormed && !overrodeLlm && !!o.headline;
+    const useBasisProse = !easedOff && !overrodeLlm;
+    const structureNow  = workout ? formatWorkoutStructure(workout) : '';
+    const finalLabel    = intensity === 'hard' ? 'Intervals' : intensity === 'moderate' ? 'Tempo'
+                        : runMinutes <= 30 ? 'Recovery run' : 'Easy Z2';
+    const finalHeadline = `Eased — ${finalLabel.toLowerCase()} today`;
+    const finalSession  = `${finalLabel} — ${runMinutes} min${structureNow ? `, ${structureNow}` : ''}.`;
+
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
     // Canonical kind follows the FINAL (possibly eased) intensity so the label stays honest; a moderate
@@ -1152,12 +1263,17 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       basis.sessionKind === 'long' ? 'long' : 'tempo';
     return {
       ...basis,
-      headline:  o.headline  ? String(o.headline).slice(0, 120)  : basis.headline,
-      session:   (wellFormed && o.session) ? String(o.session).slice(0, 280) : basis.session, // rejected structure → deterministic session (matches the fallback workout)
+      // PROSE MUST DESCRIBE THE SESSION WE ACTUALLY PRESCRIBE. The model's words were written for the
+      // session IT proposed — so they're stale the moment we reject its structure (wellFormed=false) OR
+      // override its intensity (the rest→easy floor). Keeping the headline in that case is how the home
+      // ended up reading "Cap hit — rest today, run Friday" above a prescribed workout (2026-07-22).
+      // `session` already had this guard; headline/rationale did not.
+      headline:  useLlmProse ? String(o.headline).slice(0, 120)  : useBasisProse ? basis.headline : finalHeadline,
+      session:   useLlmProse && o.session ? String(o.session).slice(0, 280) : useBasisProse ? basis.session : finalSession,
       strength:  o.strength  ? String(o.strength).slice(0, 240)  : basis.strength,
       intensity, runMinutes, runKm, workout,
       prescribedLoad: workout ? prescribedTrimp(workout) : undefined,   // derived readout — from the FINAL workout (LLM's or fallback)
-      rationale: o.rationale ? String(o.rationale).slice(0, 400) : basis.rationale,
+      rationale: (useLlmProse && o.rationale) ? String(o.rationale).slice(0, 400) : basis.rationale,
       cautions:  basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
       sessionKind,
       // Keep Part 2 only if it's STILL a long run (the LLM designs Part 1 within the split ceiling); if it
@@ -1710,6 +1826,60 @@ async function readPlanLog(date: string): Promise<PlanLogEntry[]> {
     const arr = JSON.parse(await FileSystem.readAsStringAsync(f));
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
+}
+
+// ── PENDING (PROPOSED) PRESCRIPTION — the chat coach PROPOSES, the athlete APPROVES ────────────────────
+// The chat coach used to be structurally READ-ONLY: it could diagnose (e.g. Achilles soreness) and design a
+// sensible modified session, but the insight died in the chat — the app kept the old prescription and had no
+// record of the issue. This is the write path, deliberately gated: the agent writes a PROPOSAL here, and the
+// Daily Coach surfaces it with Apply / Discard. Nothing reaches the watch without a human tap — the same LLM
+// path produced a 30-min-jog session and a zero-width power range that crash-looped the app, so an
+// LLM silently rewriting training is exactly what we don't want.
+export interface PendingPrescription {
+  date: string;
+  session: string;              // prose the athlete reads
+  rationale?: string;           // WHY the change (e.g. "Achilles soreness — walk recoveries, capped power")
+  intensity: CoachIntensity;
+  runMinutes: number;
+  workout: WatchWorkout | null; // already validated through parseWorkout + ensureBlockPower
+  source: string;               // 'chat-coach'
+  createdAt: string;
+}
+const pendingFile = (date: string) => `${FileSystem.documentDirectory}runcoach-pending-plan-${date}.json`;
+
+export async function savePendingPrescription(p: PendingPrescription): Promise<void> {
+  try { await FileSystem.writeAsStringAsync(pendingFile(p.date), JSON.stringify(p)); } catch { /* ignore */ }
+}
+export async function loadPendingPrescription(date: string): Promise<PendingPrescription | null> {
+  try {
+    const f = pendingFile(date);
+    const info = await FileSystem.getInfoAsync(f);
+    if (!info.exists) return null;
+    return JSON.parse(await FileSystem.readAsStringAsync(f)) as PendingPrescription;
+  } catch { return null; }
+}
+export async function clearPendingPrescription(date: string): Promise<void> {
+  try { await FileSystem.deleteAsync(pendingFile(date), { idempotent: true }); } catch { /* ignore */ }
+}
+
+/** Approve a proposal → it becomes the day's real plan, flagged so auto-refresh can't silently undo it. */
+export async function applyPendingPrescription(date: string, base: CoachPlan): Promise<CoachPlan | null> {
+  const p = await loadPendingPrescription(date);
+  if (!p) return null;
+  const plan: CoachPlan = {
+    ...base,
+    session:    p.session || base.session,
+    rationale:  p.rationale ? `${p.rationale}` : base.rationale,
+    intensity:  p.intensity,
+    runMinutes: p.runMinutes,
+    workout:    p.workout,
+    prescribedLoad: p.workout ? prescribedTrimp(p.workout) : undefined,
+    coachEdited: true,                       // planNeedsRefresh must not regenerate over this
+    generatedAt: new Date().toISOString(),
+  };
+  await saveCachedPlan(date, plan);
+  await clearPendingPrescription(date);
+  return plan;
 }
 
 export async function saveCachedPlan(date: string, plan: CoachPlan): Promise<void> {

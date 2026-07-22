@@ -9,6 +9,7 @@
 // Lives in its own module so BOTH coach.ts and the run-detail screen can use it without
 // an import cycle (it only `import type`s from coach, which is erased at compile time).
 import * as FileSystem from 'expo-file-system';
+import { isFloatZone } from './trainingLoad';
 import type { CoachPlan, WatchWorkout } from './coach';
 
 const planLogFile = (date: string) => `${FileSystem.documentDirectory}coach-plan-log-${date}.json`;
@@ -41,6 +42,9 @@ export async function readPlanLog(date: string): Promise<PlanLogEntry[]> {
 // Flatten a structured watch workout into the ordered phase labels the watch executes:
 // Warmup, Drills, then per block Work / (Recovery between reps only), then Cooldown —
 // mirroring exactly how RunCoachWorkoutModule.swift builds the WorkoutKit intervals.
+// A Z2/Z3 between-rep FLOAT is pushed as a WORK step (see isFloatZone), so it flattens to
+// 'Work' here too — keeping these labels identical to the ones HealthKit records, and
+// keeping the float's minutes inside the time-on-feet budget.
 export function flattenPhases(w?: WatchWorkout | null): string[] {
   if (!w) return [];
   const out: string[] = [];
@@ -48,9 +52,10 @@ export function flattenPhases(w?: WatchWorkout | null): string[] {
   if ((w.drillsMinutes ?? 0) > 0) out.push('Drills');
   for (const b of w.blocks ?? []) {
     const reps = Math.max(1, b.repeats ?? 1);
+    const restLabel = isFloatZone(b.recoveryZone) ? 'Work' : 'Recovery';
     for (let i = 0; i < reps; i++) {
       out.push('Work');
-      if ((b.restMinutes ?? 0) > 0 && i < reps - 1) out.push('Recovery');
+      if ((b.restMinutes ?? 0) > 0 && i < reps - 1) out.push(restLabel);
     }
   }
   if (w.cooldownMeters != null) out.push('Cooldown');   // 0 = open goal → still a cool-down phase on the watch
