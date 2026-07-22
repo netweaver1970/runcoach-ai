@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl, Switch,
+  StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl, Switch, Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DayStrain } from '../src/types';
@@ -87,7 +87,26 @@ export default function DailyCoachScreen() {
   // Push the 20-min threshold TEST instead of today's session. Replaces today's watch workout (same
   // weekday slot) so it behaves like any other pushed session. NOT run through ensureBlockPower — the
   // test must reach the watch with NO power target, or it would be capped by the very zones it measures.
+  const THRESHOLD_READY_MIN = 65;   // a MAXIMAL test needs more than the "decent" (55) bar for a normal run
   const sendThresholdTest = async () => {
+    // READINESS GATE. A bad training day costs one session; a bad TEST day writes a wrong threshold into
+    // the zones and every future prescription is derived from it. So when the signals say don't, say so
+    // plainly — but still let the athlete decide, since they know things the sensors don't.
+    const why: string[] = [];
+    if (recoveryStale)                     why.push('last night has no recovery data (watch not worn) — readiness is an estimate');
+    if (readiness.readiness < THRESHOLD_READY_MIN) why.push(`readiness ${readiness.readiness}/100 is below ${THRESHOLD_READY_MIN}`);
+    if (plan?.intensity === 'rest')        why.push("today's plan is REST");
+    if (why.length > 0) {
+      const go = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'Test on a compromised day?',
+          `${why.join('.\n')}.\n\nA threshold test taken on a bad day measures the bad day — and that number then sets your power zones and every session built from them. Postponing usually beats re-testing.`,
+          [{ text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+           { text: 'Send anyway', style: 'destructive', onPress: () => resolve(true) }],
+        );
+      });
+      if (!go) return;
+    }
     setTestSending(true); setWatchMsg(null);
     try {
       if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
