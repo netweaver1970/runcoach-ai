@@ -9,7 +9,7 @@ import * as FileSystem from 'expo-file-system';
 import HealthKit from '@kingstinct/react-native-healthkit';
 import { PowerZones } from '../types';
 import { getPowerZones, savePowerZones, isPowerZonesConfigured } from './claude';
-import { callLLM } from './llm';
+import { callLLM, extractJsonObject } from './llm';
 import { loadSnapshotCache, extractWeatherTempC } from './healthkit';
 import { getRunMeta } from './runMeta';
 import { upsertKnowledge, knowledgeExists, readKnowledgeContent } from './coachFiles';
@@ -297,6 +297,7 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
     return { updated: false, reason: `Skipped — hot run (${run.tempC}°C) would bias zones low.` };
   }
 
+  const [pzNow, maxHRNow, restHRNow] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);
   const analysis = await analyzeLastRun(run);
   if (!analysis || analysis.perZone.length === 0) return { updated: false, reason: 'No running-power + HR data in your last run.' };
 
@@ -309,41 +310,66 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
   const condText = conditions.length ? conditions.join('\n') : 'No special conditions noted.';
 
   const current = await readKnowledgeContent(ZONES_FILE_ID);
+  const curPz = parseZonesMarkdown(current) ?? pzNow;
+
+  // Ask for NUMBERS, not a file.
+  //
+  // This used to ask the model to return the whole updated markdown table, and it kept replying with its
+  // reasoning instead — which the old code wrote straight over the file, destroying the table (that is how
+  // Geert's zones file became 2767 chars of prose). Validation now rejects those replies, but rejecting
+  // every reply just means the loop never works. The durable fix is to stop asking an LLM to regenerate a
+  // structured document at all: it proposes five integers, the APP renders the file with zonesMarkdown().
+  // Formatting can no longer be got wrong, because the model never touches it.
   const system =
-    `You maintain a running coach's "Power & HR Zones" file (a markdown table Zone|Name|HR|Power). ` +
-    `Update ONLY the Power (W) column so each HR zone maps to the OBSERVED average running power from the latest run. ` +
-    `Blend gently with the existing values (move ~30% toward observed; never overreact to one run); keep the HR ranges, ` +
-    `the table structure and the surrounding text.\n\n` +
-    `CRUCIAL — weigh the CONDITIONS, which bias the power-vs-HR relationship: heat and stimulants (caffeine, yohimbine, ` +
-    `pre-workout, etc.) RAISE heart rate for a given power, so observed power-at-HR reads artificially LOW; interruptions ` +
-    `(phone calls, toilet/stops, walking breaks) inject noise. The more the conditions confound the data, the SMALLER the ` +
-    `adjustment you should make (down to none). State, briefly, on the "Last calibrated" line what you did and why ` +
-    `(e.g. "held — hot + yohimbine inflated HR"). Return ONLY the updated markdown — no code fences.`;
+    `You calibrate a runner's power zones. Given their CURRENT zone powers and the OBSERVED average ` +
+    `running power at each HR zone from their latest run, propose updated zone powers.\n\n` +
+    `Move only ~30% of the way toward the observed value — never overreact to a single run — and leave a ` +
+    `zone unchanged when its observed coverage is thin (a minute or two) or absent.\n\n` +
+    `CRUCIAL — weigh the CONDITIONS, which bias the power-vs-HR relationship: heat and stimulants ` +
+    `(caffeine, yohimbine, pre-workout) RAISE heart rate for a given power, so observed power-at-HR reads ` +
+    `artificially LOW; interruptions (phone calls, stops, walking breaks) inject noise. The more the ` +
+    `conditions confound the data, the SMALLER the adjustment — down to none.\n\n` +
+    `Return ONLY minified JSON, no prose, no markdown, no code fences, with EXACTLY these keys: ` +
+    `{"recoveryMax":int,"z2Max":int,"tempoMin":int,"tempoMax":int,"intervalsMin":int,"note":string}. ` +
+    `The values are watts and MUST be non-decreasing in that order. note = at most 12 words on what you ` +
+    `changed and why (e.g. "held — hot run inflated HR").`;
   const user =
-    `Current file:\n"""\n${current}\n"""\n\n` +
+    `Current zone powers (W): recoveryMax ${curPz.recoveryMax}, z2Max ${curPz.z2Max}, ` +
+    `tempoMin ${curPz.tempoMin}, tempoMax ${curPz.tempoMax}, intervalsMin ${curPz.intervalsMin}\n\n` +
     `Conditions:\n${condText}\n\n` +
     `Latest run (${analysis.date}, ${analysis.durationMin} min) — observed power by HR zone ` +
     `(warm-up, drills, recovery jogs & cool-down excluded; real work only):\n` +
     analysis.perZone.map(z => `${z.z}: ${z.minutes} min, avg HR ${z.avgHR}, avg power ${z.avgPower} W`).join('\n');
 
-  // maxTokens was 900, which TRUNCATED a chatty reply mid-sentence — and the truncated text was then
-  // written over the file. Give the reply room, and still validate it below.
-  const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1600 }))
-    .trim().replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
-  if (!out) return { updated: false, reason: 'Coach returned nothing.' };
+  const raw = await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1600 });
+  if (!raw?.trim()) return { updated: false, reason: 'Coach returned nothing.' };
 
-  // VALIDATE BEFORE WRITING. This used to upsert `out` unconditionally and only THEN try to parse it,
-  // so a reply that ignored the format (the model "thinking out loud" instead of returning the table)
-  // destroyed the zone table and left parseZonesMarkdown with nothing to save — while still reporting
-  // `updated: true`. That is exactly how Geert's file became 2767 chars of prose with no table, and why
-  // the Power column silently stopped being calibrated. The file is now only replaced by something that
-  // round-trips back to real zones; anything else is rejected and the previous table survives intact.
-  const parsedPz = parseZonesMarkdown(out);
-  if (!parsedPz) return { updated: false, reason: 'Coach reply had no readable zone table — zones left unchanged.' };
+  let o: any;
+  try { o = JSON.parse(extractJsonObject(raw) ?? ''); } catch { o = null; }
+  if (!o) return { updated: false, reason: 'Coach reply was not usable JSON — zones left unchanged.' };
 
-  await upsertKnowledge(ZONES_FILE_ID, 'Power & HR Zones', 'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs', out);
-  // Mirror the refined power into getPowerZones so synthesized watch workouts target the same watts.
-  await savePowerZones(parsedPz).catch(() => {});
+  const n = (v: any) => (typeof v === 'number' && isFinite(v) ? Math.round(v) : NaN);
+  const next: PowerZones = {
+    recoveryMax:  n(o.recoveryMax),  z2Max:    n(o.z2Max),
+    tempoMin:     n(o.tempoMin),     tempoMax: n(o.tempoMax),
+    intervalsMin: n(o.intervalsMin),
+  };
+  const ladder = [next.recoveryMax, next.z2Max, next.tempoMin, next.tempoMax, next.intervalsMin];
+  if (ladder.some(v => !(v > 0) || v > 1000)) return { updated: false, reason: 'Coach proposed implausible watts — zones left unchanged.' };
+  for (let i = 1; i < ladder.length; i++) {
+    if (ladder[i] < ladder[i - 1]) return { updated: false, reason: 'Coach proposed a non-monotonic zone ladder — zones left unchanged.' };
+  }
+  // Backstop the "~30%" instruction in code: no single run may move any zone by more than 15%.
+  const cur = [curPz.recoveryMax, curPz.z2Max, curPz.tempoMin, curPz.tempoMax, curPz.intervalsMin];
+  if (cur.every(v => v > 0) && ladder.some((v, i) => Math.abs(v - cur[i]) > cur[i] * 0.15)) {
+    return { updated: false, reason: 'Coach proposed a >15% jump from one run — zones left unchanged.' };
+  }
+
+  const note = typeof o.note === 'string' && o.note.trim() ? o.note.trim().slice(0, 80) : undefined;
+  await upsertKnowledge(ZONES_FILE_ID, 'Power & HR Zones',
+    'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
+    zonesMarkdown(maxHRNow, next, note, restHRNow));
+  await savePowerZones(next).catch(() => {});
   return { updated: true };
 }
 
