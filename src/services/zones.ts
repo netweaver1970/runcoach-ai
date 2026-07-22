@@ -28,8 +28,18 @@ const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { retur
 
 export interface ZoneRow { z: string; name: string; hrLow: number; hrHigh: number; pLow: number; pHigh: number; }
 
-export function zoneTable(maxHR: number, pz: PowerZones): ZoneRow[] {
-  const hr = (p: number) => Math.round(maxHR * p);
+// Zone HR bands are KARVONEN (% of HR RESERVE), not % of max.
+//
+// This table used to read `maxHR * p`, which ignores resting HR — and the load model right next door
+// (trainingLoad.ZONE_HRR, and computeStrainTrimp's own Banister maths) has always worked in HR-reserve.
+// The two disagreed by 15–25 bpm for Geert (max 188, rest 59): the table called 150–169 bpm "Z4" while
+// the load model scored Z4 as HR-reserve 0.85 = 169. So the coach prescribed from one definition and
+// every load number was computed with the other — worth ~1.3x on its own, and it made prescribedTrimp
+// read 90 against a measured 38 on the same session. Same 50/60/70/80/90% breakpoints, applied to the
+// reserve, so the ZONE_HRR anchors (0.50/0.62/0.72/0.85/0.93) now each land inside their own band.
+export function zoneTable(maxHR: number, pz: PowerZones, restHR = 50): ZoneRow[] {
+  const rest = restHR > 0 && restHR < maxHR ? restHR : 50;
+  const hr = (p: number) => Math.round(rest + (maxHR - rest) * p);
   return [
     { z: 'Z1', name: 'Recovery',      hrLow: hr(0.50), hrHigh: hr(0.60), pLow: 0,               pHigh: pz.recoveryMax },
     { z: 'Z2', name: 'Aerobic/Easy',  hrLow: hr(0.60), hrHigh: hr(0.70), pLow: pz.recoveryMax,  pHigh: pz.z2Max },
@@ -39,15 +49,16 @@ export function zoneTable(maxHR: number, pz: PowerZones): ZoneRow[] {
   ];
 }
 
-export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string): string {
-  const body = zoneTable(maxHR, pz)
+export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string, restHR = 50): string {
+  const body = zoneTable(maxHR, pz, restHR)
     .map(r => `| ${r.z} | ${r.name} | ${r.hrLow}–${r.hrHigh} | ${r.pHigh > r.pLow ? `${r.pLow}–${r.pHigh}` : `≥ ${r.pLow}`} |`)
     .join('\n');
   return [
     '# Power & HR Zones (calibrated)',
     '',
     'DRIVING FACTS for every workout. Prescribe sessions by HR ZONE (Z1–Z5) + duration + structure;',
-    `the watch targets the matching POWER (watts) from this table. Max HR ≈ ${maxHR} bpm.`,
+    `the watch targets the matching POWER (watts) from this table. Max HR ≈ ${maxHR} bpm, resting ≈ ${restHR} bpm;`,
+    'HR bands are % of HR RESERVE (Karvonen), matching how training load is scored.',
     '',
     '| Zone | Name | HR (bpm) | Power (W) |',
     '|------|------|----------|-----------|',
@@ -78,13 +89,33 @@ export function parseZonesMarkdown(md: string): PowerZones | null {
     tempoMax:     z3[1],
     intervalsMin: z4 ? z4[1] : (z5 ? z5[0] : z3[1] + 20),
   };
-  return pz.z2Max > 0 && pz.tempoMax > 0 ? pz : null;
+  if (!(pz.z2Max > 0 && pz.tempoMax > 0)) return null;
+  // Power must rise across the zones. A calibration reply that inverts them (Z1 above Z3, say) is not a
+  // usable zone set, and rejecting it here means validate-before-write keeps the previous table. This
+  // matters more since the HR bands moved to HR-reserve: analyzeLastRun buckets observed power by the
+  // zone the HR fell in, and short reps whose HR never reaches steady state now land a zone or two LOW
+  // (Geert's 256 W intervals sit at HR 134 = Z1), so an uncritical loop could drag easy-zone power up.
+  const ladder = [pz.recoveryMax, pz.z2Max, pz.tempoMin, pz.tempoMax, pz.intervalsMin];
+  for (let i = 1; i < ladder.length; i++) if (ladder[i] < ladder[i - 1]) return null;
+  return pz;
 }
 
 async function getMaxHR(): Promise<number> {
   const snap = await loadSnapshotCache();
   const m = (snap as any)?.estimatedMaxHR;
   return typeof m === 'number' && m > 0 ? m : 190;
+}
+
+/** Median recent resting HR — the Karvonen floor for zoneTable. Mirrors the load model's own
+ *  restHR (median of the resting-HR series, fallback 50) so zones and load agree on the reserve. */
+async function getRestHR(): Promise<number> {
+  try {
+    const snap = await loadSnapshotCache();
+    const vals = (((snap as any)?.restingHR ?? []) as { value?: number }[])
+      .map(r => r?.value).filter((v): v is number => typeof v === 'number' && v > 0)
+      .slice(-30).sort((a, b) => a - b);
+    return vals.length ? Math.round(vals[Math.floor(vals.length / 2)]) : 50;
+  } catch { return 50; }
 }
 
 /**
@@ -127,12 +158,12 @@ export async function ensureZonesFile(): Promise<void> {
       const current = await readKnowledgeContent(ZONES_FILE_ID);
       const parsed = parseZonesMarkdown(current);
       if (!parsed) {
-        const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
+        const [pz, maxHR, restHR] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);
         if (isPowerZonesConfigured(pz)) {
           await upsertKnowledge(
             ZONES_FILE_ID, 'Power & HR Zones',
             'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
-            zonesMarkdown(maxHR, pz, 'table rebuilt — previous file had no readable zone table'),
+            zonesMarkdown(maxHR, pz, 'table rebuilt — previous file had no readable zone table', restHR),
           );
         }
       } else if (!isPowerZonesConfigured(await getPowerZones())) {
@@ -144,11 +175,11 @@ export async function ensureZonesFile(): Promise<void> {
     } catch { /* best-effort sync */ }
     return;
   }
-  const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
+  const [pz, maxHR, restHR] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);
   await upsertKnowledge(
     ZONES_FILE_ID, 'Power & HR Zones',
     'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
-    zonesMarkdown(maxHR, pz),
+    zonesMarkdown(maxHR, pz, undefined, restHR),
   );
 }
 
@@ -221,8 +252,8 @@ export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAna
   // Structured run → use only the real work segments; free run → use the whole window.
   const workOnly = run.workRanges.length > 0;
   const inWork = (t: number) => run.workRanges.some(r => t >= r.from && t <= r.to);
-  const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
-  const rows = zoneTable(maxHR, pz);
+  const [pz, maxHR, restHR] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);
+  const rows = zoneTable(maxHR, pz, restHR);
   const from = new Date(run.start), to = new Date(run.end);
 
   const [hrRaw, pwrRaw] = await Promise.all([
