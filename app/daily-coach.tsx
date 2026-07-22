@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, THRESHOLD_TEST_MIN } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -58,6 +58,7 @@ export default function DailyCoachScreen() {
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
   const [testSending, setTestSending] = useState(false);   // threshold-test push in flight
+  const [testTarget, setTestTarget] = useState<{ low: number; high: number; heldMin: number } | null>(null);
   const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
   const [repAdj, setRepAdj] = useState<number | null>(null); // user override of interval rep count (interval days)
   // Sync zones (mirrors the calibrated file → getPowerZones) BEFORE reading, so a re-synthesized
@@ -150,7 +151,10 @@ export default function DailyCoachScreen() {
   const [snapStrain, setSnapStrain] = useState<DayStrain | null>(null);
   useEffect(() => {
     if (str) return; // param already carries today's DayStrain
-    loadSnapshotCache().then((sn: any) => setSnapStrain(sn?.strain ?? null)).catch(() => {});
+    loadSnapshotCache().then((sn: any) => {
+      setSnapStrain(sn?.strain ?? null);
+      setTestTarget(thresholdTestTarget(sn?.runs ?? []));   // personal watt anchor for the threshold test
+    }).catch(() => {});
   }, [str]);
   const strainObj = strain ?? snapStrain;
 
@@ -628,6 +632,14 @@ export default function DailyCoachScreen() {
                     cool-down. No power target — that's the point: it measures your true threshold instead of
                     capping you at the current zones. Best on a cool morning (&lt;24°C) with the H10, on fresh legs.
                   </Text>
+                  {testTarget && (
+                    <Text style={s.testTarget}>
+                      Aim {testTarget.low}–{testTarget.high} W. You've already held {testTarget.low} W for{' '}
+                      {testTarget.heldMin} min, so treat it as the FLOOR — finish above it.{'\n'}
+                      First 4 min deliberately easier than feels right; at 10 min it should feel “I can hold
+                      this, but I don't want to”. Fading a little is fine — stopping is not.
+                    </Text>
+                  )}
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
@@ -815,6 +827,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
              paddingVertical: 8, alignItems: 'center', marginTop: 8 },
   testBtnText: { color: c.accent, fontWeight: '700', fontSize: 12 },
   testHint: { color: c.textSub, fontSize: 11, lineHeight: 15, marginTop: 5 },
+  testTarget: { color: c.text, fontSize: 11, lineHeight: 15, marginTop: 5, fontWeight: '600' },
   adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   adjustLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   adjustBtn:   { backgroundColor: c.surface, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: c.border },

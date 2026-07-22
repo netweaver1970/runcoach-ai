@@ -591,6 +591,29 @@ export function thresholdTestWorkout(name: string): WatchWorkout {
   };
 }
 
+/**
+ * Suggested watt target for the test, from the athlete's OWN best sustained effort.
+ *
+ * The commonest way a first threshold test fails is going out too fast and fading — and a faded test
+ * doesn't just waste the session, it writes a too-low threshold into the zones. A personal anchor beats
+ * a generic "go hard": the best power already held for >= the test duration is a FLOOR the athlete knows
+ * they can live with, so the target is that up to ~6% above it. Null when there's no qualifying effort
+ * (then the UI just omits the line rather than inventing a number).
+ */
+export function thresholdTestTarget(
+  runs: { workPower?: number; workDuration?: number }[],
+): { low: number; high: number; heldMin: number } | null {
+  let best: { w: number; min: number } | null = null;
+  for (const r of runs ?? []) {
+    const w = r.workPower ?? 0;
+    const min = (r.workDuration ?? 0) / 60;
+    if (w <= 0 || min < THRESHOLD_TEST_MIN) continue;      // only genuinely SUSTAINED efforts anchor it
+    if (!best || w > best.w) best = { w, min: Math.round(min) };
+  }
+  if (!best) return null;
+  return { low: best.w, high: Math.round(best.w * 1.06 / 5) * 5, heldMin: best.min };
+}
+
 // 'trimp' basis: the quality dose ramps on LOAD — +cap%/week off the most-recent measured same-type WORK
 // TRIMP (or a nominal first dose). Returns undefined for non-quality types or a non-trimp basis, so intervals
 // + tempo become load-driven while easy/long/recovery stay minutes-driven (the volume guardrail). The minutes
