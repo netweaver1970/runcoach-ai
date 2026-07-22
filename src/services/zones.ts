@@ -113,16 +113,33 @@ export async function seedPowerZonesFromRuns(
   return true;
 }
 
-/** Seed the zones file from the athlete's current zones if it doesn't exist yet. */
+/** Seed the zones file from the athlete's current zones if it doesn't exist yet — or REPAIR it. */
 export async function ensureZonesFile(): Promise<void> {
   if (await knowledgeExists(ZONES_FILE_ID)) {
-    // The file is the calibrated source of truth, but synthesized watch workouts read getPowerZones —
-    // mirror the file's zones into it when it's still unconfigured (don't clobber a manual Settings edit),
-    // so a synthesized/adjusted session carries the same power targets the LLM gets from the file.
+    // SELF-HEAL a corrupted file. recalibrateZonesFromLastRun used to write the LLM's raw reply
+    // straight over this file, so one badly-formatted (or maxTokens-truncated) reply replaced the
+    // whole table with prose — and nothing ever repaired it, because the file still "exists". Found
+    // on Geert's device 2026-07-22: 2767 chars of the model's own reasoning, cut off mid-sentence,
+    // ZERO table rows. The coach LLM had been reading that as its authoritative zone table, and the
+    // calibration loop had been feeding it back in as "Current file" on every run since.
+    // Rebuilding from getPowerZones is safe: that's the last set of zones that actually parsed.
     try {
-      if (!isPowerZonesConfigured(await getPowerZones())) {
-        const parsed = parseZonesMarkdown(await readKnowledgeContent(ZONES_FILE_ID));
-        if (parsed) await savePowerZones(parsed);
+      const current = await readKnowledgeContent(ZONES_FILE_ID);
+      const parsed = parseZonesMarkdown(current);
+      if (!parsed) {
+        const [pz, maxHR] = await Promise.all([getPowerZones(), getMaxHR()]);
+        if (isPowerZonesConfigured(pz)) {
+          await upsertKnowledge(
+            ZONES_FILE_ID, 'Power & HR Zones',
+            'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
+            zonesMarkdown(maxHR, pz, 'table rebuilt — previous file had no readable zone table'),
+          );
+        }
+      } else if (!isPowerZonesConfigured(await getPowerZones())) {
+        // The file is the calibrated source of truth, but synthesized watch workouts read
+        // getPowerZones — mirror the file into it when still unconfigured (don't clobber a manual
+        // Settings edit), so a synthesized/adjusted session carries the same power targets.
+        await savePowerZones(parsed);
       }
     } catch { /* best-effort sync */ }
     return;
@@ -278,14 +295,24 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
     `(warm-up, drills, recovery jogs & cool-down excluded; real work only):\n` +
     analysis.perZone.map(z => `${z.z}: ${z.minutes} min, avg HR ${z.avgHR}, avg power ${z.avgPower} W`).join('\n');
 
-  const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 900 }))
+  // maxTokens was 900, which TRUNCATED a chatty reply mid-sentence — and the truncated text was then
+  // written over the file. Give the reply room, and still validate it below.
+  const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1600 }))
     .trim().replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
   if (!out) return { updated: false, reason: 'Coach returned nothing.' };
 
+  // VALIDATE BEFORE WRITING. This used to upsert `out` unconditionally and only THEN try to parse it,
+  // so a reply that ignored the format (the model "thinking out loud" instead of returning the table)
+  // destroyed the zone table and left parseZonesMarkdown with nothing to save — while still reporting
+  // `updated: true`. That is exactly how Geert's file became 2767 chars of prose with no table, and why
+  // the Power column silently stopped being calibrated. The file is now only replaced by something that
+  // round-trips back to real zones; anything else is rejected and the previous table survives intact.
+  const parsedPz = parseZonesMarkdown(out);
+  if (!parsedPz) return { updated: false, reason: 'Coach reply had no readable zone table — zones left unchanged.' };
+
   await upsertKnowledge(ZONES_FILE_ID, 'Power & HR Zones', 'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs', out);
   // Mirror the refined power into getPowerZones so synthesized watch workouts target the same watts.
-  const parsedPz = parseZonesMarkdown(out);
-  if (parsedPz) await savePowerZones(parsedPz).catch(() => {});
+  await savePowerZones(parsedPz).catch(() => {});
   return { updated: true };
 }
 
