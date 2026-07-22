@@ -144,7 +144,13 @@ export default function SettingsScreen() {
     return sub;
   }, [navigation, activeCat]);
 
-  useEffect(() => {
+  // Every persisted setting this screen shows, (re)read in one place.
+  //
+  // These used to be read ONCE on mount, which is fine for edits made here but wrong for anything that
+  // rewrites settings BEHIND the screen: a clipboard restore overwrites all of them, and "Run day view
+  // now" reaches seedPowerZonesFromRuns/maybeAutoRecalibrate and can move the power zones. The fields
+  // then kept showing pre-change values until you navigated away and back.
+  const loadAll = useCallback(() => {
     loadLLMConfig().then(cfg => {
       setProvider(cfg.provider);
       setModel(cfg.model ?? '');
@@ -185,6 +191,7 @@ export default function SettingsScreen() {
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
     isAutoDayViewEnabled().then(setDayViewAuto);
   }, []);
+  useEffect(() => { loadAll(); }, [loadAll]);
 
   const setPZ = (key: keyof PowerZones, raw: string) => {
     const val = parseInt(raw, 10);
@@ -690,6 +697,7 @@ export default function SettingsScreen() {
               setPreparing(true);
               try {
                 const r = await maybeRunDayView({ months: 3, force: true, notify: true });
+                loadAll();   // this path can seed/recalibrate the power zones behind the screen
                 Alert.alert(
                   r.ran ? 'Day view prepared' : 'Not ready yet',
                   r.ran
@@ -1453,7 +1461,8 @@ export default function SettingsScreen() {
                   { text: 'Restore', style: 'destructive', onPress: async () => {
                     try {
                       const r = await restoreAllSettings(json);
-                      Alert.alert('Restored', `${r.secure} settings, ${r.files} data files, ${r.knowledge} coaching files restored. Restart the app to apply everything.`);
+                      loadAll();   // the restore rewrote every setting — re-read them into the fields
+                      Alert.alert('Restored', `${r.secure} settings, ${r.files} data files, ${r.knowledge} coaching files restored. Settings above are refreshed; restart the app to reload cached history.`);
                     } catch (e: any) { Alert.alert('Restore failed', e?.message ?? String(e)); }
                   } },
                 ],
