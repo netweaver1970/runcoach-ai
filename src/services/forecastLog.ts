@@ -39,13 +39,39 @@ async function write(log: Log): Promise<void> {
   } catch { /* disk full / sandbox — drop silently */ }
 }
 
+// ── Serialized read-modify-write ─────────────────────────────────────────────
+// EVERY mutation funnels through ONE promise chain. The 7-day plan fires recordForecast and
+// recordActuals without awaiting either, and the home scan fires recordActuals again — each used
+// to run its own read→mutate→write, so both read the SAME stale log before either wrote and the
+// later write silently dropped the other's changes. Classic lost update.
+//
+// It froze this log at its very first capture (2026-07-08, 7 points, nothing for the two weeks
+// after): once the file had entries, recordActuals always found a date to fill, so it always wrote,
+// so it always clobbered the predictions recordForecast had just made. The first capture survived
+// ONLY because an empty log left `touched` false and recordActuals skipped its write entirely —
+// which is exactly why the breakage looked like "it worked once, then stopped".
+//
+// Serializing here (not at the call site) keeps any future caller safe too. Errors are swallowed
+// per-op and the chain is never left rejected, so one bad write can't wedge the queue.
+let chain: Promise<void> = Promise.resolve();
+function mutate(apply: (log: Log) => boolean): Promise<void> {
+  const next = chain.then(async () => {
+    try {
+      const log = await read();
+      if (apply(log)) await write(log);
+    } catch { /* never break a scan or the plan build */ }
+  });
+  chain = next.catch(() => {});
+  return next;
+}
+
 /** Record the plan's projected trajectory. Only future days; freshest (shortest-horizon) wins. */
-export async function recordForecast(
+export function recordForecast(
   rows: { date: string; intensity: string; adjMin: number; trimp: number; ctl: number; atl: number; tsb: number }[],
   madeOn: string,
 ): Promise<void> {
-  try {
-    const log = await read();
+  return mutate((log) => {
+    let touched = false;
     for (const r of rows) {
       if (!r?.date || r.date <= madeOn) continue;                 // only genuine future days
       const prev = log[r.date];
@@ -56,17 +82,17 @@ export async function recordForecast(
         projTSB: r.tsb, projLoad: Math.round(r.trimp), projCTL: r.ctl, projATL: r.atl,
         projIntensity: r.intensity, projMinutes: r.adjMin,
       };
+      touched = true;
     }
-    await write(log);
-  } catch { /* never break the plan build */ }
+    return touched;
+  });
 }
 
 /** Fill the realised side, but only for dates we actually predicted (keeps the log paired + small). */
-export async function recordActuals(
+export function recordActuals(
   series: { date: string; ctl: number; atl: number; tsb: number; load: number }[],
 ): Promise<void> {
-  try {
-    const log = await read();
+  return mutate((log) => {
     let touched = false;
     for (const d of series) {
       const prev = log[d?.date];
@@ -74,8 +100,8 @@ export async function recordActuals(
       log[d.date] = { ...prev, actTSB: d.tsb, actCTL: d.ctl, actATL: d.atl, actLoad: Math.round(d.load) };
       touched = true;
     }
-    if (touched) await write(log);
-  } catch { /* never break a scan */ }
+    return touched;
+  });
 }
 
 /** Paired points (both projected and realised present), oldest first — for the calibration dump. Excludes
