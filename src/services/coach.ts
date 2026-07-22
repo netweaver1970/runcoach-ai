@@ -565,6 +565,32 @@ export function synthesizeWorkout(
   return ensureBlockPower({ name, warmupMeters: st.warmupMeters, drillsMinutes: st.drillsMinutes, blocks, cooldownMeters: st.cooldownMeters }, pz)!;
 }
 
+// ── Threshold test ────────────────────────────────────────────────────────────
+// A 20-minute maximal-but-even effort, used to MEASURE threshold power + HR rather than to train.
+// Deliberately carries NO power target and NO hrZone: every other session reads its watts from the
+// athlete's power zones, but this session exists precisely because those zones are unvalidated —
+// pushing a PowerRangeAlert would cap the effort at the number the test is meant to discover. It must
+// therefore never be passed through ensureBlockPower (which would fill watts from the zone table).
+export const THRESHOLD_TEST_MIN = 20;
+export const THRESHOLD_TEST_NAME = 'Threshold test';
+export function thresholdTestWorkout(name: string): WatchWorkout {
+  const st = workoutStructureCache;
+  return {
+    name,
+    // A test needs a real warm-up; the athlete's configured one is used when it's long enough,
+    // otherwise an open goal (0) so they can take as long as they need.
+    warmupMeters:  st.warmupMeters >= 1500 ? st.warmupMeters : 0,
+    drillsMinutes: st.drillsMinutes,
+    blocks: [{
+      repeats: 1,
+      workMinutes: THRESHOLD_TEST_MIN,
+      restMinutes: 0,
+      label: 'threshold test — even, maximal; last 60s all-out',
+    }],
+    cooldownMeters: st.cooldownMeters > 0 ? st.cooldownMeters : 0,
+  };
+}
+
 // 'trimp' basis: the quality dose ramps on LOAD — +cap%/week off the most-recent measured same-type WORK
 // TRIMP (or a nominal first dose). Returns undefined for non-quality types or a non-trimp basis, so intervals
 // + tempo become load-driven while easy/long/recovery stay minutes-driven (the volume guardrail). The minutes

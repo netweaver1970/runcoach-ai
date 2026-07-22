@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, THRESHOLD_TEST_MIN } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -57,6 +57,7 @@ export default function DailyCoachScreen() {
   const [pendBusy, setPendBusy] = useState(false);
 
   const [powerZones, setPowerZones] = useState<any>(undefined);
+  const [testSending, setTestSending] = useState(false);   // threshold-test push in flight
   const [runAdj, setRunAdj] = useState<number | null>(null); // user override of prescribed run minutes
   const [repAdj, setRepAdj] = useState<number | null>(null); // user override of interval rep count (interval days)
   // Sync zones (mirrors the calibrated file → getPowerZones) BEFORE reading, so a re-synthesized
@@ -81,6 +82,23 @@ export default function DailyCoachScreen() {
     } catch (e: any) {
       setWatchMsg(e?.message ?? 'Send failed.');
     } finally { setWatchSending(false); }
+  };
+
+  // Push the 20-min threshold TEST instead of today's session. Replaces today's watch workout (same
+  // weekday slot) so it behaves like any other pushed session. NOT run through ensureBlockPower — the
+  // test must reach the watch with NO power target, or it would be capped by the very zones it measures.
+  const sendThresholdTest = async () => {
+    setTestSending(true); setWatchMsg(null);
+    try {
+      if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
+      const wk = thresholdTestWorkout(weekdaySlot());
+      const ok = await pushWorkoutToWatch(wk);
+      setWatchMsg(ok
+        ? `\u2713 Threshold test sent \u2014 replaces today's watch session.`
+        : 'Could not send (needs iOS 17+ and permission).');
+    } catch (e: any) {
+      setWatchMsg(e?.message ?? 'Send failed.');
+    } finally { setTestSending(false); }
   };
 
   // Fast by default: load only ~the last week of daily components. Pull down for the
@@ -579,6 +597,18 @@ export default function DailyCoachScreen() {
                   <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
                     <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
+                  {/* THRESHOLD TEST — measures threshold power + HR instead of training. Secondary styling:
+                      it REPLACES the day's session, so it must not look like the primary action. */}
+                  <TouchableOpacity style={s.testBtn} onPress={sendThresholdTest} disabled={testSending}>
+                    <Text style={s.testBtnText}>
+                      {testSending ? 'Sending…' : `🎯 Send ${THRESHOLD_TEST_MIN}-min threshold test instead`}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={s.testHint}>
+                    Warm-up, then {THRESHOLD_TEST_MIN} min as hard as you can hold EVENLY (last 60s all-out),
+                    cool-down. No power target — that's the point: it measures your true threshold instead of
+                    capping you at the current zones. Best on a cool morning (&lt;24°C) with the H10, on fresh legs.
+                  </Text>
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
@@ -762,6 +792,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  testBtn: { backgroundColor: 'transparent', borderRadius: 8, borderWidth: 1, borderColor: c.accent,
+             paddingVertical: 8, alignItems: 'center', marginTop: 8 },
+  testBtnText: { color: c.accent, fontWeight: '700', fontSize: 12 },
+  testHint: { color: c.textSub, fontSize: 11, lineHeight: 15, marginTop: 5 },
   adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   adjustLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   adjustBtn:   { backgroundColor: c.surface, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: c.border },
