@@ -229,11 +229,13 @@ export function estimateDayTrimp(intensity: string, runMinutes: number, rates: T
 // via standard Z2:Z3:Z4 ratios — the fixed defaults are only used when there is NO run data at all.
 const TRIMP_CALIB_HALF_LIFE = 28;                 // days
 const TRIMP_RATIO = { easy: 1, moderate: 2.0 / 1.3, hard: 2.8 / 1.3 };
+
+
 export function calibrateTrimpRates(
   samples: { intensity: 'easy' | 'moderate' | 'hard'; minutes: number; dayLoad: number; daysAgo: number }[],
 ): TrimpRates {
-  const acc: Record<string, { num: number; den: number }> =
-    { easy: { num: 0, den: 0 }, moderate: { num: 0, den: 0 }, hard: { num: 0, den: 0 } };
+  const acc: Record<string, { num: number; den: number; n: number }> =
+    { easy: { num: 0, den: 0, n: 0 }, moderate: { num: 0, den: 0, n: 0 }, hard: { num: 0, den: 0, n: 0 } };
   for (const s of samples) {
     if (s.minutes < 8 || s.dayLoad <= 0) continue;
     const rate = s.dayLoad / s.minutes;
@@ -241,26 +243,38 @@ export function calibrateTrimpRates(
     const w = Math.pow(0.5, Math.max(0, s.daysAgo) / TRIMP_CALIB_HALF_LIFE);
     acc[s.intensity].num += rate * w;
     acc[s.intensity].den += w;
+    acc[s.intensity].n += 1;
   }
   const wmean = (k: string): number | null => acc[k].den > 0 ? acc[k].num / acc[k].den : null;
-  let easy = wmean('easy'), moderate = wmean('moderate'), hard = wmean('hard');
+  const order = ['easy', 'moderate', 'hard'] as const;
+  const measured: Record<string, number | null> =
+    { easy: wmean('easy'), moderate: wmean('moderate'), hard: wmean('hard') };
 
-  // Anchor on whichever intensity HAS real data; fill the rest from it via the standard ratios.
-  const anchor = easy != null ? { k: 'easy' as const, v: easy }
-               : moderate != null ? { k: 'moderate' as const, v: moderate }
-               : hard != null ? { k: 'hard' as const, v: hard } : null;
-  if (anchor) {
-    const base = anchor.v / TRIMP_RATIO[anchor.k];                 // implied easy-rate from the anchor
-    easy = easy ?? base * TRIMP_RATIO.easy;
-    moderate = moderate ?? base * TRIMP_RATIO.moderate;
-    hard = hard ?? base * TRIMP_RATIO.hard;
-  } else {
-    ({ easy, moderate, hard } = DEFAULT_TRIMP_RATES);              // no run data at all
-  }
+  // Anchor on the BEST-SAMPLED intensity (not simply "easy if present") — its rate implies an
+  // easy-equivalent base through the standard Z2:Z3:Z4 ratios, from which the whole curve derives.
+  let anchor: typeof order[number] | null = null;
+  for (const k of order) if (measured[k] != null && (anchor == null || acc[k].n > acc[anchor].n)) anchor = k;
+  if (anchor == null) return { ...DEFAULT_TRIMP_RATES };           // no run data at all
+  const base = measured[anchor]! / TRIMP_RATIO[anchor];
+
+  // Use each intensity's OWN measured rate wherever it exists; derive from the anchor ONLY where there
+  // is no data. Deliberately NO monotonic clamp.
+  //
+  // The old code ended with `moderate = max(moderate, easy); hard = max(hard, moderate)` "to keep the
+  // curve monotonic". But this rate is day-load ÷ TOTAL run minutes, and that quantity has no reason to
+  // rise with intensity: a hard session is roughly 1/3 work and 2/3 warm-up, jog recoveries and
+  // cool-down, so its average is pulled toward easy — and if the athlete's HR doesn't actually reach the
+  // prescribed zone, below it. Geert's live data measured easy 1.28 (n=18) / moderate 0.92 (n=5) /
+  // hard 0.75 (n=2); the clamp shipped 1.28/1.28/1.28, so intensity was worth exactly nothing in the
+  // 7-day projection, the volume-cap arithmetic or the CTL forecast.
+  //
+  // The inversion is REAL, not noise: on 07-20 an intervals day prescribed at Z4 259–265 W was executed
+  // at 256 W — on target — yet work HR reached only 134 (HR-reserve 0.56, i.e. Z2). His quality sessions
+  // genuinely cost less per minute than his easy runs. Clamping hid that; so would deriving the curve
+  // from the standard ratios. Report what was measured and let the zone calibration fix the cause.
   const r = (v: number) => Math.round(v * 100) / 100;
-  const out: TrimpRates = { easy: r(easy!), moderate: r(moderate!), hard: r(hard!) };
-  out.moderate = Math.max(out.moderate, out.easy);                 // keep the curve monotonic
-  out.hard = Math.max(out.hard, out.moderate);
+  const out = { easy: 0, moderate: 0, hard: 0 } as TrimpRates;
+  for (const k of order) out[k] = r(measured[k] ?? base * TRIMP_RATIO[k]);
   return out;
 }
 

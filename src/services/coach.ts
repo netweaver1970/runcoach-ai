@@ -717,6 +717,7 @@ export async function getWeekPlan(
   const LONG_MIN = 45;      // shrink-to-fit: the long run is PROTECTED — never shrunk below this (keeps it a "long")
   const EASY_RESERVE = 35;  // headroom kept on a flex day before spending budget on an easy jog
   const EASY_MAX  = 60;     // PROGRESSIVE GROWTH: an easy/flex day GROWS toward the available budget (aerobic
+  const EASY_MIN  = 20;     // …but never below this — a short easy day is still a real run (see easyGrow)
   const EASY_BASE = 35;     // volume) instead of a fixed jog — capped per-day so no single day spikes. The
   const QRESERVE  = 55;     // +cap% rolling cap + the green gate keep it controlled; QRESERVE is budget held
   //                           back per still-unplaced quality session so easy growth NEVER starves the week's
@@ -726,9 +727,17 @@ export async function getWeekPlan(
   // when green; hold at EASY_BASE when run-down or when there's no genuine surplus (never below EASY_BASE, so
   // it's always a real easy run — and never worse than the pre-growth fixed 35).
   const easyGrow = (allowance: number) => {
-    if (!green) return EASY_BASE;
+    if (!green) return Math.max(EASY_MIN, Math.min(EASY_BASE, Math.round(allowance)));
     const reserve = Math.max(0, Qtotal - qPlaced) * QRESERVE;
-    return Math.min(EASY_MAX, Math.max(EASY_BASE, Math.round(allowance - reserve)));
+    const spare = Math.round(allowance - reserve);
+    // Grow into a genuine surplus; otherwise take what THIS day's allowance actually affords, down to
+    // EASY_MIN. The old floor of EASY_BASE made every easy day cost ≥35 min whatever the budget, so at a
+    // low weekly base (Geert: ~150 min/wk) only about four days fitted the week at all — the schedule
+    // says every day may be a run day, but the arithmetic priced most of them out. A short easy day is a
+    // real run; two 22-min days beat one 35-min day plus a forced rest.
+    return spare > EASY_BASE
+      ? Math.min(EASY_MAX, spare)
+      : Math.max(EASY_MIN, Math.min(EASY_BASE, Math.round(allowance)));
   };
   const isQuality = (k: WeekKind) => k === 'intervals' || k === 'tempo' || k === 'long';
   const resolveQuality = (k: WeekKind): [CoachIntensity, number] =>

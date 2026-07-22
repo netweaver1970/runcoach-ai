@@ -210,6 +210,12 @@ export default function WeekPlan() {
           const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
           const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins);
           const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;
+          // NB: do NOT price this from prescribedTrimp(wk). That integrates the PRESCRIBED zones, which
+          // assumes the athlete's HR actually reaches them. Checked against Geert's real runs (07-22):
+          // an intervals day prescribed at Z4 259–265 W was executed at 256 W — on target — yet work HR
+          // reached only 134 (HR-reserve 0.56, i.e. Z2), so prescribedTrimp read 90 against a measured
+          // day-load of 38. Projecting off prescribed zones would over-state every quality day ~2.4x and
+          // make the coach trim against fatigue that never arrives. Measured rates keep this honest.
           const trimp = estimateDayTrimp(intensity, mins, cal);
 
           atl += La * (trimp - atl);
