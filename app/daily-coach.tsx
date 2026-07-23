@@ -620,26 +620,6 @@ export default function DailyCoachScreen() {
                   <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
                     <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
-                  {/* THRESHOLD TEST — measures threshold power + HR instead of training. Secondary styling:
-                      it REPLACES the day's session, so it must not look like the primary action. */}
-                  <TouchableOpacity style={s.testBtn} onPress={sendThresholdTest} disabled={testSending}>
-                    <Text style={s.testBtnText}>
-                      {testSending ? 'Sending…' : `🎯 Send ${THRESHOLD_TEST_MIN}-min threshold test instead`}
-                    </Text>
-                  </TouchableOpacity>
-                  <Text style={s.testHint}>
-                    Warm-up, then {THRESHOLD_TEST_MIN} min as hard as you can hold EVENLY (last 60s all-out),
-                    cool-down. No power target — that's the point: it measures your true threshold instead of
-                    capping you at the current zones. Best on a cool morning (&lt;24°C) with the H10, on fresh legs.
-                  </Text>
-                  {testTarget && (
-                    <Text style={s.testTarget}>
-                      Aim {testTarget.low}–{testTarget.high} W. You've already held {testTarget.low} W for{' '}
-                      {testTarget.heldMin} min, so treat it as the FLOOR — finish above it.{'\n'}
-                      First 4 min deliberately easier than feels right; at 10 min it should feel “I can hold
-                      this, but I don't want to”. Fading a little is fine — stopping is not.
-                    </Text>
-                  )}
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
@@ -681,6 +661,35 @@ export default function DailyCoachScreen() {
 
               {!watchWorkout && plan.intensity === 'rest' && (
                 <Text style={s.workoutStep}>⌚ Rest day — no watch workout pushed.</Text>
+              )}
+
+              {/* THRESHOLD TEST — deliberately OUTSIDE the `watchWorkout &&` block above. It was inside it,
+                  which meant a REST day (watchWorkout === null) hid the button entirely — including on the
+                  very mornings you'd most want to choose between resting and testing, and it made the
+                  gate's own "today's plan is REST" branch unreachable. It measures rather than trains, so
+                  it stands on its own. Today only: pushing a test while browsing a past day makes no sense. */}
+              {targetIsToday && (
+                <View style={s.testWrap}>
+                  <TouchableOpacity style={s.testBtn} onPress={sendThresholdTest} disabled={testSending}>
+                    <Text style={s.testBtnText}>
+                      {testSending ? 'Sending…' : `🎯 Send ${THRESHOLD_TEST_MIN}-min threshold test${watchWorkout ? ' instead' : ''}`}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={s.testHint}>
+                    Warm-up, then {THRESHOLD_TEST_MIN} min as hard as you can hold EVENLY (last 60s all-out),
+                    cool-down. No power target — that's the point: it measures your true threshold instead of
+                    capping you at the current zones. Best on a cool morning (&lt;24°C) with the H10, on fresh legs.
+                  </Text>
+                  {testTarget && (
+                    <Text style={s.testTarget}>
+                      Aim {testTarget.low}–{testTarget.high} W. You've already held {testTarget.low} W for{' '}
+                      {testTarget.heldMin} min, so treat it as the FLOOR — finish above it.{'\n'}
+                      First 4 min deliberately easier than feels right; at 10 min it should feel “I can hold
+                      this, but I don't want to”. Fading a little is fine — stopping is not.
+                    </Text>
+                  )}
+                  {!watchWorkout && watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
+                </View>
               )}
 
               {/* Coach's notes are LLM prose — generated ONLY on request (the morning prep + regenerate are
@@ -826,6 +835,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   testBtn: { backgroundColor: 'transparent', borderRadius: 8, borderWidth: 1, borderColor: c.accent,
              paddingVertical: 8, alignItems: 'center', marginTop: 8 },
   testBtnText: { color: c.accent, fontWeight: '700', fontSize: 12 },
+  testWrap: { marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: c.border },
   testHint: { color: c.textSub, fontSize: 11, lineHeight: 15, marginTop: 5 },
   testTarget: { color: c.text, fontSize: 11, lineHeight: 15, marginTop: 5, fontWeight: '600' },
   adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
