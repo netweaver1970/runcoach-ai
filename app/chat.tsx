@@ -37,6 +37,7 @@ import {
   makeMsg,
   PersistedMessage,
 } from '../src/services/chatMemory';
+import { formatUsage, lastCallUsage } from '../src/services/tokenUsage';
 import { loadPrescriptionAt } from '../src/services/coach';
 import { buildPrescriptionContext } from '../src/services/runAnalysis';
 import { HealthSnapshot } from '../src/types';
@@ -82,6 +83,7 @@ interface Message {
   role:     'user' | 'assistant' | 'system';
   content:  string;
   loading?: boolean;
+  usage?:   string;   // token/cost line for THIS reply (see tokenUsage.formatUsage)
 }
 
 // Make rendered markdown selectable: `selectable` on the wrapping textgroup <Text>
@@ -308,13 +310,14 @@ export default function ChatScreen() {
     try {
       const reply    = await getChatResponse(activeSnap, apiHistory, memoryNote, localContextRef.current, undefined, systemContext);
       const replyMsg = makeMsg('assistant', reply);
+      const usageLine = formatUsage(lastCallUsage());
       const full: PersistedMessage[] = [...historyRef.current, persisted, replyMsg];
       historyRef.current = full;
       lastSeenRunRef.current = activeSnap.runs[0]?.uuid;
 
       setMessages(prev => [
         ...prev.filter(m => m.id !== loadingId),
-        { id: 'auto-reply', role: 'assistant', content: reply },
+        { id: 'auto-reply', role: 'assistant', content: reply, usage: usageLine },
       ]);
 
       updateMemoryNote(toApiMessages(full), memoryNote, activeSnap, localContextRef.current)
@@ -390,12 +393,13 @@ export default function ChatScreen() {
     try {
       const reply    = await getChatResponse(snapshot, apiHistory, memoryNote, localContextRef.current);
       const replyMsg = makeMsg('assistant', reply);
+      const usageLine = formatUsage(lastCallUsage());
       const full: PersistedMessage[] = [...historyRef.current, persisted, replyMsg];
       historyRef.current = full;
 
       setMessages(prev => [
         ...prev.filter(m => m.id !== loadingId),
-        { id: now + 'a', role: 'assistant', content: reply },
+        { ...{ id: now + 'a', role: 'assistant', content: reply }, usage: usageLine },
       ]);
 
       // Update memory + persist in background
@@ -458,6 +462,9 @@ export default function ChatScreen() {
           >
             <MarkdownBody content={item.content} style={isUser ? mdStylesUser : mdAssistant} rules={SELECTABLE_RULES} c={c} />
           </TouchableOpacity>
+          {/* What this reply cost. Shown because there is no way to query the Anthropic credit balance
+              from a normal API key — see tokenUsage.ts — so per-call visibility is the honest substitute. */}
+          {!isUser && item.usage ? <Text style={styles.usageLine}>{item.usage}</Text> : null}
           {/* Copy affordance — assistant answers (the ones you debug) get an explicit button */}
           {!isUser && (
             <TouchableOpacity onPress={() => copyMessage(item.content)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
@@ -666,6 +673,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
 
   systemMsg:     { alignItems: 'center', marginVertical: 8 },
   systemMsgText: { fontSize: 12, color: c.textFaint, textAlign: 'center', fontStyle: 'italic' },
+  usageLine: { fontSize: 10, color: c.textFaint, marginTop: 3, marginLeft: 4 },
   copyBtn:       { fontSize: 11, color: c.textFaint, fontWeight: '600', marginTop: 3, marginLeft: 6 },
 
   chips: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.surface },

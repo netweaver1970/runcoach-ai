@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, KmSplit } from '../types';
-import { callLLM, getActiveApiKey } from './llm';
+import { callLLM, getActiveApiKey, setUsageFeature } from './llm';
 import { agentComplete } from './agent';
 import { buildTimelineContext } from './timelineEvents';
 import { buildKnowledgePrompt } from './coachFiles';
@@ -817,6 +817,7 @@ export async function getChatResponse(
   // The athlete's editable coaching files (incl. the Training Model) are injected so the coach reasons from
   // the SAME knowledge the daily plan uses — one editable source of truth.
   const knowledge = await buildKnowledgePrompt().catch(() => '');
+  setUsageFeature(runContext ? 'run-analysis' : 'chat');
   return agentComplete({
     system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, knowledge),
     messages:  history,

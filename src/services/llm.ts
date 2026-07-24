@@ -10,6 +10,7 @@
  * On first load, the old `anthropic_api_key` is migrated automatically.
  */
 
+import { recordUsage } from './tokenUsage';
 import * as SecureStore from 'expo-secure-store';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -363,6 +364,7 @@ export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsR
   }
   const data = await res.json();
   await recordLLMReachable(true);
+  captureUsage(data, data?.model ?? '');
   const content: any[] = data.content ?? [];
   const text = content.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('').trim();
   return { stopReason: data.stop_reason ?? 'end_turn', content, text };
@@ -472,6 +474,26 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
 
 // ─── Response helpers ─────────────────────────────────────────────────────────
 
+// The feature attributing the CURRENT call, so usage can be broken down by what spent it. Set by
+// callLLM's callers via withFeature(); falls back to 'other'.
+let currentFeature = 'other';
+export function setUsageFeature(f: string): void { currentFeature = f; }
+
+/** Pull the provider's usage block (Anthropic and OpenAI shapes) and record it. Never throws. */
+function captureUsage(data: any, model: string): void {
+  try {
+    const u = data?.usage;
+    if (!u) return;
+    recordUsage({
+      input:      u.input_tokens ?? u.prompt_tokens ?? 0,
+      output:     u.output_tokens ?? u.completion_tokens ?? 0,
+      cacheRead:  u.cache_read_input_tokens ?? 0,
+      cacheWrite: u.cache_creation_input_tokens ?? 0,
+      model, at: new Date().toISOString(), feature: currentFeature,
+    });
+  } catch { /* accounting must never break a call */ }
+}
+
 async function handleAnthropicResponse(res: Response): Promise<string> {
   if (!res.ok) {
     let body: any = {};
@@ -485,6 +507,7 @@ async function handleAnthropicResponse(res: Response): Promise<string> {
     throw new Error(`API error ${res.status}: ${msg || JSON.stringify(body).slice(0, 200)}`);
   }
   const data = await res.json();
+  captureUsage(data, data?.model ?? '');
   return data.content[0].text as string;
 }
 
@@ -498,6 +521,7 @@ async function handleOpenAIResponse(res: Response): Promise<string> {
     throw new Error(`API error ${res.status}: ${msg || JSON.stringify(body).slice(0, 200)}`);
   }
   const data = await res.json();
+  captureUsage(data, data?.model ?? '');
   return data.choices[0].message.content as string;
 }
 

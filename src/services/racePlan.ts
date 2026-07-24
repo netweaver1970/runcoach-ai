@@ -7,7 +7,7 @@
 // Settings/config live HERE (values); only TYPES are imported from coach.ts → no runtime import cycle.
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
-import { callLLM, getLLMStatus, extractJsonObject } from './llm';
+import { callLLM, getLLMStatus, extractJsonObject, setUsageFeature } from './llm';
 import type { CoachSnapshot, WeekPlanDay, CoachIntensity } from './coach';
 
 export type PlanMode = 'leisure' | 'race';
@@ -136,6 +136,7 @@ async function generateRaceWeekPlan(snap: CoachSnapshot, race: RaceConfig, weekM
     todayISO: snap.date,
   });
   try {
+  setUsageFeature('race-plan');
     const txt = await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1400, temperature: 0.3 });
     const json = extractJsonObject(txt);
     if (!json) return null;

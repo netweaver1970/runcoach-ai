@@ -7,7 +7,7 @@
  */
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
-import { callLLM, getLLMStatus, extractJsonObject } from './llm';
+import { callLLM, getLLMStatus, extractJsonObject, setUsageFeature } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
@@ -1301,6 +1301,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       ? `\n\nIMPORTANT — TODAY'S SESSION IS DELIBERATELY FORCE-PLACED. The rolling volume cap is nearly spent, but the app has INTENTIONALLY held this shortened quality session on its scheduled day (shrink-to-fit) and banked budget elsewhere in the week. A low tofBudgetTodayMin therefore does NOT mean today is a rest day: do NOT return intensity "rest", and do NOT write that the cap forces rest today. Honour the prescribed session (you may still ease it slightly if today's recovery genuinely warrants).`
       : '';
     const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}${forced}`;
+    setUsageFeature('coach-plan');
     const txt = await callLLM({
       system,
       // Feed the LLM the SAME next-run the basis resolved from the 7-day plan (may be tomorrow's shrink-to-fit

@@ -9,7 +9,7 @@ import * as FileSystem from 'expo-file-system';
 import HealthKit from '@kingstinct/react-native-healthkit';
 import { PowerZones } from '../types';
 import { getPowerZones, savePowerZones, isPowerZonesConfigured } from './claude';
-import { callLLM, extractJsonObject } from './llm';
+import { callLLM, extractJsonObject, setUsageFeature } from './llm';
 import { loadSnapshotCache, extractWeatherTempC } from './healthkit';
 import { getRunMeta } from './runMeta';
 import { upsertKnowledge, knowledgeExists, readKnowledgeContent } from './coachFiles';
@@ -341,6 +341,7 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
     `(warm-up, drills, recovery jogs & cool-down excluded; real work only):\n` +
     analysis.perZone.map(z => `${z.z}: ${z.minutes} min, avg HR ${z.avgHR}, avg power ${z.avgPower} W`).join('\n');
 
+  setUsageFeature('zone-calibration');
   const raw = await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1600 });
   if (!raw?.trim()) return { updated: false, reason: 'Coach returned nothing.' };
 

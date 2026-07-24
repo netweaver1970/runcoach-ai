@@ -9,7 +9,7 @@
  * index.json with metadata (title, enabled, order, builtin).
  */
 import * as FileSystem from 'expo-file-system';
-import { callLLM } from './llm';
+import { callLLM, setUsageFeature } from './llm';
 
 export interface KnowledgeMeta {
   id:          string;
@@ -354,6 +354,7 @@ export async function enhanceKnowledge(id: string, instruction?: string): Promis
     (instruction
       ? `Apply this instruction: ${instruction}`
       : `Refine, deduplicate and add clearly useful, widely-accepted specifics. Keep it focused.`);
+  setUsageFeature('knowledge-file');
   const out = (await callLLM({ system, messages: [{ role: 'user', content: user }], maxTokens: 1400 })).trim();
   return out.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
 }

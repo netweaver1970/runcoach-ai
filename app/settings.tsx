@@ -41,6 +41,7 @@ import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '
 import * as Clipboard from 'expo-clipboard';
 import { exportAllSettings, restoreAllSettings } from '../src/services/backup';
 import { buildDebugExportJson, buildDebugSections } from '../src/services/debugExport';
+import { usageSince, clearUsage, UsageSummary, PRICES_AS_OF } from '../src/services/tokenUsage';
 import { shareJson } from '../src/shareJson';
 import { connectDrive, disconnectDrive, isDriveConnected, uploadDebugSections } from '../src/services/googleDrive';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
@@ -83,6 +84,7 @@ export default function SettingsScreen() {
   const [powerZonesSaved, setPowerZonesSaved] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [calibMsg, setCalibMsg] = useState('');
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [longRunMin, setLongRunMin] = useState(String(DEFAULT_LONG_RUN_MINUTES));
   const [longRunSaved, setLongRunSaved] = useState(false);
   const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
@@ -190,6 +192,7 @@ export default function SettingsScreen() {
     getAiWeeks().then(w => setAiWeeksState(String(w)));
     loadChatPersistence().then(p => setCoachMemory(p?.memoryNote ?? ''));
     isAutoDayViewEnabled().then(setDayViewAuto);
+    usageSince().then(setUsage).catch(() => {});
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -845,6 +848,42 @@ export default function SettingsScreen() {
             <Text style={styles.btnText}>{calibrating ? 'Analyzing last run…' : '⚙︎ Recalibrate zones from last run'}</Text>
           </TouchableOpacity>
           {calibMsg ? <Text style={[styles.hint, { marginTop: 8 }]}>{calibMsg}</Text> : null}
+        </Section>
+
+        {/* AI usage — what the app has spent this month */}
+        <Section title="AI Usage" cat="coaching">
+          <Text style={styles.hint}>
+            Tokens this app has sent and received this calendar month, by feature. Anthropic gives no way to
+            read your remaining CREDIT from a normal API key — that lives behind an organisation admin key,
+            which this app deliberately does not ask for — so check console.anthropic.com for the balance.
+            Costs below are estimates from list prices as of {PRICES_AS_OF}.
+          </Text>
+          {usage && usage.calls > 0 ? (
+            <>
+              <View style={styles.usageTop}>
+                <Text style={styles.usageBig}>~${usage.usd.toFixed(2)}</Text>
+                <Text style={styles.usageSub}>
+                  {usage.calls} calls · {Math.round((usage.input + usage.cacheRead + usage.cacheWrite) / 1000)}k in
+                  {usage.cacheRead > 0 ? ` (${Math.round(usage.cacheRead / Math.max(1, usage.input + usage.cacheRead + usage.cacheWrite) * 100)}% cached)` : ''}
+                  {' · '}{Math.round(usage.output / 1000)}k out
+                </Text>
+              </View>
+              {usage.byFeature.map(f => (
+                <View key={f.feature} style={styles.usageRow}>
+                  <Text style={styles.usageFeat}>{f.feature}</Text>
+                  <Text style={styles.usageVal}>{f.calls}× · {Math.round(f.tokens / 1000)}k · ~${f.usd.toFixed(2)}</Text>
+                </View>
+              ))}
+              <TouchableOpacity
+                style={[styles.btn, { backgroundColor: 'transparent', borderWidth: 1, borderColor: c.border, marginTop: 10 }]}
+                onPress={() => clearUsage().then(() => usageSince().then(setUsage))}
+              >
+                <Text style={[styles.btnText, { color: c.textSub }]}>Reset counters</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <Text style={styles.hint}>No AI calls recorded yet this month.</Text>
+          )}
         </Section>
 
         {/* Long Run Threshold */}
@@ -1682,6 +1721,13 @@ function Section({ title, cat, children }: { title: string; cat?: string; childr
 }
 
 const makeStyles = (c: Palette) => StyleSheet.create({
+  usageTop:  { flexDirection: 'row', alignItems: 'baseline', gap: 10, marginTop: 4, marginBottom: 8 },
+  usageBig:  { fontSize: 26, fontWeight: '800', color: c.text },
+  usageSub:  { fontSize: 11, color: c.textSub, flex: 1 },
+  usageRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4,
+               borderTopWidth: 1, borderTopColor: c.border },
+  usageFeat: { fontSize: 12, color: c.text },
+  usageVal:  { fontSize: 12, color: c.textSub },
   container: { flex: 1, backgroundColor: c.bg },
   navHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
