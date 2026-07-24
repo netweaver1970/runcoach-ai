@@ -703,6 +703,67 @@ export function parseWeeklyTemplate(text: string): Record<number, WeekKind> {
   return out;
 }
 
+// ── SHAPE ENVELOPE — who decides what ─────────────────────────────────────────
+// Three layers, deliberately separated:
+//   1. YOU pick the session TYPE per weekday (running-schedule.md → parseWeeklyTemplate).
+//   2. The DETERMINISTIC model turns that into a DOSE — total duration and total load — from the ToF
+//      budget, the ramp caps, recovery/TSB, heat and periodization.
+//   3. The LLM may vary the EXECUTION within that dose (rep length × count, recovery type, ordering).
+//
+// This envelope is what makes layer 3 safe. Duration and load alone are NOT enough to pin a session's
+// identity: on 2026-07-24 the model shipped 10min Z2 + 3×8min Z3 + 5min Z2 against a deterministic
+// 54min Z2 long run, and the two scored 80 vs 81 TRIMP — one point apart. Load is a scalar that
+// collapses duration × intensity, so many different sessions map to the same number. That is exactly
+// why it works as a dose currency and exactly why it cannot tell a long run from a tempo. Session
+// identity lives in the DISTRIBUTION of intensity, so the distribution is what we constrain.
+//
+// The bounds must admit every archetype the deterministic engine itself produces (INTERVAL_ARCHETYPES,
+// tempoCruiseForLoad, tempoContinuousForLoad, the continuous Z2 long) — otherwise the fallback would be
+// rejected by its own rule. There is a harness check for exactly that.
+// How far the LLM's execution may drift from the deterministic dose before it's rejected.
+export const DOSE_MIN_TOL  = 0.10;   // total work+recovery minutes, ±10%
+export const DOSE_LOAD_TOL = 0.15;   // prescribed Banister TRIMP, ±15%
+
+export interface ShapeEnvelope {
+  zones:     string[];   // work zones this KIND may use
+  maxBlocks: number;     // distinct block entries
+  maxReps:   number;     // total reps summed across blocks
+  repMin:    [number, number];   // per-rep work minutes, [min, max]
+  maxRest:   number;     // recovery minutes between reps (0 = must be continuous)
+}
+export const SHAPE_ENVELOPE: Record<string, ShapeEnvelope> = {
+  // The long run's job is uninterrupted aerobic time — one block, no reps, no recovery.
+  long:      { zones: ['Z1', 'Z2'],             maxBlocks: 1, maxReps: 1,  repMin: [12, 180], maxRest: 0 },
+  easy:      { zones: ['Z1', 'Z2'],             maxBlocks: 2, maxReps: 2,  repMin: [8, 150],  maxRest: 0 },
+  recovery:  { zones: ['Z1', 'Z2'],             maxBlocks: 1, maxReps: 1,  repMin: [5, 60],   maxRest: 0 },
+  // Sustained threshold: few long efforts, short recoveries (cruise intervals live here).
+  // Bounds are generous at the top: a continuous block IS the session for these kinds, so the ceiling
+  // only has to exclude nonsense (verified against every archetype x seed x length in the harness).
+  // tempoContinuousForLoad builds ONE continuous block whose length just tracks the run length, so the
+  // ceiling only has to sit above anything the schedule can ask for (real tempo days here are 20-60 min). The Z3 zone floor — not the rep length — is what separates this from a long run.
+  tempo:     { zones: ['Z2', 'Z3', 'Z4'],       maxBlocks: 3, maxReps: 6,  repMin: [4, 150],  maxRest: 3 },
+  // Short hard reps with real recovery.
+  intervals: { zones: ['Z3', 'Z4', 'Z5'],       maxBlocks: 3, maxReps: 12, repMin: [1, 10],   maxRest: 5 },
+};
+
+/** null when the blocks fit the kind's envelope, else a short human reason (logged, not shown). */
+export function shapeFits(kind: string | undefined, blocks?: WatchWorkoutBlock[] | null): string | null {
+  const env = SHAPE_ENVELOPE[kind ?? ''];
+  if (!env || !blocks?.length) return null;              // unknown kind → don't constrain
+  if (blocks.length > env.maxBlocks) return `${blocks.length} blocks > ${env.maxBlocks}`;
+  let reps = 0;
+  for (const b of blocks) {
+    const r = Math.max(1, b.repeats ?? 1);
+    reps += r;
+    const z = b.hrZone ?? 'Z2';
+    if (!env.zones.includes(z)) return `${z} not allowed for ${kind}`;
+    if (b.workMinutes < env.repMin[0] || b.workMinutes > env.repMin[1]) return `rep ${b.workMinutes}min outside ${env.repMin.join('-')}`;
+    if ((b.restMinutes ?? 0) > env.maxRest) return `rest ${b.restMinutes}min > ${env.maxRest}`;
+  }
+  if (reps > env.maxReps) return `${reps} reps > ${env.maxReps}`;
+  return null;
+}
+
 // ── PROGRESSIVE OVERLOAD, per session TYPE (no jumps) ─────────────────────────
 // Each session type ramps its duration from WHERE IT RECENTLY WAS, capped at +cap%/week, toward its target.
 // Weekday ≈ type (the schedule fixes Mon=intervals, Fri=long, …), so we baseline each day's ramp on the recent
@@ -1279,23 +1340,31 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     // one (2026-07-15: a hallucinated "30m jog" ballooned a 35-min tempo to a 122-min, load-137 session).
     // Either way → fall back to the deterministic basis workout (the short tempo the athlete already had).
     const workRef = Math.max(8, runMinutes - (parsed?.drillsMinutes ?? 0) - 6);   // work-minutes the session budgets
-    // A LONG RUN MUST STAY CONTINUOUS AEROBIC — check the SHAPE, not just the duration.
+    // THE DETERMINISTIC MODEL OWNS THE DOSE; THE LLM VARIES THE EXECUTION. Three checks (see
+    // SHAPE_ENVELOPE): the shape must fit the day's KIND, and — while we're still doing the basis
+    // session — its duration and load must match what the deterministic model prescribed.
     //
-    // wellFormed only ever checked total minutes, and a long run resolves to intensity 'moderate'
-    // (resolveQuality: 'long' -> ['moderate', longTargetMin]), so parseWorkout's zone clamp (moderate =>
-    // <= Z3) happily passed Z3 blocks. Nothing anywhere required the long to be continuous. On 2026-07-24
-    // the week plan said "Long, 54min @ 190-196W" and the daily plan shipped
-    // "10min Z2 + 3x 8min @ Z3 219-261W / 2min jog + 5min Z2" — a tempo-cruise session wearing the
-    // "Long Run" label. Geert overrode it and ran a steady 60min instead, which was the right call.
-    //
-    // The long run's whole job is uninterrupted aerobic time; breaking it into threshold reps makes it a
-    // different session with a different recovery cost, and the split-long feature assumes it too. So on
-    // a long day: no zone above Z2, and no rep structure. Failing this falls through to the deterministic
-    // basis workout, which synthesizeWorkout builds as ONE continuous Z2 block for kind 'long'.
-    const longDay = basis.sessionKind === 'long';
-    const longShapeOk = !longDay || (parsed?.blocks ?? []).every(b =>
-      (b.repeats ?? 1) <= 1 && (b.restMinutes ?? 0) === 0 && !/^Z[3-5]$/.test(b.hrZone ?? 'Z2'));
-    const wellFormed = parsed != null && longShapeOk
+    // wellFormed used to check total MINUTES only, against a band so wide (0.5x-1.5x) that a session
+    // could be half or half-again the intended dose. That let 2026-07-24 through: the week plan said
+    // "Long, 54min @ 190-196W" and the daily plan shipped 10min Z2 + 3x8min Z3 + 5min Z2 under a "Long
+    // Run" label. Note the loads were 80 vs 81 TRIMP — one point apart — so a load check alone would
+    // have passed it too. The ENVELOPE is what catches it.
+    const effKind: SessionKind =
+      intensity === 'rest' ? 'recovery' :
+      intensity === 'hard' ? 'intervals' :
+      intensity === 'easy' ? (runMinutes <= 30 ? 'recovery' : 'easy') :
+      basis.sessionKind === 'long' ? 'long' : 'tempo';
+    const shapeReason = shapeFits(effKind, parsed?.blocks);
+    // Compare against the basis dose ONLY when we're still doing the basis session — if the plan eased
+    // off, the basis dose is the wrong target and the workout gets synthesized for the final intensity
+    // anyway.
+    const easedOff  = intensity !== basis.intensity;
+    const refMin    = (!easedOff && basis.workout) ? basis.workout.blocks.reduce((t, b) => t + b.repeats * (b.workMinutes + b.restMinutes), 0) : 0;
+    const refLoad   = (!easedOff && basis.workout) ? prescribedTrimp(basis.workout) : 0;
+    const near      = (v: number, ref: number, tol: number) => ref <= 0 || Math.abs(v - ref) <= ref * tol;
+    const durOk     = near(blockTotal, refMin, DOSE_MIN_TOL);
+    const loadOk    = near(parsed ? prescribedTrimp(parsed) : 0, refLoad, DOSE_LOAD_TOL);
+    const wellFormed = parsed != null && !shapeReason && durOk && loadOk
       && blockTotal >= workRef * 0.5 && blockTotal <= workRef * 1.5 + 6;
 
     // wellFormed → the LLM's parsed structure (its prose describes it). Rejected → the DETERMINISTIC basis
@@ -1308,7 +1377,6 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     // to the basis's Z4 259–265 W intervals — so the home showed "Z2 · 2× 4min @ 259–265W · Z4" under a
     // headline reading "Cap hit — rest today". Three sources, three different intensities.
     // When the intensity moved, SYNTHESIZE for the intensity we actually landed on.
-    const easedOff = intensity !== basis.intensity;
     const workout = intensity === 'rest' ? null
       : wellFormed ? ensureBlockPower(parsed, snap.powerZones)
       : (basis.workout && !easedOff) ? basis.workout
@@ -1334,11 +1402,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
     // Canonical kind follows the FINAL (possibly eased) intensity so the label stays honest; a moderate
     // session is 'long' only if the basis was a long run (keeps the split), else 'tempo'.
-    const sessionKind: SessionKind =
-      intensity === 'rest' ? 'recovery' :
-      intensity === 'hard' ? 'intervals' :
-      intensity === 'easy' ? 'easy' :
-      basis.sessionKind === 'long' ? 'long' : 'tempo';
+    // effKind (computed above for the envelope) already encodes this, except that the label wants plain
+    // 'easy' where the envelope treats a short easy run as 'recovery'.
+    const sessionKind: SessionKind = intensity === 'easy' ? 'easy' : effKind;
     return {
       ...basis,
       // PROSE MUST DESCRIBE THE SESSION WE ACTUALLY PRESCRIBE. The model's words were written for the
