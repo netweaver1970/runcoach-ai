@@ -41,6 +41,42 @@ export interface ChatPersistence {
 // date label is prepended to the later message content so Claude knows that
 // time has passed between exchanges.
 
+// ── CONTEXT BUDGET ────────────────────────────────────────────────────────────
+// Every turn resent the ENTIRE stored history. Measured on Geert's device 2026-07-24: 60 messages,
+// 89 000 chars ≈ 24 000 tokens per turn — on top of ~2 600 tokens of coaching files — and the agentic
+// loop resends all of it once per tool step (up to 6). One question could cost ~100k input tokens, which
+// is what exhausted his API quota.
+//
+// 59% of that history was ten run-analysis replies (~6 300 chars each). Those are REPORTS: written once,
+// read once, and then carried forever as context nobody refers back to. The durable learnings already
+// live in the memory note (updateMemoryNote), which is exactly the mechanism that makes trimming safe —
+// old turns are summarised there, not lost.
+const HISTORY_CHAR_BUDGET = 14_000;   // ≈ 3 800 tokens of recent conversation
+const LONG_REPLY_CHARS    = 2_500;    // an assistant reply longer than this is a report, not a turn
+const REPORT_KEEP_CHARS   = 400;      // …keep only its opening as a reminder that it happened
+
+/**
+ * Trim history to a token budget, newest-first, so a long conversation costs a bounded amount.
+ * Long assistant REPORTS are truncated to their opening lines rather than dropped, so the thread still
+ * reads coherently ("you analysed that run") without re-sending the whole document.
+ */
+export function trimForApi(msgs: PersistedMessage[]): PersistedMessage[] {
+  const shrunk = msgs.map(m => (m.role === 'assistant' && m.content.length > LONG_REPLY_CHARS)
+    ? { ...m, content: m.content.slice(0, REPORT_KEEP_CHARS) + '\n…[earlier analysis omitted — ask again to regenerate]' }
+    : m);
+  const out: PersistedMessage[] = [];
+  let used = 0;
+  for (let i = shrunk.length - 1; i >= 0; i--) {
+    const c = shrunk[i].content.length;
+    if (used + c > HISTORY_CHAR_BUDGET && out.length > 0) break;
+    out.unshift(shrunk[i]);
+    used += c;
+  }
+  // Never open on an assistant turn — the API expects the exchange to start from the user.
+  while (out.length && out[0].role === 'assistant') out.shift();
+  return out;
+}
+
 export function toApiMessages(msgs: PersistedMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (let i = 0; i < msgs.length; i++) {

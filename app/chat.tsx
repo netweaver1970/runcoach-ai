@@ -33,6 +33,7 @@ import {
   saveChatPersistence,
   clearChatPersistence,
   toApiMessages,
+  trimForApi,
   makeMsg,
   PersistedMessage,
 } from '../src/services/chatMemory';
@@ -297,7 +298,12 @@ export default function ChatScreen() {
 
     const now       = new Date().toISOString();
     const persisted = makeMsg('user', text, now);
-    const apiHistory: ChatMessage[] = toApiMessages([...historyRef.current, persisted]);
+    // A run analysis is a SELF-CONTAINED report: the run data it needs is injected into the system
+    // prompt via systemContext, and the coaching files + memory note ride along there too. Prior chat
+    // turns add nothing it uses — they were just 24k tokens of ballast on every analysis. Start clean.
+    const apiHistory: ChatMessage[] = systemContext
+      ? toApiMessages([persisted])
+      : toApiMessages(trimForApi([...historyRef.current, persisted]));
 
     try {
       const reply    = await getChatResponse(activeSnap, apiHistory, memoryNote, localContextRef.current, undefined, systemContext);
@@ -379,7 +385,7 @@ export default function ChatScreen() {
     setTimeout(() => { atBottomRef.current = true; listRef.current?.scrollToEnd({ animated: true }); }, 100);
 
     // Build API history: persisted messages (with time-gap labels) + new user turn
-    const apiHistory: ChatMessage[] = toApiMessages([...historyRef.current, persisted]);
+    const apiHistory: ChatMessage[] = toApiMessages(trimForApi([...historyRef.current, persisted]));
 
     try {
       const reply    = await getChatResponse(snapshot, apiHistory, memoryNote, localContextRef.current);

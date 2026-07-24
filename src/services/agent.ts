@@ -446,7 +446,11 @@ export async function runAgent(opts: {
   const ctx: AgentCtx = { snap: opts.snap };
   const system = opts.system + TOOLS_HINT;
   const messages: any[] = opts.messages.map(m => ({ role: m.role, content: m.content }));
-  const maxSteps = opts.maxSteps ?? 6;
+  // Each step resends the WHOLE conversation plus every prior tool result, so cost grows quadratically
+  // with step count. Measured 2026-07-24: ~26 700 input tokens per step on Geert's data, so 6 steps was
+  // ~160k tokens for one question. Four steps covers every real tool path here (query_runs → detail →
+  // metric series → answer); the forced no-tool final call below still guarantees an answer.
+  const maxSteps = opts.maxSteps ?? 4;
 
   for (let step = 0; step < maxSteps; step++) {
     const res = await callLLMTools({ system, messages, tools: toolSchemas(), maxTokens: opts.maxTokens, temperature: opts.temperature });
@@ -459,7 +463,9 @@ export async function runAgent(opts: {
       let out: any;
       try { out = tool ? await tool.run(u.input ?? {}, ctx) : { error: `Unknown tool ${u.name}` }; }
       catch (e: any) { out = { error: e?.message ?? 'tool failed' }; }
-      return { type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 12000) };
+            // 12 000 chars ≈ 3 200 tokens per result, re-sent on EVERY subsequent step. The tools return
+      // structured summaries, not raw dumps, so this ceiling only ever bit on pathological queries.
+      return { type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 4000) };
     }));
     messages.push({ role: 'user', content: results });
   }
