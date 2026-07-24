@@ -259,7 +259,10 @@ its watt ranges, do not invent them). If no zones table is present, omit power. 
 recoveryZone: "Z0"/"Z1" for a walk/jog rest, "Z2"/"Z3" for a FLOAT (easy running between reps). A float is \
 counted as WORK — it goes to the watch as a work step at its own lower watts and its minutes count toward \
 tofBudgetTodayMin — so only choose it when you intend that extra running. If intensity is "rest", set \
-workout to null (no watch workout).`;
+workout to null (no watch workout).\n\nLONG RUN: when plannedSessionKind is "long", the session is a LONG RUN — ONE continuous aerobic \
+block at Z2, no reps, no recovery, and NEVER a Z3+ effort. Its purpose is uninterrupted aerobic time, not \
+threshold work; a broken tempo-style structure will be REJECTED and replaced. Length may be trimmed to the \
+budget, but the shape stays continuous.`;
 
 const OUTPUT = `Return ONLY minified JSON, no markdown, with EXACTLY these keys: \
 {"headline":string,"session":string,"strength":string,"intensity":"rest"|"easy"|"moderate"|"hard","runMinutes":number,"rationale":string,"cautions":string,\
@@ -1241,7 +1244,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       system,
       // Feed the LLM the SAME next-run the basis resolved from the 7-day plan (may be tomorrow's shrink-to-fit
       // run), so its prose doesn't state the raw cap date (e.g. "run Saturday") while the card shows Friday.
-      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes, forcePlaced: !!basis.shrinkForced } }) }],
+      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes, forcePlaced: !!basis.shrinkForced }, plannedSessionKind: basis.sessionKind }) }],
       maxTokens: 1200,
       temperature: 0.2,
     });
@@ -1276,7 +1279,24 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     // one (2026-07-15: a hallucinated "30m jog" ballooned a 35-min tempo to a 122-min, load-137 session).
     // Either way → fall back to the deterministic basis workout (the short tempo the athlete already had).
     const workRef = Math.max(8, runMinutes - (parsed?.drillsMinutes ?? 0) - 6);   // work-minutes the session budgets
-    const wellFormed = parsed != null && blockTotal >= workRef * 0.5 && blockTotal <= workRef * 1.5 + 6;
+    // A LONG RUN MUST STAY CONTINUOUS AEROBIC — check the SHAPE, not just the duration.
+    //
+    // wellFormed only ever checked total minutes, and a long run resolves to intensity 'moderate'
+    // (resolveQuality: 'long' -> ['moderate', longTargetMin]), so parseWorkout's zone clamp (moderate =>
+    // <= Z3) happily passed Z3 blocks. Nothing anywhere required the long to be continuous. On 2026-07-24
+    // the week plan said "Long, 54min @ 190-196W" and the daily plan shipped
+    // "10min Z2 + 3x 8min @ Z3 219-261W / 2min jog + 5min Z2" — a tempo-cruise session wearing the
+    // "Long Run" label. Geert overrode it and ran a steady 60min instead, which was the right call.
+    //
+    // The long run's whole job is uninterrupted aerobic time; breaking it into threshold reps makes it a
+    // different session with a different recovery cost, and the split-long feature assumes it too. So on
+    // a long day: no zone above Z2, and no rep structure. Failing this falls through to the deterministic
+    // basis workout, which synthesizeWorkout builds as ONE continuous Z2 block for kind 'long'.
+    const longDay = basis.sessionKind === 'long';
+    const longShapeOk = !longDay || (parsed?.blocks ?? []).every(b =>
+      (b.repeats ?? 1) <= 1 && (b.restMinutes ?? 0) === 0 && !/^Z[3-5]$/.test(b.hrZone ?? 'Z2'));
+    const wellFormed = parsed != null && longShapeOk
+      && blockTotal >= workRef * 0.5 && blockTotal <= workRef * 1.5 + 6;
 
     // wellFormed → the LLM's parsed structure (its prose describes it). Rejected → the DETERMINISTIC basis
     // workout (ramp-capped) paired with basis.session below, so the prescribed prose + the watch structure
