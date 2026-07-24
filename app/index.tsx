@@ -1088,6 +1088,19 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
   const status = tsbStatus(latest.tsb);
   const cl = cardioLoadStatus(latest.atl, latest.ctl, latest.tsb, ratioTrend(series, series.length - 1)); // direction-aware zone
 
+  // MOVEMENT SINCE YESTERDAY. The numbers were already updating after a run (verified 2026-07-24: a
+  // 75-min long run moved today's load 27 -> 44, ATL 27 -> 32.9, CTL 35.4 -> 35.6), but nothing on the
+  // card SHOWED that, so you had to remember the old values to notice. A run you just did should visibly
+  // move fitness — that's the point of doing it. Deltas are computed vs the previous day in the series.
+  const prev  = series[series.length - 2];
+  const dCtl  = prev ? latest.ctl - prev.ctl : 0;
+  const dAtl  = prev ? latest.atl - prev.atl : 0;
+  const dTsb  = prev ? latest.tsb - prev.tsb : 0;
+  // One decimal: CTL moves ~0.2/day, so rounding to whole numbers would hide every single day's gain.
+  const delta = (d: number) => (Math.abs(d) < 0.05 ? '' : `${d > 0 ? '▲' : '▼'}${Math.abs(d).toFixed(1)}`);
+  const dColor = (d: number, goodUp: boolean) =>
+    Math.abs(d) < 0.05 ? '#9CA3AF' : (d > 0) === goodUp ? '#22C55E' : '#F97316';
+
   // Mini 30-day CTL sparkline
   const spark = series.slice(-30);
   const ctls  = spark.map(d => d.ctl);
@@ -1110,11 +1123,13 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
       <View style={tl.metricsRow}>
         <View style={tl.metric}>
           <Text style={[tl.metricVal, { color: '#3B82F6' }]}>{Math.round(latest.ctl)}</Text>
+          {delta(dCtl) ? <Text style={[tl.metricDelta, { color: dColor(dCtl, true) }]}>{delta(dCtl)}</Text> : null}
           <Text style={tl.metricLbl}>Fitness</Text>
           <Text style={tl.metricSub}>CTL</Text>
         </View>
         <View style={tl.metric}>
           <Text style={[tl.metricVal, { color: '#F97316' }]}>{Math.round(latest.atl)}</Text>
+          {delta(dAtl) ? <Text style={[tl.metricDelta, { color: dColor(dAtl, false) }]}>{delta(dAtl)}</Text> : null}
           <Text style={tl.metricLbl}>Fatigue</Text>
           <Text style={tl.metricSub}>ATL</Text>
         </View>
@@ -1122,6 +1137,7 @@ function TrainingLoadCard({ series, onPress }: { series: DailyLoad[]; onPress: (
           <Text style={[tl.metricVal, { color: status.color }]}>
             {latest.tsb >= 0 ? '+' : ''}{Math.round(latest.tsb)}
           </Text>
+          {delta(dTsb) ? <Text style={[tl.metricDelta, { color: '#9CA3AF' }]}>{delta(dTsb)}</Text> : null}
           <Text style={tl.metricLbl}>Form</Text>
           <Text style={tl.metricSub}>TSB</Text>
         </View>
@@ -1167,6 +1183,7 @@ const makeTlStyles = (c: Palette) => StyleSheet.create({
   metric: { alignItems: 'center', minWidth: 50 },
   metricVal: { fontSize: 19, fontWeight: '800' },
   metricLbl: { fontSize: 10, color: c.textSub, marginTop: 1, fontWeight: '600' },
+  metricDelta: { fontSize: 10, fontWeight: '700', marginTop: -1 },
   metricSub: { fontSize: 9, color: c.textFaint, fontWeight: '600' },
   hint: { fontSize: 12, color: c.textSub },
 });
