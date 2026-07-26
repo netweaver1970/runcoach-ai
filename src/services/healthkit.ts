@@ -1817,8 +1817,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const todayNwSteps = rawTot > 0 ? dedupTot * (rawNw / rawTot) : dedupTot;
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
+  // Pass the REAL recovery score (including a genuine 0 — a wrecked night must reach readiness) when we
+  // have an overnight reading; pass -1 ("no data") only when todayRecovery is absent, so a missing night
+  // anchors readiness at a neutral 55 instead of masking a true 0 as unknown. See computeDayStrain.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(activeZoneLoad + noHrWorkoutLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor, activityLoads)
+    ? computeDayStrain(activeZoneLoad + noHrWorkoutLoad, muscularLoad, todayRecovery ? todayRecovery.recoveryScore : -1, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor, activityLoads)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.

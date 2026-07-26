@@ -756,7 +756,7 @@ export function heatStrainFactor(w?: { tempC?: number; apparentC?: number; humid
 export function computeDayStrain(
   activeLoad: number,    // zone-weighted active load (zoneStrainLoad) — elevated-HR exertion
   muscularLoad: number,  // strength-training load
-  recovery: number,
+  recovery: number,      // recovery score 0-100; a NEGATIVE value means "no data" (see advisableStrainRange)
   tsb: number,
   passiveLoad = 0,       // small passive-movement term (active energy / steps proxy)
   range?: AdvisableRange,
@@ -783,7 +783,8 @@ export function computeDayStrain(
     real = strainFromLoad(rawLoad);   // legacy: no per-activity breakdown available
   }
 
-  const r = range ?? advisableStrainRange({ recovery: recovery > 0 ? recovery : undefined, tsb });
+  // recovery >= 0 → a real score (0 included); negative → genuinely no data → undefined (anchors 55).
+  const r = range ?? advisableStrainRange({ recovery: recovery >= 0 ? recovery : undefined, tsb });
   return {
     real, safeLow: r.safeLow, safeHigh: r.safeHigh, safeMid: r.safeMid,
     trimp: Math.round(rawLoad),
@@ -826,8 +827,15 @@ export interface AdvisableRange {
 
 export function advisableStrainRange(i: ReadinessInputs): AdvisableRange {
   const drivers: string[] = [];
-  // Anchor on recovery (or a neutral 55 when we don't have it yet).
-  let readiness = i.recovery != null && i.recovery > 0 ? i.recovery : 55;
+  // Anchor on recovery (or a neutral 55 when we genuinely don't have it yet).
+  // ⚠️ A real recovery of 0 is NOT "missing" — it's a catastrophic night, and the strongest possible
+  // signal to rest. The old `> 0` guard treated 0 as no-data → readiness anchored at 55, so the daily
+  // plan happily prescribed a run on a morning the athlete was wrecked (2026-07-27: recovery 0 after a
+  // 3.5 h dance session + poor sleep still got "run 24 min"). The caller now passes `undefined` for a
+  // TRUE no-data day (watch not worn) and the actual score — including 0 — when data exists, so `!= null`
+  // is the correct test and a genuine 0 flows straight through to a rock-bottom readiness.
+  let readiness = i.recovery != null ? i.recovery : 55;
+  if (i.recovery != null && i.recovery < 25) drivers.push('very low recovery');
 
   // Sleep: quality nudges readiness ±; a real sleep debt drags it down.
   if (i.sleepScore != null && i.sleepScore > 0) {

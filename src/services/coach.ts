@@ -1081,6 +1081,28 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     };
   }
 
+  // ── HARD REST FLOOR (safety — highest priority after athlete status) ────────────────────────────────
+  // Low readiness previously only EASED a quality to "easy Z2 ~35 min"; nothing forced rest however
+  // wrecked you were. So a catastrophic morning — recovery 0 after a 3.5 h dance session + poor sleep
+  // (2026-07-27) — still got "run 24 min", while Bevel was flagging near-total overreach. When readiness
+  // is genuinely low AND the data is fresh, REST outright, overriding schedule / 7-day slot /
+  // shrink-to-fit / race force-placement — you never force a session onto an athlete this depleted.
+  // Gated on !recoveryStale because a missing night anchors readiness at a neutral 55 (see
+  // advisableStrainRange), so stale data can never trip this floor on false pretences.
+  const HARD_REST_READINESS = 35;
+  if (!recoveryStale && (snap.readiness ?? 100) < HARD_REST_READINESS) {
+    const r = Math.round(snap.readiness ?? 0);
+    const flags = (snap.drivers && snap.drivers.length) ? ` Flags: ${snap.drivers.join(', ')}.` : '';
+    return {
+      headline: 'Rest today — recovery is very low',
+      session: `Readiness ${r}/100. Your body is deep in the hole — little sleep, high strain, or both. No running today: rest, hydrate, gentle mobility only. Pushing a session now digs deeper and risks injury or illness; the plan resumes the moment recovery comes back up.`,
+      strength: 'Skip strength too — only pain-free mobility if you feel like moving.',
+      intensity: 'rest', runMinutes: 0,
+      rationale: bandPhrase(strainReal, strainLow, strainHigh, `readiness ${r} is below the ${HARD_REST_READINESS} rest floor — recovery is the priority today`) + flags,
+      cautions: undefined, workout: null, sessionKind: 'recovery', secondSession: null, ...stamp,
+    };
+  }
+
   // Today's session: PREFER the slot the rolling 7-day plan already laid out for today (generated on a
   // PRIOR day, so it SPREADS the week's volume) over a greedy single-day budget. Today's recovery can only
   // EASE it (never inflate). Fall back to the editable weekly template + readiness gate when no prior plan
