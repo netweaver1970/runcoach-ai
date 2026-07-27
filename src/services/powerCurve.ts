@@ -43,7 +43,7 @@ async function writeCache(c: Cache): Promise<void> {
 // in-between seconds with 0, which dragged every long-window average toward zero — a 20-min "best" read
 // 104 W for an athlete who holds 250+ (2026-07-27). A gap longer than MAX_HOLD_SEC, or a recorded pause,
 // is a genuine break → 0, so pauses can't inflate the curve either.
-function toPerSecond(power: { t: number; v: number }[], pauses: { s: number; e: number }[] = []): number[] {
+export function toPerSecond(power: { t: number; v: number }[], pauses: { s: number; e: number }[] = []): number[] {
   if (!power.length) return [];
   const last = Math.floor(power[power.length - 1].t / 1000);
   if (last < 0 || last > 36_000) return [];   // >10 h → corrupt, skip

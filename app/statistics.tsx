@@ -9,6 +9,10 @@ import { getPowerZones } from '../src/services/claude';
 import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
 } from '../src/services/powerCurve';
+import {
+  efficiencyTrend, zoneSummary, hrvTrend, acwrSeries, decouplingTrend,
+  EfPoint, ZoneSummary, HrvPoint, AcwrPoint, DecouplePoint,
+} from '../src/services/runStats';
 import type { PowerZones } from '../src/types';
 
 const CHART_H = 210;
@@ -93,6 +97,76 @@ function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz
   );
 }
 
+// ─── Generic time-series (line + optional dots, band, reference lines) ────────────
+const TS_H = 130;
+const TS_YW = 34;
+function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt }: {
+  vals: number[]; colors?: string[]; innerW: number;
+  band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
+  yfmt?: (v: number) => string; dotAt?: (i: number) => boolean;
+}) {
+  const ch = useThemedStyles(makeCh);
+  const { c } = useTheme();
+  if (innerW <= 0 || vals.length < 2) return <View style={{ height: TS_H + 8 }} />;
+  const plotW = innerW - TS_YW;
+  const lo = Math.min(...vals, band ? band[0] : Infinity, ...(refs?.map(r => r.y) ?? []));
+  const hi = Math.max(...vals, band ? band[1] : -Infinity, ...(refs?.map(r => r.y) ?? []));
+  const pad = (hi - lo) * 0.12 || 1;
+  const yMin = lo - pad, yMax = hi + pad;
+  const toY = (v: number) => TS_H - ((v - yMin) / (yMax - yMin)) * TS_H;
+  const xOf = (i: number) => (i / (vals.length - 1)) * plotW;
+  const fmt = yfmt ?? ((v: number) => String(Math.round(v)));
+  const ticks = [yMin + (yMax - yMin) * 0.15, (yMin + yMax) / 2, yMax - (yMax - yMin) * 0.15];
+  return (
+    <View style={{ flexDirection: 'row' }}>
+      <View style={{ width: TS_YW, height: TS_H }}>
+        {ticks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(t) - 7, right: 4 }]}>{fmt(t)}</Text>)}
+      </View>
+      <View style={{ width: plotW, height: TS_H, position: 'relative' }}>
+        {band && (
+          <View style={{ position: 'absolute', left: 0, right: 0, top: toY(band[1]), height: Math.max(1, toY(band[0]) - toY(band[1])), backgroundColor: '#22c55e18' }} />
+        )}
+        {refs?.map((r, i) => (
+          <View key={i} style={{ position: 'absolute', left: 0, right: 0, top: toY(r.y), height: 1, backgroundColor: r.color, opacity: r.dash ? 0.5 : 0.9 }} />
+        ))}
+        {vals.map((v, i) => {
+          if (i === 0) return null;
+          const x1 = xOf(i - 1), y1 = toY(vals[i - 1]), x2 = xOf(i), y2 = toY(v);
+          const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
+          return <View key={i} style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: (colors?.[i] ?? CTL_BLUE), borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
+        })}
+        {vals.map((v, i) => (dotAt?.(i) ?? (i === vals.length - 1)) ? (
+          <View key={`d${i}`} style={{ position: 'absolute', left: xOf(i) - 3, top: toY(v) - 3, width: 6, height: 6, borderRadius: 3, backgroundColor: colors?.[i] ?? CTL_BLUE, borderWidth: 1, borderColor: c.surface }} />
+        ) : null)}
+      </View>
+    </View>
+  );
+}
+
+function ZoneBar({ z }: { z: ZoneSummary }) {
+  const s = useThemedStyles(makeS);
+  const segs = [
+    { p: z.pct.z1, c: '#60a5fa', l: 'Z1' }, { p: z.pct.z2, c: '#22c55e', l: 'Z2' },
+    { p: z.pct.z3, c: '#f59e0b', l: 'Z3' }, { p: z.pct.z4, c: '#f97316', l: 'Z4' }, { p: z.pct.z5, c: '#ef4444', l: 'Z5' },
+  ];
+  return (
+    <View>
+      <View style={s.zoneBar}>
+        {segs.map((g, i) => g.p > 0.5 ? (
+          <View key={i} style={{ width: `${g.p}%`, backgroundColor: g.c, alignItems: 'center', justifyContent: 'center' }}>
+            {g.p > 8 ? <Text style={s.zoneBarTxt}>{Math.round(g.p)}%</Text> : null}
+          </View>
+        ) : null)}
+      </View>
+      <View style={s.zone3}>
+        <Text style={s.zone3Txt}>🟢 Easy {z.easyPct}%</Text>
+        <Text style={s.zone3Txt}>🟠 Moderate {z.modPct}%</Text>
+        <Text style={s.zone3Txt}>🔴 Hard {z.hardPct}%</Text>
+      </View>
+    </View>
+  );
+}
+
 // ─── Screen ─────────────────────────────────────────────────────────────────────
 export default function StatisticsScreen() {
   const router = useRouter();
@@ -103,6 +177,11 @@ export default function StatisticsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [innerW, setInnerW] = useState(0);
   const [pz, setPz] = useState<PowerZones | undefined>(undefined);
+  const [ef, setEf] = useState<EfPoint[]>([]);
+  const [zones, setZones] = useState<ZoneSummary | null>(null);
+  const [hrv, setHrv] = useState<HrvPoint[]>([]);
+  const [acwr, setAcwr] = useState<AcwrPoint[]>([]);
+  const [dc, setDc] = useState<DecouplePoint[] | null>(null);
 
   const build = useCallback(async () => {
     setLoading(true); setError(null);
@@ -111,11 +190,20 @@ export default function StatisticsScreen() {
       getPowerZones().then(setPz).catch(() => {});
       const runs = (snap as any)?.runs ?? [];
       if (!runs.length) { setError('No runs found. Record some runs with power, then check back.'); setLoading(false); return; }
+      // Cheap snapshot-derived series first (instant).
+      setEf(efficiencyTrend(runs));
+      setZones(zoneSummary(runs));
+      const nightly = ((snap as any)?.recentNightlyHRV ?? []).map((n: any) => ({ date: n.date, rmssd: n.weightedRMSSD }));
+      setHrv(hrvTrend(nightly));
+      setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));
+      // Power curve (fetches run detail with progress).
       const cur = await computePowerCurve(runs, (done, total) => setProgress({ done, total }));
       if (cur.points.length < 2) setError('Not enough running-power data yet to draw a curve.');
       setCurve(cur);
+      // Decoupling last (also fetches detail, but only long aerobic runs → fewer).
+      decouplingTrend(runs).then(setDc).catch(() => setDc([]));
     } catch (e: any) {
-      setError(e?.message ?? 'Could not build the power curve.');
+      setError(e?.message ?? 'Could not build the statistics.');
     } finally { setLoading(false); setProgress(null); }
   }, []);
 
@@ -190,6 +278,91 @@ export default function StatisticsScreen() {
             </>
           ) : null}
         </View>
+
+        {/* ── Efficiency Factor ── */}
+        {ef.length >= 2 && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Efficiency Factor</Text>
+            <Text style={s.cardSub}>Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.</Text>
+            <TSChart
+              innerW={innerW} vals={ef.map(p => p.ef)}
+              colors={ef.map(p => p.aerobic ? '#22c55e' : '#cbd5e1')}
+              dotAt={(i) => ef[i].aerobic}
+              yfmt={(v) => v.toFixed(2)}
+            />
+            <Text style={s.foot}>
+              Green = steady aerobic runs (the meaningful ones). Latest {ef[ef.length - 1].ef.toFixed(2)}
+              {ef.filter(p => p.aerobic).length >= 2 ? ((): string => {
+                const a = ef.filter(p => p.aerobic); const d = a[a.length - 1].ef - a[0].ef;
+                return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
+              })() : ''}
+            </Text>
+          </View>
+        )}
+
+        {/* ── Time-in-zone / polarization ── */}
+        {zones && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Intensity Distribution</Text>
+            <Text style={s.cardSub}>Where your running time goes (last 8 weeks). Most endurance plans want ~80% easy.</Text>
+            <ZoneBar z={zones} />
+            <Text style={s.foot}>
+              {zones.minutes} min · polarization index {zones.polarizationIndex.toFixed(2)}
+              {zones.modPct > 35 ? '  ·  a lot of moderate "gray zone" — the classic flat-fitness trap.'
+                : zones.easyPct >= 75 ? '  ·  nicely polarised (lots of easy).' : ''}
+            </Text>
+          </View>
+        )}
+
+        {/* ── HRV trend ── */}
+        {hrv.length >= 3 && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>HRV Trend (lnRMSSD)</Text>
+            <Text style={s.cardSub}>Nightly HRV (log) with its 7-night mean. Rising mean = adapting; dropping = accumulating strain.</Text>
+            <TSChart
+              innerW={innerW} vals={hrv.map(p => p.mean7)}
+              band={[hrv[hrv.length - 1].mean7 - hrv[hrv.length - 1].sd7, hrv[hrv.length - 1].mean7 + hrv[hrv.length - 1].sd7]}
+              yfmt={(v) => v.toFixed(2)}
+            />
+            <Text style={s.foot}>Shaded = normal range (±1 SD of the last week). Latest 7-night mean {hrv[hrv.length - 1].mean7.toFixed(2)}.</Text>
+          </View>
+        )}
+
+        {/* ── ACWR ── */}
+        {acwr.length >= 3 && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Load Ratio (ACWR)</Text>
+            <Text style={s.cardSub}>Acute ÷ chronic load. The 0.8–1.3 band is the injury-risk sweet spot.</Text>
+            <TSChart
+              innerW={innerW} vals={acwr.map(p => p.ratio)}
+              band={[0.8, 1.3]}
+              refs={[{ y: 1.5, color: '#ef4444', dash: true }]}
+              yfmt={(v) => v.toFixed(1)}
+            />
+            <Text style={s.foot}>
+              Latest {acwr[acwr.length - 1].ratio.toFixed(2)}. Green band = sweet spot; red dashed = 1.5 (spike-risk).
+            </Text>
+          </View>
+        )}
+
+        {/* ── Aerobic decoupling ── */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Aerobic Decoupling (Pw:HR)</Text>
+          <Text style={s.cardSub}>How much HR drifts up relative to power over a steady run. Under 5% = strong aerobic base.</Text>
+          {dc == null ? (
+            <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…</Text></View>
+          ) : dc.length >= 2 ? (
+            <>
+              <TSChart innerW={innerW} vals={dc.map(p => p.pct)} refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} dotAt={() => true} yfmt={(v) => `${Math.round(v)}%`} />
+              <Text style={s.foot}>
+                One point per steady run ≥30 min. Green line = 5% threshold. Latest {dc[dc.length - 1].pct.toFixed(1)}%
+                {dc[dc.length - 1].pct < 5 ? ' — well-coupled aerobic base.' : ' — some drift; more Z2 volume helps.'}
+              </Text>
+            </>
+          ) : (
+            <Text style={s.errorText}>Need a couple of steady runs ≥30 min with power to show decoupling.</Text>
+          )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -207,7 +380,11 @@ const makeS = (c: Palette) => StyleSheet.create({
   back: { color: c.accent, fontSize: 16, fontWeight: '600', width: 60 },
   title: { fontSize: 17, fontWeight: '700', color: c.text },
   scroll: { padding: 12, paddingBottom: 40 },
-  card: { backgroundColor: c.surface, borderRadius: 16, padding: 12 },
+  card: { backgroundColor: c.surface, borderRadius: 16, padding: 12, marginBottom: 12 },
+  zoneBar: { flexDirection: 'row', height: 26, borderRadius: 6, overflow: 'hidden', marginTop: 12 },
+  zoneBarTxt: { fontSize: 10, color: '#fff', fontWeight: '700' },
+  zone3: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  zone3Txt: { fontSize: 12, color: c.text, fontWeight: '600' },
   cardTitle: { fontSize: 16, fontWeight: '800', color: c.text },
   cardSub: { fontSize: 12, color: c.textSub, marginTop: 2, marginBottom: 12 },
   center: { height: CHART_H, alignItems: 'center', justifyContent: 'center' },
