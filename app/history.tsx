@@ -405,15 +405,20 @@ function Chart({
   const prevLineW = 2;
   const dotR      = data.length > 20 ? 2 : 3;
 
-  // Cursor → nearest data index + tooltip geometry
+  // Cursor → nearest data index. `cur` defaults to the LATEST point when not scrubbing, so the fixed
+  // readout line above the chart always shows a value; the cursor line only appears once you scrub.
   const cursorIdx = cursorX == null ? -1
     : Math.max(0, Math.min(data.length - 1, Math.round((cursorX - barW / 2) / (barW + barGap))));
-  const cur  = cursorIdx >= 0 ? data[cursorIdx] : null;
-  const curCx = cursorIdx >= 0 ? cxOf(cursorIdx) : 0;
-  const tipW  = 90;
-  const tipLeft = Math.max(0, Math.min(plotW - tipW, curCx - tipW / 2));
+  const cur   = cursorIdx >= 0 ? data[cursorIdx] : data[data.length - 1];
+  const curCx = cursorIdx >= 0 ? cxOf(cursorIdx) : -1;   // <0 → no visible cursor line
 
   return (
+   <View>
+    {/* READOUT LINE — under-cursor (or latest) value shown here instead of a bubble over the graph. */}
+    <View style={ch.readout}>
+      <Text style={ch.readoutDate}>{cur ? cur.fullDate.slice(0, 10) : ''}{cursorIdx < 0 ? ' · latest' : ''}</Text>
+      <Text style={[ch.readoutVal, { color }]}>{cur ? (cur.missing ? '—' : fmt(cur.value)) : ''}</Text>
+    </View>
     <View style={{ flexDirection: 'row' }}>
       {/* Y-axis */}
       <View style={{ width: Y_AXIS_W, height: CHART_H }}>
@@ -625,8 +630,8 @@ function Chart({
           </>
         )}
 
-        {/* Scrubber cursor */}
-        {cur && (
+        {/* Scrubber cursor — only the thin line + dot; the value is shown in the readout line above. */}
+        {curCx >= 0 && cur && (
           <>
             <View style={{ position: 'absolute', left: curCx, top: 0, width: 1, height: CHART_H, backgroundColor: '#999' }} />
             {!cur.missing && (
@@ -635,14 +640,11 @@ function Chart({
               width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1, borderColor: '#fff',
             }} />
             )}
-            <View style={[ch.tip, { left: tipLeft, width: tipW }]}>
-              <Text style={ch.tipDate}>{cur.fullDate.slice(0, 10)}</Text>
-              <Text style={ch.tipVal}>{cur.missing ? '—' : fmt(cur.value)}</Text>
-            </View>
           </>
         )}
       </View>
     </View>
+   </View>
   );
 }
 
@@ -1151,12 +1153,10 @@ const makeCh = (c: Palette) => StyleSheet.create({
   yLabel:     { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
   xLabel:     { fontSize: 10, color: c.textSub, fontWeight: '600' },
   xLabelYear: { fontSize: 9,  color: c.textSub, fontWeight: '600' },
-  tip: {
-    position: 'absolute', top: 0, backgroundColor: 'rgba(20,20,24,0.92)',
-    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, alignItems: 'center',
-  },
-  tipDate: { color: '#fff', fontSize: 10, fontWeight: '700' },
-  tipVal:  { color: '#fff', fontSize: 13, fontWeight: '800', marginTop: 1 },
+  // Fixed readout line above the chart — replaces the floating bubble so nothing covers the bars.
+  readout:     { flexDirection: 'row', alignItems: 'baseline', columnGap: 8, marginBottom: 6, minHeight: 18 },
+  readoutDate: { fontSize: 11, color: c.textSub, fontWeight: '700' },
+  readoutVal:  { fontSize: 14, fontWeight: '800' },
 });
 
 // ─── Screen styles ────────────────────────────────────────────────────────────

@@ -26,7 +26,11 @@ const CTL_COLOR = '#3B82F6'; // fitness (blue)
 const ATL_COLOR = '#F97316'; // fatigue (orange)
 const TSB_COLOR = '#10B981'; // form (green)
 const CARD_PADDING = 12;
-const CHART_H = 180;
+// TSB split out below CTL/ATL: the main chart no longer shares its y-scale with form, so CTL/ATL/Load
+// get the full height instead of being squashed toward the top by TSB's ±range forcing 0 into the scale.
+const MAIN_H = 172;   // CTL / ATL / optimal-load band
+const TSB_H  = 58;    // form (TSB) — its own tight, 0-centred axis below
+const SUB_GAP = 10;
 const Y_AXIS_W = 34;
 
 function niceScale(rawMin: number, rawMax: number) {
@@ -80,17 +84,23 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
     })
   ).current;
 
-  if (innerW <= 0 || data.length === 0) return <View style={{ height: CHART_H }} />;
+  if (innerW <= 0 || data.length === 0) return <View style={{ height: MAIN_H + TSB_H + SUB_GAP + 40 }} />;
 
   // Downsample to ≤120 points for render performance (CTL/ATL/TSB are smooth)
   const stride = Math.max(1, Math.ceil(data.length / 120));
   const pts = data.filter((_, i) => i % stride === 0 || i === data.length - 1);
   const trendByDate = new Map(data.map((d, i) => [d.date, ratioTrend(data, i)])); // ratio slope per day (full series)
 
-  // Scale across all three series + the optimal-load band top (1.3×CTL); force 0 in so TSB zero shows
-  const allVals = pts.flatMap(d => [d.ctl, d.atl, d.tsb, d.ctl * 1.3]);
-  const scale = niceScale(Math.min(...allVals, 0), Math.max(...allVals, 1));
-  const toY = (v: number) => CHART_H - ((v - scale.min) / (scale.max - scale.min)) * CHART_H;
+  // MAIN scale: CTL / ATL / optimal-band top only. TSB is NOT in here any more — it lives in its own
+  // sub-chart below with a tight ±axis, so CTL/ATL fill the full MAIN_H instead of being pushed up by
+  // TSB's negative range forcing 0 low into a shared scale.
+  const mainVals = pts.flatMap(d => [d.ctl, d.atl, d.ctl * 1.3]);
+  const mScale = niceScale(Math.min(...mainVals, 0), Math.max(...mainVals, 1));
+  const toYm = (v: number) => MAIN_H - ((v - mScale.min) / (mScale.max - mScale.min)) * MAIN_H;
+  // TSB scale: its OWN range, centred on 0, so a ±10 form swing uses the whole 58px instead of a sliver.
+  const tAbs = Math.max(10, ...pts.map(d => Math.abs(d.tsb)));
+  const tScale = niceScale(-tAbs, tAbs);
+  const toYt = (v: number) => TSB_H - ((v - tScale.min) / (tScale.max - tScale.min)) * TSB_H;
   const xOf = (i: number) => (i / Math.max(1, pts.length - 1)) * plotW;
 
   const xAxisH = 22;
@@ -98,12 +108,12 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const nLabels = Math.min(5, pts.length);
   for (let k = 0; k < nLabels; k++) labelIdxs.add(Math.round((k / (nLabels - 1 || 1)) * (pts.length - 1)));
 
-  const renderLine = (key: 'ctl' | 'atl' | 'tsb', color: string, width = 2.5) => (
+  // Segment-line renderer parameterised by the y-mapping, so main + TSB share it.
+  const renderLine = (key: 'ctl' | 'atl' | 'tsb', color: string, toY: (v: number) => number, width = 2.5) => (
     pts.map((d, i) => {
       if (i === 0) return null;
-      const a = pts[i - 1], b = d;
-      const x1 = xOf(i - 1), y1 = toY(a[key]);
-      const x2 = xOf(i),     y2 = toY(b[key]);
+      const x1 = xOf(i - 1), y1 = toY(pts[i - 1][key]);
+      const x2 = xOf(i),     y2 = toY(d[key]);
       const dx = x2 - x1, dy = y2 - y1;
       const len = Math.sqrt(dx * dx + dy * dy);
       const ang = Math.atan2(dy, dx) * 180 / Math.PI;
@@ -117,80 +127,108 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
     })
   );
 
-  // Cursor → nearest point
+  // Cursor → nearest point. Default to the LATEST point when not scrubbing, so the readout line is never
+  // empty (shows today's values) and the cursor line simply appears where the finger is once you scrub.
   const cursorIdx = cursorX == null ? -1
     : Math.max(0, Math.min(pts.length - 1, Math.round((cursorX / plotW) * (pts.length - 1))));
-  const cur = cursorIdx >= 0 ? pts[cursorIdx] : null;
-  const curX = cursorIdx >= 0 ? xOf(cursorIdx) : 0;
-  const tipW = 116;
-  const tipLeft = Math.max(0, Math.min(plotW - tipW, curX - tipW / 2));
+  const cur   = cursorIdx >= 0 ? pts[cursorIdx] : pts[pts.length - 1];
+  const curX  = cursorIdx >= 0 ? xOf(cursorIdx) : -1;   // <0 = no visible cursor line
 
+  const gridV = c.gridline;
   return (
-    <View style={{ flexDirection: 'row' }}>
-      <View style={{ width: Y_AXIS_W, height: CHART_H }}>
-        {scale.ticks.map((t, i) => (
-          <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(t) - 8, right: 4 }]}>{t}</Text>
-        ))}
+    <View>
+      {/* READOUT LINE — fixed, directly under the date range. Replaces the floating bubble that used to
+          cover the graph. Shows the values under the cursor (or the latest point when not scrubbing);
+          only the thin cursor line moves over the chart, so nothing is ever hidden. */}
+      <View style={ch.readout}>
+        <Text style={ch.readoutDate}>{cur.date.slice(5)}{cursorIdx < 0 ? ' · latest' : ''}</Text>
+        <Text style={ch.readoutVals}>
+          <Text style={{ color: CTL_COLOR }}>CTL </Text><Text style={ch.readoutNum}>{Math.round(cur.ctl)}</Text>
+          {'   '}<Text style={{ color: ATL_COLOR }}>ATL </Text><Text style={ch.readoutNum}>{Math.round(cur.atl)}</Text>
+          {'   '}<Text style={{ color: TSB_COLOR }}>TSB </Text><Text style={ch.readoutNum}>{cur.tsb >= 0 ? '+' : ''}{Math.round(cur.tsb)}</Text>
+          {cur.load > 0 ? <Text style={ch.readoutSub}>{`   load ${Math.round(cur.load)}`}</Text> : null}
+        </Text>
       </View>
-      <View ref={plotRef} onLayout={measurePlot} style={{ width: plotW, height: CHART_H + xAxisH, position: 'relative' }} {...pan.panHandlers}>
-        {scale.ticks.map((t, i) => (
-          <View key={i} style={{
-            position: 'absolute', top: toY(t), left: 0, right: 0,
-            height: t === 0 ? 1.5 : 1, backgroundColor: t === 0 ? c.textFaint : c.gridline,
-          }} />
-        ))}
-        {/* Optimal-load band: 0.8–1.3×CTL per day (the "calculated range") */}
-        {pts.map((d, i) => {
-          if (d.ctl <= 0) return null;
-          const yTop = toY(d.ctl * 1.3), yBot = toY(d.ctl * 0.8);
-          const w = plotW / Math.max(1, pts.length - 1) + 1;
-          return (
-            <View key={`band-${i}`} style={{
-              position: 'absolute', left: xOf(i) - w / 2, width: w,
-              top: yTop, height: Math.max(1, yBot - yTop),
-              backgroundColor: '#8e7cc326',
-            }} />
-          );
-        })}
-        {renderLine('ctl', CTL_COLOR)}
-        {renderLine('atl', ATL_COLOR)}
-        {renderLine('tsb', TSB_COLOR, 2)}
-        {/* Cardio-status dots on the ATL (load) line — trend from the FULL daily series (by date) */}
-        {pts.map((d, i) => {
-          const st = cardioLoadStatus(d.atl, d.ctl, d.tsb, trendByDate.get(d.date));
-          return (
-            <View key={`st-${i}`} style={{
-              position: 'absolute', left: xOf(i) - 3.5, top: toY(d.atl) - 3.5,
-              width: 7, height: 7, borderRadius: 3.5, backgroundColor: st.color,
-              borderWidth: 1, borderColor: c.bg,
-            }} />
-          );
-        })}
 
-        {/* Cursor: vertical line, series dots, tooltip */}
-        {cur && (
-          <>
-            <View style={{ position: 'absolute', left: curX, top: 0, width: 1, height: CHART_H, backgroundColor: '#999' }} />
-            {([['ctl', CTL_COLOR], ['atl', ATL_COLOR], ['tsb', TSB_COLOR]] as const).map(([k, c]) => (
-              <View key={k} style={{
-                position: 'absolute', left: curX - 3.5, top: toY(cur[k]) - 3.5,
-                width: 7, height: 7, borderRadius: 3.5, backgroundColor: c,
-                borderWidth: 1, borderColor: '#fff',
+      {/* ── MAIN chart: CTL / ATL / optimal band ── */}
+      <View style={{ flexDirection: 'row' }}>
+        <View style={{ width: Y_AXIS_W, height: MAIN_H }}>
+          {mScale.ticks.map((t, i) => (
+            <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toYm(t) - 8, right: 4 }]}>{t}</Text>
+          ))}
+        </View>
+        <View ref={plotRef} onLayout={measurePlot} style={{ width: plotW, height: MAIN_H, position: 'relative' }} {...pan.panHandlers}>
+          {mScale.ticks.map((t, i) => (
+            <View key={i} style={{ position: 'absolute', top: toYm(t), left: 0, right: 0, height: 1, backgroundColor: gridV }} />
+          ))}
+          {pts.map((d, i) => {
+            if (d.ctl <= 0) return null;
+            const yTop = toYm(d.ctl * 1.3), yBot = toYm(d.ctl * 0.8);
+            const w = plotW / Math.max(1, pts.length - 1) + 1;
+            return (
+              <View key={`band-${i}`} style={{
+                position: 'absolute', left: xOf(i) - w / 2, width: w,
+                top: yTop, height: Math.max(1, yBot - yTop), backgroundColor: '#8e7cc326',
               }} />
-            ))}
-            <View style={[ch.tip, { left: tipLeft, width: tipW }]}>
-              <Text style={ch.tipDate}>{cur.date.slice(5)}</Text>
-              <Text style={ch.tipRow}><Text style={{ color: CTL_COLOR }}>CTL </Text>{Math.round(cur.ctl)}   <Text style={{ color: ATL_COLOR }}>ATL </Text>{Math.round(cur.atl)}</Text>
-              <Text style={ch.tipRow}><Text style={{ color: TSB_COLOR }}>TSB </Text>{cur.tsb >= 0 ? '+' : ''}{Math.round(cur.tsb)}{cur.load > 0 ? `   load ${Math.round(cur.load)}` : ''}</Text>
-            </View>
-          </>
-        )}
+            );
+          })}
+          {renderLine('ctl', CTL_COLOR, toYm)}
+          {renderLine('atl', ATL_COLOR, toYm)}
+          {pts.map((d, i) => {
+            const st = cardioLoadStatus(d.atl, d.ctl, d.tsb, trendByDate.get(d.date));
+            return (
+              <View key={`st-${i}`} style={{
+                position: 'absolute', left: xOf(i) - 3.5, top: toYm(d.atl) - 3.5,
+                width: 7, height: 7, borderRadius: 3.5, backgroundColor: st.color, borderWidth: 1, borderColor: c.bg,
+              }} />
+            );
+          })}
+          {curX >= 0 && (
+            <>
+              <View style={{ position: 'absolute', left: curX, top: 0, width: 1, height: MAIN_H, backgroundColor: '#999' }} />
+              {([['ctl', CTL_COLOR], ['atl', ATL_COLOR]] as const).map(([k, col]) => (
+                <View key={k} style={{
+                  position: 'absolute', left: curX - 3.5, top: toYm(cur[k]) - 3.5,
+                  width: 7, height: 7, borderRadius: 3.5, backgroundColor: col, borderWidth: 1, borderColor: '#fff',
+                }} />
+              ))}
+            </>
+          )}
+        </View>
+      </View>
 
-        {pts.map((d, i) => labelIdxs.has(i) ? (
-          <Text key={`x-${i}`} style={[ch.xLabel, {
-            position: 'absolute', top: CHART_H + 4, left: xOf(i) - 18, width: 36, textAlign: 'center',
-          }]} numberOfLines={1}>{fmtDM(d.date)}</Text>
-        ) : null)}
+      {/* ── TSB (form) sub-chart: own tight 0-centred axis ── */}
+      <View style={{ flexDirection: 'row', marginTop: SUB_GAP }}>
+        <View style={{ width: Y_AXIS_W, height: TSB_H + xAxisH }}>
+          <Text style={[ch.subAxisLabel, { position: 'absolute', top: -2, right: 4 }]}>TSB</Text>
+          {tScale.ticks.filter(t => t === tScale.min || t === 0 || t === tScale.max).map((t, i) => (
+            <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toYt(t) - 7, right: 4 }]}>{t > 0 ? `+${t}` : t}</Text>
+          ))}
+        </View>
+        <View style={{ width: plotW, height: TSB_H + xAxisH, position: 'relative' }} {...pan.panHandlers}>
+          {/* zero baseline emphasised; band edges faint */}
+          {tScale.ticks.map((t, i) => (
+            <View key={i} style={{
+              position: 'absolute', top: toYt(t), left: 0, right: 0,
+              height: t === 0 ? 1.5 : 1, backgroundColor: t === 0 ? c.textFaint : gridV,
+            }} />
+          ))}
+          {renderLine('tsb', TSB_COLOR, toYt, 2)}
+          {curX >= 0 && (
+            <>
+              <View style={{ position: 'absolute', left: curX, top: 0, width: 1, height: TSB_H, backgroundColor: '#999' }} />
+              <View style={{
+                position: 'absolute', left: curX - 3.5, top: toYt(cur.tsb) - 3.5,
+                width: 7, height: 7, borderRadius: 3.5, backgroundColor: TSB_COLOR, borderWidth: 1, borderColor: '#fff',
+              }} />
+            </>
+          )}
+          {pts.map((d, i) => labelIdxs.has(i) ? (
+            <Text key={`x-${i}`} style={[ch.xLabel, {
+              position: 'absolute', top: TSB_H + 4, left: xOf(i) - 18, width: 36, textAlign: 'center',
+            }]} numberOfLines={1}>{fmtDM(d.date)}</Text>
+          ) : null)}
+        </View>
       </View>
     </View>
   );
@@ -421,12 +459,17 @@ export default function TrainingLoadScreen() {
 const makeCh = (c: Palette) => StyleSheet.create({
   yLabel: { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
   xLabel: { fontSize: 10, color: c.textSub, fontWeight: '600' },
-  tip: {
-    position: 'absolute', top: 2, backgroundColor: 'rgba(20,20,24,0.92)',
-    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5,
+  subAxisLabel: { fontSize: 9, color: c.textFaint, fontWeight: '700', textAlign: 'right' },
+  // Fixed readout line under the date range — the under-cursor values live here instead of a bubble
+  // over the graph, so the chart is never covered. flexWrap keeps it on one/two lines on narrow phones.
+  readout: {
+    flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap',
+    columnGap: 10, marginBottom: 6, minHeight: 18,
   },
-  tipDate: { color: '#fff', fontSize: 11, fontWeight: '800', marginBottom: 2 },
-  tipRow:  { color: '#eee', fontSize: 11, fontWeight: '600', lineHeight: 15 },
+  readoutDate: { fontSize: 11, color: c.textSub, fontWeight: '700' },
+  readoutVals: { fontSize: 12, fontWeight: '600' },
+  readoutNum:  { color: c.text, fontWeight: '800' },
+  readoutSub:  { color: c.textSub, fontWeight: '600' },
 });
 
 const makeS = (c: Palette) => StyleSheet.create({
