@@ -94,6 +94,7 @@ function RootStack() {
         <Stack.Screen name="body-battery" options={{ headerShown: false }} />
         <Stack.Screen name="history" options={{ headerShown: false }} />
         <Stack.Screen name="training-load" options={{ headerShown: false }} />
+        <Stack.Screen name="statistics" options={{ headerShown: false }} />
         <Stack.Screen name="coach-knowledge" options={{ headerShown: false }} />
         <Stack.Screen name="coach-knowledge-edit" options={{ headerShown: false }} />
         <Stack.Screen name="account" options={{ headerShown: false }} />

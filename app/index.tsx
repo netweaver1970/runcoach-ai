@@ -789,6 +789,13 @@ export default function HomeScreen() {
           <Text style={styles.coachBtnText}>📆 7-Day Plan</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={[styles.coachBtn, styles.coachBtnSecondary]}
+          onPress={() => router.push('/statistics' as any)}
+        >
+          <Text style={styles.coachBtnText}>📊 Statistics</Text>
+        </TouchableOpacity>
+
         {/* Stats row */}
         <View style={styles.statsRow}>
           <TouchableOpacity
