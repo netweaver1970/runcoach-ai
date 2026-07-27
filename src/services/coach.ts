@@ -576,7 +576,7 @@ export function synthesizeWorkout(
 // therefore never be passed through ensureBlockPower (which would fill watts from the zone table).
 export const THRESHOLD_TEST_MIN = 20;
 export const THRESHOLD_TEST_NAME = 'Threshold test';
-export function thresholdTestWorkout(name: string): WatchWorkout {
+export function thresholdTestWorkout(name: string, target?: { low: number; high: number } | null): WatchWorkout {
   const st = workoutStructureCache;
   return {
     name,
@@ -588,6 +588,16 @@ export function thresholdTestWorkout(name: string): WatchWorkout {
       repeats: 1,
       workMinutes: THRESHOLD_TEST_MIN,
       restMinutes: 0,
+      // PACING TARGET on the watch. Originally the test carried NO power target — the reasoning was that a
+      // PowerRangeAlert would "cap" the effort. That was wrong: the alert only nudges (haptic when you drift
+      // out of band), it never stops you. And with no target the watch showed no power at all, so on the
+      // 2026-07-27 test Geert went out blind, started too fast, and blew up before 20 min. A band derived
+      // from his OWN best sustained effort (thresholdTestTarget) is exactly the pacing aid that prevents
+      // that — hold it for 19 min, then ignore the alert and empty the tank in the last 60 s. He may exceed
+      // it late; what calibrates the zones is HR-at-power, which we measure whatever he holds.
+      ...(target && target.low > 0 && target.high > target.low
+        ? { powerLowWatts: target.low, powerHighWatts: target.high }
+        : {}),
       label: 'threshold test — even, maximal; last 60s all-out',
     }],
     cooldownMeters: st.cooldownMeters > 0 ? st.cooldownMeters : 0,

@@ -111,10 +111,20 @@ export default function DailyCoachScreen() {
     setTestSending(true); setWatchMsg(null);
     try {
       if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
-      const wk = thresholdTestWorkout(weekdaySlot());
+      // Push WITH the personal pacing band, so the watch shows a power target (the 2026-07-27 test had none
+      // \u2192 blind pacing \u2192 blow-up). testTarget comes from the athlete's own best sustained effort.
+      const wk = thresholdTestWorkout(weekdaySlot(), testTarget);
       const ok = await pushWorkoutToWatch(wk);
+      // Record the pushed test as today's live prescription. Without this the test bypassed the plan log,
+      // so the post-run phase-relabel never ran and the cool-down came back labelled "Work" (2026-07-27),
+      // and the prescription-aware run analysis had nothing to judge against.
+      if (ok && plan && targetIsToday) {
+        const pushed: CoachPlan = { ...plan, workout: wk, sessionKind: 'tempo', runMinutes: THRESHOLD_TEST_MIN,
+          headline: 'Threshold test', session: `${THRESHOLD_TEST_MIN}-min threshold test`, generatedAt: new Date().toISOString() };
+        await saveCachedPlan(targetDate, pushed).catch(() => {});
+      }
       setWatchMsg(ok
-        ? `\u2713 Threshold test sent \u2014 replaces today's watch session.`
+        ? `\u2713 Threshold test sent \u2014 ${testTarget ? `pace ${testTarget.low}\u2013${testTarget.high} W, ` : ''}replaces today's watch session.`
         : 'Could not send (needs iOS 17+ and permission).');
     } catch (e: any) {
       setWatchMsg(e?.message ?? 'Send failed.');
