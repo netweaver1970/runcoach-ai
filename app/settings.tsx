@@ -818,6 +818,17 @@ export default function SettingsScreen() {
             <Text style={styles.pzUnit}>W</Text>
           </View>
 
+          {/* Threshold (Z4) is the band BETWEEN Tempo-max and Intervals — derived, not a separate input,
+              so it's shown read-only. This is the zone a sustained "threshold run" targets. */}
+          <View style={styles.pzRow}>
+            <Text style={styles.pzLabel}>🟡 Threshold</Text>
+            <Text style={[styles.pzUnit, { flex: 1, textAlign: 'left', marginLeft: 4 }]}>
+              {powerZones.tempoMax > 0 && powerZones.intervalsMin > powerZones.tempoMax
+                ? `${powerZones.tempoMax} – ${powerZones.intervalsMin} W`
+                : 'set Tempo-max + Intervals'}
+            </Text>
+          </View>
+
           <View style={styles.pzRow}>
             <Text style={styles.pzLabel}>🔴 Intervals ≥</Text>
             <TextInput

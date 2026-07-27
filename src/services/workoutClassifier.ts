@@ -135,6 +135,7 @@ function computeWorkHR(
         ? surges.flatMap(s => hrSamples.slice(s.startIdx, s.endIdx + 1))
         : hrSamples.filter(h => h >= maxHR * Z3);
       break;
+    case 'Threshold':
     case 'Tempo':
       workSamples = hrSamples
         .slice(Math.floor(hrSamples.length * 0.10))  // drop warm-up
@@ -342,6 +343,7 @@ function computeWorkPace(
         ? Math.round(withPace.reduce((a, r) => a + r.avgPaceSecs * r.durationSecs, 0) / totalDur)
         : overallPace;
     }
+    case 'Threshold':
     case 'Tempo': {
       // Skip first 10% of the run (warm-up) then compute pace from dist segments
       if (hrTimestampsMs.length < 10 || distSegs.length === 0) return overallPace;
@@ -385,6 +387,7 @@ function computeWorkPower(
         ? Math.round(withPower.reduce((a, r) => a + r.avgPowerW * r.durationSecs, 0) / totalDur)
         : avgFromSegs(powerSegs);
     }
+    case 'Threshold':
     case 'Tempo': {
       // Skip warm-up — match same window as computeWorkPace
       if (hrTimestampsMs.length < 10) return avgFromSegs(powerSegs);
@@ -655,7 +658,7 @@ export function computeWorkoutTypeStats(runs: RunWorkout[]): WorkoutTypeStats[] 
       };
     })
     .sort((a, b) => {
-      const order: WorkoutLabel[] = ['Intervals', 'Tempo', 'LongRun', 'Z2', 'Recovery', 'Unknown'];
+      const order: WorkoutLabel[] = ['Intervals', 'Threshold', 'Tempo', 'LongRun', 'Z2', 'Recovery', 'Unknown'];
       return order.indexOf(a.label) - order.indexOf(b.label);
     });
 }

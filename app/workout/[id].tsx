@@ -590,9 +590,9 @@ const LABEL_STYLE: Record<string, { color: string; bg: string; emoji: string }> 
   Unknown:   { color: '#888',    bg: '#f5f5f5', emoji: '⚪' },
 };
 
-const OVERRIDE_LABELS: WorkoutLabel[] = ['Z2', 'Tempo', 'Intervals', 'LongRun', 'Recovery'];
+const OVERRIDE_LABELS: WorkoutLabel[] = ['Z2', 'Tempo', 'Threshold', 'Intervals', 'LongRun', 'Recovery'];
 const LABEL_DISPLAY: Record<WorkoutLabel, string> = {
-  Z2: '🟢 Z2', Tempo: '🟠 Tempo', Intervals: '🔴 Intervals',
+  Z2: '🟢 Z2', Tempo: '🟠 Tempo', Threshold: '🟡 Threshold', Intervals: '🔴 Intervals',
   LongRun: '🔵 Long Run', Recovery: '🟣 Recovery', Unknown: '⚪ Unknown',
 };
 

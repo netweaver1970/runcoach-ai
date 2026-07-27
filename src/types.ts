@@ -1,8 +1,9 @@
 // ─── Workout classification ───────────────────────────────────────────────────
 
 export type WorkoutLabel =
-  | 'Intervals'   // multiple hard efforts, high HR variability
-  | 'Tempo'       // sustained threshold effort, steady Z3-Z4
+  | 'Intervals'   // multiple hard efforts, high HR variability (Z5 reps)
+  | 'Threshold'   // sustained AT threshold — one continuous Z4 block (a "cruise"/threshold run)
+  | 'Tempo'       // sustained SUB-threshold effort, steady Z3
   | 'Z2'          // aerobic base, steady zone 2
   | 'LongRun'     // extended duration, Z2-Z3 mix
   | 'Recovery'    // very easy, Z1

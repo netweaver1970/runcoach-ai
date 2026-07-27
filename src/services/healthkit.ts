@@ -1541,6 +1541,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
       if (pz.intervalsMin > 0 && wp >= pz.intervalsMin) {
         powerLabel = 'Intervals';
+      } else if (pz.tempoMax > 0 && pz.intervalsMin > 0 && wp > pz.tempoMax && wp < pz.intervalsMin) {
+        // Z4: above tempo, below intervals — a sustained THRESHOLD effort. This band used to fall through
+        // (no power label → kept the HR classifier's coarser guess), which is part of why the 2026-07-27
+        // threshold test at 288 W mislabelled. Now the realistic zones make it a first-class label.
+        powerLabel = 'Threshold';
       } else if (pz.tempoMin > 0 && pz.tempoMax > 0 && wp >= pz.tempoMin && wp <= pz.tempoMax) {
         powerLabel = 'Tempo';
       } else if (pz.z2Max > 0 && wp > (pz.recoveryMax || 0) && wp <= pz.z2Max) {
@@ -1837,8 +1842,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // Rolling, recency-weighted per-intensity TRIMP/min calibration from the runner's OWN runs
   // (day cardio-TRIMP ÷ run minutes). Recomputed every sync so it tracks changing fitness.
   const trimpLoadByDate = new Map(trainingLoad.map(d => [d.date, d.load]));
+  // Threshold (sustained Z4) is a HARD per-minute dose — grouping it with intervals keeps it from
+  // inflating the 'moderate' (tempo) rate, which was the reason to split it out from Tempo.
   const runIntensity = (label?: string): 'easy' | 'moderate' | 'hard' =>
-    label === 'Intervals' ? 'hard' : (label === 'Tempo' || label === 'LongRun') ? 'moderate' : 'easy';
+    (label === 'Intervals' || label === 'Threshold') ? 'hard'
+      : (label === 'Tempo' || label === 'LongRun') ? 'moderate' : 'easy';
   const trimpRates = calibrateTrimpRates(runs.map(r => ({
     intensity: runIntensity(r.label),
     // TOTAL run minutes, NOT workDuration: the 7-day-plan projection prescribes in run-minutes (time-on-feet),
