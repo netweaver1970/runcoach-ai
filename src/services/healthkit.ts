@@ -774,7 +774,12 @@ function computeRecoveryScore(
   // Ease in from an absolute cold-start over the first two weeks of data.
   const warm = Math.min(1, recent.length / 14);
   const cold = clamp01(0.6 * absoluteHRVScore(todayRMSSD) + 0.4 * (todayRestingHR > 0 ? absoluteRHRScore(todayRestingHR) : 50));
-  const score = Math.round(warm * linear + (1 - warm) * cold);
+  // Floor a REAL computed score at 1 (Bevel's convention). A score is only produced when there IS
+  // overnight data, so it should never be 0 — that keeps 0 as an unambiguous sentinel for "no data".
+  // Without this a catastrophic night could clamp to 0 and become indistinguishable from a missing night,
+  // which is exactly what masked the 2026-07-27 dance morning (recovery read 0, treated as no-data →
+  // readiness defaulted to a neutral 55 → the plan prescribed a run). Geert confirmed Bevel floors at 1.
+  const score = Math.max(1, Math.round(warm * linear + (1 - warm) * cold));
 
   // Baseline + trend (raw RMSSD, for display).
   const rmssdMean = recent.length ? hrvMean : todayRMSSD;
@@ -1822,11 +1827,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const todayNwSteps = rawTot > 0 ? dedupTot * (rawNw / rawTot) : dedupTot;
   // Always compute (real may be 0 early in the day) so the ring shows "0%" + the
   // safe range rather than "--". Only null when there's no HR data at all today.
-  // Pass the REAL recovery score (including a genuine 0 — a wrecked night must reach readiness) when we
-  // have an overnight reading; pass -1 ("no data") only when todayRecovery is absent, so a missing night
-  // anchors readiness at a neutral 55 instead of masking a true 0 as unknown. See computeDayStrain.
+  // recoveryScore is now floored at 1 for any real night (see computeRecoveryScore), so 0 = no data:
+  // `?? 0` cleanly passes a genuine low score through and only a missing night lands on 0 → neutral 55.
   const strain: DayStrain | null = (todayHr as any[]).length > 0
-    ? computeDayStrain(activeZoneLoad + noHrWorkoutLoad, muscularLoad, todayRecovery ? todayRecovery.recoveryScore : -1, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor, activityLoads)
+    ? computeDayStrain(activeZoneLoad + noHrWorkoutLoad, muscularLoad, todayRecovery?.recoveryScore ?? 0, latestTsb, stepStrainLoad(todayNwSteps), advisable, heatFactor, activityLoads)
     : null;
 
   // Recent activities (last 35 days) for the recommendation's cross-training view.
