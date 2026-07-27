@@ -145,6 +145,21 @@ export async function seedPowerZonesFromRuns(
 }
 
 /** Seed the zones file from the athlete's current zones if it doesn't exist yet — or REPAIR it. */
+/**
+ * Write the calibrated markdown file from an EXPLICIT zone set (manual Settings edit). savePowerZones
+ * alone only updates the watch's zones (getPowerZones); the LLM coach reads THIS file, so without also
+ * writing it the two silently disagree — a hand-edit reached the watch but not the coach's reasoning.
+ * Reads maxHR/restHR internally so the HR bands stay consistent with the calibration path.
+ */
+export async function writeZonesFileFrom(pz: PowerZones, note?: string): Promise<void> {
+  const [maxHR, restHR] = await Promise.all([getMaxHR(), getRestHR()]);
+  await upsertKnowledge(
+    ZONES_FILE_ID, 'Power & HR Zones',
+    'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
+    zonesMarkdown(maxHR, pz, note, restHR),
+  );
+}
+
 export async function ensureZonesFile(): Promise<void> {
   if (await knowledgeExists(ZONES_FILE_ID)) {
     // SELF-HEAL a corrupted file. recalibrateZonesFromLastRun used to write the LLM's raw reply

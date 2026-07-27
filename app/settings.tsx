@@ -27,7 +27,7 @@ import {
 } from '../src/services/llm';
 import { getAgenticMode, setAgenticMode } from '../src/services/agent';
 import { PowerZones } from '../src/types';
-import { recalibrateZonesFromLastRun } from '../src/services/zones';
+import { recalibrateZonesFromLastRun, writeZonesFileFrom } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
 import { useTheme, useThemedStyles, Palette, ThemeMode, FontSizeStep, ACCENT_OPTIONS } from '../src/theme';
 import { resolveBodyMassKg, loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache } from '../src/services/healthkit';
@@ -212,6 +212,9 @@ export default function SettingsScreen() {
       return;
     }
     await savePowerZones(powerZones);
+    // Also write the coaching FILE the LLM reads, so a manual edit reaches BOTH the watch and the coach's
+    // reasoning (savePowerZones alone updates only the watch's zones).
+    await writeZonesFileFrom(powerZones, 'set manually').catch(() => {});
     setPowerZonesSaved(true);
     setTimeout(() => setPowerZonesSaved(false), 2000);
   };
