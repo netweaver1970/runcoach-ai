@@ -86,7 +86,8 @@ export function acwrSeries(load: DailyLoad[]): AcwrPoint[] {
 }
 
 // ── Aerobic decoupling (Pw:HR) — per run, cached by UUID (fetches detail). ───────────────────────────────
-const DC_CACHE = `${FileSystem.documentDirectory}decoupling-cache-v1.json`;
+// v2: warm-up excluded from the decoupling window (v1 included it → inflated). Bump discards v1.
+const DC_CACHE = `${FileSystem.documentDirectory}decoupling-cache-v2.json`;
 const DC_AEROBIC = new Set(['Z2', 'Recovery', 'LongRun']);   // steady aerobic only — decoupling is noise on quality days
 export interface DecouplePoint { date: string; pct: number; label: string; }
 
@@ -105,14 +106,20 @@ function computeDecouple(power: { t: number; v: number }[], hr: { t: number; v: 
   const act: number[] = [];
   for (let i = 0; i < n; i++) if (p[i] > 0 && h[i] > 0) act.push(i);
   if (act.length < 1500) return null;   // need ~25 min of paired data
-  const mid = Math.floor(act.length / 2);
+  // EXCLUDE THE WARM-UP. Friel's Pw:HR decoupling is defined on the STEADY portion only — early-run HR
+  // lags power, so an included warm-up makes the first-half ratio artificially high and inflates the drift.
+  // Drop ~the first 10 min (capped at 15% so a short run keeps enough), then split the remainder in half.
+  const warm = Math.min(600, Math.floor(act.length * 0.15));
+  const steady = act.slice(warm);
+  if (steady.length < 1200) return null;   // need ~20 min of steady effort after the warm-up
+  const mid = Math.floor(steady.length / 2);
   const ratio = (idx: number[]) => {
     let sp = 0, sh = 0;
     for (const i of idx) { sp += p[i]; sh += h[i]; }
     const mh = sh / idx.length;
     return mh > 0 ? (sp / idx.length) / mh : 0;
   };
-  const r1 = ratio(act.slice(0, mid)), r2 = ratio(act.slice(mid));
+  const r1 = ratio(steady.slice(0, mid)), r2 = ratio(steady.slice(mid));
   if (r1 <= 0) return null;
   return Math.round(((r1 - r2) / r1) * 1000) / 10;   // percent, 1 dp
 }
