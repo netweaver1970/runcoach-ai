@@ -30,8 +30,9 @@ const CARD_PADDING = 12;
 // get the full height instead of being squashed toward the top by TSB's ±range forcing 0 into the scale.
 const MAIN_H = 172;   // CTL / ATL / optimal-load band
 const TSB_H  = 58;    // form (TSB) — its own tight, 0-centred axis below
-const SUB_GAP = 10;
-const Y_AXIS_W = 34;
+const SUB_GAP = 20;   // vertical gap between the two charts (also clears the TSB axis label)
+const Y_AXIS_W = 34;  // left axis (CTL/ATL numbers)
+const R_AXIS_W = 30;  // right axis (daily load numbers)
 
 function niceScale(rawMin: number, rawMax: number) {
   if (rawMax <= rawMin) rawMax = rawMin + 1;
@@ -68,7 +69,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const plotLeft = useRef(0);
   const measurePlot = () => plotRef.current?.measureInWindow((x) => { plotLeft.current = x; });
 
-  const plotW = innerW - Y_AXIS_W;
+  const plotW = innerW - Y_AXIS_W - R_AXIS_W;
 
   const pan = useRef(
     PanResponder.create({
@@ -91,13 +92,16 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const pts = data.filter((_, i) => i % stride === 0 || i === data.length - 1);
   const trendByDate = new Map(data.map((d, i) => [d.date, ratioTrend(data, i)])); // ratio slope per day (full series)
 
-  // MAIN scale: CTL / ATL / optimal-band top only. TSB is NOT in here any more — it lives in its own
-  // sub-chart below with a tight ±axis, so CTL/ATL fill the full MAIN_H instead of being pushed up by
-  // TSB's negative range forcing 0 low into a shared scale.
-  const mainVals = pts.flatMap(d => [d.ctl, d.atl, d.ctl * 1.3]);
-  const mScale = niceScale(Math.min(...mainVals, 0), Math.max(...mainVals, 1));
+  // MAIN scale: fit the DATA (CTL/ATL + the optimal band's 0.8–1.3×CTL edges), NOT anchored at 0 — so
+  // the lines fill MAIN_H instead of leaving a big empty strip below ~15. TSB lives in its own sub-chart.
+  const mainVals = pts.flatMap(d => [d.atl, d.ctl * 0.8, d.ctl * 1.3]);
+  const mScale = niceScale(Math.min(...mainVals), Math.max(...mainVals, 1));
   const toYm = (v: number) => MAIN_H - ((v - mScale.min) / (mScale.max - mScale.min)) * MAIN_H;
-  // TSB scale: its OWN range, centred on 0, so a ±10 form swing uses the whole 58px instead of a sliver.
+  // LOAD: daily training impulse, its OWN right-hand axis (from 0 — a bar height is only meaningful from 0),
+  // drawn as faint bars behind the lines so the smoothing (CTL/ATL) reads against the raw stimulus.
+  const loadScale = niceScale(0, Math.max(1, ...pts.map(d => d.load || 0)));
+  const toYload = (v: number) => MAIN_H - (v / (loadScale.max || 1)) * MAIN_H;
+  // TSB scale: its OWN range, centred on 0, so a ±10 form swing uses the whole TSB_H instead of a sliver.
   const tAbs = Math.max(10, ...pts.map(d => Math.abs(d.tsb)));
   const tScale = niceScale(-tAbs, tAbs);
   const toYt = (v: number) => TSB_H - ((v - tScale.min) / (tScale.max - tScale.min)) * TSB_H;
@@ -158,6 +162,19 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
           ))}
         </View>
         <View ref={plotRef} onLayout={measurePlot} style={{ width: plotW, height: MAIN_H, position: 'relative' }} {...pan.panHandlers}>
+          {/* daily LOAD bars — drawn FIRST so the lines sit on top; own right-hand scale (toYload). */}
+          {pts.map((d, i) => {
+            const v = d.load || 0;
+            if (v <= 0) return null;
+            const bw = Math.max(1.5, plotW / pts.length - 1);
+            const y = toYload(v);
+            return (
+              <View key={`ld-${i}`} style={{
+                position: 'absolute', left: xOf(i) - bw / 2, width: bw,
+                top: y, height: MAIN_H - y, backgroundColor: '#94a3b833', borderRadius: 1,
+              }} />
+            );
+          })}
           {mScale.ticks.map((t, i) => (
             <View key={i} style={{ position: 'absolute', top: toYm(t), left: 0, right: 0, height: 1, backgroundColor: gridV }} />
           ))}
@@ -195,17 +212,25 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
             </>
           )}
         </View>
+        {/* RIGHT axis — daily load scale (matches the faint bars) */}
+        <View style={{ width: R_AXIS_W, height: MAIN_H }}>
+          {loadScale.ticks.map((t, i) => (
+            <Text key={i} style={[ch.yLabelR, { position: 'absolute', top: toYload(t) - 8, left: 4 }]}>{t}</Text>
+          ))}
+          <Text style={[ch.yLabelR, ch.loadAxisCap, { position: 'absolute', top: -2, left: 4 }]}>load</Text>
+        </View>
       </View>
 
       {/* ── TSB (form) sub-chart: own tight 0-centred axis ── */}
       <View style={{ flexDirection: 'row', marginTop: SUB_GAP }}>
         <View style={{ width: Y_AXIS_W, height: TSB_H + xAxisH }}>
-          <Text style={[ch.subAxisLabel, { position: 'absolute', top: -2, right: 4 }]}>TSB</Text>
           {tScale.ticks.filter(t => t === tScale.min || t === 0 || t === tScale.max).map((t, i) => (
             <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toYt(t) - 7, right: 4 }]}>{t > 0 ? `+${t}` : t}</Text>
           ))}
         </View>
         <View style={{ width: plotW, height: TSB_H + xAxisH, position: 'relative' }} {...pan.panHandlers}>
+          {/* TSB label INSIDE the plot (top-left), so it can't collide with the axis tick numbers. */}
+          <Text style={[ch.subAxisLabel, { position: 'absolute', top: 1, left: 2 }]}>TSB</Text>
           {/* zero baseline emphasised; band edges faint */}
           {tScale.ticks.map((t, i) => (
             <View key={i} style={{
@@ -458,8 +483,10 @@ export default function TrainingLoadScreen() {
 
 const makeCh = (c: Palette) => StyleSheet.create({
   yLabel: { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
+  yLabelR: { fontSize: 10, color: c.textFaint, textAlign: 'left', fontWeight: '500' },
+  loadAxisCap: { fontSize: 9, fontWeight: '700' },
   xLabel: { fontSize: 10, color: c.textSub, fontWeight: '600' },
-  subAxisLabel: { fontSize: 9, color: c.textFaint, fontWeight: '700', textAlign: 'right' },
+  subAxisLabel: { fontSize: 9, color: c.textFaint, fontWeight: '700' },
   // Fixed readout line under the date range — the under-cursor values live here instead of a bubble
   // over the graph, so the chart is never covered. flexWrap keeps it on one/two lines on narrow phones.
   readout: {
