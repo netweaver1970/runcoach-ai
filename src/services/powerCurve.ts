@@ -14,7 +14,10 @@ import * as FileSystem from 'expo-file-system';
 import { fetchWorkoutDetail } from './healthkit';
 import type { RunWorkout } from '../types';
 
-const CACHE = `${FileSystem.documentDirectory}power-curve-cache-v1.json`;
+// v2: forward-fill resampling (v1 zero-filled gaps → long-window averages collapsed). Bumping the name
+// discards the wrong v1 cache so every run recomputes correctly on first open.
+const CACHE = `${FileSystem.documentDirectory}power-curve-cache-v2.json`;
+const MAX_HOLD_SEC = 20;   // carry a power reading forward at most this long; a bigger gap = a real break
 
 // Durations sampled along the curve (seconds): dense enough to draw a smooth line, anchored on the
 // classic reference points (5s neuromuscular · 1min · 5min VO₂ · 20min threshold · 60min aerobic).
@@ -34,14 +37,29 @@ async function writeCache(c: Cache): Promise<void> {
   try { await FileSystem.writeAsStringAsync(CACHE, JSON.stringify(c)); } catch { /* best-effort */ }
 }
 
-// Power series (t = ms from start, may have pauses) → per-second watts array (gaps filled 0, so a window
-// spanning a pause simply averages low and never wins the max — no need to detect pauses explicitly).
-function toPerSecond(power: { t: number; v: number }[]): number[] {
+// Power series (t = ms from start, IRREGULARLY sampled — Apple records running power every few seconds,
+// and downsampleTo1PerSecond only emits the seconds that HAD a sample) → a continuous 1 Hz watts array via
+// ZERO-ORDER HOLD: carry the last reading forward until the next sample. The original code filled the
+// in-between seconds with 0, which dragged every long-window average toward zero — a 20-min "best" read
+// 104 W for an athlete who holds 250+ (2026-07-27). A gap longer than MAX_HOLD_SEC, or a recorded pause,
+// is a genuine break → 0, so pauses can't inflate the curve either.
+function toPerSecond(power: { t: number; v: number }[], pauses: { s: number; e: number }[] = []): number[] {
   if (!power.length) return [];
   const last = Math.floor(power[power.length - 1].t / 1000);
   if (last < 0 || last > 36_000) return [];   // >10 h → corrupt, skip
+  const at = new Map<number, number>();
+  for (const p of power) { const s = Math.floor(p.t / 1000); if (s >= 0 && s <= last) at.set(s, p.v); }
   const arr = new Array(last + 1).fill(0);
-  for (const p of power) { const s = Math.floor(p.t / 1000); if (s >= 0 && s <= last) arr[s] = p.v; }
+  let lastV = 0, lastAt = -Infinity;
+  for (let s = 0; s <= last; s++) {
+    if (at.has(s)) { lastV = at.get(s)!; lastAt = s; arr[s] = lastV; }
+    else if (s - lastAt <= MAX_HOLD_SEC) arr[s] = lastV;   // hold across a normal inter-sample gap
+    // else: leave 0 — the recording genuinely stopped here
+  }
+  for (const p of pauses) {
+    const a = Math.max(0, Math.floor(p.s / 1000)), b = Math.min(last, Math.ceil(p.e / 1000));
+    for (let s = a; s <= b; s++) arr[s] = 0;
+  }
   return arr;
 }
 
@@ -55,8 +73,8 @@ function bestWindowAvg(arr: number[], win: number): number {
   return best / win;
 }
 
-function runMeanMax(power: { t: number; v: number }[]): RunResult {
-  const arr = toPerSecond(power);
+function runMeanMax(power: { t: number; v: number }[], pauses: { s: number; e: number }[]): RunResult {
+  const arr = toPerSecond(power, pauses);
   const out: RunResult = {};
   for (const d of PDC_DURATIONS) { const w = bestWindowAvg(arr, d); if (w > 0) out[d] = Math.round(w); }
   return out;
@@ -96,7 +114,7 @@ export async function computePowerCurve(
   for (const r of toFetch) {
     try {
       const detail = await fetchWorkoutDetail(r.date, r.duration);
-      cache[r.uuid] = runMeanMax(detail.power ?? []);
+      cache[r.uuid] = runMeanMax(detail.power ?? [], detail.pauseIntervals ?? []);
     } catch { cache[r.uuid] = {}; }   // cache the miss so we don't refetch a bad run every visit
     onProgress?.(++done, toFetch.length);
   }
