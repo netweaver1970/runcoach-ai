@@ -139,6 +139,9 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const curX  = cursorIdx >= 0 ? xOf(cursorIdx) : -1;   // <0 = no visible cursor line
 
   const gridV = c.gridline;
+  // Load-bar fill: steel-blue, opaque enough to stand out from the purple optimal band, and lifted on dark
+  // backgrounds so it doesn't vanish. Distinct hue from CTL (blue line) / ATL (orange) too.
+  const LOAD_BAR = c.mode === 'dark' ? '#7d8aa855' : '#64748b59';
   return (
     <View>
       {/* READOUT LINE — fixed, directly under the date range. Replaces the floating bubble that used to
@@ -162,7 +165,9 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
           ))}
         </View>
         <View ref={plotRef} onLayout={measurePlot} style={{ width: plotW, height: MAIN_H, position: 'relative' }} {...pan.panHandlers}>
-          {/* daily LOAD bars — drawn FIRST so the lines sit on top; own right-hand scale (toYload). */}
+          {/* daily LOAD bars — drawn FIRST so the lines sit on top; own right-hand scale (toYload). A
+              slate/steel tint distinct from the purple optimal-band, opaque enough to read against it, and
+              theme-aware (lighter on dark backgrounds). */}
           {pts.map((d, i) => {
             const v = d.load || 0;
             if (v <= 0) return null;
@@ -171,7 +176,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
             return (
               <View key={`ld-${i}`} style={{
                 position: 'absolute', left: xOf(i) - bw / 2, width: bw,
-                top: y, height: MAIN_H - y, backgroundColor: '#94a3b833', borderRadius: 1,
+                top: y, height: MAIN_H - y, backgroundColor: LOAD_BAR, borderRadius: 1,
               }} />
             );
           })}
@@ -211,13 +216,15 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
               ))}
             </>
           )}
+          {/* "load" caption for the right axis — placed INSIDE the plot at the top-right (i.e. LEFT of the
+              right-axis numbers) so it can't collide with them. */}
+          <Text style={[ch.loadAxisCap, { position: 'absolute', top: 1, right: 3 }]}>load (W)</Text>
         </View>
-        {/* RIGHT axis — daily load scale (matches the faint bars) */}
+        {/* RIGHT axis — daily load scale (matches the bars) */}
         <View style={{ width: R_AXIS_W, height: MAIN_H }}>
           {loadScale.ticks.map((t, i) => (
             <Text key={i} style={[ch.yLabelR, { position: 'absolute', top: toYload(t) - 8, left: 4 }]}>{t}</Text>
           ))}
-          <Text style={[ch.yLabelR, ch.loadAxisCap, { position: 'absolute', top: -2, left: 4 }]}>load</Text>
         </View>
       </View>
 
@@ -484,7 +491,7 @@ export default function TrainingLoadScreen() {
 const makeCh = (c: Palette) => StyleSheet.create({
   yLabel: { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
   yLabelR: { fontSize: 10, color: c.textFaint, textAlign: 'left', fontWeight: '500' },
-  loadAxisCap: { fontSize: 9, fontWeight: '700' },
+  loadAxisCap: { fontSize: 9, fontWeight: '700', color: c.textFaint, textAlign: 'right' },
   xLabel: { fontSize: 10, color: c.textSub, fontWeight: '600' },
   subAxisLabel: { fontSize: 9, color: c.textFaint, fontWeight: '700' },
   // Fixed readout line under the date range — the under-cursor values live here instead of a bubble
