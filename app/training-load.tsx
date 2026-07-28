@@ -32,7 +32,6 @@ const MAIN_H = 172;   // CTL / ATL / optimal-load band
 const TSB_H  = 58;    // form (TSB) — its own tight, 0-centred axis below
 const SUB_GAP = 20;   // vertical gap between the two charts (also clears the TSB axis label)
 const Y_AXIS_W = 34;  // left axis (CTL/ATL numbers)
-const R_AXIS_W = 30;  // right axis (daily load numbers)
 
 function niceScale(rawMin: number, rawMax: number) {
   if (rawMax <= rawMin) rawMax = rawMin + 1;
@@ -69,7 +68,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const plotLeft = useRef(0);
   const measurePlot = () => plotRef.current?.measureInWindow((x) => { plotLeft.current = x; });
 
-  const plotW = innerW - Y_AXIS_W - R_AXIS_W;
+  const plotW = innerW - Y_AXIS_W;
 
   const pan = useRef(
     PanResponder.create({
@@ -97,10 +96,11 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
   const mainVals = pts.flatMap(d => [d.atl, d.ctl * 0.8, d.ctl * 1.3]);
   const mScale = niceScale(Math.min(...mainVals), Math.max(...mainVals, 1));
   const toYm = (v: number) => MAIN_H - ((v - mScale.min) / (mScale.max - mScale.min)) * MAIN_H;
-  // LOAD: daily training impulse, its OWN right-hand axis (from 0 — a bar height is only meaningful from 0),
-  // drawn as faint bars behind the lines so the smoothing (CTL/ATL) reads against the raw stimulus.
-  const loadScale = niceScale(0, Math.max(1, ...pts.map(d => d.load || 0)));
-  const toYload = (v: number) => MAIN_H - (v / (loadScale.max || 1)) * MAIN_H;
+  // DAILY LOAD is TRIMP — the SAME unit as CTL/ATL (which are just its smoothed averages), so it shares
+  // the LEFT axis. That's the whole point: each day's load bar TOP can be read against the optimal band
+  // (0.8–1.3× CTL) directly — inside the band = a productive single-day stimulus, well above = overreach
+  // (his multi-hour dance days), below = easy/recovery. It was briefly on a bogus separate "watts" axis,
+  // which made the two incomparable. Tall bars clamp at the chart top rather than blowing up the scale.
   // TSB scale: its OWN range, centred on 0, so a ±10 form swing uses the whole TSB_H instead of a sliver.
   const tAbs = Math.max(10, ...pts.map(d => Math.abs(d.tsb)));
   const tScale = niceScale(-tAbs, tAbs);
@@ -172,7 +172,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
             const v = d.load || 0;
             if (v <= 0) return null;
             const bw = Math.max(1.5, plotW / pts.length - 1);
-            const y = toYload(v);
+            const y = Math.max(0, toYm(v));   // same axis as CTL/ATL + band; clamp tall (overreach) bars at top
             return (
               <View key={`ld-${i}`} style={{
                 position: 'absolute', left: xOf(i) - bw / 2, width: bw,
@@ -216,15 +216,8 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
               ))}
             </>
           )}
-          {/* "load" caption for the right axis — placed INSIDE the plot at the top-right (i.e. LEFT of the
-              right-axis numbers) so it can't collide with them. */}
-          <Text style={[ch.loadAxisCap, { position: 'absolute', top: 1, right: 3 }]}>load (W)</Text>
-        </View>
-        {/* RIGHT axis — daily load scale (matches the bars) */}
-        <View style={{ width: R_AXIS_W, height: MAIN_H }}>
-          {loadScale.ticks.map((t, i) => (
-            <Text key={i} style={[ch.yLabelR, { position: 'absolute', top: toYload(t) - 8, left: 4 }]}>{t}</Text>
-          ))}
+          {/* caption: the bars are daily load, same TRIMP scale as the axis. */}
+          <Text style={[ch.loadAxisCap, { position: 'absolute', top: 1, right: 3 }]}>bars = daily load</Text>
         </View>
       </View>
 
@@ -438,7 +431,7 @@ export default function TrainingLoadScreen() {
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: ATL_COLOR }]} /><Text style={s.legendText}>Fatigue</Text></View>
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: TSB_COLOR }]} /><Text style={s.legendText}>Form</Text></View>
             </View>
-            <Text style={s.scrubHint}>Shaded band = optimal load (0.8–1.3× fitness) · dot colour = daily status</Text>
+            <Text style={s.scrubHint}>Grey bars = each day's training load (same scale). Shaded band = the productive range for it (0.8–1.3× fitness): a bar in the band is a solid day, well above = overreaching, below = easy. Dot colour = daily status.</Text>
           </View>
 
           {/* Cardio status breakdown over the period */}
@@ -490,7 +483,6 @@ export default function TrainingLoadScreen() {
 
 const makeCh = (c: Palette) => StyleSheet.create({
   yLabel: { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
-  yLabelR: { fontSize: 10, color: c.textFaint, textAlign: 'left', fontWeight: '500' },
   loadAxisCap: { fontSize: 9, fontWeight: '700', color: c.textFaint, textAlign: 'right' },
   xLabel: { fontSize: 10, color: c.textSub, fontWeight: '600' },
   subAxisLabel: { fontSize: 9, color: c.textFaint, fontWeight: '700' },
