@@ -60,7 +60,7 @@ function fmtRange(from: string, to: string): string {
 
 // ─── Triple-line chart (CTL / ATL / TSB) with scrubber cursor ──────────────────
 
-function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
+function LoadChart({ data, innerW, showLoad }: { data: DailyLoad[]; innerW: number; showLoad: boolean }) {
   const ch = useThemedStyles(makeCh);
   const { c } = useTheme();
   const [cursorX, setCursorX] = useState<number | null>(null);
@@ -168,7 +168,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
           {/* daily LOAD bars — drawn FIRST so the lines sit on top; own right-hand scale (toYload). A
               slate/steel tint distinct from the purple optimal-band, opaque enough to read against it, and
               theme-aware (lighter on dark backgrounds). */}
-          {pts.map((d, i) => {
+          {showLoad && pts.map((d, i) => {
             const v = d.load || 0;
             if (v <= 0) return null;
             const bw = Math.max(1.5, plotW / pts.length - 1);
@@ -217,7 +217,7 @@ function LoadChart({ data, innerW }: { data: DailyLoad[]; innerW: number }) {
             </>
           )}
           {/* caption: the bars are daily load, same TRIMP scale as the axis. */}
-          <Text style={[ch.loadAxisCap, { position: 'absolute', top: 1, right: 3 }]}>bars = daily load</Text>
+          {showLoad && <Text style={[ch.loadAxisCap, { position: 'absolute', top: 1, right: 3 }]}>bars = daily load</Text>}
         </View>
       </View>
 
@@ -270,6 +270,7 @@ export default function TrainingLoadScreen() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [innerW, setInnerW]       = useState(0);
+  const [showLoad, setShowLoad]   = useState(false);   // daily-load bars off by default (they add clutter)
   const [copyState, setCopyState] = useState<'idle' | 'working' | 'done'>('idle');
 
   const periodMs = PERIOD_MONTHS[period] * 30 * 86_400_000;
@@ -423,15 +424,22 @@ export default function TrainingLoadScreen() {
               </TouchableOpacity>
             </View>
 
-            <LoadChart data={data} innerW={innerW} />
+            <LoadChart data={data} innerW={innerW} showLoad={showLoad} />
 
-            {/* Legend */}
+            {/* Legend + daily-load toggle */}
             <View style={s.legendRow}>
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: CTL_COLOR }]} /><Text style={s.legendText}>Fitness</Text></View>
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: ATL_COLOR }]} /><Text style={s.legendText}>Fatigue</Text></View>
               <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: TSB_COLOR }]} /><Text style={s.legendText}>Form</Text></View>
             </View>
-            <Text style={s.scrubHint}>Grey bars = each day's training load (same scale). Shaded band = the productive range for it (0.8–1.3× fitness): a bar in the band is a solid day, well above = overreaching, below = easy. Dot colour = daily status.</Text>
+            <TouchableOpacity onPress={() => setShowLoad(v => !v)} style={[s.loadToggle, showLoad && s.loadToggleOn]}>
+              <Text style={[s.loadToggleText, showLoad && s.loadToggleTextOn]}>{showLoad ? '✓ Daily load bars' : '＋ Show daily load bars'}</Text>
+            </TouchableOpacity>
+            {showLoad ? (
+              <Text style={s.scrubHint}>Grey bars = each day's training load (same scale). Shaded band = its productive range (0.8–1.3× fitness): in the band = solid day, well above = overreaching, below = easy.</Text>
+            ) : (
+              <Text style={s.scrubHint}>Shaded band = optimal load (0.8–1.3× fitness) · dot colour = daily status.</Text>
+            )}
           </View>
 
           {/* Cardio status breakdown over the period */}
@@ -554,6 +562,11 @@ const makeS = (c: Palette) => StyleSheet.create({
   navLabel: { flex: 1, textAlign: 'center', fontSize: 12, color: c.textSub, fontWeight: '600' },
 
   legendRow: { flexDirection: 'row', justifyContent: 'center', gap: 20, marginTop: 10 },
+  loadToggle: { alignSelf: 'center', marginTop: 10, paddingVertical: 5, paddingHorizontal: 12,
+                borderRadius: 14, borderWidth: 1, borderColor: c.border },
+  loadToggleOn: { backgroundColor: c.accent, borderColor: c.accent },
+  loadToggleText: { fontSize: 12, fontWeight: '600', color: c.textSub },
+  loadToggleTextOn: { color: '#fff' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendText: { fontSize: 12, color: c.textSub, fontWeight: '600' },
