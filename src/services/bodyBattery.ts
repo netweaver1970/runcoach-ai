@@ -149,7 +149,20 @@ const DAY_STRESS_SCALE = 15;
 const DAY_STRESS_OFFSET = 1.5;  // was 12 — the old lift assumed our day-stress read BELOW Bevel; it now reads
                                 // ABOVE, so with STRESS_SCALE 8.3 this gives daytime stress = 3.3 + 0.64·old.
 const BASE_SD_MIN   = 3;      // floor on a baseline's SD so a tight baseline can't explode z-scores
-const STRESS_SMOOTH = 0.11;   // awake-day EWMA decay weight (smooth on the way down; rise is instant)
+// DAYTIME HRV WEIGHT (2026-07-28 paired-Bevel validation). Our daytime HRV is SPARSE, NOISY spot-reads —
+// on the validated day they bounced 18→70 around a 41 baseline (SD 17). The z-index weighted zHRV equally
+// with zHR, so ONE low blip spiked raw stress to ~50 even while HR sat at rest (60 vs restHR 59). Bevel /
+// Garmin derive all-day stress from a CONTINUOUS quality-gated HRV stream; with spot-reads the honest move
+// is to lean on HR during the day and treat HRV as a secondary nudge. Night is UNAFFECTED (zStressNight has
+// its own softened HRV term and already matches Bevel).
+const DAY_HRV_WEIGHT = 0.5;
+// Awake-day EWMA decay. Rise is instant (a real stressor should show at once); the fall was 0.11/bin ≈ a
+// 45-min tail, so each HRV blip lingered ~an hour and, with a blip every ~30 min, the calm evening never
+// settled (ours ~40 while Bevel fell to 18–24). 0.30 still smooths bin noise but lets calm actually read calm.
+const STRESS_SMOOTH = 0.30;   // was 0.11
+// Both constants above were grid-checked together against the 2026-07-28 paired Bevel export (12 clock-matched
+// points, 12:00–20:00): current bias +9.0 / RMSE 15.5 → half-HRV+faster-decay bias +1.0 / RMSE 10.8. Fit on ONE
+// day — re-confirm on the next paired export before treating them as final.
 const SESSION_GAP_MS = 60 * 60_000; // merge sleep segments < 1h apart into one night session
 // Night stress = a RECOVERY baseline (HRV vs personal baseline) + a stage modulation ADDED on top.
 // Research-aligned: night HRV is a recovery-quality signal, shaped by sleep stage. The square wave
@@ -555,7 +568,9 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   // night baseline. Missing HRV → zHRV 0 (HR-only). Capped 0..100.
   const zStress = (avgHR: number, vHrv: number | null, b: { hvM: number; hvS: number; hrM: number; hrS: number }): number => {
     const zHR  = (avgHR - b.hrM) / b.hrS;
-    const zHRV = vHrv != null ? (vHrv - b.hvM) / b.hvS : 0;
+    // DAY_HRV_WEIGHT down-weights the noisy daytime HRV spot-reads (see the constant) so a single low blip
+    // can't read as stress while HR plainly shows rest. This is the DAY path only — night uses zStressNight.
+    const zHRV = vHrv != null ? ((vHrv - b.hvM) / b.hvS) * DAY_HRV_WEIGHT : 0;
     return clamp(STRESS_BASE + (zHR - zHRV) * DAY_STRESS_SCALE, 0, 100); // DAY: steeper scale (decompressed to Bevel)
   };
   // Night variant: anchor low and count ONLY HR arousal beyond a margin (normal settling HR ≈ 0),
@@ -786,7 +801,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
           return { p10: p(0.10), p25: p(0.25), p50: p(0.50), p75: p(0.75), p90: p(0.90) };
         })(),
         hrvBaseWindow: { day: dayBase0.hvM, night: nightBase0.hvM },
-        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE_K, SLEEP_TARGET_MIN, SLEEP_TARGET_FALLB, SLEEP_STRESS_FREE, SLEEP_STRESS_K, SLEEP_QUALITY_MIN, WORKOUT_DRAIN_PER_HRR, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, DRAIN_TIME_MMAX, DRAIN_TIME_DECAY, DRAIN_TIME_MMIN, WORKOUT_STRESS_CAP, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, DAY_STRESS_OFFSET, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
+        constants: { BIN_MIN, REST_STRESS, SLEEP_CHARGE_K, SLEEP_TARGET_MIN, SLEEP_TARGET_FALLB, SLEEP_STRESS_FREE, SLEEP_STRESS_K, SLEEP_QUALITY_MIN, WORKOUT_DRAIN_PER_HRR, CHARGE_BASE, CHARGE_STRESS_K, DRAIN_BASE, DRAIN_STRESS_K, DRAIN_TIME_MMAX, DRAIN_TIME_DECAY, DRAIN_TIME_MMIN, WORKOUT_STRESS_CAP, REM_STRESS_CAP, STRESS_SMOOTH, STRESS_BASE, STRESS_SCALE, DAY_STRESS_OFFSET, DAY_HRV_WEIGHT, DAY_STRESS_SCALE, BASE_SD_MIN, NIGHT_STAGE_SMOOTH, SEED, WINDOW_H },
         baselines: { dayBase, nightBase } },
       hrv: hrvDebug,   // every HRV sample: m=min-from-start, v=ms, hr/cv context, ok, why
       bins: binDebug,  // per 10-min bin: m, hr, a=asleep, hrv=nearest-trusted, s=stress, b=battery
