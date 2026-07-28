@@ -4,6 +4,7 @@ import { callLLM, getActiveApiKey, setUsageFeature } from './llm';
 import { agentComplete } from './agent';
 import { buildTimelineContext } from './timelineEvents';
 import { buildKnowledgePrompt } from './coachFiles';
+import { buildAppModelPrompt } from './appModel';
 import { tsbStatus, ctlRamp, trainingDayKey } from './trainingLoad';
 
 // Legacy constant — kept so existing imports don't break; actual model comes from llm.ts config.
@@ -816,10 +817,15 @@ export async function getChatResponse(
   // this is the existing single-shot call. The snapshot is still passed as baseline context either way.
   // The athlete's editable coaching files (incl. the Training Model) are injected so the coach reasons from
   // the SAME knowledge the daily plan uses — one editable source of truth.
-  const knowledge = await buildKnowledgePrompt().catch(() => '');
+  // The APP MODEL (how ToF/cap/load/settings actually work) rides in front of the editable coaching files,
+  // so the coach reasons from the real in-app logic instead of guessing about the app's own accounting.
+  const [appModel, knowledge] = await Promise.all([
+    buildAppModelPrompt().catch(() => ''),
+    buildKnowledgePrompt().catch(() => ''),
+  ]);
   setUsageFeature(runContext ? 'run-analysis' : 'chat');
   return agentComplete({
-    system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, knowledge),
+    system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, [appModel, knowledge].filter(Boolean).join('\n\n')),
     messages:  history,
     maxTokens: 2500,   // was 1024 — the detailed run analysis (multi-section + tables) was truncated mid-output. This is a CEILING, not a target: short chats still cost only what they emit.
     snap,

@@ -13,6 +13,7 @@ import * as Notifications from 'expo-notifications';
 import { HealthSnapshot, RunWorkout } from '../types';
 import { callLLM, extractJsonObject } from './llm';
 import { agentComplete } from './agent';
+import { buildAppModelPrompt } from './appModel';
 import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadPrescriptionAt, CoachPlan } from './coach';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
@@ -116,11 +117,14 @@ Write a sharp, specific post-run review grounded in the numbers. Crucially:
 • Judge the run against the PRESCRIPTION, not generic targets. If they were told 25 min easy and ran ~25 min easy, that's ON PLAN — say so; do not tell them to run more.
 • Recognise the planned warm-up, drills, work reps and cool-down. Refer to the drills explicitly as the prescribed drills block.
 • The prescription already accounts for HRV/recovery/load/heat — respect it. wHR = work-only HR.
+• The APP MODEL block (in the data) is authoritative on how ToF / the cap / load / the athlete's settings work — use it, never guess at the app's accounting.
+
+BREVITY IS REQUIRED — this is read on a phone, glanceable. Lead with the point; cut filler, hedging and throat-clearing. No "it's worth noting", no restating the data back. Every bullet carries a number and a consequence.
 
 Return ONLY minified JSON — no markdown fences — with EXACTLY these keys:
 {"verdict": string (≤4 words, e.g. "On plan", "Overcooked it", "Easier than planned", "Solid tempo"),
  "headline": string (≤14 words — the single most useful takeaway, for a phone notification),
- "full": string (markdown, ~150–280 words, using these headers: "## Verdict vs plan", "## What stood out" with 2–4 number-rich bullets, "## Next" with one forward-looking cue; reference the prescription and the drills where relevant)}`;
+ "full": string (markdown, ≤120 words TOTAL, using these headers: "## Verdict vs plan" (1 sentence), "## What stood out" (2–3 number-rich bullets, one line each), "## Next" (1 sentence, one concrete cue). No other prose.)}`;
 
 /** Generate the analysis for one run. Throws on LLM/auth errors. */
 export async function analyzeRun(
@@ -133,7 +137,8 @@ export async function analyzeRun(
     ? buildPrescriptionContext(plan)
     : `NO SESSION WAS PRESCRIBED before this run — today's plan had not been generated when the run started, so there is no prescription to judge against. Do NOT assume it was a rest day or that the athlete should not have run, and do NOT produce a "ran on a rest day / should have rested" verdict. Analyse the run purely on its own merits and recent trends.`;
   const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true);
-  const userMsg = [recoveryLoadContext(snap), prescription, runBlock].filter(Boolean).join('\n\n');
+  const appModel = await buildAppModelPrompt().catch(() => '');
+  const userMsg = [appModel, recoveryLoadContext(snap), prescription, runBlock].filter(Boolean).join('\n\n');
 
   // Same shape as Chat, only the SYSTEM_PROMPT differs: run through agentComplete so agentic mode (when on)
   // can pull prior runs / metric series via tools to ground the analysis; else single-shot.
