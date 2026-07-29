@@ -7,7 +7,7 @@
  */
 import { HealthSnapshot, DailyRecovery, DayStrain, DailyLoad, SleepSession } from '../types';
 import { scoreToLabel, scoreToColor } from './healthkit';
-import { advisableStrainRange } from './trainingLoad';
+import { advisableStrainRange, trainingDayKey } from './trainingLoad';
 
 export interface DayView {
   date:    string;            // YYYY-MM-DD
@@ -107,6 +107,25 @@ export function buildDayView(
   const isToday = key === toDateKey(new Date());
 
   if (isToday && snapshot) {
+    // STALE-CACHE GUARD. The home renders the cached snapshot INSTANTLY on launch and refreshes in the
+    // background, but the cache may have been written on a PREVIOUS training day — and its day-scoped
+    // values (today's accumulated strain, and the recovery/sleep computed from "last night") then describe
+    // YESTERDAY. Presenting them under today's date is simply wrong: at 05:22 the ring read strain 37,
+    // impossible ~80 min into a new day. Show "no data yet" until the refresh lands rather than a
+    // confident lie. Uses the same 4am trainingDayKey boundary strain is attributed by, so a pre-4am
+    // launch still sees the still-accumulating day rather than being blanked.
+    // trainingLoad is NOT suppressed: CTL/ATL/TSB are multi-day EWMAs carrying their own dates, so
+    // "as of yesterday" is a fair reading of a trailing average, not a false statement about today.
+    const fetchedAt = (snapshot as { fetchedAt?: string }).fetchedAt;
+    const staleDay = fetchedAt != null
+      && trainingDayKey(new Date(fetchedAt).getTime()) !== trainingDayKey(Date.now());
+    if (staleDay) {
+      return {
+        date: key, isToday: true, hasData: false,
+        recovery: null, strain: null,
+        trainingLoad: snapshot.trainingLoad ?? [],
+      };
+    }
     return {
       date: key, isToday: true,
       hasData: !!(snapshot.todayRecovery || snapshot.strain),

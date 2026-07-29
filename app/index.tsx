@@ -676,7 +676,9 @@ export default function HomeScreen() {
             onNext={() => shiftDay(1)}
             onPickDate={() => { ensureComps(); setPickerOpen(true); }}
             historic={!isTodayView}
-            loadingDay={compsLoading && !isTodayView}
+            // Today with no data yet = the stale-cache guard blanked it (or the first scan hasn't landed);
+            // either way a refresh IS in flight, so show "Loading day…" not "waiting to sync".
+            loadingDay={(compsLoading && !isTodayView) || (isTodayView && !dayView.hasData)}
           />
         </View>
 
