@@ -22,7 +22,7 @@
  */
 import HealthKit from '@kingstinct/react-native-healthkit';
 import * as FileSystem from 'expo-file-system';
-import { buildHeartbeatQualityMap, isGoodHRVSample, loadSnapshotCache } from './healthkit';
+import { buildHeartbeatQualityMap, isGoodHRVSample, buildBeatQualityMap, beatQualityNear, loadSnapshotCache } from './healthkit';
 
 const HR_ID    = 'HKQuantityTypeIdentifierHeartRate';
 const HRV_ID   = 'HKQuantityTypeIdentifierHeartRateVariabilitySDNN';
@@ -351,12 +351,22 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
 
   // ── HRV trust filter ──────────────────────────────────────────────────────────
   const qmap = buildHeartbeatQualityMap(beatsRaw as any[]);
+  // Graded beat-level quality (coverage + artifact rate), the usable version of the binary gap flag.
+  const bqmap = buildBeatQualityMap(beatsRaw as any[]);
   const trustHRV = (t: number, v: number, useHrContext: boolean): { ok: boolean; why: string } => {
     if (!(v >= 5 && v <= HRV_VMAX)) return { ok: false, why: 'value' }; // implausible / artifact SDNN
     if (useHrContext) {
-      // The arbiter is the surrounding HR: heat/stress raises HR while STILL (real low-HRV
+      // BEAT-LEVEL GATE (2026-07-29). RMSSD is built from successive R-R differences, so a MISSED beat
+      // merges two intervals and injects a false ~medianRR difference — this is what made daytime HRV
+      // jump 26→73→31 ms within minutes and spike the stress index while HR showed rest. Apple's binary
+      // `precededByGap` was too blunt to gate on (it condemned 52% of this user's samples, so it was
+      // switched off and left debug-only); assessBeatQuality instead rejects only windows that are
+      // genuinely unusable — too few beats, poor coverage vs the implied beat count, or a high
+      // artifact rate. No beat series for this sample → we cannot judge → keep it.
+      const bq = beatQualityNear(t, bqmap);
+      if (bq && !bq.ok) return { ok: false, why: 'beats' };
+      // The arbiter is then the surrounding HR: heat/stress raises HR while STILL (real low-HRV
       // signal — keep it), whereas movement raises HR a lot and/or makes it erratic (reject).
-      // The watch R-R "gap" flag over-rejects this user's stable reads, so it is NOT a reject.
       const s = hrStatsNear(t);
       if (s && s.mean > restHR + HRV_HR_OVER) return { ok: false, why: 'hr-high' };
       if (s && s.cv > HRV_CV_MAX)             return { ok: false, why: 'hr-erratic' };
@@ -383,7 +393,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const ctx = hrStatsNear(t);
     const res = trustHRV(t, v, true);
     if (res.ok) { validHrv.push({ t, v, hr: ctx ? ctx.mean : restHR }); hrvUsed++; } else hrvRejected++;
-    hrvDebug.push({ m: relMin(t), v: Math.round(v), hr: ctx ? Math.round(ctx.mean) : 0, cv: ctx ? Math.round(ctx.cv * 100) : -1, rr: isGoodHRVSample(t, qmap) ? 1 : 0, ok: res.ok ? 1 : 0, w: res.why });
+    hrvDebug.push({ m: relMin(t), v: Math.round(v), hr: ctx ? Math.round(ctx.mean) : 0, cv: ctx ? Math.round(ctx.cv * 100) : -1, rr: isGoodHRVSample(t, qmap) ? 1 : 0, ok: res.ok ? 1 : 0, w: res.why,
+      bq: (() => { const q = beatQualityNear(t, bqmap); return q ? { n: q.beats, cov: Math.round(q.coverage * 100), art: Math.round(q.artifactPct * 100), ok: q.ok ? 1 : 0 } : null; })() });
   }
   validHrv.sort((a, b) => a.t - b.t);
   const nearestHrv = (t: number, win = HRV_WIN_MIN * 60_000): number | null => {

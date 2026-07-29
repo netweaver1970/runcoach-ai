@@ -421,6 +421,10 @@ export function buildHeartbeatQualityMap(
   return map;
 }
 
+// Beat-level HRV quality lives in its own dependency-free module (pure + unit-testable).
+export { assessBeatQuality, buildBeatQualityMap, beatQualityNear } from './hrvQuality';
+export type { BeatQuality } from './hrvQuality';
+
 /**
  * True RMSSD (ms) from raw R-R intervals in the heartbeat series — the metric Bevel
  * uses for "Resting HRV", which runs lower than Apple's SDNN on variable nights.
