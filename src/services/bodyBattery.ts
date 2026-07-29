@@ -336,7 +336,21 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   // SLEEP_TARGET_FALLB for everyone and was never recovery-driven at all (caught in the 07-14 12:14 dump:
   // recoveryNow 0 / chargeTarget 85). The `as any` cast is what hid it from the compiler.
   const recoveryNow = Number((snap as any)?.todayRecovery?.recoveryScore) || 0;
-  const chargeTarget = recoveryNow > 0 ? clamp(recoveryNow, SLEEP_TARGET_MIN, 100) : SLEEP_TARGET_FALLB;
+  // ANCHOR THE OVERNIGHT CHARGE ON SLEEP, NOT RECOVERY (2026-07-29).
+  // The target was recoveryScore, and since the charge law is `max(0, K·quality·(target − battery))` that
+  // made recovery a HARD CEILING — the battery could never rise above it. Bevel disproves that directly:
+  // on 29 Jul it showed Recovery 40% while Energy sat at 64%, i.e. 24 points ABOVE the supposed ceiling
+  // (our own run that morning was pinned at 34 against chargeTarget 44). Recovery and energy are different
+  // constructs: recovery is a point-in-time autonomic readiness score (HRV/RHR), while the energy bank is
+  // a reservoir refilled by SLEEP. A poor-HRV night after decent sleep legitimately banks energy.
+  // Two paired mornings support sleep as the anchor and rule recovery out:
+  //     28 Jul  sleep 89  recovery 72  Bevel energy 74  → +2 over recovery, 83% of sleep
+  //     29 Jul  sleep 84  recovery 40  Bevel energy 64  → +24 over recovery, 76% of sleep
+  // Energy EXCEEDS recovery in both (ceiling violated) but lands at a consistent 76–83% of the sleep
+  // score — exactly the undershoot an asymptotic approach produces in one night. Keep the level-aware
+  // law (it fixed the earlier level-blind charge bug); only the anchor changes.
+  const sleepNow = Number((snap as any)?.todayRecovery?.sleepScore) || 0;
+  const chargeTarget = sleepNow > 0 ? clamp(sleepNow, SLEEP_TARGET_MIN, 100) : SLEEP_TARGET_FALLB;
 
   // ── HR helpers ──────────────────────────────────────────────────────────────
   const hrStatsNear = (t: number, win = 90_000): { mean: number; cv: number } | null => {
@@ -780,7 +794,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     debug: {
       meta: { restHR, maxHR, hrvBaseline: Math.round(hrvBaseline), now, fromMin: relMin(from.getTime()),
         // The anchor actually used this run — verify the next paired export against these.
-        recoveryNow, chargeTarget,
+        recoveryNow, sleepNow, chargeTarget,
         // 60-day HRV baseline vs the OLD 60h-window one. When these two diverge (heat wave, hard block) the
         // old window baseline was self-normalising the condition away. Bevel's own 60-day value was 45.4.
         hrvBase60: { day: dayBase.hvM, night: nightBase.hvM, nDay: dayBaseVals.length, nNight: nightBaseVals.length, days: BASELINE_DAYS,
