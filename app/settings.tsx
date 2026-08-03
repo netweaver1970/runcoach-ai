@@ -621,7 +621,7 @@ export default function SettingsScreen() {
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={styles.switchLabel}>Agentic coach (tools)</Text>
               <Text style={styles.switchSub}>
-                Lets the coach pull specific runs & metrics on demand for deeper answers in Chat and Run Analysis. Anthropic only — slower and uses more tokens.
+                Lets the coach pull specific runs & metrics on demand for deeper answers in Chat and Run Analysis. Works on providers marked “tools” (Anthropic, DeepSeek, GLM, Kimi) — slower and uses more tokens.
               </Text>
             </View>
             <Switch
