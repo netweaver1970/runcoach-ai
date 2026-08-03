@@ -142,7 +142,9 @@ export async function analyzeRun(
 
   // Same shape as Chat, only the SYSTEM_PROMPT differs: run through agentComplete so agentic mode (when on)
   // can pull prior runs / metric series via tools to ground the analysis; else single-shot.
-  const raw = await agentComplete({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userMsg }], maxTokens: 950, snap });
+  // 2500 not 950: a reasoning model's hidden thinking can eat a small budget before it emits the JSON,
+  // yielding an empty "hit output-token limit" result. Ceiling only — non-reasoning models stop when done.
+  const raw = await agentComplete({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userMsg }], maxTokens: 2500, snap });
 
   let verdict = '', headline = '', full = '';
   const match = extractJsonObject(raw);

@@ -777,7 +777,7 @@ export async function updateMemoryNote(
     const updated = await callLLM({
       system:    buildChatSystemPrompt(snap, currentMemory, localContext, aiWeeks),
       messages:  contextMessages,
-      maxTokens: 300,
+      maxTokens: 1500,   // headroom for reasoning-model thinking before the ~150-word note (ceiling only)
     });
     return updated.trim().length > 10 ? updated.trim() : currentMemory;
   } catch {
@@ -792,8 +792,11 @@ export async function generateCoachingReport(snap: HealthSnapshot): Promise<Coac
   if (!apiKey) throw new Error('No API key found. Add one in Settings first.');
 
   const content = await callLLM({
+    // 1200 was too tight for a multi-section report once a reasoning model (e.g. DeepSeek deepseek-v4-pro)
+    // is in play — its hidden thinking spent the whole budget, leaving no answer ("hit output-token limit").
+    // max_tokens is a CEILING: flash/Claude stop when done, so a bigger number costs them nothing.
     messages:  [{ role: 'user', content: buildPrompt(snap) }],
-    maxTokens: 1200,
+    maxTokens: 4000,
   });
 
   return {
@@ -830,7 +833,7 @@ export async function getChatResponse(
   return agentComplete({
     system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, [appModel, knowledge].filter(Boolean).join('\n\n')),
     messages:  history,
-    maxTokens: 2500,   // was 1024 — the detailed run analysis (multi-section + tables) was truncated mid-output. This is a CEILING, not a target: short chats still cost only what they emit.
+    maxTokens: 4000,   // was 1024 → 2500 → 4000. A CEILING, not a target: flash/Claude stop when done, so short chats still cost only what they emit; the extra room is so a reasoning model's hidden thinking can't starve the answer ("hit output-token limit").
     snap,
   });
 }
