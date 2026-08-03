@@ -23,7 +23,7 @@ import {
 import {
   loadLLMConfig, saveLLMConfig, deleteLLMApiKey, validateLLMKey,
   loadModelHistory, PROVIDER_LABELS, PROVIDER_KEY_PLACEHOLDER, SUGGESTED_MODELS,
-  fetchAvailableModels, loadModelList, LLMProvider,
+  fetchAvailableModels, loadModelList, LLMProvider, PROVIDERS, PROVIDER_ORDER, providerSpec,
 } from '../src/services/llm';
 import { getAgenticMode, setAgenticMode } from '../src/services/agent';
 import { PowerZones } from '../src/types';
@@ -65,6 +65,7 @@ export default function SettingsScreen() {
 
   // ── LLM config ──────────────────────────────────────────────────────────────
   const [provider,      setProvider]      = useState<LLMProvider>('anthropic');
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [model,         setModel]         = useState('');
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
@@ -543,20 +544,28 @@ export default function SettingsScreen() {
             Keys stored securely in the iOS Keychain — never leave your device.
           </Text>
 
-          {/* Provider tabs */}
-          <View style={styles.providerTabs}>
-            {(['anthropic', 'openai', 'custom'] as LLMProvider[]).map(p => (
-              <TouchableOpacity
-                key={p}
-                style={[styles.providerTab, provider === p && styles.providerTabActive]}
-                onPress={() => handleSwitchProvider(p)}
-              >
-                <Text style={[styles.providerTabText, provider === p && styles.providerTabTextActive]}>
-                  {PROVIDER_LABELS[p]}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          {/* Provider selector — a dropdown so new providers can be added without cramming a tab row */}
+          <TouchableOpacity style={styles.providerSelect} activeOpacity={0.7} onPress={() => setProviderMenuOpen(o => !o)}>
+            <Text style={styles.providerSelectText}>{providerSpec(provider).label}</Text>
+            <Text style={styles.providerSelectChevron}>{providerMenuOpen ? '▲' : '▼'}</Text>
+          </TouchableOpacity>
+          {providerMenuOpen && (
+            <View style={styles.providerMenu}>
+              {PROVIDER_ORDER.map(p => (
+                <TouchableOpacity
+                  key={p}
+                  style={[styles.providerMenuItem, provider === p && styles.providerMenuItemActive]}
+                  onPress={() => { setProviderMenuOpen(false); handleSwitchProvider(p); }}
+                >
+                  <Text style={[styles.providerMenuItemText, provider === p && styles.providerMenuItemTextActive]}>
+                    {PROVIDERS[p].label}
+                  </Text>
+                  {PROVIDERS[p].agentic && <Text style={styles.providerMenuBadge}>tools</Text>}
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+          {providerSpec(provider).hint ? <Text style={styles.providerHint}>{providerSpec(provider).hint}</Text> : null}
 
           {/* Model input */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -640,8 +649,8 @@ export default function SettingsScreen() {
                 returnKeyType="done"
               />
               <Text style={styles.hint}>
-                Any OpenAI-compatible endpoint (Groq, Mistral, Ollama, LM Studio, …). For DeepSeek use{' '}
-                https://api.deepseek.com — NOT the /anthropic URL — with model deepseek-v4-flash or deepseek-v4-pro.
+                The endpoint's base URL, e.g. https://api.groq.com/openai/v1. For DeepSeek, GLM or Kimi,
+                pick their dedicated provider above instead — those use the agentic tool loop.
               </Text>
             </>
           )}
@@ -1853,6 +1862,31 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   providerTabText: { fontSize: 12, fontWeight: '600', color: c.textSub },
   providerTabTextActive: { color: '#fff' },
+  // Provider dropdown
+  providerSelect: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 11, paddingHorizontal: 14, borderRadius: 8,
+    backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, marginBottom: 8,
+  },
+  providerSelectText: { fontSize: 15, fontWeight: '600', color: c.text },
+  providerSelectChevron: { fontSize: 11, color: c.textSub },
+  providerMenu: {
+    backgroundColor: c.surface, borderRadius: 8, borderWidth: 1, borderColor: c.border,
+    marginBottom: 10, overflow: 'hidden',
+  },
+  providerMenuItem: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 11, paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: c.border,
+  },
+  providerMenuItemActive: { backgroundColor: c.surfaceAlt },
+  providerMenuItemText: { fontSize: 14, color: c.text },
+  providerMenuItemTextActive: { fontWeight: '700', color: c.accent },
+  providerMenuBadge: {
+    fontSize: 10, fontWeight: '700', color: c.accent,
+    borderWidth: 1, borderColor: c.accent, borderRadius: 4,
+    paddingHorizontal: 5, paddingVertical: 1, overflow: 'hidden',
+  },
+  providerHint: { fontSize: 12, color: c.textSub, lineHeight: 17, marginBottom: 12 },
   // Field label
   fieldLabel: { fontSize: 12, fontWeight: '700', color: c.textSub, marginBottom: 5, textTransform: 'uppercase', letterSpacing: 0.3 },
   // Model chips

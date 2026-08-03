@@ -1,10 +1,13 @@
 /**
  * Provider-agnostic LLM service
  *
- * Supported providers:
- *   • anthropic  — native Anthropic Messages API
- *   • openai     — OpenAI Chat Completions API
- *   • custom     — any OpenAI-compatible endpoint (Groq, Mistral, Ollama, …)
+ * Two wire formats, several providers each:
+ *   • anthropic-format — Anthropic Messages API (`POST {base}/v1/messages`). Native Anthropic PLUS the
+ *     Anthropic-compatible endpoints exposed by DeepSeek, GLM (Z.ai) and Kimi (Moonshot). These all speak
+ *     the same request/response shape INCLUDING tool_use/tool_result, so the agentic coach loop works on
+ *     every one of them.
+ *   • openai-format — OpenAI Chat Completions (`POST {base}/chat/completions`). Native OpenAI plus any
+ *     OpenAI-compatible endpoint (Groq, Mistral, Ollama, LM Studio, …) via the 'custom' provider.
  *
  * Config is stored per-provider in the iOS Keychain via expo-secure-store.
  * On first load, the old `anthropic_api_key` is migrated automatically.
@@ -15,7 +18,7 @@ import * as SecureStore from 'expo-secure-store';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type LLMProvider = 'anthropic' | 'openai' | 'custom';
+export type LLMProvider = 'anthropic' | 'deepseek' | 'glm' | 'kimi' | 'openai' | 'custom';
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -30,6 +33,89 @@ export interface LLMValidationResult {
   warning?: string;
 }
 
+// ─── Provider registry ────────────────────────────────────────────────────────
+// One row per provider drives everything: which wire format, base URL, how to authenticate, default/
+// suggested models, and whether it supports the native agentic tool loop. Add a provider by adding a row.
+
+export type ApiFlavor = 'anthropic' | 'openai';
+export type AuthStyle = 'x-api-key' | 'bearer' | 'both';
+
+export interface ProviderSpec {
+  id:              LLMProvider;
+  label:           string;
+  api:             ApiFlavor;
+  baseUrl:         string | null;   // null → user supplies it ('custom')
+  auth:            AuthStyle;        // 'both' sends x-api-key AND Authorization: Bearer (safe for proxies)
+  keyPlaceholder:  string;
+  defaultModel:    string;
+  suggestedModels: string[];
+  agentic:         boolean;         // supports the native Anthropic tool loop (⇒ api === 'anthropic')
+  liveModels:      boolean;         // provider implements a listable /models (or /v1/models) endpoint
+  hint?:           string;          // shown under the field in Settings
+}
+
+export const PROVIDERS: Record<LLMProvider, ProviderSpec> = {
+  anthropic: {
+    id: 'anthropic', label: 'Anthropic', api: 'anthropic',
+    baseUrl: 'https://api.anthropic.com', auth: 'x-api-key',
+    keyPlaceholder: 'sk-ant-api03-…', defaultModel: 'claude-sonnet-4-6',
+    suggestedModels: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-5'],
+    agentic: true, liveModels: true,
+  },
+  deepseek: {
+    id: 'deepseek', label: 'DeepSeek', api: 'anthropic',
+    baseUrl: 'https://api.deepseek.com/anthropic', auth: 'both',
+    keyPlaceholder: 'sk-… (DeepSeek key)', defaultModel: 'deepseek-v4-flash',
+    suggestedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    agentic: true, liveModels: false,
+    hint: 'DeepSeek via its Anthropic-compatible endpoint — supports the agentic coach (tools).',
+  },
+  glm: {
+    id: 'glm', label: 'GLM · Z.ai', api: 'anthropic',
+    baseUrl: 'https://api.z.ai/api/anthropic', auth: 'both',
+    keyPlaceholder: 'Z.ai API key', defaultModel: 'glm-4.6',
+    suggestedModels: ['glm-4.6', 'glm-4.7', 'glm-4.5-air'],
+    agentic: true, liveModels: false,
+    hint: 'Zhipu GLM via its Anthropic-compatible endpoint — supports the agentic coach (tools).',
+  },
+  kimi: {
+    id: 'kimi', label: 'Kimi · Moonshot', api: 'anthropic',
+    baseUrl: 'https://api.moonshot.ai/anthropic', auth: 'both',
+    keyPlaceholder: 'Moonshot API key', defaultModel: 'kimi-k2-turbo-preview',
+    suggestedModels: ['kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-latest'],
+    agentic: true, liveModels: false,
+    hint: 'Moonshot Kimi via its Anthropic-compatible endpoint — supports the agentic coach (tools).',
+  },
+  openai: {
+    id: 'openai', label: 'OpenAI', api: 'openai',
+    baseUrl: 'https://api.openai.com/v1', auth: 'bearer',
+    keyPlaceholder: 'sk-proj-…', defaultModel: 'gpt-4o-mini',
+    suggestedModels: ['gpt-4o-mini', 'gpt-4o', 'o3-mini'],
+    agentic: false, liveModels: true,
+  },
+  custom: {
+    id: 'custom', label: 'Custom · OpenAI-compatible', api: 'openai',
+    baseUrl: null, auth: 'bearer',
+    keyPlaceholder: 'API key', defaultModel: '',
+    suggestedModels: [],
+    agentic: false, liveModels: true,
+    hint: 'Any OpenAI-compatible endpoint (Groq, Mistral, Ollama, LM Studio, …).',
+  },
+};
+
+/** Display order in the Settings provider picker. */
+export const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'deepseek', 'glm', 'kimi', 'openai', 'custom'];
+
+export function providerSpec(p: LLMProvider): ProviderSpec {
+  return PROVIDERS[p] ?? PROVIDERS.anthropic;
+}
+
+// Back-compat derived maps (still imported around the app).
+export const PROVIDER_LABELS         = Object.fromEntries(PROVIDER_ORDER.map(p => [p, PROVIDERS[p].label]))          as Record<LLMProvider, string>;
+export const PROVIDER_KEY_PLACEHOLDER = Object.fromEntries(PROVIDER_ORDER.map(p => [p, PROVIDERS[p].keyPlaceholder])) as Record<LLMProvider, string>;
+export const DEFAULT_MODELS          = Object.fromEntries(PROVIDER_ORDER.map(p => [p, PROVIDERS[p].defaultModel]))    as Record<LLMProvider, string>;
+export const SUGGESTED_MODELS        = Object.fromEntries(PROVIDER_ORDER.map(p => [p, PROVIDERS[p].suggestedModels])) as Record<LLMProvider, string[]>;
+
 // ─── SecureStore keys ─────────────────────────────────────────────────────────
 
 const SK_PROVIDER     = 'llm_provider_v1';
@@ -37,42 +123,35 @@ const SK_MODEL        = (p: LLMProvider) => `llm_model_${p}_v1`;
 const SK_APIKEY       = (p: LLMProvider) => `llm_apikey_${p}_v1`;
 const SK_BASEURL      = 'llm_baseurl_custom_v1';
 const SK_HISTORY      = (p: LLMProvider) => `llm_model_history_${p}_v1`;
-const SK_MODEL_LIST   = (p: LLMProvider) => `llm_model_list_${p}_v1`;   // live list fetched from /v1/models
+const SK_MODEL_LIST   = (p: LLMProvider) => `llm_model_list_${p}_v1`;   // live list fetched from /models
 const SK_OLD_ANTHRO   = 'anthropic_api_key'; // legacy key — migrated on first load
 
-// ─── Defaults ─────────────────────────────────────────────────────────────────
+// ─── Request helpers ──────────────────────────────────────────────────────────
 
-export const PROVIDER_LABELS: Record<LLMProvider, string> = {
-  anthropic: 'Anthropic',
-  openai:    'OpenAI',
-  custom:    'Custom',
-};
+/** Auth + version headers for an anthropic-format request. 'both' covers proxies that want either. */
+function anthropicHeaders(spec: ProviderSpec, key: string): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' };
+  if (spec.auth === 'x-api-key' || spec.auth === 'both') h['x-api-key'] = key;
+  if (spec.auth === 'bearer'    || spec.auth === 'both') h['Authorization'] = `Bearer ${key}`;
+  return h;
+}
 
-export const PROVIDER_KEY_PLACEHOLDER: Record<LLMProvider, string> = {
-  anthropic: 'sk-ant-api03-…',
-  openai:    'sk-proj-…',
-  custom:    'API key',
-};
+/** Build the `system` field. Native Anthropic gets a cached block (10% input billing on repeat); the
+ *  third-party Anthropic-compatible proxies may reject the unknown `cache_control`, so they get a plain
+ *  string (still valid Anthropic shape). */
+function systemField(spec: ProviderSpec, system?: string): any {
+  if (!system) return undefined;
+  return spec.id === 'anthropic'
+    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+    : system;
+}
 
-export const DEFAULT_MODELS: Record<LLMProvider, string> = {
-  anthropic: 'claude-sonnet-4-6',
-  openai:    'gpt-4o-mini',
-  custom:    '',
-};
+/** Resolve the OpenAI-format base URL (fixed for 'openai', user-supplied for 'custom'). */
+function openaiBase(spec: ProviderSpec, cfgBaseUrl?: string): string {
+  return (spec.baseUrl ?? cfgBaseUrl ?? '').replace(/\/+$/, '');
+}
 
-export const SUGGESTED_MODELS: Record<LLMProvider, string[]> = {
-  anthropic: [
-    'claude-haiku-4-5-20251001',
-    'claude-sonnet-4-6',
-    'claude-opus-4-5',
-  ],
-  openai: [
-    'gpt-4o-mini',
-    'gpt-4o',
-    'o3-mini',
-  ],
-  custom: [],
-};
+// ─── Defaults (legacy export shape kept above) ─────────────────────────────────
 
 // ─── Config load / save ───────────────────────────────────────────────────────
 
@@ -188,52 +267,50 @@ async function validateLLMKeyImpl(
   apiKey:   string,
   baseUrl?: string,
 ): Promise<LLMValidationResult> {
-  const key = apiKey.trim();
+  const key  = apiKey.trim();
+  const spec = providerSpec(provider);
   if (!key) return { valid: false, error: 'API key cannot be empty.' };
 
   try {
-    if (provider === 'anthropic') {
-      if (!key.startsWith('sk-ant-')) {
-        return { valid: false, error: 'Anthropic keys start with "sk-ant-".' };
+    if (spec.api === 'anthropic') {
+      if (spec.id === 'anthropic') {
+        if (!key.startsWith('sk-ant-')) return { valid: false, error: 'Anthropic keys start with "sk-ant-".' };
+        const res = await fetch(`${spec.baseUrl}/v1/models`, { method: 'GET', headers: anthropicHeaders(spec, key) });
+        if (res.status === 401) return { valid: false, error: 'Key rejected (401). Check console.anthropic.com.' };
+        if (res.status === 403) return { valid: false, error: 'Key has no permissions (403).' };
+        return { valid: true };
       }
-      const res = await fetch('https://api.anthropic.com/v1/models', {
-        method: 'GET',
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      // Third-party Anthropic-compatible endpoints don't reliably expose /v1/models — do a 1-token
+      // messages ping instead, which genuinely verifies the endpoint + auth. A model-not-found (400)
+      // still proves the KEY works, so only 401/403 is a hard failure.
+      const res = await fetch(`${spec.baseUrl}/v1/messages`, {
+        method: 'POST', headers: anthropicHeaders(spec, key),
+        body: JSON.stringify({ model: spec.defaultModel, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
       });
-      if (res.status === 401) return { valid: false, error: 'Key rejected (401). Check console.anthropic.com.' };
-      if (res.status === 403) return { valid: false, error: 'Key has no permissions (403).' };
+      if (res.status === 401 || res.status === 403) return { valid: false, error: `Key rejected (${res.status}).` };
       return { valid: true };
     }
 
-    if (provider === 'openai') {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      if (res.status === 401) return { valid: false, error: 'Key rejected (401). Check platform.openai.com.' };
-      if (res.status === 403) return { valid: false, error: 'Key has no permissions (403).' };
-      return { valid: true };
-    }
-
-    if (provider === 'custom') {
+    // openai-format
+    if (spec.id === 'custom') {
       const base = (baseUrl ?? '').replace(/\/+$/, '');
       if (!base) return { valid: false, error: 'Base URL is required for custom providers.' };
       try {
-        const res = await fetch(`${base}/models`, {
-          headers: { Authorization: `Bearer ${key}` },
-        });
+        const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` } });
         if (res.status === 401) return { valid: false, error: 'Key rejected (401).' };
-        // Some providers don't implement /models — anything other than 401 is treated as OK
-        return { valid: true };
+        return { valid: true }; // some providers don't implement /models — anything but 401 is OK
       } catch {
-        // /models may not exist — treat as OK if no 401
         return { valid: true, warning: 'Could not verify key (no /models endpoint). Saved anyway.' };
       }
     }
+    // native OpenAI
+    const res = await fetch(`${spec.baseUrl}/models`, { headers: { Authorization: `Bearer ${key}` } });
+    if (res.status === 401) return { valid: false, error: 'Key rejected (401). Check platform.openai.com.' };
+    if (res.status === 403) return { valid: false, error: 'Key has no permissions (403).' };
+    return { valid: true };
   } catch (e: any) {
     return { valid: false, error: `Network error: ${e?.message ?? String(e)}` };
   }
-
-  return { valid: false, error: 'Unknown provider.' };
 }
 
 // ─── Unified LLM call ─────────────────────────────────────────────────────────
@@ -245,11 +322,6 @@ export interface LLMCallOptions {
   temperature?: number; // omit for the provider default; low (~0.2) for stable, repeatable plans
 }
 
-/**
- * Make a single LLM request using the currently configured provider/model/key.
- * Returns the assistant's text response.
- * Throws on network errors, auth failures, or rate limits.
- */
 // Wrap a provider response so success/failure updates the reachability flag the UI reads.
 async function recordingReturn(p: Promise<string>): Promise<string> {
   try {
@@ -262,54 +334,45 @@ async function recordingReturn(p: Promise<string>): Promise<string> {
   }
 }
 
+/**
+ * Make a single LLM request using the currently configured provider/model/key.
+ * Returns the assistant's text response. Throws on network errors, auth failures, or rate limits.
+ */
 export async function callLLM(options: LLMCallOptions): Promise<string> {
   const cfg = await loadLLMConfig();
   if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
+  const spec = providerSpec(cfg.provider);
 
   const { system, messages, maxTokens, temperature } = options;
 
-  // ── Anthropic ──────────────────────────────────────────────────────────────
-  if (cfg.provider === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // ── Anthropic-format (native + DeepSeek/GLM/Kimi Anthropic-compatible) ───────
+  if (spec.api === 'anthropic') {
+    const sys = systemField(spec, system);
+    const res = await fetch(`${spec.baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': cfg.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: anthropicHeaders(spec, cfg.apiKey),
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
         ...(temperature != null ? { temperature } : {}),
-        // Prompt caching: send the (large, mostly-static) system prompt as a cached
-        // block so repeated calls within the 5-min TTL — e.g. regenerating the coach
-        // plan or back-to-back coaching-file enhancements — bill cached input tokens
-        // (~10% of base) instead of re-reading the whole prompt each time.
-        ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
+        ...(sys ? { system: sys } : {}),
         messages,
       }),
     });
     return recordingReturn(handleAnthropicResponse(res));
   }
 
-  // ── OpenAI / Custom (OpenAI-compatible) ────────────────────────────────────
-  const baseUrl = cfg.provider === 'custom'
-    ? (cfg.baseUrl ?? '').replace(/\/+$/, '')
-    : 'https://api.openai.com/v1';
-
+  // ── OpenAI / Custom (OpenAI-compatible) ──────────────────────────────────────
+  const baseUrl = openaiBase(spec, cfg.baseUrl);
   if (!baseUrl) throw new Error('Base URL is required for custom providers. Set it in Settings.');
 
-  // OpenAI puts system as the first message
   const allMessages = system
     ? [{ role: 'system' as const, content: system }, ...messages]
     : messages;
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: maxTokens,
@@ -320,9 +383,10 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
   return recordingReturn(handleOpenAIResponse(res));
 }
 
-// ─── Tool-use (agentic) call — Anthropic native ───────────────────────────────
+// ─── Tool-use (agentic) call — Anthropic Messages format ───────────────────────
 // Unlike callLLM (single-shot, returns text), this returns the RAW assistant content blocks + stop_reason
-// so the agent loop can detect tool_use blocks, run the tools, feed results back, and continue.
+// so the agent loop can detect tool_use blocks, run the tools, feed results back, and continue. Works on
+// every anthropic-format provider (native + DeepSeek/GLM/Kimi), which all support tool_use/tool_result.
 export interface LLMToolsCallOptions {
   system?:      string;
   messages:     any[];   // content-block messages (may contain tool_use / tool_result blocks)
@@ -332,25 +396,26 @@ export interface LLMToolsCallOptions {
 }
 export interface LLMToolsResult { stopReason: string; content: any[]; text: string; }
 
-/** True when the active provider supports the native tool loop (Anthropic). */
+/** True when the active provider supports the native tool loop (any anthropic-format provider). */
 export async function agenticSupported(): Promise<boolean> {
-  return (await loadLLMConfig()).provider === 'anthropic';
+  return providerSpec((await loadLLMConfig()).provider).agentic;
 }
 
 export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsResult> {
   const cfg = await loadLLMConfig();
   if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
-  if (cfg.provider !== 'anthropic') throw new Error('AGENTIC_UNSUPPORTED'); // caller falls back to single-shot
+  const spec = providerSpec(cfg.provider);
+  if (spec.api !== 'anthropic') throw new Error('AGENTIC_UNSUPPORTED'); // caller falls back to single-shot
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const sys = systemField(spec, opts.system);
+  const res = await fetch(`${spec.baseUrl}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
+    headers: anthropicHeaders(spec, cfg.apiKey),
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: opts.maxTokens,
       ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
-      // Cache the (static) system + tool defs so each loop step bills cached input tokens.
-      ...(opts.system ? { system: [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }] } : {}),
+      ...(sys ? { system: sys } : {}),
       ...(opts.tools?.length ? { tools: opts.tools } : {}),   // omit when empty → forces a final text answer
       messages: opts.messages,
     }),
@@ -372,14 +437,24 @@ export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsR
 
 // ─── Model discovery — fetch the provider's live model list (Settings "Refresh") ──
 export async function fetchAvailableModels(provider: LLMProvider, apiKey?: string, baseUrl?: string): Promise<string[]> {
+  const spec = providerSpec(provider);
+
+  // Providers without a listable /models endpoint (DeepSeek/GLM/Kimi Anthropic-compatible) → surface the
+  // curated suggestions so the picker is still useful. Cache them like a fetched list.
+  if (!spec.liveModels) {
+    const ids = [...spec.suggestedModels];
+    if (ids.length) await SecureStore.setItemAsync(SK_MODEL_LIST(provider), JSON.stringify(ids)).catch(() => {});
+    return ids;
+  }
+
   const key = (apiKey ?? (await SecureStore.getItemAsync(SK_APIKEY(provider))) ?? '').trim();
   if (!key && provider !== 'custom') throw new Error('Add and save an API key first.');
   let url: string; let headers: Record<string, string>;
-  if (provider === 'anthropic') {
-    url = 'https://api.anthropic.com/v1/models';
-    headers = { 'x-api-key': key, 'anthropic-version': '2023-06-01' };
-  } else if (provider === 'openai') {
-    url = 'https://api.openai.com/v1/models';
+  if (spec.id === 'anthropic') {
+    url = `${spec.baseUrl}/v1/models`;
+    headers = anthropicHeaders(spec, key);
+  } else if (spec.id === 'openai') {
+    url = `${spec.baseUrl}/models`;
     headers = { Authorization: `Bearer ${key}` };
   } else {
     const base = ((baseUrl ?? (await SecureStore.getItemAsync(SK_BASEURL)) ?? '')).replace(/\/+$/, '');
@@ -392,8 +467,8 @@ export async function fetchAvailableModels(provider: LLMProvider, apiKey?: strin
   const data = await res.json();
   let ids: string[] = (data?.data ?? []).map((m: any) => m?.id).filter((x: any) => typeof x === 'string');
   // Trim to chat-capable models — drop embeddings/audio/image/etc noise.
-  if (provider === 'openai') ids = ids.filter(id => /^(gpt|o\d|chatgpt)/i.test(id) && !/embedding|whisper|tts|audio|image|moderation|dall|realtime|search|transcribe/i.test(id));
-  if (provider === 'anthropic') ids = ids.filter(id => /^claude/i.test(id));
+  if (spec.id === 'openai') ids = ids.filter(id => /^(gpt|o\d|chatgpt)/i.test(id) && !/embedding|whisper|tts|audio|image|moderation|dall|realtime|search|transcribe/i.test(id));
+  if (spec.id === 'anthropic') ids = ids.filter(id => /^claude/i.test(id));
   ids = [...new Set(ids)].sort().reverse(); // roughly newest-first
   if (ids.length) await SecureStore.setItemAsync(SK_MODEL_LIST(provider), JSON.stringify(ids)).catch(() => {});
   return ids;
@@ -413,23 +488,20 @@ export interface LLMVisionOptions {
 
 /**
  * Send one image plus a text prompt to the configured provider's vision model.
- * Works with Anthropic (image content blocks) and OpenAI-compatible (image_url data URI).
+ * Works with anthropic-format (image content blocks) and OpenAI-compatible (image_url data URI).
  * Returns the assistant's text response.
  */
 export async function callLLMWithImage(options: LLMVisionOptions): Promise<string> {
   const cfg = await loadLLMConfig();
   if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
+  const spec = providerSpec(cfg.provider);
   const { prompt, imageBase64, maxTokens } = options;
   const mediaType = options.mediaType ?? 'image/png';
 
-  if (cfg.provider === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+  if (spec.api === 'anthropic') {
+    const res = await fetch(`${spec.baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': cfg.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: anthropicHeaders(spec, cfg.apiKey),
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
@@ -446,17 +518,12 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
   }
 
   // OpenAI / Custom (OpenAI-compatible vision)
-  const baseUrl = cfg.provider === 'custom'
-    ? (cfg.baseUrl ?? '').replace(/\/+$/, '')
-    : 'https://api.openai.com/v1';
+  const baseUrl = openaiBase(spec, cfg.baseUrl);
   if (!baseUrl) throw new Error('Base URL is required for custom providers. Set it in Settings.');
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: maxTokens,
@@ -502,13 +569,22 @@ async function handleAnthropicResponse(res: Response): Promise<string> {
     if (res.status === 401) throw new Error('Invalid API key. Check Settings.');
     if (res.status === 429) throw new Error('Rate limited — wait a moment and try again.');
     if (msg.match(/credit|quota|balance/i)) {
-      throw new Error('Anthropic credits exhausted. Top up at console.anthropic.com.');
+      throw new Error('Credits exhausted for this provider. Top up your account.');
     }
     throw new Error(`API error ${res.status}: ${msg || JSON.stringify(body).slice(0, 200)}`);
   }
   const data = await res.json();
   captureUsage(data, data?.model ?? '');
-  return data.content[0].text as string;
+  // Join every text block — a reasoning model (e.g. DeepSeek via its Anthropic endpoint) can emit a
+  // `thinking` block before the answer, so content[0] is not necessarily the text.
+  const blocks = Array.isArray(data?.content) ? data.content : [];
+  const text = blocks.filter((b: any) => b?.type === 'text').map((b: any) => b?.text ?? '').join('').trim();
+  if (!text) {
+    const sr = data?.stop_reason;
+    if (sr === 'max_tokens') throw new Error('The model hit its output-token limit before answering. Try a shorter question, or a model with a larger budget.');
+    throw new Error(`The model returned an empty response${sr ? ` (stop_reason: ${sr})` : ''}.`);
+  }
+  return text;
 }
 
 async function handleOpenAIResponse(res: Response): Promise<string> {
