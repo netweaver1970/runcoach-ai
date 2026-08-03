@@ -230,11 +230,19 @@ export default function ChatScreen() {
           const sameType = snap.runs
             .filter(r => r.uuid !== latestRun.uuid && r.label === latestRun.label)
             .slice(0, 5);
-          const userText = buildNewRunUserMessage(latestRun, sameType);
+          // Hide the raw run-data block in the system prompt (same as the "Analyse run" button) and show a
+          // short human message — not a wall of metrics. Passing systemContext also starts the analysis
+          // CLEAN (autoSend drops prior chat history when systemContext is present).
+          const plan = await loadPrescriptionAt(latestRun.date.slice(0, 10), new Date(latestRun.date).getTime()).catch(() => null);
+          const systemContext = [
+            buildNewRunUserMessage(latestRun, sameType),
+            buildPrescriptionContext(plan),
+          ].filter(Boolean).join('\n\n');
+          const shortMsg = `I just finished a ${latestRun.label ?? 'run'}. Analyze it and compare with my last ${sameType.length} ${latestRun.label ?? 'run'} runs.`;
           lastSeenRunRef.current = latestRun.uuid;
           setIsLoaded(true);
           // Auto-send after a short delay so the restored history renders first
-          setTimeout(() => autoSend(userText, snap), 400);
+          setTimeout(() => autoSend(shortMsg, snap, systemContext), 400);
           return;
         }
       } else {

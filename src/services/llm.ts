@@ -522,7 +522,27 @@ async function handleOpenAIResponse(res: Response): Promise<string> {
   }
   const data = await res.json();
   captureUsage(data, data?.model ?? '');
-  return data.choices[0].message.content as string;
+  const choice = data?.choices?.[0];
+  const message = choice?.message ?? {};
+  let text: any = message.content;
+  // Some OpenAI-compatible servers return content as an array of parts rather than a plain string.
+  if (Array.isArray(text)) text = text.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).join('');
+  // Reasoning models (DeepSeek deepseek-v4-pro / -reasoner, and others) emit the chain-of-thought in
+  // `reasoning_content` and can leave `content` EMPTY when the max_tokens budget is spent thinking. Fall
+  // back to reasoning_content so the answer bubble is never silently blank.
+  if ((text == null || !String(text).trim()) && typeof message.reasoning_content === 'string') {
+    text = message.reasoning_content;
+  }
+  text = text == null ? '' : String(text);
+  if (!text.trim()) {
+    // Empty content with a real completion → almost always a reasoning model that hit the token cap while
+    // thinking. Surface it clearly instead of rendering an empty bubble.
+    if (choice?.finish_reason === 'length') {
+      throw new Error('The model ran out of output tokens before answering — likely a reasoning model spending the whole budget on its chain-of-thought. Switch to a non-reasoning model (e.g. deepseek-v4-flash) or ask a shorter question.');
+    }
+    throw new Error(`The model returned an empty response${choice?.finish_reason ? ` (finish_reason: ${choice.finish_reason})` : ''}.`);
+  }
+  return text;
 }
 
 /**
