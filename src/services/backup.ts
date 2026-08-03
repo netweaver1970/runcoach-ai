@@ -10,8 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { exportKnowledgeBundle, importKnowledgeBundle, KnowledgeBundle } from './coachFiles';
 import { clearAccountingCache } from './accounting';
-
-const PROVIDERS = ['anthropic', 'openai', 'custom'] as const;
+import { PROVIDER_ORDER } from './llm';
 
 // Meaningful settings only — caches like `training_rec_v1` and the internal `scan_marker_v1`
 // are deliberately omitted (they're rebuilt from HealthKit on the next scan).
@@ -35,11 +34,14 @@ const STATIC_SECURE_KEYS = [
   'plan_mode_v1', 'race_config_v1', // leisure vs race + race config
   'agentic_mode_v1',              // agentic (tool-using) coach toggle
   'onboarding_done_v1', 'user_profile_v1', // onboarding + age/sex profile
+  'stt_enabled_v1', 'stt_baseurl_v1', 'stt_apikey_v1', 'stt_model_v1', // voice input (cloud transcription)
 ];
 
+// Driven off the live provider list (PROVIDER_ORDER) so adding a provider auto-includes its model/key/
+// history in backups — the old hard-coded [anthropic,openai,custom] silently dropped DeepSeek/GLM/Kimi.
 function providerKeys(): string[] {
   const out: string[] = [];
-  for (const p of PROVIDERS) out.push(`llm_model_${p}_v1`, `llm_apikey_${p}_v1`, `llm_model_history_${p}_v1`);
+  for (const p of PROVIDER_ORDER) out.push(`llm_model_${p}_v1`, `llm_apikey_${p}_v1`, `llm_model_history_${p}_v1`);
   return out;
 }
 const ALL_SECURE = [...STATIC_SECURE_KEYS, ...providerKeys()];

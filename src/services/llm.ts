@@ -169,7 +169,11 @@ export async function loadLLMConfig(): Promise<LLMConfig> {
     if (oldKey) await SecureStore.deleteItemAsync(SK_OLD_ANTHRO);
   } catch {}
 
-  const provider = ((await SecureStore.getItemAsync(SK_PROVIDER)) as LLMProvider | null) ?? 'anthropic';
+  // Sanitize the stored provider: a backup restored onto an OLDER build (or any version skew) can carry a
+  // provider this build doesn't know (e.g. 'deepseek' on a build that predates it). Fall back instead of
+  // letting an undefined spec crash every consumer.
+  const storedProvider = (await SecureStore.getItemAsync(SK_PROVIDER)) as LLMProvider | null;
+  const provider: LLMProvider = storedProvider && PROVIDERS[storedProvider] ? storedProvider : 'anthropic';
   const model    = (await SecureStore.getItemAsync(SK_MODEL(provider))) ?? DEFAULT_MODELS[provider];
   const apiKey   = (await SecureStore.getItemAsync(SK_APIKEY(provider))) ?? '';
   const baseUrl  = provider === 'custom'

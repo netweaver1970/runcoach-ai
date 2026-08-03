@@ -622,7 +622,7 @@ export default function SettingsScreen() {
               value={model}
               onChangeText={setModel}
               onEndEditing={handleSaveModel}
-              placeholder={SUGGESTED_MODELS[provider][0] ?? 'model name'}
+              placeholder={SUGGESTED_MODELS[provider]?.[0] ?? 'model name'}
               placeholderTextColor="#bbb"
               autoCapitalize="none"
               autoCorrect={false}
@@ -637,7 +637,7 @@ export default function SettingsScreen() {
             // before "Refresh" succeeds, so the model field is never a guessing game.
             const suggestions = provider === 'custom' && /deepseek/i.test(baseUrl)
               ? ['deepseek-v4-flash', 'deepseek-v4-pro']
-              : SUGGESTED_MODELS[provider];
+              : (SUGGESTED_MODELS[provider] ?? []);
             const chips = [...new Set([...fetchedModels, ...modelHistory, ...suggestions])].slice(0, 15);
             return chips.length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
