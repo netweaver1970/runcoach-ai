@@ -36,6 +36,7 @@ import { loadScanTimings, loadAutoTimings } from '../src/services/perf';
 import { computeWorkoutLoad } from '../src/services/trainingLoad';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
 import { useRouter, useNavigation } from 'expo-router';
 import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { loadChatPersistence, saveChatPersistence, clearChatPersistence } from '../src/services/chatMemory';
@@ -1642,6 +1643,33 @@ export default function SettingsScreen() {
             }}
           >
             <Text style={[styles.btnText, { color: c.textSub }]}>Restore from Clipboard</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btnSecondary, { marginTop: 8 }]}
+            onPress={async () => {
+              try {
+                const res = await DocumentPicker.getDocumentAsync({ type: 'application/json', copyToCacheDirectory: true });
+                if (res.canceled || !res.assets?.[0]?.uri) return;   // user dismissed the picker
+                const json = await FileSystem.readAsStringAsync(res.assets[0].uri);
+                if (!json.trim()) { Alert.alert('Empty file', 'That file has no backup data.'); return; }
+                Alert.alert(
+                  'Restore from file',
+                  `This overwrites your current settings with "${res.assets[0].name ?? 'the chosen file'}". Continue?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Restore', style: 'destructive', onPress: async () => {
+                      try {
+                        const r = await restoreAllSettings(json);
+                        loadAll();   // the restore rewrote every setting — re-read them into the fields
+                        Alert.alert('Restored', `${r.secure} settings, ${r.files} data files, ${r.knowledge} coaching files restored. Settings above are refreshed; restart the app to reload cached history.`);
+                      } catch (e: any) { Alert.alert('Restore failed', e?.message ?? String(e)); }
+                    } },
+                  ],
+                );
+              } catch (e: any) { Alert.alert('Couldn\'t open file', e?.message ?? String(e)); }
+            }}
+          >
+            <Text style={[styles.btnText, { color: c.textSub }]}>Restore from File</Text>
           </TouchableOpacity>
         </Section>
 
