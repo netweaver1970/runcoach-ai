@@ -26,6 +26,7 @@ import {
   fetchAvailableModels, loadModelList, LLMProvider, PROVIDERS, PROVIDER_ORDER, providerSpec,
 } from '../src/services/llm';
 import { getAgenticMode, setAgenticMode } from '../src/services/agent';
+import { loadTranscriptionConfig, saveTranscriptionConfig, STT_PRESETS, matchPreset } from '../src/services/transcription';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun, writeZonesFileFrom } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
@@ -66,6 +67,11 @@ export default function SettingsScreen() {
   // ── LLM config ──────────────────────────────────────────────────────────────
   const [provider,      setProvider]      = useState<LLMProvider>('anthropic');
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  // Voice input (cloud transcription)
+  const [sttEnabled,  setSttEnabled]  = useState(false);
+  const [sttPresetId, setSttPresetId] = useState(STT_PRESETS[0].id);
+  const [sttKey,      setSttKey]      = useState('');
+  const [sttSaved,    setSttSaved]    = useState(false);
   const [model,         setModel]         = useState('');
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
@@ -419,6 +425,33 @@ export default function SettingsScreen() {
     setSaved(false);
   }, []);
 
+  // ── Voice input (cloud transcription) ────────────────────────────────────────
+  useEffect(() => {
+    loadTranscriptionConfig().then(cfg => {
+      setSttEnabled(cfg.enabled);
+      setSttKey(cfg.apiKey);
+      const p = matchPreset(cfg.baseUrl, cfg.model);
+      if (p) setSttPresetId(p.id);
+    }).catch(() => {});
+  }, []);
+
+  const handleSttToggle = useCallback(async (v: boolean) => {
+    setSttEnabled(v);
+    await saveTranscriptionConfig({ enabled: v });
+  }, []);
+
+  const handleSttPreset = useCallback(async (id: string) => {
+    const p = STT_PRESETS.find(x => x.id === id); if (!p) return;
+    setSttPresetId(id); setSttSaved(false);
+    await saveTranscriptionConfig({ baseUrl: p.baseUrl, model: p.model });
+  }, []);
+
+  const handleSttSave = useCallback(async () => {
+    const p = STT_PRESETS.find(x => x.id === sttPresetId) ?? STT_PRESETS[0];
+    await saveTranscriptionConfig({ enabled: sttEnabled, baseUrl: p.baseUrl, model: p.model, apiKey: sttKey.trim() });
+    setSttSaved(true); setTimeout(() => setSttSaved(false), 2000);
+  }, [sttEnabled, sttPresetId, sttKey]);
+
   // Fetch the provider's live model list from /v1/models (the "Refresh" button).
   const handleRefreshModels = useCallback(async () => {
     setRefreshingModels(true);
@@ -685,6 +718,59 @@ export default function SettingsScreen() {
                 <Text style={styles.btnText}>Remove Key</Text>
               </TouchableOpacity>
             )}
+          </View>
+        </Section>
+
+        {/* Voice input — cloud transcription (chat providers can't do audio, so it needs its own key). */}
+        <Section title="Voice Input" cat="coaching">
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.switchLabel}>Speak to the coach</Text>
+              <Text style={styles.switchSub}>
+                Adds a 🎤 to chat: tap, speak, and it transcribes with a cloud model, then sends automatically.
+                Uses its own key — your chat provider (DeepSeek/Anthropic/…) can't transcribe audio.
+              </Text>
+            </View>
+            <Switch
+              value={sttEnabled}
+              onValueChange={handleSttToggle}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
+              thumbColor="#fff"
+            />
+          </View>
+
+          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Transcription model</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
+            {STT_PRESETS.map(p => (
+              <TouchableOpacity
+                key={p.id}
+                style={[styles.chip, sttPresetId === p.id && styles.chipActive]}
+                onPress={() => handleSttPreset(p.id)}
+              >
+                <Text style={[styles.chipText, sttPresetId === p.id && styles.chipTextActive]} numberOfLines={1}>{p.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>
+            {(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).label.split(' · ')[0]} API Key
+          </Text>
+          <TextInput
+            style={[styles.input, styles.apiKeyInput]}
+            value={sttKey}
+            onChangeText={t => { setSttKey(t); setSttSaved(false); }}
+            placeholder={(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).keyHint}
+            placeholderTextColor="#bbb"
+            autoCapitalize="none" autoCorrect={false} autoComplete="off" spellCheck={false} secureTextEntry
+          />
+          <Text style={styles.hint}>
+            Free key at {(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).getKey}. Groq's tier is free
+            & fast; OpenAI's gpt-4o-transcribe is top accuracy (paid). Nothing but the audio clip leaves the phone.
+          </Text>
+          <View style={styles.row}>
+            <TouchableOpacity style={[styles.btn, sttSaved && styles.btnSuccess]} onPress={handleSttSave}>
+              <Text style={styles.btnText}>{sttSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
           </View>
         </Section>
 

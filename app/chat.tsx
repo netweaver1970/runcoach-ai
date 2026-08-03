@@ -40,6 +40,8 @@ import {
 import { formatUsage, lastCallUsage } from '../src/services/tokenUsage';
 import { loadPrescriptionAt } from '../src/services/coach';
 import { buildPrescriptionContext } from '../src/services/runAnalysis';
+import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
+import { startRecording, stopRecording, cancelRecording, ensureMicPermission } from '../src/services/voiceRecorder';
 import { HealthSnapshot } from '../src/types';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
@@ -107,6 +109,7 @@ export default function ChatScreen() {
   const [messages,       setMessages]       = useState<Message[]>([]);
   const [input,          setInput]          = useState('');
   const [sending,        setSending]        = useState(false);
+  const [voiceState,     setVoiceState]     = useState<'idle' | 'recording' | 'transcribing'>('idle');
   const [showChips,      setShowChips]      = useState(true);
   const [memoryNote,     setMemoryNote]     = useState('');
   const [isLoaded,       setIsLoaded]       = useState(false);
@@ -442,6 +445,48 @@ export default function ChatScreen() {
     }
   }, [sending, snapshot, memoryNote]);
 
+  // ── Voice input — record → cloud transcribe → auto-send (hands-free) ─────────
+  const handleMicPress = useCallback(async () => {
+    if (voiceState === 'transcribing') return;
+
+    // Recording → stop, transcribe, and send.
+    if (voiceState === 'recording') {
+      setVoiceState('transcribing');
+      try {
+        const uri = await stopRecording();
+        if (!uri) { setVoiceState('idle'); return; }
+        const text = (await transcribeAudio(uri)).trim();
+        setVoiceState('idle');
+        if (text) send(text);   // auto-send the transcript
+        else Alert.alert('Voice input', 'No speech detected — try again.');
+      } catch (e: any) {
+        setVoiceState('idle');
+        Alert.alert('Voice input', e?.message ?? 'Could not transcribe.');
+      }
+      return;
+    }
+
+    // Idle → start recording (after checking it's configured + permitted).
+    if (!(await transcriptionReady())) {
+      Alert.alert('Voice input not set up', 'Add a transcription key in Settings → Voice input first — it\'s free with Groq.');
+      return;
+    }
+    if (!(await ensureMicPermission())) {
+      Alert.alert('Microphone needed', 'Enable microphone access for RunCoachAI in iOS Settings to use voice input.');
+      return;
+    }
+    try {
+      await startRecording();
+      setVoiceState('recording');
+    } catch (e: any) {
+      setVoiceState('idle');
+      Alert.alert('Voice input', e?.message ?? 'Could not start recording.');
+    }
+  }, [voiceState, send]);
+
+  // Drop any in-flight recording if the screen unmounts mid-capture.
+  useEffect(() => () => { cancelRecording().catch(() => {}); }, []);
+
   // ── Copy helper (long-press a bubble or tap ⧉ Copy → whole message to clipboard) ─
   const copyMessage = useCallback(async (text: string) => {
     try {
@@ -554,8 +599,25 @@ export default function ChatScreen() {
           </View>
         )}
 
+        {/* Voice status line */}
+        {voiceState !== 'idle' && (
+          <Text style={styles.voiceHint}>
+            {voiceState === 'recording' ? '● Listening… tap ⏹ to send' : 'Transcribing…'}
+          </Text>
+        )}
+
         {/* Input bar */}
         <View style={styles.inputBar}>
+          <TouchableOpacity
+            style={[styles.micBtn, voiceState === 'recording' && styles.micBtnRecording]}
+            onPress={handleMicPress}
+            disabled={sending && voiceState === 'idle'}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            {voiceState === 'transcribing'
+              ? <ActivityIndicator size="small" color={c.accent} />
+              : <Text style={styles.micBtnText}>{voiceState === 'recording' ? '⏹' : '🎤'}</Text>}
+          </TouchableOpacity>
           <TextInput
             ref={inputRef}
             style={styles.input}
@@ -737,4 +799,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   sendBtnDisabled: { backgroundColor: c.textFaint },
   sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '700', lineHeight: 24 },
+  micBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  micBtnRecording: { backgroundColor: '#e5484d', borderColor: '#e5484d' },
+  micBtnText: { fontSize: 18 },
+  voiceHint: { fontSize: 12, color: c.textFaint, textAlign: 'center', paddingBottom: 4 },
 });
