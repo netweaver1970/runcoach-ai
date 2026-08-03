@@ -258,7 +258,20 @@ export interface RunZoneAnalysis {
   date: string;
   durationMin: number;
   perZone: { z: string; minutes: number; avgPower: number; avgHR: number }[];
+  decouplePct: number | null;   // Pw:HR drift over the work window — high = fasted/dehydrated/ill/hot
 }
+
+// Cardiac-drift ceiling for accepting a run into the zone calibration. Fasted, dehydrated, ill or
+// over-hot efforts all make HR climb relative to power across a sustained run (Pw:HR "decoupling"); a
+// fed, well-fuelled run stays coupled (<5%). Compromised runs produce artificially LOW power-at-HR, so
+// letting them into the loop drags the zones DOWN — exactly the drift Geert's fasted tests caused
+// (zones fell from a provisional 295 W to 271 W). Friel's "aerobically coupled" threshold is 5%; a fed,
+// well-paced training run sits at 2–4%. 6% catches a clearly compromised day (a 20-bpm fasted drift
+// measures ~6.5%) while leaving headroom for normal variation. Tests aren't meant to feed the auto-loop
+// anyway — zones are set from a test manually, via the paired analysis, not this path.
+const CALIB_MAX_DRIFT_PCT = 6;
+// Words in the athlete's run note that mark a run as not-representative for calibration.
+const COMPROMISED_NOTE = /fast(ed|ing)?|hung.?over|sick|ill\b|unwell|dehydrat|exhaust|cramp|bonk/i;
 
 /** Observed average running power at each HR zone for the most recent run. */
 export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAnalysis | null> {
@@ -298,7 +311,34 @@ export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAna
     avgHR:    acc[i].n ? Math.round(acc[i].hrSum / acc[i].n) : 0,
   })).filter(z => z.minutes >= 0.5 && z.avgPower > 0);
 
-  return { date: new Date(run.start).toISOString().slice(0, 10), durationMin: Math.round((run.end - run.start) / 60000), perZone };
+  // Pw:HR DECOUPLING — first half vs second half of mean(power)/mean(HR). Needs a sustained effort
+  // (≥20 min) to mean anything; null otherwise. For a STRUCTURED run the work segments already exclude
+  // warm-up/cool-down; for a FREE run (no steps) trim 15% off each end so the easy warm-up/cool-down
+  // don't masquerade as drift and falsely reject a good run.
+  let paired: { p: number; hr: number }[] = [];
+  { let j = 0;
+    for (const p of pwr) {
+      while (j + 1 < hr.length && hr[j + 1].t <= p.t) j++;
+      const bpm = hr[j]?.v ?? 0;
+      if (bpm > 0 && p.v > 0 && (!workOnly || inWork(p.t))) paired.push({ p: p.v, hr: bpm });
+    }
+  }
+  if (!workOnly && paired.length > 20) {
+    const trim = Math.floor(paired.length * 0.15);
+    paired = paired.slice(trim, paired.length - trim);
+  }
+  let decouplePct: number | null = null;
+  if (paired.length * intervalSec >= 20 * 60) {
+    const mid = Math.floor(paired.length / 2);
+    const ratio = (arr: { p: number; hr: number }[]) => {
+      const mh = arr.reduce((s, x) => s + x.hr, 0) / arr.length;
+      return mh > 0 ? (arr.reduce((s, x) => s + x.p, 0) / arr.length) / mh : 0;
+    };
+    const r1 = ratio(paired.slice(0, mid)), r2 = ratio(paired.slice(mid));
+    if (r1 > 0) decouplePct = Math.round(((r1 - r2) / r1) * 1000) / 10;
+  }
+
+  return { date: new Date(run.start).toISOString().slice(0, 10), durationMin: Math.round((run.end - run.start) / 60000), perZone, decouplePct };
 }
 
 /** Feed the last run's power-by-HR-zone to the LLM to refine the zones file. */
@@ -311,10 +351,22 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
   if (opts?.auto && run.tempC != null && run.tempC >= HOT_SKIP_C) {
     return { updated: false, reason: `Skipped — hot run (${run.tempC}°C) would bias zones low.` };
   }
+  // NOTE guard: the athlete flagged the run as fasted / ill / etc. — not representative, skip either path.
+  if (run.note && COMPROMISED_NOTE.test(run.note)) {
+    return { updated: false, reason: `Skipped — run noted as compromised ("${run.note.trim().slice(0, 40)}"); not calibrating from it.` };
+  }
 
   const [pzNow, maxHRNow, restHRNow] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);
   const analysis = await analyzeLastRun(run);
   if (!analysis || analysis.perZone.length === 0) return { updated: false, reason: 'No running-power + HR data in your last run.' };
+  // DRIFT guard: high Pw:HR decoupling = the body couldn't hold output steady = a fasted / dehydrated /
+  // ill / over-hot day. Such a run produces artificially low power-at-HR, so calibrating from it drags the
+  // zones DOWN — the exact fasted-test drift the athlete flagged. Reject on BOTH paths (the auto loop is
+  // what silently drifted; the manual button gets a clear reason so the user knows why nothing moved).
+  // Only fires when drift is measurable (a sustained ≥20-min effort); short/interval runs pass through.
+  if (analysis.decouplePct != null && analysis.decouplePct > CALIB_MAX_DRIFT_PCT) {
+    return { updated: false, reason: `Skipped — ${analysis.decouplePct}% cardiac drift signals a fasted/compromised effort; calibrating from it would lower your zones incorrectly.` };
+  }
 
   // Conditions the LLM should weigh when deciding how much to trust this run.
   const conditions: string[] = [];
