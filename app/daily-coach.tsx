@@ -160,9 +160,12 @@ export default function DailyCoachScreen() {
   // home passes), so this screen always plans with the real readiness.
   const [snapStrain, setSnapStrain] = useState<DayStrain | null>(null);
   useEffect(() => {
-    if (str) return; // param already carries today's DayStrain
+    // Always load the snapshot for the runs — the threshold-test power band is derived from them, and
+    // is needed even when `str` (today's DayStrain) was passed in. The old `if (str) return` bailed
+    // before computing testTarget whenever the coach was opened from home (which DOES pass str), so the
+    // test pushed with NO power band to the watch (2026-07-30). Only the strain is skipped when supplied.
     loadSnapshotCache().then((sn: any) => {
-      setSnapStrain(sn?.strain ?? null);
+      if (!str) setSnapStrain(sn?.strain ?? null);
       setTestTarget(thresholdTestTarget(sn?.runs ?? []));   // personal watt anchor for the threshold test
     }).catch(() => {});
   }, [str]);
