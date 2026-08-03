@@ -17,14 +17,34 @@ export async function ensureMicPermission(): Promise<boolean> {
   }
 }
 
-/** Begin recording. Any in-flight recording is discarded first. */
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/**
+ * Begin recording. Any in-flight recording is discarded first.
+ *
+ * Retries the audio-session activation: right after the mic-permission prompt (or any brief resign-active
+ * like Control Center), iOS hasn't flipped the app back to "active" yet, so expo-av rejects with
+ * "…currently in the background, so the audio session could not be activated." Waiting a beat and retrying
+ * lets the did-become-active notification land, then it succeeds.
+ */
 export async function startRecording(): Promise<void> {
   if (recording) { try { await recording.stopAndUnloadAsync(); } catch {} recording = null; }
-  await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-  const rec = new Audio.Recording();
-  await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY); // iOS → .m4a AAC
-  await rec.startAsync();
-  recording = rec;
+  let lastErr: any;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY); // iOS → .m4a AAC
+      await rec.startAsync();
+      recording = rec;
+      return;
+    } catch (e: any) {
+      lastErr = e;
+      if (/background|audio session/i.test(e?.message ?? '')) { await sleep(400); continue; }
+      throw e;
+    }
+  }
+  throw lastErr;
 }
 
 /** Stop and return the recorded file URI (.m4a), or null if nothing was recording. */

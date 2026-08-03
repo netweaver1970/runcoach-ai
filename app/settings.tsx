@@ -452,6 +452,13 @@ export default function SettingsScreen() {
     setSttSaved(true); setTimeout(() => setSttSaved(false), 2000);
   }, [sttEnabled, sttPresetId, sttKey]);
 
+  // Reliable paste for the secure key fields: iOS is flaky about showing the long-press "Paste" callout on
+  // secureTextEntry inputs (worse with Universal Clipboard's on-demand fetch from a Mac). Reading the
+  // clipboard directly grabs the same content — including a key copied on the Mac — in one tap.
+  const pasteInto = useCallback(async (setter: (s: string) => void, after?: () => void) => {
+    try { const t = (await Clipboard.getStringAsync()).trim(); if (t) { setter(t); after?.(); } } catch {}
+  }, []);
+
   // Fetch the provider's live model list from /v1/models (the "Refresh" button).
   const handleRefreshModels = useCallback(async () => {
     setRefreshingModels(true);
@@ -689,7 +696,12 @@ export default function SettingsScreen() {
           )}
 
           {/* API Key */}
-          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>API Key</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+            <Text style={styles.fieldLabel}>API Key</Text>
+            <TouchableOpacity onPress={() => pasteInto(setApiKey, () => setSaved(false))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ color: c.accent, fontWeight: '600', fontSize: 13 }}>📋 Paste</Text>
+            </TouchableOpacity>
+          </View>
           <TextInput
             style={[styles.input, styles.apiKeyInput]}
             value={apiKey}
@@ -699,6 +711,7 @@ export default function SettingsScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="off"
+            textContentType="none"
             spellCheck={false}
             secureTextEntry
           />
@@ -752,16 +765,21 @@ export default function SettingsScreen() {
             ))}
           </ScrollView>
 
-          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>
-            {(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).label.split(' · ')[0]} API Key
-          </Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+            <Text style={styles.fieldLabel}>
+              {(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).label.split(' · ')[0]} API Key
+            </Text>
+            <TouchableOpacity onPress={() => pasteInto(setSttKey, () => setSttSaved(false))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ color: c.accent, fontWeight: '600', fontSize: 13 }}>📋 Paste</Text>
+            </TouchableOpacity>
+          </View>
           <TextInput
             style={[styles.input, styles.apiKeyInput]}
             value={sttKey}
             onChangeText={t => { setSttKey(t); setSttSaved(false); }}
             placeholder={(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).keyHint}
             placeholderTextColor="#bbb"
-            autoCapitalize="none" autoCorrect={false} autoComplete="off" spellCheck={false} secureTextEntry
+            autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" spellCheck={false} secureTextEntry
           />
           <Text style={styles.hint}>
             Free key at {(STT_PRESETS.find(p => p.id === sttPresetId) ?? STT_PRESETS[0]).getKey}. Groq's tier is free
