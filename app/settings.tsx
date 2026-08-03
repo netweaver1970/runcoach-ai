@@ -584,7 +584,11 @@ export default function SettingsScreen() {
 
           {/* Model chips: live fetched list + history + suggestions */}
           {(() => {
-            const suggestions = SUGGESTED_MODELS[provider];
+            // DeepSeek is OpenAI-compatible → used via the Custom provider. Offer its ids as chips even
+            // before "Refresh" succeeds, so the model field is never a guessing game.
+            const suggestions = provider === 'custom' && /deepseek/i.test(baseUrl)
+              ? ['deepseek-v4-flash', 'deepseek-v4-pro']
+              : SUGGESTED_MODELS[provider];
             const chips = [...new Set([...fetchedModels, ...modelHistory, ...suggestions])].slice(0, 15);
             return chips.length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
@@ -636,7 +640,8 @@ export default function SettingsScreen() {
                 returnKeyType="done"
               />
               <Text style={styles.hint}>
-                Any OpenAI-compatible endpoint (Groq, Mistral, Ollama, LM Studio, …)
+                Any OpenAI-compatible endpoint (Groq, Mistral, Ollama, LM Studio, …). For DeepSeek use{' '}
+                https://api.deepseek.com — NOT the /anthropic URL — with model deepseek-v4-flash or deepseek-v4-pro.
               </Text>
             </>
           )}
