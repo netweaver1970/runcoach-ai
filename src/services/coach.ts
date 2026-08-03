@@ -1667,8 +1667,8 @@ export interface TofPlan {
 // ── Periodization (build / deload cycles) ──────────────────────────────────────
 // Replaces "grow forever": volume ramps for `buildWeeks`, then a `deloadWeeks` block drops the ceiling
 // by `deloadDropPct`% before the build RESUMES from the pre-deload level (not the trough). Adjustable by
-// the athlete/coach with safe defaults. Cycle phase is a deterministic function of the ISO week (fixed
-// epoch Monday) + the settings — no per-user anchor to persist.
+// the athlete/coach with safe defaults. Cycle phase is a deterministic function of the athlete's cycle-start
+// anchor (a blank anchor auto-fills to the current week on first use) + the settings.
 export interface Periodization { on: boolean; buildWeeks: number; deloadWeeks: number; deloadDropPct: number; anchor: string; }
 // anchor = ISO date (YYYY-MM-DD) the athlete chose to START a cycle (its week = Build 1); '' → fixed calendar default.
 export const DEFAULT_PERIODIZATION: Periodization = { on: true, buildWeeks: 3, deloadWeeks: 1, deloadDropPct: 25, anchor: '' };
@@ -1681,6 +1681,16 @@ export async function getPeriodization(): Promise<Periodization> {
     p.deloadWeeks   = Math.max(1, Math.min(4,  Math.round(p.deloadWeeks)));
     p.deloadDropPct = Math.max(5, Math.min(60, Math.round(p.deloadDropPct)));
     p.anchor = typeof p.anchor === 'string' ? p.anchor : '';
+    // First-use default: a blank anchor USED to fall back to a fixed 2024 epoch, which dropped a fresh
+    // install onto an ARBITRARY point in the build/deload cycle (e.g. "deload week" in its very first week,
+    // unrelated to that phone's training — the exact surprise Geert hit on a 2nd phone). Instead, anchor a
+    // blank cycle to THIS week so the athlete starts at Build 1 now, and persist it once so it's stable and
+    // shows up (editable) in Settings. Two devices only diverge if their anchors differ → reconcile by
+    // setting the same Cycle start, tapping "This wk" on both, or restoring a backup (anchor is included).
+    if (p.on && !p.anchor) {
+      p.anchor = isoDate(mondayOf(new Date()));
+      await setPeriodization(p);
+    }
     return p;
   } catch { return { ...DEFAULT_PERIODIZATION }; }
 }
@@ -1688,9 +1698,13 @@ export async function setPeriodization(p: Periodization): Promise<void> {
   try { await SecureStore.setItemAsync(PERIODIZATION_KEY, JSON.stringify(p)); } catch { /* ignore */ }
 }
 
-// Monday of the ISO week containing `d` (local); fixed epoch Monday (2024-01-01) → deterministic cycle index.
+// Monday of the ISO week containing `d` (local).
 function mondayOf(d: Date): Date { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
-const PERIODIZATION_EPOCH = new Date(2024, 0, 1); // a Monday — the default anchor when the athlete hasn't set one
+// Local YYYY-MM-DD (the anchor storage format, read back via `new Date(anchor + 'T00:00:00')`).
+function isoDate(d: Date): string { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+// Last-resort reference only: getPeriodization now fills a blank anchor with the current week, so weekIndex
+// almost always has a real anchor. This epoch just keeps the math finite if an anchor is somehow missing/invalid.
+const PERIODIZATION_EPOCH = new Date(2024, 0, 1); // a Monday
 function weekIndex(d: Date, per: Periodization): number {
   const ref = per.anchor ? mondayOf(new Date(per.anchor + 'T00:00:00')) : PERIODIZATION_EPOCH;
   const t = ref.getTime();

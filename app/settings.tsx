@@ -1306,8 +1306,9 @@ export default function SettingsScreen() {
             <Text style={styles.unitLabel}>% drop</Text>
           </View>
           <Text style={styles.hint}>
-            Cycle start (optional): the week that becomes Build 1. Blank = calendar default. Tap "This wk"
-            to align the cycle to this week.
+            Cycle start: the week that becomes Build 1. Leave blank and it anchors to the week you first turn
+            this on. Tap "This wk" to realign the cycle to the current week. (Two phones only match if they
+            share this date — set it the same on both, or restore a backup.)
           </Text>
           <View style={styles.row}>
             <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={anchor} onChangeText={setAnchor}
