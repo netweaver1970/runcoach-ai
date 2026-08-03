@@ -24,7 +24,7 @@ const STATIC_SECURE_KEYS = [
   // added so a wipe + restore rebuilds EXACTLY:
   'accounting_switches',          // volume-accounting regime switch list (work↔full by date)
   'load_cap_pct', 'load_cap_basis', // progression cap settings
-  'user_max_hr', 'body_mass_kg',  // physiology that drives zones/strain/power
+  'user_max_hr', 'max_hr_history_v1', 'body_mass_kg', // physiology (incl. date-keyed max-HR changes) that drives zones/strain/power. (observed_max_hr is a HK-derived cache → excluded, rebuilt on scan.)
   'dayview_auto_v1', 'watch_kpi_v1', // auto day-view toggle, watch complication choice
   'coaching_mode_v1',             // self (LLM) vs coach (cloud prescription) mode
   'athlete_status_v1',            // overall status (Active/Sick/Injured/On a break) + until

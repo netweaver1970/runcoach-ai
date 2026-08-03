@@ -796,7 +796,7 @@ export async function generateCoachingReport(snap: HealthSnapshot): Promise<Coac
     // is in play — its hidden thinking spent the whole budget, leaving no answer ("hit output-token limit").
     // max_tokens is a CEILING: flash/Claude stop when done, so a bigger number costs them nothing.
     messages:  [{ role: 'user', content: buildPrompt(snap) }],
-    maxTokens: 4000,
+    maxTokens: 8000,   // 4000 still got starved by a heavy reasoning model's thinking; 8000 is ~the provider cap (DeepSeek 8192). Ceiling only.
   });
 
   return {
@@ -833,7 +833,7 @@ export async function getChatResponse(
   return agentComplete({
     system:    buildChatSystemPrompt(snap, memoryNote, localContext, aiWeeks, runContext, [appModel, knowledge].filter(Boolean).join('\n\n')),
     messages:  history,
-    maxTokens: 4000,   // was 1024 → 2500 → 4000. A CEILING, not a target: flash/Claude stop when done, so short chats still cost only what they emit; the extra room is so a reasoning model's hidden thinking can't starve the answer ("hit output-token limit").
+    maxTokens: 8000,   // 1024 → 2500 → 4000 → 8000 (~provider cap). A CEILING, not a target: flash/Claude stop when done; the room is so a reasoning model's hidden thinking can't starve the answer ("hit output-token limit"). If it STILL truncates, the model is a heavy reasoner — use a non-reasoning one (deepseek-v4-flash).
     snap,
   });
 }
