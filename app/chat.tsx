@@ -186,14 +186,26 @@ export default function ChatScreen() {
           role:    'system',
           content: `— continuing from ${dateStr} ${timeStr} —`,
         };
-        const restored: Message[] = saved.messages.map((m, i) => ({
+        // A prior analysis that returned EMPTY (e.g. a reasoning model that spent its whole token budget
+        // thinking) persisted a BLANK assistant bubble AND advanced lastSeenRunUUID — so it displayed
+        // forever and never retried. Drop blank messages; if the last turn was a blank reply, also drop its
+        // orphaned trigger prompt and re-fire the analysis below (lastReplyBlank).
+        const rawMsgs = saved.messages;
+        const lastReplyBlank =
+          rawMsgs[rawMsgs.length - 1]?.role === 'assistant' && !rawMsgs[rawMsgs.length - 1].content.trim();
+        let restoreMsgs = rawMsgs.filter(m => m.content && m.content.trim());
+        if (lastReplyBlank) {
+          while (restoreMsgs.length && restoreMsgs[restoreMsgs.length - 1].role === 'user') restoreMsgs.pop();
+        }
+
+        const restored: Message[] = restoreMsgs.map((m, i) => ({
           id:      `hist-${i}`,
           role:    m.role,
           content: m.content,
         }));
-        setMessages([divider, ...restored]);
+        setMessages(restoreMsgs.length ? [divider, ...restored] : []);
         setMemoryNote(saved.memoryNote ?? '');
-        historyRef.current     = saved.messages;
+        historyRef.current     = restoreMsgs;
         lastSeenRunRef.current = saved.lastSeenRunUUID;
         setShowChips(false);
 
@@ -224,8 +236,7 @@ export default function ChatScreen() {
         // run is different (i.e., a new run completed since the last chat).
         if (
           latestRun &&
-          saved.lastSeenRunUUID &&
-          latestRun.uuid !== saved.lastSeenRunUUID
+          ((saved.lastSeenRunUUID && latestRun.uuid !== saved.lastSeenRunUUID) || lastReplyBlank)
         ) {
           const sameType = snap.runs
             .filter(r => r.uuid !== latestRun.uuid && r.label === latestRun.label)
