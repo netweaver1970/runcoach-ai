@@ -623,7 +623,7 @@ ${buildDataBlock(snap, maxRuns)}`;
   }
 
   if (runContext && runContext.trim()) {
-    prompt += `\n\n## Run analysis context (user opened detail screen — use this data to answer)\n${runContext.trim()}`;
+    prompt += `\n\n## Run analysis context (use this data to answer). HARD LIMIT: the whole analysis is under 200 words / 5–8 short lines — verdict vs plan, the standout, the next step. No section headers, no tables, no restating the data.\n${runContext.trim()}`;
   }
 
   return prompt;
@@ -744,9 +744,12 @@ export function buildNewRunUserMessage(
 
   const prevCount = prevRuns.slice(0, 10).filter(r => r.distance > 0).length;
   const prevLabel = prevCount > 0 ? `the ${prevCount} previous ${lbl} runs listed below` : 'my training history';
+  // Ask CONCISELY. The old "…in detail…" wording fought the system prompt's hard brevity cap — Claude
+  // reconciled the two, but less-steerable models (DeepSeek et al.) obeyed "in detail" and overran the
+  // token ceiling until the answer was cut off. Match the 5–8 line format the system prompt asks for.
   const intro = isExplicit
-    ? `Please analyze this ${lbl} run in detail and compare it against ${prevLabel}. Highlight what improved, what declined, and give actionable coaching advice:`
-    : `I just completed a ${lbl} run. Please analyze it and compare against ${prevLabel}. Highlight improvements, declines, and coaching advice:`;
+    ? `Analyze this ${lbl} run against ${prevLabel}: verdict vs its plan, the one thing that stands out, and the one thing to do next. 5–8 short lines, no headers or tables.`
+    : `I just finished a ${lbl} run. Analyze it against ${prevLabel}: verdict vs plan, the standout, and the next step. 5–8 short lines, no headers or tables.`;
   return `${intro}\n\nThis run:\n${newBlock}\n\nPrevious ${lbl} runs (most recent first):\n${prevLines}`;
 }
 
