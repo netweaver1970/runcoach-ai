@@ -611,8 +611,9 @@ Concise answers, phone-friendly. Cite numbers.
 BREVITY IS A HARD REQUIREMENT, not a style note. Answer in at most ~250 words unless the runner explicitly \
 asks for depth. Lead with the answer, then at most 3 supporting numbers. No preamble ("Got everything...", \
 "Let me look at..."), no restating the question, no summary of what you just said, no section headers or \
-tables unless the data genuinely needs a grid. A run analysis is 5-8 lines: what the session was, whether \
-it hit its prescription, the one thing that stands out, and the one thing to do next. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
+tables unless the data genuinely needs a grid — a run-vs-recent comparison DOES. A run analysis compares \
+this session against recent same-type runs (pace, HR, power, and efficiency = power÷HR), flags what \
+improved or declined, then gives the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). EF=efficiency (work power ÷ work HR; higher = more output per beat). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
 ${PROGRAM_DESIGN}
 ${knowledge && knowledge.trim() ? `\n## The athlete's coaching files (their own editable setup — schedule, zones, rules, Training Model). Follow these; the Training Model file explains how the ToF budget & load model work.\n${knowledge.trim()}\n` : ''}
@@ -623,7 +624,7 @@ ${buildDataBlock(snap, maxRuns)}`;
   }
 
   if (runContext && runContext.trim()) {
-    prompt += `\n\n## Run analysis context (use this data to answer). HARD LIMIT: the whole analysis is under 200 words / 5–8 short lines — verdict vs plan, the standout, the next step. No section headers, no tables, no restating the data.\n${runContext.trim()}`;
+    prompt += `\n\n## Run analysis context (use this data to answer). Give a STATISTICAL / EFFICIENCY comparison of this run against the recent same-type runs below — a compact markdown table (columns: pace · wHR · power · EF = power÷HR) comparing this run to those is welcome — then call out what improved or declined, the verdict vs the day's plan, and one concrete next step. Keep it focused (~300 words): lead with the numbers that matter, don't re-list every row of raw data.\n${runContext.trim()}`;
   }
 
   return prompt;
@@ -665,12 +666,14 @@ export function buildNewRunUserMessage(
     ? `wHR ${newRun.workHR}bpm`
     : newRun.avgHeartRate ? `HR ${Math.round(newRun.avgHeartRate)}bpm` : '';
   const pwr  = (newRun.workPower ?? 0) > 0 ? ` ${newRun.workPower}W` : '';
+  // Efficiency = work power ÷ work HR (output per beat). Precomputed so the comparison uses one consistent metric.
+  const ef   = (newRun.workPower ?? 0) > 0 && (newRun.workHR ?? 0) > 0 ? ` · EF${(newRun.workPower! / newRun.workHR!).toFixed(2)}` : '';
   const cal  = (runDetail?.cal ?? 0) > 0 ? ` · ${runDetail!.cal}kcal` : (newRun.calories > 0 ? ` · ${Math.round(newRun.calories)}kcal` : '');
 
   const hrFlag = runDetail?.hrUnreliable ? ' ⚠️HR-unreliable' : (newRun.hrUnreliable ? ' ⚠️HR-unreliable' : '');
   const temp = newRun.tempC != null ? ` · ${newRun.tempC}°C` : '';
   const note = newRun.note ? `\nNote: ${newRun.note.replace(/\s+/g, ' ').trim()}` : '';
-  let newBlock = `${lbl} · ${fd(newRun.date)} · ${dist}km · ${fdur(newRun.duration)} · @${pace} · ${hr}${pwr}${cal}${temp}${hrFlag}${note}`;
+  let newBlock = `${lbl} · ${fd(newRun.date)} · ${dist}km · ${fdur(newRun.duration)} · @${pace} · ${hr}${pwr}${ef}${cal}${temp}${hrFlag}${note}`;
 
   const effectiveSegs = runDetail?.segs.length ? runDetail.segs : null;
   if (effectiveSegs) {
@@ -736,20 +739,22 @@ export function buildNewRunUserMessage(
     const p  = fp(r.workPace ?? r.pace);
     const rh = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${Math.round(r.avgHeartRate)}` : '');
     const rp = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
+    const re = (r.workPower ?? 0) > 0 && (r.workHR ?? 0) > 0 ? ` EF${(r.workPower! / r.workHR!).toFixed(2)}` : '';
     const rc = r.calories > 0 ? ` ${Math.round(r.calories)}kcal` : '';
     const rt = r.tempC != null ? ` ${r.tempC}°C` : '';
     const rn = r.note ? ` note:"${r.note.replace(/\s+/g, ' ').trim().slice(0, 120)}"` : '';
-    return `  ${fd(r.date)}: ${d}km ${fdur(r.duration)} @${p} ${rh}${rp}${rc}${rt}${rn}`.trimEnd();
+    return `  ${fd(r.date)}: ${d}km ${fdur(r.duration)} @${p} ${rh}${rp}${re}${rc}${rt}${rn}`.trimEnd();
   }).join('\n') || '  (none yet)';
 
   const prevCount = prevRuns.slice(0, 10).filter(r => r.distance > 0).length;
   const prevLabel = prevCount > 0 ? `the ${prevCount} previous ${lbl} runs listed below` : 'my training history';
-  // Ask CONCISELY. The old "…in detail…" wording fought the system prompt's hard brevity cap — Claude
-  // reconciled the two, but less-steerable models (DeepSeek et al.) obeyed "in detail" and overran the
-  // token ceiling until the answer was cut off. Match the 5–8 line format the system prompt asks for.
+  // Ask for a STATISTICAL/EFFICIENCY comparison (pace · wHR · power · EF) vs the recent same-type runs — a
+  // compact table is welcome — then the verdict + next step. Keep it focused (~300 words) so a verbose/
+  // reasoning model doesn't sprawl; the system prompt + runContext header set the same bound. (Earlier this
+  // was over-tightened to "5-8 lines, no tables" — too brief; the athlete wants the comparison back.)
   const intro = isExplicit
-    ? `Analyze this ${lbl} run against ${prevLabel}: verdict vs its plan, the one thing that stands out, and the one thing to do next. 5–8 short lines, no headers or tables.`
-    : `I just finished a ${lbl} run. Analyze it against ${prevLabel}: verdict vs plan, the standout, and the next step. 5–8 short lines, no headers or tables.`;
+    ? `Analyze this ${lbl} run and compare it statistically against ${prevLabel} — pace, wHR, power and efficiency (EF = power÷HR): what improved, what declined. A compact comparison table is welcome, then the verdict vs its plan and one concrete next step. Keep it focused (~300 words).`
+    : `I just finished a ${lbl} run. Compare it statistically against ${prevLabel} — pace, wHR, power, efficiency (EF = power÷HR) — flag what improved or declined, then the verdict vs plan and one next step. A compact comparison table is welcome; keep it focused (~300 words).`;
   return `${intro}\n\nThis run:\n${newBlock}\n\nPrevious ${lbl} runs (most recent first):\n${prevLines}`;
 }
 
