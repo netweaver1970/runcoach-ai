@@ -614,7 +614,7 @@ asks for depth. Lead with the answer, then at most 3 supporting numbers. No prea
 tables unless the data genuinely needs a grid — a run-vs-recent comparison DOES. A run analysis compares \
 this session against recent same-type runs using NORMALIZED efficiency ratios (never raw pace/watts, which \
 aren't comparable) — LEAD with EC (HR-independent), then EF & SE — flags what improved or declined, then \
-the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). Efficiency ratios (higher=better; compare THESE across runs): EC=speed÷power (running economy — HR-INDEPENDENT, trust it most), EF=power÷HR, SE=speed÷HR (both HR-based; on days yohimbine was taken HR is auto-corrected ~−7bpm and marked "(yoh-HRcorr)"). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
+the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). Efficiency ratios (higher=better; compare THESE across runs): EC=speed÷power (running economy — HR-INDEPENDENT, trust it most), EF=power÷HR, SE=speed÷HR (both HR-based; on days yohimbine was taken HR is auto-corrected dose-dependently and marked "(yoh-HRcorr)"). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
 ${PROGRAM_DESIGN}
 ${knowledge && knowledge.trim() ? `\n## The athlete's coaching files (their own editable setup — schedule, zones, rules, Training Model). Follow these; the Training Model file explains how the ToF budget & load model work.\n${knowledge.trim()}\n` : ''}

@@ -78,13 +78,20 @@ export function lastDose(d: SupplementData, name: string, fallback = 10): number
 }
 
 // ── Stimulant → exercise-HR offset model (for the run-analysis EF/SE correction) ──
-// Yohimbine raises HR dose-dependently; a cup of coffee (taken with it on easy days) adds a ~fixed bit.
-// All rough estimates — the HR-INDEPENDENT metric (EC = speed÷power) is the real comparator, this only
-// tidies the HR-based EF/SE. Tune the two constants if it over/under-corrects.
-const COFFEE_BPM = 3;               // one cup (~100 mg caffeine)
-const YOHIMBINE_BPM_PER_MG = 0.5;   // ~+0.5 bpm/mg → 5 mg ≈ +2.5, 20 mg ≈ +10
-const DEFAULT_YOHIMBINE_MG = 10;    // assume the mid of the 5–20 mg range when a dose wasn't recorded
-const MAX_HR_OFFSET = 20;           // clamp so a mis-typed dose can't wildly distort
+// Research-based (Goldberg 1983 IV dose-ranging; Berlan/Galitzky 0.2 mg/kg oral; Musso 1995 10 mg;
+// 20 mg crossover, Hypertension/AHA 2008 → +5 bpm; 5 mg/14 d maximal-exercise 2025 → no HR change):
+// low/moderate yohimbine (≤~10 mg) raises BP but NOT heart rate — the pressor effect is offset by the
+// baroreflex — and HR only rises ~+5 bpm by 20 mg. So the correction is ~0 up to 10 mg and ramps to +5 at
+// 20 mg (NOT linear from zero). A cup of coffee adds a modest ~2 bpm. Estimates; the HR-INDEPENDENT metric
+// (EC = speed÷power) is the real comparator — this only tidies the HR-based EF/SE.
+const COFFEE_BPM = 2;               // one cup (~100 mg caffeine); small exercise-HR effect
+const YOH_THRESHOLD_MG = 10;        // below this, ~no HR effect (BP rises, HR held by the baroreflex)
+const YOH_BPM_PER_MG = 0.5;         // above threshold → +5 bpm by 20 mg
+const DEFAULT_YOHIMBINE_MG = 10;    // legacy entries with no recorded dose → threshold (⇒ 0 yohimbine bpm)
+const MAX_HR_OFFSET = 15;           // clamp so a mis-typed dose can't wildly distort
+
+/** Yohimbine's dose-dependent exercise-HR bump (bpm): ~0 up to ~10 mg, ~+5 by 20 mg. */
+function yohimbineBpm(mg: number): number { return Math.max(0, (mg - YOH_THRESHOLD_MG) * YOH_BPM_PER_MG); }
 
 /** date (YYYY-MM-DD) → bpm to SUBTRACT from that day's HR before EF/SE, from yohimbine dose + coffee. */
 export function hrOffsetByDay(d: SupplementData, re = /yohimb/i): Record<string, number> {
@@ -94,7 +101,7 @@ export function hrOffsetByDay(d: SupplementData, re = /yohimb/i): Record<string,
     for (const iso of d.log[n] ?? []) mgByDay[iso] = (mgByDay[iso] ?? 0) + (d.doses?.[n]?.[iso] ?? DEFAULT_YOHIMBINE_MG);
   }
   const out: Record<string, number> = {};
-  for (const [iso, mg] of Object.entries(mgByDay)) out[iso] = Math.min(MAX_HR_OFFSET, COFFEE_BPM + YOHIMBINE_BPM_PER_MG * mg);
+  for (const [iso, mg] of Object.entries(mgByDay)) out[iso] = Math.min(MAX_HR_OFFSET, COFFEE_BPM + yohimbineBpm(mg));
   return out;
 }
 /** Days-taken out of the last `days` window (for the little "5/7" adherence badge). */
