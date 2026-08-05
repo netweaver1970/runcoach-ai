@@ -7,8 +7,9 @@ import * as FileSystem from 'expo-file-system';
 const FILE = `${FileSystem.documentDirectory}runcoach-supplements.json`;
 
 export interface SupplementData {
-  list: string[];                     // supplement names, in display order
-  log:  Record<string, string[]>;     // name → ISO dates taken (YYYY-MM-DD)
+  list:   string[];                              // supplement names, in display order
+  log:    Record<string, string[]>;              // name → ISO dates taken (YYYY-MM-DD)
+  doses?: Record<string, Record<string, number>>; // name → dateISO → mg (optional; for dosed stimulants)
 }
 
 const p2 = (n: number) => String(n).padStart(2, '0');
@@ -19,8 +20,8 @@ async function read(): Promise<SupplementData> {
     const info = await FileSystem.getInfoAsync(FILE);
     if (!info.exists) return { list: [], log: {} };
     const d = JSON.parse(await FileSystem.readAsStringAsync(FILE)) as SupplementData;
-    return { list: d.list ?? [], log: d.log ?? {} };
-  } catch { return { list: [], log: {} }; }
+    return { list: d.list ?? [], log: d.log ?? {}, doses: d.doses ?? {} };
+  } catch { return { list: [], log: {}, doses: {} }; }
 }
 async function write(d: SupplementData): Promise<void> {
   try { await FileSystem.writeAsStringAsync(FILE, JSON.stringify(d)); } catch { /* ignore */ }
@@ -60,11 +61,40 @@ export function takenToday(d: SupplementData, name: string, today = todayISO()):
 export function anyTakenOn(d: SupplementData, dateISO: string, re: RegExp): boolean {
   return d.list.some(n => re.test(n) && (d.log[n] ?? []).includes(dateISO));
 }
-/** All ISO dates (YYYY-MM-DD) on which a supplement matching `re` was logged. Used to HR-correct the
- *  efficiency metrics on days an HR-raising stimulant (default: yohimbine) was taken. */
-export function daysTaken(d: SupplementData, re = /yohimb/i): Set<string> {
-  const out = new Set<string>();
-  for (const n of d.list) if (re.test(n)) for (const iso of d.log[n] ?? []) out.add(iso);
+/** Record a dose (mg) for a supplement on a date. */
+export async function setDose(name: string, dateISO: string, mg: number): Promise<void> {
+  const d = await read();
+  d.doses = d.doses ?? {};
+  d.doses[name] = { ...(d.doses[name] ?? {}), [dateISO]: mg };
+  await write(d);
+}
+export function getDose(d: SupplementData, name: string, dateISO: string): number {
+  return d.doses?.[name]?.[dateISO] ?? 0;
+}
+/** Most recent recorded dose for a supplement, to prefill the next entry. */
+export function lastDose(d: SupplementData, name: string, fallback = 10): number {
+  const map = d.doses?.[name]; if (!map) return fallback;
+  const days = Object.keys(map).sort(); return days.length ? map[days[days.length - 1]] : fallback;
+}
+
+// ── Stimulant → exercise-HR offset model (for the run-analysis EF/SE correction) ──
+// Yohimbine raises HR dose-dependently; a cup of coffee (taken with it on easy days) adds a ~fixed bit.
+// All rough estimates — the HR-INDEPENDENT metric (EC = speed÷power) is the real comparator, this only
+// tidies the HR-based EF/SE. Tune the two constants if it over/under-corrects.
+const COFFEE_BPM = 3;               // one cup (~100 mg caffeine)
+const YOHIMBINE_BPM_PER_MG = 0.5;   // ~+0.5 bpm/mg → 5 mg ≈ +2.5, 20 mg ≈ +10
+const DEFAULT_YOHIMBINE_MG = 10;    // assume the mid of the 5–20 mg range when a dose wasn't recorded
+const MAX_HR_OFFSET = 20;           // clamp so a mis-typed dose can't wildly distort
+
+/** date (YYYY-MM-DD) → bpm to SUBTRACT from that day's HR before EF/SE, from yohimbine dose + coffee. */
+export function hrOffsetByDay(d: SupplementData, re = /yohimb/i): Record<string, number> {
+  const mgByDay: Record<string, number> = {};
+  for (const n of d.list) {
+    if (!re.test(n)) continue;
+    for (const iso of d.log[n] ?? []) mgByDay[iso] = (mgByDay[iso] ?? 0) + (d.doses?.[n]?.[iso] ?? DEFAULT_YOHIMBINE_MG);
+  }
+  const out: Record<string, number> = {};
+  for (const [iso, mg] of Object.entries(mgByDay)) out[iso] = Math.min(MAX_HR_OFFSET, COFFEE_BPM + YOHIMBINE_BPM_PER_MG * mg);
   return out;
 }
 /** Days-taken out of the last `days` window (for the little "5/7" adherence badge). */

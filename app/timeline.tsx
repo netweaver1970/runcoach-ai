@@ -10,6 +10,7 @@ import {
 } from '../src/services/timelineEvents';
 import {
   loadSupplements, addSupplement, removeSupplement, toggleSupplementToday, takenToday, adherence, todayISO, SupplementData,
+  setDose, getDose, lastDose,
 } from '../src/services/supplements';
 import { TimelineEvent } from '../src/types';
 
@@ -37,7 +38,25 @@ export default function TimelineScreen() {
   const refresh = useCallback(() => { loadEvents().then(setEvents); loadSupplements().then(setSupps); }, []);
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
+  const DOSED_SUPP = /yohimb/i;   // supplements we prompt a mg dose for (HR-correction is dose-dependent)
+
   const toggleSupp = async (n: string) => {
+    // Dosed stimulant (yohimbine) → capture the mg on log so the run-analysis HR-correction is
+    // dose-dependent (5–20 mg all correct differently). A cup of coffee is assumed alongside it.
+    if (!takenToday(supps, n) && DOSED_SUPP.test(n)) {
+      Alert.prompt(
+        `${n} dose`,
+        'mg taken today (a cup of coffee is assumed with it)',
+        async (val?: string) => {
+          const mg = Math.max(0, Math.min(50, parseFloat((val ?? '').replace(',', '.')) || lastDose(supps, n)));
+          await setDose(n, todayISO(), mg);
+          await toggleSupplementToday(n);
+          loadSupplements().then(setSupps);
+        },
+        'plain-text', String(Math.round(lastDose(supps, n))), 'number-pad',
+      );
+      return;
+    }
     // Optimistic → instant feedback; persist in the background.
     setSupps(prev => {
       const t = todayISO(); const dates = new Set(prev.log[n] ?? []);
@@ -98,10 +117,11 @@ export default function TimelineScreen() {
           <View style={s.suppRow}>
             {supps.list.map(n => {
               const on = takenToday(supps, n);
+              const dose = on && DOSED_SUPP.test(n) ? getDose(supps, n, todayISO()) : 0;
               return (
                 <TouchableOpacity key={n} style={[s.suppChip, on && s.suppChipOn]} activeOpacity={0.7}
                   onPress={() => toggleSupp(n)} onLongPress={() => removeSupp(n)} delayLongPress={400}>
-                  <Text style={[s.suppText, on && s.suppTextOn]}>{on ? '✓ ' : ''}{n}</Text>
+                  <Text style={[s.suppText, on && s.suppTextOn]}>{on ? '✓ ' : ''}{n}{dose > 0 ? ` ${dose}mg` : ''}</Text>
                   <Text style={[s.suppAdh, on && s.suppTextOn]}>{adherence(supps, n, 7)}/7</Text>
                 </TouchableOpacity>
               );

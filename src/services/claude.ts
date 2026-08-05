@@ -648,10 +648,9 @@ Write in second person ("The runner..."). Be concise — this note is injected i
 // run is detected since the last chat session. Token-efficient: only includes
 // fields that differ from the global data block.
 
-// Yohimbine (and similar stimulants) raise HR, which deflates the HR-based efficiency ratios; subtract
-// this estimated exercise-HR offset on logged days so EF/SE stay comparable. Rough & dose-dependent — the
-// HR-INDEPENDENT ratio (EC = speed÷power) is the robust comparator and needs no correction.
-const YOHIMBINE_HR_BPM = 7;
+// Yohimbine (+coffee) raises HR, which deflates the HR-based efficiency ratios; the caller passes a
+// per-day bpm offset (dose-dependent, from the supplement log) that we subtract before EF/SE. The
+// HR-INDEPENDENT ratio (EC = speed÷power) needs no correction — it's the robust comparator.
 const dayKeyOf = (dt: any): string => { const d = new Date(dt); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
 // Normalized efficiency ratios so power & pace compare ACROSS runs (raw watts/pace don't). speed = m/min.
@@ -679,7 +678,7 @@ export function buildNewRunUserMessage(
     segs: { l: string; d: number; t: number; hr: number; cad: number; pwr: number }[];
     kms:  { km: number; t: number; p: number; hr: number; cad: number; pwr: number }[];
   },
-  yohimbineDays?: Set<string>,   // ISO days yohimbine was logged → HR-correct EF/SE for those runs
+  hrOffsetByDay?: Record<string, number>,   // dateISO → bpm to subtract (yohimbine dose + coffee) before EF/SE
 ): string {
   const lbl  = newRun.label ?? 'Unknown';
   const dist = (newRun.distance / 1000).toFixed(2);
@@ -689,7 +688,7 @@ export function buildNewRunUserMessage(
     : newRun.avgHeartRate ? `HR ${Math.round(newRun.avgHeartRate)}bpm` : '';
   const pwr  = (newRun.workPower ?? 0) > 0 ? ` ${newRun.workPower}W` : '';
   // Normalized efficiency ratios (EC/EF/SE) so power & pace compare across runs; HR-based ones yohimbine-corrected.
-  const newEff = effRatios(newRun.workPace ?? newRun.pace ?? 0, newRun.workPower ?? 0, newRun.workHR ?? 0, yohimbineDays?.has(dayKeyOf(newRun.date)) ? YOHIMBINE_HR_BPM : 0);
+  const newEff = effRatios(newRun.workPace ?? newRun.pace ?? 0, newRun.workPower ?? 0, newRun.workHR ?? 0, hrOffsetByDay?.[dayKeyOf(newRun.date)] ?? 0);
   const ef   = newEff ? ` · ${newEff}` : '';
   const cal  = (runDetail?.cal ?? 0) > 0 ? ` · ${runDetail!.cal}kcal` : (newRun.calories > 0 ? ` · ${Math.round(newRun.calories)}kcal` : '');
 
@@ -762,7 +761,7 @@ export function buildNewRunUserMessage(
     const p  = fp(r.workPace ?? r.pace);
     const rh = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${Math.round(r.avgHeartRate)}` : '');
     const rp = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
-    const rEff = effRatios(r.workPace ?? r.pace ?? 0, r.workPower ?? 0, r.workHR ?? 0, yohimbineDays?.has(dayKeyOf(r.date)) ? YOHIMBINE_HR_BPM : 0);
+    const rEff = effRatios(r.workPace ?? r.pace ?? 0, r.workPower ?? 0, r.workHR ?? 0, hrOffsetByDay?.[dayKeyOf(r.date)] ?? 0);
     const re = rEff ? ` ${rEff}` : '';
     const rc = r.calories > 0 ? ` ${Math.round(r.calories)}kcal` : '';
     const rt = r.tempC != null ? ` ${r.tempC}°C` : '';
