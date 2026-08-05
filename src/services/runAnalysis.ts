@@ -15,6 +15,7 @@ import { callLLM, extractJsonObject } from './llm';
 import { agentComplete } from './agent';
 import { buildAppModelPrompt } from './appModel';
 import { getApiKey, buildNewRunUserMessage } from './claude';
+import { loadSupplements, daysTaken } from './supplements';
 import { loadPrescriptionAt, CoachPlan } from './coach';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
 
@@ -136,7 +137,8 @@ export async function analyzeRun(
   const prescription = plan
     ? buildPrescriptionContext(plan)
     : `NO SESSION WAS PRESCRIBED before this run — today's plan had not been generated when the run started, so there is no prescription to judge against. Do NOT assume it was a rest day or that the athlete should not have run, and do NOT produce a "ran on a rest day / should have rested" verdict. Analyse the run purely on its own merits and recent trends.`;
-  const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true);
+  const yohDays = await loadSupplements().then(d => daysTaken(d)).catch(() => new Set<string>());
+  const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true, undefined, yohDays);
   const appModel = await buildAppModelPrompt().catch(() => '');
   const userMsg = [appModel, recoveryLoadContext(snap), prescription, runBlock].filter(Boolean).join('\n\n');
 

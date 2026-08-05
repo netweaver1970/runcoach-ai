@@ -12,6 +12,7 @@ import { getPowerZones, savePowerZones, isPowerZonesConfigured } from './claude'
 import { callLLM, extractJsonObject, setUsageFeature } from './llm';
 import { loadSnapshotCache, extractWeatherTempC } from './healthkit';
 import { getRunMeta } from './runMeta';
+import { loadSupplements, anyTakenOn } from './supplements';
 import { upsertKnowledge, knowledgeExists, readKnowledgeContent } from './coachFiles';
 
 // Above this run-time temperature the auto loop skips calibration: heat elevates HR for a
@@ -271,7 +272,7 @@ export interface RunZoneAnalysis {
 // anyway — zones are set from a test manually, via the paired analysis, not this path.
 const CALIB_MAX_DRIFT_PCT = 6;
 // Words in the athlete's run note that mark a run as not-representative for calibration.
-const COMPROMISED_NOTE = /fast(ed|ing)?|hung.?over|sick|ill\b|unwell|dehydrat|exhaust|cramp|bonk/i;
+const COMPROMISED_NOTE = /fast(ed|ing)?|hung.?over|sick|ill\b|unwell|dehydrat|exhaust|cramp|bonk|yohimb/i;
 
 /** Observed average running power at each HR zone for the most recent run. */
 export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAnalysis | null> {
@@ -351,9 +352,19 @@ export async function recalibrateZonesFromLastRun(opts?: { auto?: boolean }): Pr
   if (opts?.auto && run.tempC != null && run.tempC >= HOT_SKIP_C) {
     return { updated: false, reason: `Skipped — hot run (${run.tempC}°C) would bias zones low.` };
   }
-  // NOTE guard: the athlete flagged the run as fasted / ill / etc. — not representative, skip either path.
+  // NOTE guard: the athlete flagged the run as fasted / ill / yohimbine / etc. — not representative.
   if (run.note && COMPROMISED_NOTE.test(run.note)) {
     return { updated: false, reason: `Skipped — run noted as compromised ("${run.note.trim().slice(0, 40)}"); not calibrating from it.` };
+  }
+  // YOHIMBINE guard: an HR-raising stimulant elevates HR, so power-at-HR reads LOW and would drag zones
+  // DOWN — the same bias as a fasted run. Skip if it was logged on the run's day (either path).
+  {
+    const rd = new Date(run.start);
+    const runDay = `${rd.getFullYear()}-${String(rd.getMonth() + 1).padStart(2, '0')}-${String(rd.getDate()).padStart(2, '0')}`;
+    const supps = await loadSupplements().catch(() => null);
+    if (supps && anyTakenOn(supps, runDay, /yohimb/i)) {
+      return { updated: false, reason: `Skipped — yohimbine logged on ${runDay}; it raises HR, so this run's power-at-HR reads low and would lower your zones incorrectly.` };
+    }
   }
 
   const [pzNow, maxHRNow, restHRNow] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);

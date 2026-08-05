@@ -612,8 +612,9 @@ BREVITY IS A HARD REQUIREMENT, not a style note. Answer in at most ~250 words un
 asks for depth. Lead with the answer, then at most 3 supporting numbers. No preamble ("Got everything...", \
 "Let me look at..."), no restating the question, no summary of what you just said, no section headers or \
 tables unless the data genuinely needs a grid — a run-vs-recent comparison DOES. A run analysis compares \
-this session against recent same-type runs (pace, HR, power, and efficiency = power÷HR), flags what \
-improved or declined, then gives the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). EF=efficiency (work power ÷ work HR; higher = more output per beat). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
+this session against recent same-type runs using NORMALIZED efficiency ratios (never raw pace/watts, which \
+aren't comparable) — LEAD with EC (HR-independent), then EF & SE — flags what improved or declined, then \
+the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). Efficiency ratios (higher=better; compare THESE across runs): EC=speed÷power (running economy — HR-INDEPENDENT, trust it most), EF=power÷HR, SE=speed÷HR (both HR-based; on days yohimbine was taken HR is auto-corrected ~−7bpm and marked "(yoh-HRcorr)"). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
 ${PROGRAM_DESIGN}
 ${knowledge && knowledge.trim() ? `\n## The athlete's coaching files (their own editable setup — schedule, zones, rules, Training Model). Follow these; the Training Model file explains how the ToF budget & load model work.\n${knowledge.trim()}\n` : ''}
@@ -624,7 +625,7 @@ ${buildDataBlock(snap, maxRuns)}`;
   }
 
   if (runContext && runContext.trim()) {
-    prompt += `\n\n## Run analysis context (use this data to answer). Give a STATISTICAL / EFFICIENCY comparison of this run against the recent same-type runs below — a compact markdown table (columns: pace · wHR · power · EF = power÷HR) comparing this run to those is welcome — then call out what improved or declined, the verdict vs the day's plan, and one concrete next step. Keep it focused (~300 words): lead with the numbers that matter, don't re-list every row of raw data.\n${runContext.trim()}`;
+    prompt += `\n\n## Run analysis context (use this data to answer). Give a STATISTICAL / EFFICIENCY comparison of this run against the recent same-type runs below, ALWAYS via the normalized efficiency ratios (never raw pace/watts, which aren't comparable across efforts). A compact markdown table (columns: EC=speed÷power · EF=power÷HR · SE=speed÷HR) comparing this run to those is welcome. EC is HR-INDEPENDENT — trust it most for the trend; EF/SE are HR-based and already yohimbine-corrected on flagged days. Then call out what improved or declined, the verdict vs the day's plan, and one concrete next step. Keep it focused (~300 words); don't re-list every raw row.\n${runContext.trim()}`;
   }
 
   return prompt;
@@ -647,6 +648,26 @@ Write in second person ("The runner..."). Be concise — this note is injected i
 // run is detected since the last chat session. Token-efficient: only includes
 // fields that differ from the global data block.
 
+// Yohimbine (and similar stimulants) raise HR, which deflates the HR-based efficiency ratios; subtract
+// this estimated exercise-HR offset on logged days so EF/SE stay comparable. Rough & dose-dependent — the
+// HR-INDEPENDENT ratio (EC = speed÷power) is the robust comparator and needs no correction.
+const YOHIMBINE_HR_BPM = 7;
+const dayKeyOf = (dt: any): string => { const d = new Date(dt); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+// Normalized efficiency ratios so power & pace compare ACROSS runs (raw watts/pace don't). speed = m/min.
+//   EC = speed ÷ power (running economy — HR-INDEPENDENT, listed first), EF = power ÷ HR, SE = speed ÷ HR.
+// `hrCorr` bpm is subtracted from HR (yohimbine days) for the two HR-based ratios. Higher = better.
+function effRatios(paceSec: number, power: number, hr: number, hrCorr = 0): string {
+  const spd = paceSec > 0 ? 60000 / paceSec : 0;
+  const h   = hr > 0 ? Math.max(1, hr - hrCorr) : 0;
+  const out: string[] = [];
+  if (spd > 0 && power > 0) out.push(`EC${(spd / power).toFixed(2)}`);   // HR-independent — primary comparator
+  if (power > 0 && h > 0)   out.push(`EF${(power / h).toFixed(2)}`);
+  if (spd > 0 && h > 0)     out.push(`SE${(spd / h).toFixed(2)}`);
+  if (hrCorr > 0 && out.length > 1) out.push('(yoh-HRcorr)');
+  return out.join(' ');
+}
+
 export function buildNewRunUserMessage(
   newRun:    RunWorkout,
   prevRuns:  RunWorkout[],
@@ -658,6 +679,7 @@ export function buildNewRunUserMessage(
     segs: { l: string; d: number; t: number; hr: number; cad: number; pwr: number }[];
     kms:  { km: number; t: number; p: number; hr: number; cad: number; pwr: number }[];
   },
+  yohimbineDays?: Set<string>,   // ISO days yohimbine was logged → HR-correct EF/SE for those runs
 ): string {
   const lbl  = newRun.label ?? 'Unknown';
   const dist = (newRun.distance / 1000).toFixed(2);
@@ -666,8 +688,9 @@ export function buildNewRunUserMessage(
     ? `wHR ${newRun.workHR}bpm`
     : newRun.avgHeartRate ? `HR ${Math.round(newRun.avgHeartRate)}bpm` : '';
   const pwr  = (newRun.workPower ?? 0) > 0 ? ` ${newRun.workPower}W` : '';
-  // Efficiency = work power ÷ work HR (output per beat). Precomputed so the comparison uses one consistent metric.
-  const ef   = (newRun.workPower ?? 0) > 0 && (newRun.workHR ?? 0) > 0 ? ` · EF${(newRun.workPower! / newRun.workHR!).toFixed(2)}` : '';
+  // Normalized efficiency ratios (EC/EF/SE) so power & pace compare across runs; HR-based ones yohimbine-corrected.
+  const newEff = effRatios(newRun.workPace ?? newRun.pace ?? 0, newRun.workPower ?? 0, newRun.workHR ?? 0, yohimbineDays?.has(dayKeyOf(newRun.date)) ? YOHIMBINE_HR_BPM : 0);
+  const ef   = newEff ? ` · ${newEff}` : '';
   const cal  = (runDetail?.cal ?? 0) > 0 ? ` · ${runDetail!.cal}kcal` : (newRun.calories > 0 ? ` · ${Math.round(newRun.calories)}kcal` : '');
 
   const hrFlag = runDetail?.hrUnreliable ? ' ⚠️HR-unreliable' : (newRun.hrUnreliable ? ' ⚠️HR-unreliable' : '');
@@ -739,7 +762,8 @@ export function buildNewRunUserMessage(
     const p  = fp(r.workPace ?? r.pace);
     const rh = r.workHR ? `wHR${r.workHR}` : (r.avgHeartRate ? `HR${Math.round(r.avgHeartRate)}` : '');
     const rp = (r.workPower ?? 0) > 0 ? ` ${r.workPower}W` : '';
-    const re = (r.workPower ?? 0) > 0 && (r.workHR ?? 0) > 0 ? ` EF${(r.workPower! / r.workHR!).toFixed(2)}` : '';
+    const rEff = effRatios(r.workPace ?? r.pace ?? 0, r.workPower ?? 0, r.workHR ?? 0, yohimbineDays?.has(dayKeyOf(r.date)) ? YOHIMBINE_HR_BPM : 0);
+    const re = rEff ? ` ${rEff}` : '';
     const rc = r.calories > 0 ? ` ${Math.round(r.calories)}kcal` : '';
     const rt = r.tempC != null ? ` ${r.tempC}°C` : '';
     const rn = r.note ? ` note:"${r.note.replace(/\s+/g, ' ').trim().slice(0, 120)}"` : '';
@@ -753,8 +777,8 @@ export function buildNewRunUserMessage(
   // reasoning model doesn't sprawl; the system prompt + runContext header set the same bound. (Earlier this
   // was over-tightened to "5-8 lines, no tables" — too brief; the athlete wants the comparison back.)
   const intro = isExplicit
-    ? `Analyze this ${lbl} run and compare it statistically against ${prevLabel} — pace, wHR, power and efficiency (EF = power÷HR): what improved, what declined. A compact comparison table is welcome, then the verdict vs its plan and one concrete next step. Keep it focused (~300 words).`
-    : `I just finished a ${lbl} run. Compare it statistically against ${prevLabel} — pace, wHR, power, efficiency (EF = power÷HR) — flag what improved or declined, then the verdict vs plan and one next step. A compact comparison table is welcome; keep it focused (~300 words).`;
+    ? `Analyze this ${lbl} run and compare it against ${prevLabel} using the efficiency ratios — EC (speed÷power, HR-independent) first, then EF (power÷HR) and SE (speed÷HR): what improved, what declined. A compact comparison table is welcome, then the verdict vs its plan and one next step. Keep it focused (~300 words).`
+    : `I just finished a ${lbl} run. Compare it against ${prevLabel} using the efficiency ratios — EC (speed÷power, HR-independent) first, then EF and SE — flag what improved or declined, then the verdict vs plan and one next step. A compact table is welcome; keep it focused (~300 words).`;
   return `${intro}\n\nThis run:\n${newBlock}\n\nPrevious ${lbl} runs (most recent first):\n${prevLines}`;
 }
 

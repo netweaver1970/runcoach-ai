@@ -55,6 +55,18 @@ export async function toggleSupplementToday(name: string): Promise<boolean> {
 export function takenToday(d: SupplementData, name: string, today = todayISO()): boolean {
   return (d.log[name] ?? []).includes(today);
 }
+/** True if ANY supplement whose name matches `re` was logged on `dateISO` (YYYY-MM-DD). Used to keep
+ *  HR-raising stimulants (e.g. yohimbine) out of the auto zone calibration. */
+export function anyTakenOn(d: SupplementData, dateISO: string, re: RegExp): boolean {
+  return d.list.some(n => re.test(n) && (d.log[n] ?? []).includes(dateISO));
+}
+/** All ISO dates (YYYY-MM-DD) on which a supplement matching `re` was logged. Used to HR-correct the
+ *  efficiency metrics on days an HR-raising stimulant (default: yohimbine) was taken. */
+export function daysTaken(d: SupplementData, re = /yohimb/i): Set<string> {
+  const out = new Set<string>();
+  for (const n of d.list) if (re.test(n)) for (const iso of d.log[n] ?? []) out.add(iso);
+  return out;
+}
 /** Days-taken out of the last `days` window (for the little "5/7" adherence badge). */
 export function adherence(d: SupplementData, name: string, days = 7, now = todayISO()): number {
   const base = new Date(now + 'T00:00:00');
