@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator, useWindowDimensions, PanResponder } from 'react-native';
 import { Stack } from 'expo-router';
 import Svg, { Polyline, Line, Text as SvgText } from 'react-native-svg';
 import { loadSnapshotCache } from '../src/services/healthkit';
@@ -17,36 +17,95 @@ const TRN_COLOR = '#f97316';       // training
 const levelWord = (v: number) => v >= 62 ? 'climbing' : v >= 54 ? 'improving' : v >= 46 ? 'holding steady' : v >= 38 ? 'slipping' : 'declining';
 
 // ─── Chart ────────────────────────────────────────────────────────────────────
-const CH_H = 200, PAD_L = 26, PAD_R = 8, PAD_T = 10, PAD_B = 18;
+const CH_H = 200, PAD_L = 26, PAD_R = 8, PAD_T = 10, PAD_B = 20;
+const shortDate = (iso: string) => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+const longDate  = (iso: string) => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 
-function GpiChart({ points, innerW, showPillars, c }: { points: GpiPoint[]; innerW: number; showPillars: boolean; c: Palette }) {
+function GpiChart({ points, innerW, showPillars, c, styles }: { points: GpiPoint[]; innerW: number; showPillars: boolean; c: Palette; styles: any }) {
+  const [cursorX, setCursorX] = useState<number | null>(null);
+  const plotRef  = useRef<View>(null);
+  const plotLeft = useRef(0);
+  const measure  = () => plotRef.current?.measureInWindow((x) => { plotLeft.current = x; });
+
   const plotW = Math.max(1, innerW - PAD_L - PAD_R);
   const plotH = CH_H - PAD_T - PAD_B;
+
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => false,                                   // let vertical page scroll start on the chart
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,  // capture only a horizontal scrub
+    onPanResponderGrant: (_e, g) => setCursorX(g.x0 - plotLeft.current),
+    onPanResponderMove:  (_e, g) => setCursorX(g.moveX - plotLeft.current),
+    onPanResponderTerminationRequest: () => false,
+  })).current;
+
   const vals = points.map(p => p.gpi).filter((v): v is number => v != null);
   if (vals.length < 2) return <View style={{ height: CH_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint }}>Not enough data yet for this range.</Text></View>;
 
-  const lo = Math.min(45, Math.floor(Math.min(...vals) - 3));
-  const hi = Math.max(55, Math.ceil(Math.max(...vals) + 3));
+  // Y-scale fits ALL visible series — so pillar lines (which spread wider than the GPI average) fit when shown.
+  const scaleVals = showPillars
+    ? points.flatMap(p => [p.gpi, p.recovery, p.sleep, p.training]).filter((v): v is number => v != null)
+    : vals;
+  const lo = Math.min(45, Math.floor(Math.min(...scaleVals) - 3));
+  const hi = Math.max(55, Math.ceil(Math.max(...scaleVals) + 3));
   const xOf = (i: number) => PAD_L + (points.length <= 1 ? 0 : (i / (points.length - 1)) * plotW);
   const yOf = (v: number) => PAD_T + (1 - (v - lo) / (hi - lo)) * plotH;
 
   const line = (key: 'gpi' | 'recovery' | 'sleep' | 'training') =>
     points.map((p, i) => (p[key] == null ? null : `${xOf(i).toFixed(1)},${yOf(p[key]!).toFixed(1)}`)).filter(Boolean).join(' ');
 
+  // Cursor → nearest index; default to the LATEST point so the readout is never empty (shows today).
+  const scrubbing = cursorX != null;
+  const cursorIdx = !scrubbing ? points.length - 1
+    : Math.max(0, Math.min(points.length - 1, Math.round(((cursorX! - PAD_L) / plotW) * (points.length - 1))));
+  const cur = points[cursorIdx];
+
+  // X-axis: ~4 evenly-spaced date labels.
+  const nLab = Math.min(4, points.length);
+  const labelIdx = Array.from({ length: nLab }, (_, k) => Math.round((k / (nLab - 1 || 1)) * (points.length - 1)));
+  const pillars = [['recovery', REC_COLOR], ['sleep', SLP_COLOR], ['training', TRN_COLOR]] as const;
+
   return (
-    <Svg width={innerW} height={CH_H}>
-      {/* baseline (50) + y grid */}
-      {[lo, 50, hi].map((t, i) => (
-        <React.Fragment key={i}>
-          <Line x1={PAD_L} y1={yOf(t)} x2={innerW - PAD_R} y2={yOf(t)} stroke={t === 50 ? c.textSub : c.border} strokeWidth={t === 50 ? 1 : 0.5} strokeDasharray={t === 50 ? '4 3' : undefined} opacity={t === 50 ? 0.7 : 0.5} />
-          <SvgText x={PAD_L - 4} y={yOf(t) + 3} fontSize={9} fill={c.textFaint} textAnchor="end">{t}</SvgText>
-        </React.Fragment>
-      ))}
-      {showPillars && (['recovery', 'sleep', 'training'] as const).map((k, i) => (
-        <Polyline key={k} points={line(k)} fill="none" stroke={[REC_COLOR, SLP_COLOR, TRN_COLOR][i]} strokeWidth={1} opacity={0.45} />
-      ))}
-      <Polyline points={line('gpi')} fill="none" stroke={GPI_COLOR} strokeWidth={2.5} strokeLinejoin="round" />
-    </Svg>
+    <View>
+      {/* Live readout (cursor point, or latest when not scrubbing) */}
+      <View style={styles.readout}>
+        <Text style={styles.readoutDate}>{longDate(cur.date)}</Text>
+        <View style={{ flexDirection: 'row', gap: 12, marginTop: 2, flexWrap: 'wrap' }}>
+          <Text style={[styles.readoutVal, { color: GPI_COLOR }]}>GPI {cur.gpi == null ? '—' : Math.round(cur.gpi)}</Text>
+          {showPillars && pillars.map(([k, col]) => (
+            <Text key={k} style={[styles.readoutVal, { color: col }]}>{k[0].toUpperCase()} {cur[k] == null ? '—' : Math.round(cur[k]!)}</Text>
+          ))}
+        </View>
+      </View>
+
+      <View ref={plotRef} onLayout={measure} {...pan.panHandlers}>
+        <Svg width={innerW} height={CH_H}>
+          {[lo, 50, hi].map((t, i) => (
+            <React.Fragment key={i}>
+              <Line x1={PAD_L} y1={yOf(t)} x2={innerW - PAD_R} y2={yOf(t)} stroke={t === 50 ? c.textSub : c.border} strokeWidth={t === 50 ? 1 : 0.5} strokeDasharray={t === 50 ? '4 3' : undefined} opacity={t === 50 ? 0.7 : 0.5} />
+              <SvgText x={PAD_L - 4} y={yOf(t) + 3} fontSize={9} fill={c.textFaint} textAnchor="end">{t}</SvgText>
+            </React.Fragment>
+          ))}
+          {/* X-axis date labels */}
+          {labelIdx.map((idx, k) => (
+            <SvgText key={`x${k}`} x={Math.min(innerW - PAD_R, Math.max(PAD_L, xOf(idx)))} y={CH_H - 5} fontSize={9} fill={c.textFaint} textAnchor={k === 0 ? 'start' : k === labelIdx.length - 1 ? 'end' : 'middle'}>{shortDate(points[idx].date)}</SvgText>
+          ))}
+          {showPillars && pillars.map(([k, col]) => (
+            <Polyline key={k} points={line(k)} fill="none" stroke={col} strokeWidth={1} opacity={0.5} />
+          ))}
+          <Polyline points={line('gpi')} fill="none" stroke={GPI_COLOR} strokeWidth={2.5} strokeLinejoin="round" />
+          {/* Cursor line + dots */}
+          {scrubbing && (
+            <>
+              <Line x1={xOf(cursorIdx)} y1={PAD_T} x2={xOf(cursorIdx)} y2={PAD_T + plotH} stroke={c.textSub} strokeWidth={1} opacity={0.6} />
+              {showPillars && pillars.map(([k, col]) => cur[k] == null ? null : (
+                <Line key={`d${k}`} x1={xOf(cursorIdx) - 0.01} y1={yOf(cur[k]!)} x2={xOf(cursorIdx) + 0.01} y2={yOf(cur[k]!)} stroke={col} strokeWidth={5} strokeLinecap="round" />
+              ))}
+              {cur.gpi != null && <Line x1={xOf(cursorIdx) - 0.01} y1={yOf(cur.gpi)} x2={xOf(cursorIdx) + 0.01} y2={yOf(cur.gpi)} stroke={GPI_COLOR} strokeWidth={7} strokeLinecap="round" />}
+            </>
+          )}
+        </Svg>
+      </View>
+    </View>
   );
 }
 
@@ -135,7 +194,7 @@ export default function PerformanceScreen() {
           </View>
 
           <View style={s.card}>
-            <GpiChart points={view.slice} innerW={innerW - 24} showPillars={showPillars} c={c} />
+            <GpiChart points={view.slice} innerW={innerW - 24} showPillars={showPillars} c={c} styles={s} />
             <TouchableOpacity style={s.toggle} onPress={() => setShowPillars(v => !v)}>
               <Text style={s.toggleTxt}>{showPillars ? '✓ Pillar lines' : '＋ Show pillar lines'}</Text>
             </TouchableOpacity>
@@ -172,5 +231,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   periodTxt: { fontSize: 13, fontWeight: '600', color: c.textSub },
   toggle:    { alignSelf: 'center', marginTop: 6, paddingVertical: 4, paddingHorizontal: 12 },
   toggleTxt: { fontSize: 12, color: c.accent, fontWeight: '600' },
+  readout:    { marginBottom: 4, minHeight: 34 },
+  readoutDate:{ fontSize: 12, color: c.textSub, fontWeight: '600' },
+  readoutVal: { fontSize: 13, fontWeight: '700' },
   note:      { fontSize: 11, color: c.textFaint, lineHeight: 16, marginTop: 8 },
 });
