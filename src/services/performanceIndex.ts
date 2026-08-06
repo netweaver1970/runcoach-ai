@@ -33,6 +33,26 @@ export interface GpiResult {
 
 interface Raw { date: string; hrv?: number; rhr?: number; sleep?: number; ctl?: number; ec?: number; }
 
+// Pillar weighting for the composite. "performance" leans on training (what you feel as getting fitter);
+// re-weighting to only the pillars present handles watch-off / no-run days. Default = performance-led.
+export type Weights = { recovery: number; sleep: number; training: number };
+export type Emphasis = 'balanced' | 'performance' | 'fitness';
+export const WEIGHT_PRESETS: Record<Emphasis, Weights> = {
+  balanced:    { recovery: 1, sleep: 1, training: 1 },   // equal thirds
+  performance: { recovery: 1, sleep: 1, training: 2 },   // training 50%
+  fitness:     { recovery: 1, sleep: 1, training: 4 },   // training 66%
+};
+export const EMPHASIS_LABEL: Record<Emphasis, string> = { balanced: 'Balanced', performance: 'Performance', fitness: 'Fitness-led' };
+
+/** Weighted mean of the pillars, renormalised over only the ones that have data. */
+export function weightedGpi(p: { recovery: number | null; sleep: number | null; training: number | null }, w: Weights): number | null {
+  let sum = 0, wt = 0;
+  for (const [v, weight] of [[p.recovery, w.recovery], [p.sleep, w.sleep], [p.training, w.training]] as const) {
+    if (v != null && weight > 0) { sum += v * weight; wt += weight; }
+  }
+  return wt > 0 ? Math.round((sum / wt) * 10) / 10 : null;
+}
+
 const WIN_DAYS   = 7;    // trailing smoothing window
 const BASE_DAYS  = 56;   // earliest window that fixes the personal baseline (~8 weeks)
 const Z_GAIN     = 12;   // 50 + Z_GAIN·z → a +1 SD lift reads ~62
