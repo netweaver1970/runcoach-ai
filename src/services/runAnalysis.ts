@@ -16,7 +16,7 @@ import { agentComplete } from './agent';
 import { buildAppModelPrompt } from './appModel';
 import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadSupplements, hrOffsetByDay } from './supplements';
-import { loadPrescriptionAt, CoachPlan } from './coach';
+import { loadPrescriptionAt, CoachPlan, assembleCoachSnapshot } from './coach';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
 
 export interface RunAnalysis {
@@ -101,6 +101,21 @@ How to use the prescription:
 
 // ─── Prompt + one-shot LLM call ───────────────────────────────────────────────
 
+/**
+ * The PURE rolling time-on-feet budget — independent of today's readiness. Without this the LLM only sees
+ * the day's PRESCRIBED minutes, which a poor night can cut to ~0, and wrongly concludes the athlete "had no
+ * budget" (Geert's case: a long run was reduced to recovery, then a 30-min recovery run was called over-budget).
+ */
+export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: number; tofPrev7d?: number; loadCapPct?: number } | null): string {
+  if (!cs || cs.tofBudgetTodayMin == null) return '';
+  const cap    = cs.loadCapPct ?? 10;
+  const prev   = Math.round(cs.tofPrev7d ?? 0);
+  const used   = Math.round(cs.tof7d ?? 0);
+  const weekly = Math.round(prev * (1 + cap / 100));
+  const remain = Math.max(0, Math.round(cs.tofBudgetTodayMin));
+  return `ROLLING VOLUME BUDGET (the PURE budget, independent of today's readiness): the +${cap}% weekly cap allowed ~${weekly} run-min this week (a step up on last week's ${prev}); ~${used} used before this run, ~${remain} min still under the cap today. CRITICAL: if today's PRESCRIBED minutes read low or 0, that is because a poor night/low readiness SCALED THE SESSION DOWN for recovery — it is NOT the volume budget running out. The athlete still had room in the weekly budget, so NEVER tell them they had "no budget"/"no room" today; a short recovery run inside the weekly cap is on-side.`;
+}
+
 function recoveryLoadContext(snap: HealthSnapshot): string {
   const rec = snap.todayRecovery;
   const recLine = rec && rec.weightedRMSSD > 0
@@ -139,8 +154,11 @@ export async function analyzeRun(
     : `NO SESSION WAS PRESCRIBED before this run — today's plan had not been generated when the run started, so there is no prescription to judge against. Do NOT assume it was a rest day or that the athlete should not have run, and do NOT produce a "ran on a rest day / should have rested" verdict. Analyse the run purely on its own merits and recent trends.`;
   const yohOffsets = await loadSupplements().then(d => hrOffsetByDay(d)).catch(() => ({} as Record<string, number>));
   const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true, undefined, yohOffsets);
-  const appModel = await buildAppModelPrompt().catch(() => '');
-  const userMsg = [appModel, recoveryLoadContext(snap), prescription, runBlock].filter(Boolean).join('\n\n');
+  const [appModel, cs] = await Promise.all([
+    buildAppModelPrompt().catch(() => ''),
+    assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null),
+  ]);
+  const userMsg = [appModel, recoveryLoadContext(snap), buildBudgetContext(cs), prescription, runBlock].filter(Boolean).join('\n\n');
 
   // Same shape as Chat, only the SYSTEM_PROMPT differs: run through agentComplete so agentic mode (when on)
   // can pull prior runs / metric series via tools to ground the analysis; else single-shot.

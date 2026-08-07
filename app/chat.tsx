@@ -38,8 +38,8 @@ import {
   PersistedMessage,
 } from '../src/services/chatMemory';
 import { formatUsage, lastCallUsage } from '../src/services/tokenUsage';
-import { loadPrescriptionAt } from '../src/services/coach';
-import { buildPrescriptionContext } from '../src/services/runAnalysis';
+import { loadPrescriptionAt, assembleCoachSnapshot } from '../src/services/coach';
+import { buildPrescriptionContext, buildBudgetContext } from '../src/services/runAnalysis';
 import { loadSupplements, hrOffsetByDay } from '../src/services/supplements';
 import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
 import { startRecording, stopRecording, cancelRecording, ensureMicPermission } from '../src/services/voiceRecorder';
@@ -181,6 +181,8 @@ export default function ChatScreen() {
       const latestRun = snap.runs[0] ?? null;
       // Per-day HR offset (yohimbine dose + coffee) → the run-analysis HR-corrects EF/SE for those runs.
       const yohOffsets = await loadSupplements().then(d => hrOffsetByDay(d)).catch(() => ({} as Record<string, number>));
+      // The PURE rolling ToF budget, so the analysis doesn't mistake a readiness-reduced day for "no budget".
+      const budgetCtx = buildBudgetContext(await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null));
 
       if (saved && saved.messages.length > 0) {
         // Restore previous conversation
@@ -228,7 +230,7 @@ export default function ChatScreen() {
             const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
             const systemContext = [
               buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail, yohOffsets),
-              buildPrescriptionContext(plan),
+              buildPrescriptionContext(plan), budgetCtx,
             ].filter(Boolean).join('\n\n');
             const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             setIsLoaded(true);
@@ -253,7 +255,7 @@ export default function ChatScreen() {
           const plan = await loadPrescriptionAt(latestRun.date.slice(0, 10), new Date(latestRun.date).getTime()).catch(() => null);
           const systemContext = [
             buildNewRunUserMessage(latestRun, sameType, undefined, undefined, undefined, yohOffsets),
-            buildPrescriptionContext(plan),
+            buildPrescriptionContext(plan), budgetCtx,
           ].filter(Boolean).join('\n\n');
           const shortMsg = `I just finished a ${latestRun.label ?? 'run'}. Analyze it and compare with my last ${sameType.length} ${latestRun.label ?? 'run'} runs.`;
           lastSeenRunRef.current = latestRun.uuid;
@@ -274,7 +276,7 @@ export default function ChatScreen() {
             const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
             const systemContext = [
               buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail, yohOffsets),
-              buildPrescriptionContext(plan),
+              buildPrescriptionContext(plan), budgetCtx,
             ].filter(Boolean).join('\n\n');
             const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             if (latestRun) lastSeenRunRef.current = latestRun.uuid;
