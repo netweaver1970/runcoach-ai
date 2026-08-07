@@ -110,10 +110,14 @@ export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: num
   if (!cs || cs.tofBudgetTodayMin == null) return '';
   const cap    = cs.loadCapPct ?? 10;
   const prev   = Math.round(cs.tofPrev7d ?? 0);
-  const used   = Math.round(cs.tof7d ?? 0);
   const weekly = Math.round(prev * (1 + cap / 100));
+  // tofBudgetTodayMin is computed from runs that ALREADY include this just-finished run → it is the
+  // budget REMAINING AFTER the run, not a pre-run allowance the run "exceeded". Frame it that way.
   const remain = Math.max(0, Math.round(cs.tofBudgetTodayMin));
-  return `ROLLING VOLUME BUDGET (the PURE budget, independent of today's readiness): the +${cap}% weekly cap allowed ~${weekly} run-min this week (a step up on last week's ${prev}); ~${used} used before this run, ~${remain} min still under the cap today. CRITICAL: if today's PRESCRIBED minutes read low or 0, that is because a poor night/low readiness SCALED THE SESSION DOWN for recovery — it is NOT the volume budget running out. The athlete still had room in the weekly budget, so NEVER tell them they had "no budget"/"no room" today; a short recovery run inside the weekly cap is on-side.`;
+  const withinNote = remain > 0
+    ? ` AFTER this run there are STILL ~${remain} run-min left before the weekly cap — so the run stayed WITHIN the volume budget. Do NOT say it went "over budget", "past the cap", or "used up the budget": ${remain} min still remain.`
+    : ` This run took the rolling total up to the weekly cap (~0 left) — but the ceiling was reached BY this run, so the day did not start with "no budget".`;
+  return `ROLLING VOLUME BUDGET (the PURE budget, independent of readiness): the +${cap}% weekly cap is ~${weekly} run-min this week (vs last week's ${prev}).${withinNote} SEPARATELY: a low or 0 PRESCRIBED-minutes day is a READINESS call (e.g. a poor night), NOT the volume budget running out — never say "no budget"/"no room". Judging whether to run against a REST prescription on low readiness is fair game; the volume cap is not the reason.`;
 }
 
 function recoveryLoadContext(snap: HealthSnapshot): string {
