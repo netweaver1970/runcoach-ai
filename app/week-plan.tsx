@@ -6,7 +6,7 @@ import { loadSnapshotCache } from '../src/services/healthkit';
 import {
   assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
-  getPeriodization, weekCapMultiplier, cyclePhase,
+  getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS,
 } from '../src/services/coach';
 import {
   estimateWorkoutLoad, strainFromLoad, estimateDayTrimp,
@@ -139,9 +139,24 @@ export default function WeekPlan() {
       setPeriodLabel(per.on ? cyclePhase(new Date(), per).label : '');
       const rw = await getRaceWeekPlan(coach); setRaceWeek(rw);  // race mode → the LLM race week IS the plan
       const raceMode = !!rw;                                     // → skip the cap/TSB re-trim below
-      const tof = (coach.recentTimeOnFeet ?? []).map(d => d.min);
-      while (tof.length < 14) tof.unshift(0);                 // pad if short
-      tof.splice(0, tof.length - 14);                          // keep the last 14 (offsets today-13…today)
+      // Seed 28 days (dates kept) so this re-trim grows off the SAME base as getWeekPlan / the daily engine:
+      // MAX of the last BASE_WINDOWS heat-credited weeks (a hot/sick week can't erode it). Without this the
+      // screen re-trimmed against the raw single prior week and silently undid the anti-erosion fix.
+      const HIST = 28;
+      const pad2 = (n: number) => String(n).padStart(2, '0');
+      const isoOf = (dt: Date) => `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+      const histSrc = (coach.recentTof28 && coach.recentTof28.length ? coach.recentTof28 : (coach.recentTimeOnFeet ?? []));
+      const tof = histSrc.map(d => d.min);
+      const tofDate = histSrc.map(d => d.date);
+      while (tof.length < HIST) {
+        tof.unshift(0);
+        const f = tofDate.length ? new Date(tofDate[0] + 'T00:00:00') : new Date();
+        f.setDate(f.getDate() - 1);
+        tofDate.unshift(isoOf(f));
+      }
+      tof.splice(0, tof.length - HIST); tofDate.splice(0, tofDate.length - HIST);
+      const heatBy = coach.heatByDate ?? {};
+      const clampCredit = (fac?: number) => Math.min(Math.max(1, fac ?? 1), HEAT_CREDIT_MAX);
 
       // Project CTL/ATL/TSB forward. Two passes:
       //   1. Per-day TSB floor — "protect the long, cap the rest". Only the LONG is protected THROUGH the floor
@@ -158,18 +173,24 @@ export default function WeekPlan() {
       const LONG_FLOOR = 45;       // the long is never trimmed into a recovery jog, even below the floor
       const LONG_DIP_MARGIN = 3;   // the protected long may sit up to this far below minTSB before we taper into it
       const tof0 = [...tof];       // snapshot of actual ToF history — each projection pass replays from the same base
+      const tofDate0 = [...tofDate];
 
       const walk = (taperSet: Set<number>): { rows: Row[]; cappedDays: number } => {
         const tofW = [...tof0];
+        const tofDateW = [...tofDate0];
+        const creditedAt = (idx: number) => (tofW[idx] ?? 0) * clampCredit(heatBy[tofDateW[idx]]);
         let ctl = ctl0, atl = atl0, cappedDays = 0;
         const rows = days.map((d, i) => {
           const fc = fxBy.get(d.date);
           const heat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
           const heatMin = d.intensity === 'rest' ? 0 : Math.max(8, Math.round(d.runMinutes / heat));
           const j = tofW.length;
-          const ref7   = tofW.slice(j - 13, j - 6).reduce((a, b) => a + b, 0); // 7 days ending a week ago
+          // Base = MAX over the last BASE_WINDOWS heat-credited 7-day blocks (matches getWeekPlan / the daily
+          // engine); consumption (prior6) stays raw. This is what makes the plan reflect the anti-erosion cap.
+          let baseRef = 0;
+          for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
           const prior6 = tofW.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
-          const allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct) - prior6)) : heatMin;
+          const allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct, BASE_WINDOWS > 1) - prior6)) : heatMin;
           const isLongDay = d.forced && d.kind === 'long';
           const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
 
@@ -199,7 +220,7 @@ export default function WeekPlan() {
           const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
           const volCapped = isRun && !d.forced && volMin < heatMin; // trimmed by the volume cap
           const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor (forced days too now)
-          tofW.push(mins);
+          tofW.push(mins); tofDateW.push(d.date);   // keep the date array aligned for the max-window base
 
           // Match the daily plan's true-work-minutes cap so the week's interval/tempo days render the same
           // ramped structure (intervals +1 rep, tempo +cap%) rather than an uncapped synthesis.

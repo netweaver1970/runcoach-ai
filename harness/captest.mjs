@@ -44,3 +44,12 @@ console.log('  → raw week = 60; credited base should be ~69 (60×1.15), cap ~7
 console.log('\n=== E. Re-entry (near-zero base) still floors a short run ===');
 const empty = series(() => 0);
 run('baseWindows=3, empty history', empty, { baseWindows: 3 });
+
+console.log('\n=== F. Rebuild week (first build after deload) — max-window must NOT double-count the jump ===');
+// periodization: 4 build + 1 deload; anchor 5 weeks back → TODAY is the first build week of cycle 1.
+const per = { on: true, buildWeeks: 4, deloadWeeks: 1, deloadDropPct: 25, anchor: '2026-07-06' };
+// Steady ~180/wk history (so the base is well-defined); the deload week (7-13d ago) ran lower.
+const cyc = series((o) => (o >= 7 && o <= 13) ? weekVal(o, 15) : weekVal(o, 60));
+run('baseWindows=1 (raw + rebuild JUMP 1.47×)', cyc, { baseWindows: 1, periodization: per });
+run('baseWindows=3 (smooth base, plain ramp)', cyc, { baseWindows: 3, periodization: per });
+console.log('  → raw-base uses the 1.47× rebuild jump on the depressed deload week; smooth-base holds the peak and uses plain 1.10× → no 374-style spike.');

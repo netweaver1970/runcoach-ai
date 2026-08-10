@@ -912,7 +912,7 @@ export async function getWeekPlan(
     for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
     const prior6   = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);
     const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
-    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct) - prior6)) : 45;
+    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
 
     const kind = template[d.getDay()];
@@ -1741,7 +1741,12 @@ function weekIndex(d: Date, per: Periodization): number {
 // Per-week cap multiplier: +cap% ramp on a build week; a drop on the FIRST deload week (hold thereafter);
 // a rebuild jump on the first build week AFTER a deload (undo the drop + ramp → back to the pre-deload
 // level, not the trough). Returns the plain ramp when periodization is off.
-export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: number): number {
+// `smoothBase`: the base the cap grows off is the MAX of the last N weeks (anti-heat-erosion), which does
+// NOT dip during the deload week — so the rebuild-jump compensation would DOUBLE-COUNT (base already holds
+// the pre-deload peak). With a smoothed base the first build week after a deload uses the PLAIN ramp: base
+// (=peak) × ramp = peak+cap%, resuming from where you left off. The rebuild jump is only correct when the
+// base tracks last-week (which collapsed to the deload trough), so keep it for the raw-base default.
+export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: number, smoothBase = false): number {
   const ramp = 1 + capPct / 100;
   if (!per.on) return ramp;
   const cycleLen = per.buildWeeks + per.deloadWeeks;
@@ -1749,7 +1754,7 @@ export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: 
   const cycleNum = Math.floor(idx / cycleLen);
   const w = ((idx % cycleLen) + cycleLen) % cycleLen;
   const deload = 1 - per.deloadDropPct / 100;
-  if (w < per.buildWeeks) return (w === 0 && cycleNum > 0) ? ramp / deload : ramp;
+  if (w < per.buildWeeks) return (w === 0 && cycleNum > 0 && !smoothBase) ? ramp / deload : ramp;
   return (w === per.buildWeeks) ? deload : 1;
 }
 
@@ -1790,10 +1795,12 @@ export function computeTimeOnFeetPlan(
   const capPct       = opts.capPct ?? DEFAULT_LOAD_CAP_PCT;
   const per          = opts.periodization;
   // Per-week cap multiplier (periodized build/deload); plain +cap% ramp when no periodization passed.
+  // smoothBase = the base is a max-of-N-weeks (doesn't dip in deload) → skip the rebuild jump (see weekCapMultiplier).
+  const smoothBase = (opts.baseWindows ?? 1) > 1;
   const weekMultAt = (offsetDays: number) => {
     if (!per) return 1 + capPct / 100;
     const d = new Date(today); d.setDate(d.getDate() + offsetDays);
-    return weekCapMultiplier(d, per, capPct);
+    return weekCapMultiplier(d, per, capPct, smoothBase);
   };
   const meaningful   = opts.meaningful   ?? 20;
   const reentryBelow = opts.reentryBelow ?? 30;
