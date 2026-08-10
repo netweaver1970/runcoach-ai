@@ -579,32 +579,83 @@ function buildTodayStatus(snap: HealthSnapshot, todayPlan?: TodayPlanContext): s
   return `TODAY (${todayName}): prescribed ${prescribed} · status: ${completed}${nextNote}`;
 }
 
+// Resting HR for the HR-reserve column: median of the recent series (robust to outliers), fallback 57.
+function reportRestHR(snap: HealthSnapshot): number {
+  const vals = (snap.restingHR ?? []).map(v => v.value).filter(v => v > 0).sort((a, b) => a - b);
+  return vals.length ? vals[Math.floor(vals.length / 2)] : 57;
+}
+
+// Precomputed EFFICIENCY table (markdown) so the report never has to derive EC/EF/SE from prose — that's
+// where it misread/invented numbers. EC=speed÷power (HR-independent), EF=power÷HR, SE=speed÷HR; higher=better.
+function buildEfficiencyTable(runs: RunWorkout[], restHR: number, maxHR: number, maxRows = 12): string {
+  const reserve = Math.max(1, maxHR - restHR);
+  const rows = (runs ?? []).slice(0, maxRows).map(r => {
+    const paceSec = r.workPace ?? r.pace ?? 0;
+    const power   = r.workPower ?? 0;
+    const hr      = r.workHR ?? r.avgHeartRate ?? 0;
+    const spd     = paceSec > 0 ? 60000 / paceSec : 0;   // m/min
+    const ec = spd > 0 && power > 0 ? (spd / power).toFixed(2) : '—';
+    const ef = power > 0 && hr > 0  ? (power / hr).toFixed(2)  : '—';
+    const se = spd > 0 && hr > 0    ? (spd / hr).toFixed(2)    : '—';
+    const hrr = hr > 0 ? ((hr - restHR) / reserve).toFixed(2) : '—';   // HR-reserve → zone context
+    return `| ${fd(r.date)} | ${LSHORT[r.label ?? 'Unknown'] ?? '?'} | ${fp(paceSec)} | ${hr || '—'} | ${hrr} | ${power || '—'} | ${ec} | ${ef} | ${se} |`;
+  });
+  if (!rows.length) return '';
+  return `EFFICIENCY (precomputed per run — use THESE, do not recompute; higher EC/EF/SE = better; HRr = HR-reserve for zone context):
+| Date | Type | pace | wHR | HRr | W | EC | EF | SE |
+|---|---|---|---|---|---|---|---|---|
+${rows.join('\n')}`;
+}
+
+// Precomputed CTL/ATL/TSB trend (markdown) sampled across the load series — so "Training Load" is a table, not prose.
+function buildLoadTrendTable(snap: HealthSnapshot): string {
+  const load = snap.trainingLoad ?? [];
+  if (load.length < 2) return '';
+  const idxs = Array.from(new Set([0, Math.floor(load.length * 0.25), Math.floor(load.length * 0.5), Math.floor(load.length * 0.75), load.length - 1]));
+  const rows = idxs.map(i => {
+    const l: any = load[i];
+    const d = l.date ? fd(l.date) : `#${i}`;
+    return `| ${d} | ${Math.round(l.ctl)} | ${Math.round(l.atl)} | ${l.tsb >= 0 ? '+' : ''}${Math.round(l.tsb)} |`;
+  });
+  return `TRAINING LOAD trend (CTL=fitness · ATL=fatigue · TSB=form; oldest→latest):
+| Date | CTL | ATL | TSB |
+|---|---|---|---|
+${rows.join('\n')}`;
+}
+
 function buildPrompt(snap: HealthSnapshot, todayPlan?: TodayPlanContext): string {
   return `You are an expert running coach writing a BACKWARD-LOOKING review — analyse what has HAPPENED: trends, \
 efficiency, load, recovery, what improved or declined. Write DIRECTLY — no deliberation, no preamble, no chain-of-thought.
-CRITICAL: do NOT prescribe future sessions — no "tomorrow do X", no target paces/HR/watts, no weekly-km targets, \
-no workout suggestions. The app's own 7-Day Plan and daily coach own all prescription; they hold the volume budget, \
-periodization, zones and rolling cap that THIS report does not see, so any forward number here would contradict them. \
-Stay in the past tense: interpret the data, don't plan.
-wHR=work-only HR (excl. warm-up/recovery). HRV=RMSSD (sleep-stage-weighted). Efficiency ratios (higher=better, \
-compare ACROSS runs — never raw pace/watts): EC=speed÷power (HR-INDEPENDENT, trust most), EF=power÷HR, SE=speed÷HR.
+CRITICAL RULES:
+1. NO forward prescriptions — no "tomorrow do X", no target paces/HR/watts, no weekly-km targets, no workout \
+suggestions. The app's 7-Day Plan owns prescription (it has the budget/periodization/zones/cap this report can't see). Past tense only.
+2. PREFER TABLES over prose. Any multi-number comparison (efficiency across runs, load trend, recent runs) MUST be a \
+compact markdown table, not a paragraph. Keep prose to a one-line takeaway under each table.
+3. USE ONLY the numbers given below. Do NOT invent or estimate figures (esp. weekly km — quote the WEEKLY KM series \
+verbatim). The EFFICIENCY and TRAINING LOAD tables are PRECOMPUTED — reproduce/interpret them, never recompute.
+4. NEUTRAL and factual — report what happened without moralising. If a logged run deviated from the plan, state it \
+plainly (one line); do NOT call it a mistake, a "spike", or a risk unless the load/recovery numbers actually show harm.
+wHR=work-only HR. HRr=HR-reserve ((HR−rest)/(max−rest); ~0.6=Z2, ~0.7=Z3, ~0.85=threshold). EC=speed÷power \
+(HR-INDEPENDENT, trust most), EF=power÷HR, SE=speed÷HR; higher=better.
 
 ${buildTodayStatus(snap, todayPlan)}
+
+${buildEfficiencyTable(snap.runs, reportRestHR(snap), snap.estimatedMaxHR || 188)}
+
+${buildLoadTrendTable(snap)}
 
 ${buildDataBlock(snap)}
 
 Write the review using EXACTLY these headers:
 
 **Fitness Snapshot** — current level from VO2Max + recent runs (2–3 sentences).
-**What's Working** — 1–2 specific positives with numbers.
-**Efficiency Trend** — is running economy improving? Compare recent same-type runs via EC (HR-independent) first, then EF/SE. Cite the ratios; say improving / flat / declining.
-**Training Load** — where CTL/ATL/TSB have been and the trend; call out what's actually driving load (running vs cross-training/dance).
-**Recovery & Sleep** — interpret today's score + RMSSD/RHR vs baseline, and the recent sleep pattern.
-**Watch Out For** — warning signs already visible in the data: overtraining, under-recovery, injury risk, a declining trend.
+**What's Working** — 1–2 specific positives with numbers (a mini table is fine).
+**Efficiency Trend** — reproduce the EFFICIENCY table (or the same-type subset) and give a one-line verdict: economy improving / flat / declining. Note any HRr shift (e.g. same run type now reaching a higher HR-reserve = harder/more real).
+**Training Load** — reproduce the TRAINING LOAD table + one line on the trend and what's driving it (running vs cross-training/dance).
+**Recovery & Sleep** — today's score + RMSSD/RHR vs baseline + recent sleep. A small table (metric | value | baseline) is welcome.
+**Watch Out For** — only genuine warning signs the numbers actually show (under-recovery, a declining EC trend, ACWR out of range). If nothing is wrong, say so — don't manufacture risk.
 
-Rules: cite real numbers, 2–4 sentences per section, skip sections with no data. This is a REVIEW of the past — \
-NO forward prescriptions (the 7-Day Plan handles those). Use TODAY's status only to interpret what happened (e.g. \
-whether a logged run matched or deviated from the plan), never to tell the runner what to do next.`;
+Skip any section whose data is missing. Use TODAY's status only to note factually whether a logged run matched the plan.`;
 }
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
