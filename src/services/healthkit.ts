@@ -3478,10 +3478,10 @@ function workDrillsTotals(w: any, regime: AccountingMode = 'work'): { seconds: n
 
 // Per-day running WORK+DRILLS totals (runs only). `pick` selects minutes or km.
 async function fetchDailyWorkHistory(
-  pick: (t: { seconds: number; meters: number }) => number, toDate?: Date,
+  pick: (t: { seconds: number; meters: number }) => number, toDate?: Date, days = 31,
 ): Promise<{ date: string; value: number }[]> {
   const endDate = toDate ?? new Date();
-  const since   = new Date(endDate.getTime() - 31 * 86_400_000);
+  const since   = new Date(endDate.getTime() - days * 86_400_000);
   const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
     filter: { startDate: since, endDate: endDate },
     limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
@@ -3498,8 +3498,8 @@ async function fetchDailyWorkHistory(
 }
 
 // Time-on-feet basis: work+drills MINUTES per day.
-export function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
-  return fetchDailyWorkHistory((t) => t.seconds, toDate).then((rows) =>
+export function fetchDailyDurationHistory(toDate?: Date, days = 31): Promise<{ date: string; value: number }[]> {
+  return fetchDailyWorkHistory((t) => t.seconds, toDate, days).then((rows) =>
     rows.map((r) => ({ date: r.date, value: Math.round(r.value / 60) })));
 }
 
@@ -3507,6 +3507,45 @@ export function fetchDailyDurationHistory(toDate?: Date): Promise<{ date: string
 export function fetchDailyWorkDistanceHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
   return fetchDailyWorkHistory((t) => t.meters, toDate).then((rows) =>
     rows.map((r) => ({ date: r.date, value: Math.round(r.value / 100) / 10 })));
+}
+
+/**
+ * Read the relative humidity Apple Watch records in a workout's metadata (HKWeatherHumidity).
+ * HK stores it as a 0–1 ratio (sometimes already a %); returns 0–100 or undefined when absent.
+ */
+export function extractWeatherHumidity(w: any): number | undefined {
+  const h = metaGet(w?.metadata, 'HKWeatherHumidity');
+  if (h == null) return undefined;
+  let value = typeof h === 'object' ? Number(h.quantity ?? metaGet(h, 'quantity')) : Number(h);
+  if (!isFinite(value)) return undefined;
+  if (value > 0 && value <= 1) value *= 100;  // ratio → %
+  if (value < 0 || value > 100) return undefined;
+  return Math.round(value);
+}
+
+/**
+ * Per-day OUTDOOR run weather (the HOTTEST run of each day), reconstructed from workout weather
+ * metadata → date → {tempC, humidity}. Feeds the rolling-cap HEAT-CREDIT (so a heat-shortened run
+ * doesn't permanently erode next week's volume ceiling). Days with no recorded weather (indoor /
+ * old runs) are simply absent → the cap treats them as neutral (factor 1).
+ */
+export async function fetchDailyRunWeatherHistory(toDate?: Date, days = 31): Promise<Record<string, { tempC: number; humidity?: number }>> {
+  const endDate = toDate ?? new Date();
+  const since   = new Date(endDate.getTime() - days * 86_400_000);
+  const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
+    filter: { startDate: since, endDate: endDate }, limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
+  }).catch(() => []);
+  const byDay: Record<string, { tempC: number; humidity?: number }> = {};
+  (allWorkouts as any[])
+    .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only
+    .forEach((w: any) => {
+      const tempC = extractWeatherTempC(w);
+      if (tempC == null) return;
+      const day = toISOStr(w.startDate).slice(0, 10);
+      // Keep the hottest run of the day (the conditions that most limited the session).
+      if (!byDay[day] || tempC > byDay[day].tempC) byDay[day] = { tempC, humidity: extractWeatherHumidity(w) };
+    });
+  return byDay;
 }
 
 export async function fetchVO2MaxHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {

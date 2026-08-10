@@ -43,6 +43,8 @@ const snap: any = {
   advisableHigh: scn.advisableHigh,
   acwr: scn.acwr,
   recentTimeOnFeet: capCtx.tof.series14,
+  recentTof28: capCtx.tof.series28,
+  heatByDate: capCtx.heatCredit,
   tof7d: capCtx.tof.tof7d,
   tofPrev7d: capCtx.tof.tofPrev7d,
   tofBudgetTodayMin: capCtx.budgetMin,

@@ -3,6 +3,8 @@
 export async function fetchOurDailyComponents() { return null; }
 export async function fetchDailyDurationHistory() { return []; }
 export async function fetchDailyWorkDistanceHistory() { return []; }
+export async function fetchDailyRunWeatherHistory() { return {}; }   // heat-credit map (empty on the deterministic path)
+export function extractWeatherHumidity() { return undefined; }
 export async function loadSnapshotCache() { return null; }
 export function buildHeartbeatQualityMap() { return new Map(); }   // bodyBattery.ts imports (never called on the deterministic path)
 export function buildBeatQualityMap() { return new Map(); }

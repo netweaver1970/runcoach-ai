@@ -10,7 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import { callLLM, getLLMStatus, extractJsonObject, setUsageFeature } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
-import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory } from './healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
@@ -42,6 +42,8 @@ export interface CoachSnapshot {
   recentQualityTrimp?: { intervals?: number; tempo?: number; long?: number };
   // Time-on-feet (running minutes) — drives the alternation + rolling-volume rules.
   recentTimeOnFeet?: { date: string; min: number }[]; // last ~14 days (0 = no run)
+  recentTof28?:      { date: string; min: number }[]; // last 28 days — week planner's max-of-N-weeks cap base
+  heatByDate?:       Record<string, number>;          // date → heat factor experienced (week-planner heat-credit)
   tof7d?:            number;   // trailing 7-day running minutes (completed days only)
   tofPrev7d?:        number;   // the 7 days before that
   tofBudgetTodayMin?: number;  // max running MINUTES today under the rolling cap (distance cap → via pace)
@@ -826,9 +828,24 @@ export async function getWeekPlan(
   const fxBy = new Map((forecast ?? []).map(f => [f.date, f]));
   const p = (n: number) => String(n).padStart(2, '0');
 
-  const tof = (snap.recentTimeOnFeet ?? []).map(d => d.min);
-  while (tof.length < 14) tof.unshift(0);
-  tof.splice(0, tof.length - 14);
+  // Seed the history with 28 days (dates kept) so the base can take the MAX over the last 3 comparable
+  // weeks and heat-credit each day — matching the daily engine (computeTimeOnFeetPlan) so the 7-day
+  // forecast's ceiling equals the budget the runner actually trains against. Falls back to the 14-day
+  // series on older snapshots.
+  const HIST = 28;
+  const histSrc = (snap.recentTof28 && snap.recentTof28.length ? snap.recentTof28 : (snap.recentTimeOnFeet ?? []));
+  const tof: number[] = histSrc.map(d => d.min);
+  const tofDate: string[] = histSrc.map(d => d.date);
+  while (tof.length < HIST) {
+    tof.unshift(0);
+    const f = tofDate.length ? new Date(tofDate[0] + 'T00:00:00') : new Date(today);
+    f.setDate(f.getDate() - 1);
+    tofDate.unshift(`${f.getFullYear()}-${p(f.getMonth() + 1)}-${p(f.getDate())}`);
+  }
+  tof.splice(0, tof.length - HIST); tofDate.splice(0, tofDate.length - HIST);
+  const heatBy = snap.heatByDate ?? {};
+  const clampCredit = (fac?: number) => Math.min(Math.max(1, fac ?? 1), HEAT_CREDIT_MAX);
+  const creditedAt = (idx: number) => (tof[idx] ?? 0) * clampCredit(heatBy[tofDate[idx]]);
 
   // Shuffle state: a quality session the cap blocks on its template day is DEFERRED (FIFO) and
   // rescheduled onto the next budgeted, well-spaced flex day — so the runner's key sessions shift
@@ -849,7 +866,7 @@ export async function getWeekPlan(
   // Grow an easy day to spend the SPARE budget (after reserving for quality still to place) up to EASY_MAX,
   // when green; hold at EASY_BASE when run-down or when there's no genuine surplus (never below EASY_BASE, so
   // it's always a real easy run — and never worse than the pre-growth fixed 35).
-  const easyGrow = (allowance: number) => {
+  const easyGrow = (allowance: number, maxCap: number = EASY_MAX) => {
     if (!green) return Math.max(EASY_MIN, Math.min(EASY_BASE, Math.round(allowance)));
     const reserve = Math.max(0, Qtotal - qPlaced) * QRESERVE;
     const spare = Math.round(allowance - reserve);
@@ -859,9 +876,11 @@ export async function getWeekPlan(
     // says every day may be a run day, but the arithmetic priced most of them out. A short easy day is a
     // real run; two 22-min days beat one 35-min day plus a forced rest.
     return spare > EASY_BASE
-      ? Math.min(EASY_MAX, spare)
+      ? Math.min(maxCap, spare)
       : Math.max(EASY_MIN, Math.min(EASY_BASE, Math.round(allowance)));
   };
+  const EASY_MAX_BUILD = 80;   // BUILD-week push: let an easy/flex day absorb more of the surplus so the week
+  //                              actually reaches the +cap% ceiling (per-type +10%/wk ramp still applies below).
   const isQuality = (k: WeekKind) => k === 'intervals' || k === 'tempo' || k === 'long';
   const resolveQuality = (k: WeekKind): [CoachIntensity, number] =>
     k === 'intervals' ? ['hard', 45] : k === 'long' ? ['moderate', longTargetMin] : ['moderate', 50];
@@ -884,11 +903,17 @@ export async function getWeekPlan(
     const fc = fxBy.get(key);
     const heat = fc ? heatStrainFactor({ apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
 
+    const buildWk = periodization.on && cyclePhase(d, periodization).phase === 'build';
     const j = tof.length;
-    const ref7   = tof.slice(j - 13, j - 6).reduce((a, b) => a + b, 0);
-    const prior6 = tof.slice(j - 6,  j).reduce((a, b) => a + b, 0);
-    let allowance = ref7 > 0 ? Math.max(0, Math.round(ref7 * weekCapMultiplier(d, periodization, capPct) - prior6)) : 45;
-    if (ref7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
+    // Base = MAX over the last BASE_WINDOWS 7-day blocks, each heat-credited (a hot/sick week can't drag
+    // the ceiling down; a heat-cut run counts as its normal-conditions volume). Consumption (prior6) and
+    // the re-entry gate (rawPrev7) stay RAW. Mirrors computeTimeOnFeetPlan so budget == forecast.
+    let baseRef = 0;
+    for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
+    const prior6   = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);
+    const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
+    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct) - prior6)) : 45;
+    if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
 
     const kind = template[d.getDay()];
     const spaced = (i - lastQ) >= 2; // ≥1 non-quality day since the last quality session
@@ -918,7 +943,7 @@ export async function getWeekPlan(
       const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
     } else if (kind === 'easy') {
       // Easy volume day — but only up to maxRunDays total (else REST so the week isn't a jog every day).
-      if (runDays < maxRunDays) { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
+      if (runDays < maxRunDays) { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
     }
     else if (kind === 'rest')   { intensity = 'rest'; base = 0; }
     else { // flex: MOP UP the spare budget with easy volume rather than banking it by resting. easyGrow already
@@ -926,7 +951,7 @@ export async function getWeekPlan(
       // or shorten — better to OFFER the aerobic volume than hoard it. Rest when the budget is spent OR the
       // week already has maxRunDays runs (concentrate volume into fewer, meaningful days).
       if (allowance < MEANINGFUL || runDays >= maxRunDays) { intensity = 'rest'; }
-      else { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }
+      else { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
     }
     if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
     // PROGRESSIVE OVERLOAD: ramp this day's TYPE from where it recently was (+cap%/week), so it climbs toward
@@ -943,6 +968,7 @@ export async function getWeekPlan(
     // Force-placed quality counts its REAL minutes (so later days' budgets — esp. the long — see the true
     // load); otherwise the day's counted ToF is capped at the available allowance.
     tof.push(intensity === 'rest' ? 0 : forcePlaced ? heatMin : Math.min(heatMin, Math.max(MEANINGFUL, allowance)));
+    tofDate.push(key);   // keep the date array aligned so the max-window base indexes correctly as the loop projects forward
 
     const isLong = placed === 'long';
     const structure = intensity === 'rest' ? 'Rest'
@@ -1653,6 +1679,7 @@ export async function setLoadCapBasis(b: LoadCapBasis): Promise<void> {
 
 export interface TofPlan {
   series14:       { date: string; min: number }[];
+  series28:       { date: string; min: number }[];   // last 28 days (week-planner max-window base + cap history)
   tof7d:          number;   // rolling 7-day total ending today (today so far)
   tofPrev7d:      number;   // the 7 days before that
   cap7dMin:       number;   // (1+pct%) × prior-7 (the rolling ceiling)
@@ -1741,6 +1768,13 @@ export interface CapOpts {
   reentryBelow?: number;  // prior-7 below this → apply the re-entry floor
   reentryFloor?: number;  // minimum budget when returning from a near-zero base
   periodization?: Periodization; // build/deload cycle modulating the per-week cap multiplier
+  // Anti-heat-erosion (see computeTimeOnFeetPlan): the base the +cap% ceiling grows off used to be
+  // the single raw prior week, so a heat-shortened week permanently dragged next week's ceiling down.
+  heatCredit?:   Record<string, number>; // date(YYYY-MM-DD) → heat factor experienced that day (≥1). A heat-cut
+  //                                         run counts as its ~normal-conditions volume so weather doesn't erode fitness.
+  heatCreditMax?: number; // per-day credit ceiling (default 1.15) — bounds crediting so it can't spiral the cap up.
+  baseWindows?:  number;  // # of prior 7-day blocks to take the MAX over as the base (default 1). >1 → a single bad
+  //                         (hot / sick / travel) week can't drop the ceiling; the base tracks demonstrated capacity.
 }
 
 /**
@@ -1764,6 +1798,9 @@ export function computeTimeOnFeetPlan(
   const meaningful   = opts.meaningful   ?? 20;
   const reentryBelow = opts.reentryBelow ?? 30;
   const reentryFloor = opts.reentryFloor ?? 20;
+  const heatCredit   = opts.heatCredit   ?? {};
+  const heatCreditMax = opts.heatCreditMax ?? 1.15;
+  const baseWindows  = Math.max(1, Math.round(opts.baseWindows ?? 1));
   const map = new Map(daily.map(d => [d.date, d.value]));
   const p = (n: number) => String(n).padStart(2, '0');
   const dayStr = (offset: number) => {
@@ -1771,11 +1808,20 @@ export function computeTimeOnFeetPlan(
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   };
   const minsAt = (offset: number) => map.get(dayStr(offset)) ?? 0;
+  // Heat-credit: a run done in the heat counts as its ~normal-conditions volume (raw × the day's heat
+  // factor, capped) so weather doesn't erode the fitness base. clampCredit keeps it in [1, heatCreditMax].
+  const clampCredit = (f?: number) => Math.min(Math.max(1, f ?? 1), heatCreditMax);
+  const creditAt = (offset: number) => minsAt(offset) * clampCredit(heatCredit[dayStr(offset)]);
+  // The base the +cap% ceiling grows off = the MAX over the last `baseWindows` 7-day blocks (each
+  // heat-credited). max-of-N means a single hot/sick/travel week can't ratchet the ceiling down —
+  // it tracks demonstrated capacity. baseWindows=1 + empty heatCredit ⇒ identical to the old raw prev-7.
+  const blockSumAgo = (startAgo: number) => { let s = 0; for (let j = 0; j < 7; j++) s += creditAt(startAgo + j); return s; };
+  const baseRefAgo  = () => { let best = 0; for (let w = 0; w < baseWindows; w++) best = Math.max(best, blockSumAgo(7 + 7 * w)); return best; };
 
   let tofLast6  = 0; for (let o = 1; o <= 6;  o++) tofLast6  += minsAt(o);
-  let tofPrev7  = 0; for (let o = 7; o <= 13; o++) tofPrev7  += minsAt(o);
+  let tofPrev7  = 0; for (let o = 7; o <= 13; o++) tofPrev7  += minsAt(o);  // RAW immediate prior week (re-entry gate + display)
   const todayDone = minsAt(0);                       // time-on-feet ALREADY done today (e.g. a morning run)
-  const cap = Math.round(weekMultAt(0) * tofPrev7);
+  const cap = Math.round(weekMultAt(0) * baseRefAgo());
   // The cap limits the TRAILING-7 window (days 0–6), so today's remaining room must subtract BOTH the
   // last 6 days AND what's already been run today — otherwise after a morning run the plan offers the
   // whole day's allowance again and a second session blows the weekly cap (eating next week's budget).
@@ -1784,18 +1830,28 @@ export function computeTimeOnFeetPlan(
 
   const series14: { date: string; min: number }[] = [];
   for (let o = 13; o >= 0; o--) series14.push({ date: dayStr(o), min: minsAt(o) });
+  const series28: { date: string; min: number }[] = [];
+  for (let o = 27; o >= 0; o--) series28.push({ date: dayStr(o), min: minsAt(o) });
 
   // Forward-project the rolling cap to find the earliest day a meaningful-length run fits again,
   // ASSUMING REST until then: each future rest day rolls an old high-volume day off the trailing
   // window, so the budget recovers. minIdx(i): past/today carry real minutes, future days = 0.
   const minIdx = (i: number) => (i <= 0 ? minsAt(-i) : 0);
+  // Credited/max-window base for a projected day k (mirrors baseRefAgo but indexed forward in time;
+  // future days carry 0 minutes so they never inflate the base). Consumption (last6) stays RAW.
+  const creditIdx = (i: number) => minIdx(i) * (i <= 0 ? clampCredit(heatCredit[dayStr(-i)]) : 1);
+  const baseRefAt = (k: number) => {
+    let best = 0;
+    for (let w = 0; w < baseWindows; w++) { let s = 0; for (let j = 7; j <= 13; j++) s += creditIdx(k - j - 7 * w); best = Math.max(best, s); }
+    return best;
+  };
   let nextRunInDays = 0, nextRunBudgetMin = budget;
   for (let k = 0; k <= 21; k++) {
     let last6 = 0; for (let j = 1; j <= 6;  j++) last6 += minIdx(k - j);
-    let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);
+    let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);   // raw, for the re-entry gate only
     // minIdx(k) = the current day's already-done minutes (today's run for k=0; 0 for future days) —
     // subtract it too so "does a run fit today?" reflects what's already on the legs today.
-    let b = Math.max(0, Math.round(weekMultAt(k) * prev7) - last6 - minIdx(k));
+    let b = Math.max(0, Math.round(weekMultAt(k) * baseRefAt(k)) - last6 - minIdx(k));
     if (prev7 < reentryBelow) b = Math.max(b, reentryFloor); // re-entry / very low base
     if (b >= meaningful) { nextRunInDays = k; nextRunBudgetMin = b; break; }
   }
@@ -1807,6 +1863,7 @@ export function computeTimeOnFeetPlan(
 
   return {
     series14,
+    series28,
     tof7d: tofLast6 + minsAt(0),
     tofPrev7d: tofPrev7,
     cap7dMin: cap,
@@ -1827,7 +1884,13 @@ export interface CapContext {
   capBasis: LoadCapBasis;
   capPct: number;
   paceMinPerKm: number;    // trailing real-work pace (min/km); 0 in tof mode (unused there)
+  heatCredit: Record<string, number>; // date → heat factor experienced (for the week planner's matching base)
 }
+
+// Anti-heat-erosion tuning for the rolling cap (shared by the daily engine + the week planner so both
+// grow off the same base). See computeTimeOnFeetPlan / CapOpts.
+export const HEAT_CREDIT_MAX = 1.15;  // a heat day counts for at most +15% of its raw minutes
+export const BASE_WINDOWS    = 3;     // ceiling = +cap% × MAX of the last 3 comparable weeks (heat-credited)
 
 /**
  * The rolling progression cap, honouring the user's settings. Time-on-feet is ALWAYS computed (the
@@ -1839,16 +1902,81 @@ export async function buildCapContext(
   durSeries: { date: string; value: number }[], toDate: Date, capPct: number, capBasis: LoadCapBasis,
 ): Promise<CapContext> {
   const periodization = await getPeriodization();
-  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization });
-  if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0 };
+  // HEAT-CREDIT map: reconstruct each past run-day's heat factor from its stored workout weather, so the
+  // rolling-cap base counts a heat-shortened run as its ~normal-conditions volume (weather ≠ fitness drop).
+  const weatherHist = await fetchDailyRunWeatherHistory(toDate).catch(() => ({} as Record<string, { tempC: number; humidity?: number }>));
+  const heatCredit: Record<string, number> = {};
+  for (const [date, w] of Object.entries(weatherHist)) heatCredit[date] = heatStrainFactor({ tempC: w.tempC, humidity: w.humidity });
+  const antiErosion = { heatCredit, heatCreditMax: HEAT_CREDIT_MAX, baseWindows: BASE_WINDOWS };
+  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization, ...antiErosion });
+  if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
 
   const distKm = await fetchDailyWorkDistanceHistory(toDate);
-  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization });
+  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, ...antiErosion });
   const p = (n: number) => String(n).padStart(2, '0');
   const dStr = `${toDate.getFullYear()}-${p(toDate.getMonth() + 1)}-${p(toDate.getDate())}`;
   const dist7d = distKm.filter(d => d.date <= dStr).slice(-7).reduce((s, d) => s + d.value, 0);
   const paceMinPerKm = dist7d > 0 ? tof.tof7d / dist7d : 6; // fallback ~6 min/km
-  return { tof, cap, budgetMin: Math.round(cap.budgetTodayMin * paceMinPerKm), loadUnit: 'km', capBasis, capPct, paceMinPerKm };
+  return { tof, cap, budgetMin: Math.round(cap.budgetTodayMin * paceMinPerKm), loadUnit: 'km', capBasis, capPct, paceMinPerKm, heatCredit };
+}
+
+export interface CapWeek {
+  weekStart:  string;   // Monday YYYY-MM-DD
+  label:      string;   // e.g. "Aug 4"
+  actualMin:  number;   // raw time-on-feet that week
+  ceilingMin: number;   // the +cap% rolling ceiling entering that week (heat-credited, max-of-N base)
+  hitPct:     number;   // actualMin / ceilingMin × 100  (>100 = at/over the cap)
+  phase:      string;   // "Build 2/4" | "Deload week" | ''
+  heatTaxPct: number;   // avg heat tax over the week's run days: (heatFactor − 1) × 100
+  isCurrent:  boolean;  // the in-progress week (actual still accumulating)
+}
+
+/**
+ * Week-by-week BUDGET vs ACTUAL readout (see app/cap-history.tsx): for each of the last `weeks` weeks,
+ * the +cap% ceiling that applied (heat-credited, max-of-N-weeks base — the same math the daily engine
+ * uses) vs what was actually run, plus that week's heat tax and periodization phase. Makes the
+ * anti-erosion cap visible: are you reaching the ceiling, and how much is heat costing you?
+ */
+export async function computeCapHistory(weeks = 12, toDate = new Date()): Promise<CapWeek[]> {
+  const [periodization, capPct] = await Promise.all([getPeriodization(), getLoadCapPct()]);
+  const spanDays = weeks * 7 + 28;   // +28d so the earliest week's base lookback is covered
+  const [dur, weatherHist] = await Promise.all([
+    fetchDailyDurationHistory(toDate, spanDays),
+    fetchDailyRunWeatherHistory(toDate, spanDays).catch(() => ({} as Record<string, { tempC: number; humidity?: number }>)),
+  ]);
+  const heatCredit: Record<string, number> = {};
+  for (const [date, w] of Object.entries(weatherHist)) heatCredit[date] = heatStrainFactor({ tempC: w.tempC, humidity: w.humidity });
+  const map = new Map(dur.map(d => [d.date, d.value]));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const thisMonday = mondayOf(toDate);
+  const out: CapWeek[] = [];
+  for (let w = weeks - 1; w >= 0; w--) {
+    const monday = new Date(thisMonday); monday.setDate(monday.getDate() - 7 * w);
+    // Ceiling ENTERING the week = the daily engine's cap7d computed as of that Monday (weekMult × the
+    // max-of-N heat-credited base of the 3 weeks before it) — guaranteed identical to what the plan uses.
+    const plan = computeTimeOnFeetPlan(dur, monday, { capPct, baseWindows: BASE_WINDOWS, heatCredit, heatCreditMax: HEAT_CREDIT_MAX, periodization });
+    let actual = 0, heatSum = 0, runDays = 0;
+    for (let j = 0; j < 7; j++) {
+      const d = new Date(monday); d.setDate(d.getDate() + j);
+      const min = map.get(iso(d)) ?? 0;
+      actual += min;
+      if (min > 0) { runDays++; heatSum += (heatCredit[iso(d)] ?? 1) - 1; }
+    }
+    const ceiling = plan.cap7dMin;
+    out.push({
+      weekStart:  iso(monday),
+      label:      `${MO[monday.getMonth()]} ${monday.getDate()}`,
+      actualMin:  Math.round(actual),
+      ceilingMin: Math.round(ceiling),
+      hitPct:     ceiling > 0 ? Math.round((actual / ceiling) * 100) : 0,
+      phase:      cyclePhase(monday, periodization).label,
+      heatTaxPct: runDays > 0 ? Math.round((heatSum / runDays) * 100) : 0,
+      isCurrent:  w === 0,
+    });
+  }
+  return out;
 }
 
 /**
@@ -1893,7 +2021,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   const yDate = new Date(new Date(date + 'T00:00:00').getTime() - 86_400_000);
   const yesterdayKey = `${yDate.getFullYear()}-${String(yDate.getMonth() + 1).padStart(2, '0')}-${String(yDate.getDate()).padStart(2, '0')}`;
 
-  const { tof, cap, budgetMin, loadUnit, paceMinPerKm } = await buildCapContext(dur, new Date(), capPct, capBasis);
+  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
@@ -1917,6 +2045,8 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     drivers:      strain?.drivers,
     recentStrain: strainHist.slice(-10),
     recentTimeOnFeet:  tof.series14,
+    recentTof28:       tof.series28,   // longer window for the week planner's max-of-N-weeks base
+    heatByDate:        heatCredit,     // per-day heat factor → week planner matches the daily engine's heat-credit
     recentQualityWork: buildRecentQualityWork(runs),
     recentQualityTrimp: buildRecentQualityTrimp(runs, latest.restingHr ?? 50, maxHR),
     tof7d:             tof.tof7d,

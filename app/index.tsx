@@ -805,6 +805,13 @@ export default function HomeScreen() {
           <Text style={styles.coachBtnText}>📊 Statistics</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={[styles.coachBtn, styles.coachBtnSecondary]}
+          onPress={() => router.push('/cap-history' as any)}
+        >
+          <Text style={styles.coachBtnText}>📶 Volume vs budget</Text>
+        </TouchableOpacity>
+
         {/* Stats row */}
         <View style={styles.statsRow}>
           <TouchableOpacity
