@@ -580,7 +580,7 @@ function buildTodayStatus(snap: HealthSnapshot, todayPlan?: TodayPlanContext): s
 }
 
 function buildPrompt(snap: HealthSnapshot, todayPlan?: TodayPlanContext): string {
-  return `You are an expert running coach. Analyse this runner's data and write a structured coaching report.
+  return `You are an expert running coach. Write the report DIRECTLY — no deliberation, no preamble, no chain-of-thought.
 wHR=work-only HR (excl. warm-up/recovery). HRV=RMSSD (sleep-stage-weighted).
 
 ${buildTodayStatus(snap, todayPlan)}
@@ -598,10 +598,7 @@ Write a structured report using EXACTLY these headers:
 **Sleep Quality** — comment on duration and deep/REM balance.
 **Watch Out For** — warning signs: overtraining, poor recovery, injury risk.
 
-Rules: cite real numbers, 2–4 sentences per section, skip sections with no data. HONOUR TODAY'S STATUS above: \
-if today's session is already DONE, acknowledge it and make **Suggested Workout** the NEXT session (or an \
-optional easy top-up) — never re-prescribe what was just completed; if it's a REST day or the cap defers the \
-next run, say so instead of inventing a workout; only prescribe a session for today when it's NOT yet done.`;
+Rules: cite real numbers, 2–4 sentences per section, skip sections with no data. Per TODAY above: if today's run is already done, make Suggested Workout the NEXT session (not what's done); if today is rest/deferred, say so.`;
 }
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
