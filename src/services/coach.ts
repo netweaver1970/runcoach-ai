@@ -877,8 +877,13 @@ export async function getWeekPlan(
   let lastQ = -99;                 // index of the last quality session placed (≥2 apart = spacing)
   const deferred: WeekKind[] = []; // quality kinds bumped by the cap, awaiting a later slot
   const out: WeekPlanDay[] = [];
+  // BUILD MODE: on periodization BUILD weeks, aim for ONE extra quality day (a Tempo) beyond the template
+  // — the intensity lever the volume-only cap ramp was missing. Off weeks (deload) and periodization-off
+  // keep the template's count. Capped at 3 so a quality-rich template isn't over-cooked.
+  const buildQTarget = periodization.on ? Math.min(3, Qtotal + 1) : Qtotal;
   for (let i = 0; i < 7; i++) {
     const d = new Date(today); d.setDate(d.getDate() + 1 + i);
+    const buildDay = periodization.on && cyclePhase(d, periodization).phase === 'build';
     const key = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
     const weekday = weekdayName(key);
     const fc = fxBy.get(key);
@@ -916,6 +921,10 @@ export async function getWeekPlan(
       }
     } else if (deferred.length && green && allowance >= QMIN && spaced) {              // SHUFFLE: reschedule a deferred quality here (incl. the weekend)
       const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
+    } else if (buildDay && (kind === 'easy' || kind === 'flex') && spaced && qPlaced < buildQTarget && allowance >= QMIN && runDays < maxRunDays) {
+      // BUILD MODE: a build-cycle week turns a spaced easy/flex day into a 2nd Tempo — accumulate load to
+      // lift CTL. Same guardrails as any quality: ≥2 days since the last one, budget ≥ QMIN, under maxRunDays.
+      [intensity, base] = resolveQuality('tempo'); placed = 'tempo'; lastQ = i; qPlaced++; banked = false;
     } else if (kind === 'easy') {
       // Easy volume day — but only up to maxRunDays total (else REST so the week isn't a jog every day).
       if (runDays < maxRunDays) { intensity = 'easy'; base = easyGrow(allowance); placed = 'easy'; }

@@ -5,7 +5,10 @@ export async function fetchDailyDurationHistory() { return []; }
 export async function fetchDailyWorkDistanceHistory() { return []; }
 export async function loadSnapshotCache() { return null; }
 export function buildHeartbeatQualityMap() { return new Map(); }   // bodyBattery.ts imports (never called on the deterministic path)
+export function buildBeatQualityMap() { return new Map(); }
+export function beatQualityNear() { return null; }
 export function isGoodHRVSample() { return true; }
+export async function fetchTrainingLoadHistory() { return []; }   // performanceIndex.ts (not on the deterministic path)
 export function extractWeatherTempC() { return undefined; }
 export async function fetchWorkoutDetail() { return { hr: [], power: [], pace: [], totalMs: 0, activities: [], kmSplits: [], pauseIntervals: [] }; }
 export async function fetchActivityHistory() { return []; }   // agent.ts (query_activities) imports; never called on the deterministic path
