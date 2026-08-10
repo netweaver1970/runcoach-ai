@@ -580,25 +580,31 @@ function buildTodayStatus(snap: HealthSnapshot, todayPlan?: TodayPlanContext): s
 }
 
 function buildPrompt(snap: HealthSnapshot, todayPlan?: TodayPlanContext): string {
-  return `You are an expert running coach. Write the report DIRECTLY — no deliberation, no preamble, no chain-of-thought.
-wHR=work-only HR (excl. warm-up/recovery). HRV=RMSSD (sleep-stage-weighted).
+  return `You are an expert running coach writing a BACKWARD-LOOKING review — analyse what has HAPPENED: trends, \
+efficiency, load, recovery, what improved or declined. Write DIRECTLY — no deliberation, no preamble, no chain-of-thought.
+CRITICAL: do NOT prescribe future sessions — no "tomorrow do X", no target paces/HR/watts, no weekly-km targets, \
+no workout suggestions. The app's own 7-Day Plan and daily coach own all prescription; they hold the volume budget, \
+periodization, zones and rolling cap that THIS report does not see, so any forward number here would contradict them. \
+Stay in the past tense: interpret the data, don't plan.
+wHR=work-only HR (excl. warm-up/recovery). HRV=RMSSD (sleep-stage-weighted). Efficiency ratios (higher=better, \
+compare ACROSS runs — never raw pace/watts): EC=speed÷power (HR-INDEPENDENT, trust most), EF=power÷HR, SE=speed÷HR.
 
 ${buildTodayStatus(snap, todayPlan)}
 
 ${buildDataBlock(snap)}
 
-Write a structured report using EXACTLY these headers:
+Write the review using EXACTLY these headers:
 
-**Fitness Snapshot** — 2–3 sentences on current level (VO2Max + runs).
+**Fitness Snapshot** — current level from VO2Max + recent runs (2–3 sentences).
 **What's Working** — 1–2 specific positives with numbers.
-**Key Insight** — one important trend (pace, wHR efficiency, load, recovery).
-**Today's Recovery** — interpret score + RMSSD in context. Flag: hard/easy/rest.
-**This Week's Focus** — one actionable recommendation adjusted for recovery.
-**Suggested Workout** — type, distance/duration, target pace or HR zone.
-**Sleep Quality** — comment on duration and deep/REM balance.
-**Watch Out For** — warning signs: overtraining, poor recovery, injury risk.
+**Efficiency Trend** — is running economy improving? Compare recent same-type runs via EC (HR-independent) first, then EF/SE. Cite the ratios; say improving / flat / declining.
+**Training Load** — where CTL/ATL/TSB have been and the trend; call out what's actually driving load (running vs cross-training/dance).
+**Recovery & Sleep** — interpret today's score + RMSSD/RHR vs baseline, and the recent sleep pattern.
+**Watch Out For** — warning signs already visible in the data: overtraining, under-recovery, injury risk, a declining trend.
 
-Rules: cite real numbers, 2–4 sentences per section, skip sections with no data. Per TODAY above: if today's run is already done, make Suggested Workout the NEXT session (not what's done); if today is rest/deferred, say so.`;
+Rules: cite real numbers, 2–4 sentences per section, skip sections with no data. This is a REVIEW of the past — \
+NO forward prescriptions (the 7-Day Plan handles those). Use TODAY's status only to interpret what happened (e.g. \
+whether a logged run matched or deviated from the plan), never to tell the runner what to do next.`;
 }
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
