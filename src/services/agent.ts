@@ -20,7 +20,7 @@ import { buildKnowledgePrompt } from './coachFiles';
 
 const SK_AGENTIC = 'agentic_mode_v1';
 // Default ON: the coach now has genuinely useful read-only tools (plan/budget, week plan, prescription
-// history, KPI series, coaching files). It only engages on Anthropic (else it degrades to single-shot), and
+// history, KPI series, coaching files). It only engages on tool-capable providers (else it degrades to single-shot), and
 // any tool error falls back silently — so on-by-default is safe. Explicitly turn it off → stored '0'.
 export async function getAgenticMode(): Promise<boolean> {
   try { return (await SecureStore.getItemAsync(SK_AGENTIC)) !== '0'; } catch { return true; }
@@ -426,13 +426,13 @@ const TOOLS_HINT =
   'Check get_plan_context first so the proposal respects the day\'s budget, and say plainly that it is ' +
   'waiting for their approval.';
 
-/** Anthropic tool schemas (no run fn) sent to the API. */
+/** Tool schemas (Messages format, no run fn) sent to the API. */
 const toolSchemas = () => TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema }));
 
 /**
  * Run the agentic loop: call the model with tools; whenever it emits tool_use blocks, execute the matching
  * tool against the snapshot, feed results back, and continue — until it produces a final text answer.
- * Anthropic-only (checked by the caller via agenticSupported); throws 'AGENTIC_UNSUPPORTED' otherwise so
+ * Tool-capable providers only (checked by the caller via agenticSupported); throws 'AGENTIC_UNSUPPORTED' otherwise so
  * the caller can fall back to a single-shot call.
  */
 export async function runAgent(opts: {

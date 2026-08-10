@@ -2,8 +2,8 @@
  * Provider-agnostic LLM service
  *
  * Two wire formats, several providers each:
- *   • anthropic-format — Anthropic Messages API (`POST {base}/v1/messages`). Native Anthropic PLUS the
- *     Anthropic-compatible endpoints exposed by DeepSeek, GLM (Z.ai) and Kimi (Moonshot). These all speak
+ *   • messages-format — the Messages API (`POST {base}/v1/messages`). Spoken natively by Anthropic (Claude)
+ *     and by the compatible endpoints DeepSeek, GLM (Z.ai) and Kimi (Moonshot) expose. These all speak
  *     the same request/response shape INCLUDING tool_use/tool_result, so the agentic coach loop works on
  *     every one of them.
  *   • openai-format — OpenAI Chat Completions (`POST {base}/chat/completions`). Native OpenAI plus any
@@ -37,7 +37,7 @@ export interface LLMValidationResult {
 // One row per provider drives everything: which wire format, base URL, how to authenticate, default/
 // suggested models, and whether it supports the native agentic tool loop. Add a provider by adding a row.
 
-export type ApiFlavor = 'anthropic' | 'openai';
+export type ApiFlavor = 'messages' | 'openai';
 export type AuthStyle = 'x-api-key' | 'bearer' | 'both';
 
 export interface ProviderSpec {
@@ -49,42 +49,42 @@ export interface ProviderSpec {
   keyPlaceholder:  string;
   defaultModel:    string;
   suggestedModels: string[];
-  agentic:         boolean;         // supports the native Anthropic tool loop (⇒ api === 'anthropic')
+  agentic:         boolean;         // supports the native tool loop (⇒ api === 'messages')
   liveModels:      boolean;         // provider implements a listable /models (or /v1/models) endpoint
   hint?:           string;          // shown under the field in Settings
 }
 
 export const PROVIDERS: Record<LLMProvider, ProviderSpec> = {
   anthropic: {
-    id: 'anthropic', label: 'Anthropic', api: 'anthropic',
+    id: 'anthropic', label: 'Anthropic', api: 'messages',
     baseUrl: 'https://api.anthropic.com', auth: 'x-api-key',
     keyPlaceholder: 'sk-ant-api03-…', defaultModel: 'claude-sonnet-4-6',
     suggestedModels: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-5'],
     agentic: true, liveModels: true,
   },
   deepseek: {
-    id: 'deepseek', label: 'DeepSeek', api: 'anthropic',
+    id: 'deepseek', label: 'DeepSeek', api: 'messages',
     baseUrl: 'https://api.deepseek.com/anthropic', auth: 'both',
     keyPlaceholder: 'sk-… (DeepSeek key)', defaultModel: 'deepseek-v4-flash',
     suggestedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
     agentic: true, liveModels: false,
-    hint: 'DeepSeek via its Anthropic-compatible endpoint — supports the agentic coach (tools).',
+    hint: 'DeepSeek — supports the agentic coach (tools).',
   },
   glm: {
-    id: 'glm', label: 'GLM · Z.ai', api: 'anthropic',
+    id: 'glm', label: 'GLM · Z.ai', api: 'messages',
     baseUrl: 'https://api.z.ai/api/anthropic', auth: 'both',
     keyPlaceholder: 'Z.ai API key', defaultModel: 'glm-4.6',
     suggestedModels: ['glm-4.6', 'glm-4.7', 'glm-4.5-air'],
     agentic: true, liveModels: false,
-    hint: 'Zhipu GLM via its Anthropic-compatible endpoint — supports the agentic coach (tools).',
+    hint: 'Zhipu GLM — supports the agentic coach (tools).',
   },
   kimi: {
-    id: 'kimi', label: 'Kimi · Moonshot', api: 'anthropic',
+    id: 'kimi', label: 'Kimi · Moonshot', api: 'messages',
     baseUrl: 'https://api.moonshot.ai/anthropic', auth: 'both',
     keyPlaceholder: 'Moonshot API key', defaultModel: 'kimi-k2-turbo-preview',
     suggestedModels: ['kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-latest'],
     agentic: true, liveModels: false,
-    hint: 'Moonshot Kimi via its Anthropic-compatible endpoint — supports the agentic coach (tools).',
+    hint: 'Moonshot Kimi — supports the agentic coach (tools).',
   },
   openai: {
     id: 'openai', label: 'OpenAI', api: 'openai',
@@ -110,6 +110,14 @@ export function providerSpec(p: LLMProvider): ProviderSpec {
   return PROVIDERS[p] ?? PROVIDERS.anthropic;
 }
 
+/** Human label for the CURRENTLY-configured provider + model, e.g. "DeepSeek · deepseek-v4-flash".
+ *  Use this for any user-facing "which model produced this" readout instead of a hard-coded model id. */
+export async function activeModelLabel(): Promise<string> {
+  const cfg = await loadLLMConfig();
+  const label = providerSpec(cfg.provider).label;
+  return cfg.model ? `${label} · ${cfg.model}` : label;
+}
+
 // Back-compat derived maps (still imported around the app).
 export const PROVIDER_LABELS         = Object.fromEntries(PROVIDER_ORDER.map(p => [p, PROVIDERS[p].label]))          as Record<LLMProvider, string>;
 export const PROVIDER_KEY_PLACEHOLDER = Object.fromEntries(PROVIDER_ORDER.map(p => [p, PROVIDERS[p].keyPlaceholder])) as Record<LLMProvider, string>;
@@ -128,8 +136,8 @@ const SK_OLD_ANTHRO   = 'anthropic_api_key'; // legacy key — migrated on first
 
 // ─── Request helpers ──────────────────────────────────────────────────────────
 
-/** Auth + version headers for an anthropic-format request. 'both' covers proxies that want either. */
-function anthropicHeaders(spec: ProviderSpec, key: string): Record<string, string> {
+/** Auth + version headers for a messages-format request. 'both' covers proxies that want either. */
+function messagesHeaders(spec: ProviderSpec, key: string): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' };
   if (spec.auth === 'x-api-key' || spec.auth === 'both') h['x-api-key'] = key;
   if (spec.auth === 'bearer'    || spec.auth === 'both') h['Authorization'] = `Bearer ${key}`;
@@ -137,8 +145,8 @@ function anthropicHeaders(spec: ProviderSpec, key: string): Record<string, strin
 }
 
 /** Build the `system` field. Native Anthropic gets a cached block (10% input billing on repeat); the
- *  third-party Anthropic-compatible proxies may reject the unknown `cache_control`, so they get a plain
- *  string (still valid Anthropic shape). */
+ *  third-party messages-format proxies may reject the unknown `cache_control`, so they get a plain
+ *  string (still a valid Messages shape). */
 function systemField(spec: ProviderSpec, system?: string): any {
   if (!system) return undefined;
   return spec.id === 'anthropic'
@@ -276,19 +284,19 @@ async function validateLLMKeyImpl(
   if (!key) return { valid: false, error: 'API key cannot be empty.' };
 
   try {
-    if (spec.api === 'anthropic') {
+    if (spec.api === 'messages') {
       if (spec.id === 'anthropic') {
         if (!key.startsWith('sk-ant-')) return { valid: false, error: 'Anthropic keys start with "sk-ant-".' };
-        const res = await fetch(`${spec.baseUrl}/v1/models`, { method: 'GET', headers: anthropicHeaders(spec, key) });
+        const res = await fetch(`${spec.baseUrl}/v1/models`, { method: 'GET', headers: messagesHeaders(spec, key) });
         if (res.status === 401) return { valid: false, error: 'Key rejected (401). Check console.anthropic.com.' };
         if (res.status === 403) return { valid: false, error: 'Key has no permissions (403).' };
         return { valid: true };
       }
-      // Third-party Anthropic-compatible endpoints don't reliably expose /v1/models — do a 1-token
+      // Third-party messages-format endpoints don't reliably expose /v1/models — do a 1-token
       // messages ping instead, which genuinely verifies the endpoint + auth. A model-not-found (400)
       // still proves the KEY works, so only 401/403 is a hard failure.
       const res = await fetch(`${spec.baseUrl}/v1/messages`, {
-        method: 'POST', headers: anthropicHeaders(spec, key),
+        method: 'POST', headers: messagesHeaders(spec, key),
         body: JSON.stringify({ model: spec.defaultModel, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
       });
       if (res.status === 401 || res.status === 403) return { valid: false, error: `Key rejected (${res.status}).` };
@@ -349,12 +357,12 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
 
   const { system, messages, maxTokens, temperature } = options;
 
-  // ── Anthropic-format (native + DeepSeek/GLM/Kimi Anthropic-compatible) ───────
-  if (spec.api === 'anthropic') {
+  // ── messages-format (native Anthropic + DeepSeek/GLM/Kimi) ───────
+  if (spec.api === 'messages') {
     const sys = systemField(spec, system);
     const res = await fetch(`${spec.baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: anthropicHeaders(spec, cfg.apiKey),
+      headers: messagesHeaders(spec, cfg.apiKey),
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
@@ -363,7 +371,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
         messages,
       }),
     });
-    return recordingReturn(handleAnthropicResponse(res));
+    return recordingReturn(handleMessagesResponse(res));
   }
 
   // ── OpenAI / Custom (OpenAI-compatible) ──────────────────────────────────────
@@ -387,20 +395,20 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
   return recordingReturn(handleOpenAIResponse(res));
 }
 
-// ─── Tool-use (agentic) call — Anthropic Messages format ───────────────────────
+// ─── Tool-use (agentic) call — Messages format ───────────────────────
 // Unlike callLLM (single-shot, returns text), this returns the RAW assistant content blocks + stop_reason
 // so the agent loop can detect tool_use blocks, run the tools, feed results back, and continue. Works on
-// every anthropic-format provider (native + DeepSeek/GLM/Kimi), which all support tool_use/tool_result.
+// every messages-format provider (native + DeepSeek/GLM/Kimi), which all support tool_use/tool_result.
 export interface LLMToolsCallOptions {
   system?:      string;
   messages:     any[];   // content-block messages (may contain tool_use / tool_result blocks)
-  tools:        any[];   // Anthropic tool schemas
+  tools:        any[];   // Tool schemas (Messages format)
   maxTokens:    number;
   temperature?: number;
 }
 export interface LLMToolsResult { stopReason: string; content: any[]; text: string; }
 
-/** True when the active provider supports the native tool loop (any anthropic-format provider). */
+/** True when the active provider supports the native tool loop (any messages-format provider). */
 export async function agenticSupported(): Promise<boolean> {
   return providerSpec((await loadLLMConfig()).provider).agentic;
 }
@@ -409,12 +417,12 @@ export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsR
   const cfg = await loadLLMConfig();
   if (!cfg.apiKey) { await recordLLMReachable(false); throw new Error('No API key configured — add one in Settings.'); }
   const spec = providerSpec(cfg.provider);
-  if (spec.api !== 'anthropic') throw new Error('AGENTIC_UNSUPPORTED'); // caller falls back to single-shot
+  if (spec.api !== 'messages') throw new Error('AGENTIC_UNSUPPORTED'); // caller falls back to single-shot
 
   const sys = systemField(spec, opts.system);
   const res = await fetch(`${spec.baseUrl}/v1/messages`, {
     method: 'POST',
-    headers: anthropicHeaders(spec, cfg.apiKey),
+    headers: messagesHeaders(spec, cfg.apiKey),
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: opts.maxTokens,
@@ -443,7 +451,7 @@ export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsR
 export async function fetchAvailableModels(provider: LLMProvider, apiKey?: string, baseUrl?: string): Promise<string[]> {
   const spec = providerSpec(provider);
 
-  // Providers without a listable /models endpoint (DeepSeek/GLM/Kimi Anthropic-compatible) → surface the
+  // Providers without a listable /models endpoint (DeepSeek/GLM/Kimi (messages-format)) → surface the
   // curated suggestions so the picker is still useful. Cache them like a fetched list.
   if (!spec.liveModels) {
     const ids = [...spec.suggestedModels];
@@ -456,7 +464,7 @@ export async function fetchAvailableModels(provider: LLMProvider, apiKey?: strin
   let url: string; let headers: Record<string, string>;
   if (spec.id === 'anthropic') {
     url = `${spec.baseUrl}/v1/models`;
-    headers = anthropicHeaders(spec, key);
+    headers = messagesHeaders(spec, key);
   } else if (spec.id === 'openai') {
     url = `${spec.baseUrl}/models`;
     headers = { Authorization: `Bearer ${key}` };
@@ -492,7 +500,7 @@ export interface LLMVisionOptions {
 
 /**
  * Send one image plus a text prompt to the configured provider's vision model.
- * Works with anthropic-format (image content blocks) and OpenAI-compatible (image_url data URI).
+ * Works with messages-format (image content blocks) and OpenAI-compatible (image_url data URI).
  * Returns the assistant's text response.
  */
 export async function callLLMWithImage(options: LLMVisionOptions): Promise<string> {
@@ -502,10 +510,10 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
   const { prompt, imageBase64, maxTokens } = options;
   const mediaType = options.mediaType ?? 'image/png';
 
-  if (spec.api === 'anthropic') {
+  if (spec.api === 'messages') {
     const res = await fetch(`${spec.baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: anthropicHeaders(spec, cfg.apiKey),
+      headers: messagesHeaders(spec, cfg.apiKey),
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
@@ -518,7 +526,7 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
         }],
       }),
     });
-    return recordingReturn(handleAnthropicResponse(res));
+    return recordingReturn(handleMessagesResponse(res));
   }
 
   // OpenAI / Custom (OpenAI-compatible vision)
@@ -550,7 +558,7 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
 let currentFeature = 'other';
 export function setUsageFeature(f: string): void { currentFeature = f; }
 
-/** Pull the provider's usage block (Anthropic and OpenAI shapes) and record it. Never throws. */
+/** Pull the provider's usage block (Messages and OpenAI shapes) and record it. Never throws. */
 function captureUsage(data: any, model: string): void {
   try {
     const u = data?.usage;
@@ -565,7 +573,7 @@ function captureUsage(data: any, model: string): void {
   } catch { /* accounting must never break a call */ }
 }
 
-async function handleAnthropicResponse(res: Response): Promise<string> {
+async function handleMessagesResponse(res: Response): Promise<string> {
   if (!res.ok) {
     let body: any = {};
     try { body = await res.json(); } catch {}
@@ -579,7 +587,7 @@ async function handleAnthropicResponse(res: Response): Promise<string> {
   }
   const data = await res.json();
   captureUsage(data, data?.model ?? '');
-  // Join every text block — a reasoning model (e.g. DeepSeek via its Anthropic endpoint) can emit a
+  // Join every text block — a reasoning model (e.g. DeepSeek via its messages-format endpoint) can emit a
   // `thinking` block before the answer, so content[0] is not necessarily the text.
   const blocks = Array.isArray(data?.content) ? data.content : [];
   const text = blocks.filter((b: any) => b?.type === 'text').map((b: any) => b?.text ?? '').join('').trim();

@@ -1,15 +1,15 @@
 /**
  * LLM token accounting — what each call cost, and what the month has cost so far.
  *
- * Built after Geert exhausted his Anthropic credits earlier than expected (2026-07-24) with no way to see
+ * Built after Geert exhausted his LLM-provider credits earlier than expected (2026-07-24) with no way to see
  * where the spend went. Every provider returns a `usage` block on every response and we were discarding
  * it, so the app had no idea what it was spending.
  *
- * ⚠️ WHAT THIS CANNOT DO: show your remaining Anthropic CREDIT. A normal API key (sk-ant-api…) has no
- * endpoint for the account balance — usage and cost live behind the Admin API, which needs an
- * organisation admin key (sk-ant-admin…). That is a far more powerful credential than a phone app should
- * hold, so we deliberately don't ask for one. What you get instead is an accurate record of what THIS APP
- * spent, which is the part it can actually measure. The console remains the source of truth for balance.
+ * ⚠️ WHAT THIS CANNOT DO: show your remaining provider CREDIT. A normal API key generally has no
+ * endpoint for the account balance — providers keep usage/cost behind an admin-only credential (far more
+ * powerful than a phone app should hold), so we deliberately don't ask for one. What you get instead is an
+ * accurate record of what THIS APP spent, which is the part it can actually measure. Your provider's
+ * console/dashboard remains the source of truth for the balance.
  */
 import * as FileSystem from 'expo-file-system';
 

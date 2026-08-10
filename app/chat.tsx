@@ -26,7 +26,6 @@ import {
   updateMemoryNote,
   buildNewRunUserMessage,
   ChatMessage,
-  CHAT_MODEL,
 } from '../src/services/claude';
 import {
   loadChatPersistence,
@@ -531,7 +530,7 @@ export default function ChatScreen() {
           >
             <MarkdownBody content={item.content} style={isUser ? mdStylesUser : mdAssistant} rules={SELECTABLE_RULES} c={c} />
           </TouchableOpacity>
-          {/* What this reply cost. Shown because there is no way to query the Anthropic credit balance
+          {/* What this reply cost. Shown because most providers give no way to query the credit balance
               from a normal API key — see tokenUsage.ts — so per-call visibility is the honest substitute. */}
           {!isUser && item.usage ? <Text style={styles.usageLine}>{item.usage}</Text> : null}
           {/* Copy affordance — assistant answers (the ones you debug) get an explicit button */}

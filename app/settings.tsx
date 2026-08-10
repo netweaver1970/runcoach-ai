@@ -986,9 +986,9 @@ export default function SettingsScreen() {
         {/* AI usage — what the app has spent this month */}
         <Section title="AI Usage" cat="coaching">
           <Text style={styles.hint}>
-            Tokens this app has sent and received this calendar month, by feature. Anthropic gives no way to
-            read your remaining CREDIT from a normal API key — that lives behind an organisation admin key,
-            which this app deliberately does not ask for — so check console.anthropic.com for the balance.
+            Tokens this app has sent and received this calendar month, by feature. Most providers give no way
+            to read your remaining CREDIT from a normal API key — that lives behind an admin-only credential,
+            which this app deliberately does not ask for — so check your provider's console for the balance.
             Costs below are estimates from list prices as of {PRICES_AS_OF}.
           </Text>
           {usage && usage.calls > 0 ? (
@@ -1845,7 +1845,7 @@ export default function SettingsScreen() {
         <Section title="Data & Privacy" cat="data">
           <Text style={styles.hint}>
             RunCoach AI reads Apple Health data directly on your device.{'\n\n'}
-            Health data leaves the device in exactly two cases: coaching requests send context to your configured AI provider (Anthropic does not use API data to train models), and — only if you set up a Cloud account — daily metrics and runs sync to YOUR OWN Cloudflare Worker so a linked coach can see them.{'\n\n'}
+            Health data leaves the device in exactly two cases: coaching requests send context to your configured AI provider (check that provider's data-use policy — some, e.g. Anthropic, don't train on API data), and — only if you set up a Cloud account — daily metrics and runs sync to YOUR OWN Cloudflare Worker so a linked coach can see them.{'\n\n'}
             Your API key and cloud tokens stay in the iOS Keychain.
           </Text>
         </Section>

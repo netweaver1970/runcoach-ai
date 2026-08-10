@@ -1,16 +1,12 @@
 import * as SecureStore from 'expo-secure-store';
 import { HealthSnapshot, CoachingReport, PowerZones, WorkoutLabel, RunWorkout, KmSplit } from '../types';
-import { callLLM, getActiveApiKey, setUsageFeature } from './llm';
+import { callLLM, getActiveApiKey, setUsageFeature, activeModelLabel } from './llm';
 import { agentComplete } from './agent';
 import { buildTimelineContext } from './timelineEvents';
 import { buildKnowledgePrompt } from './coachFiles';
 import { buildAppModelPrompt } from './appModel';
 import { tsbStatus, ctlRamp, trainingDayKey } from './trainingLoad';
 
-// Legacy constant — kept so existing imports don't break; actual model comes from llm.ts config.
-const API_KEY_KEY = 'anthropic_api_key';
-export const MODEL      = 'claude-haiku-4-5-20251001';
-export const CHAT_MODEL = 'claude-sonnet-4-6';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -20,154 +16,6 @@ export interface ChatMessage {
 /** Returns the active API key for the currently-selected provider. */
 export async function getApiKey(): Promise<string | null> {
   return getActiveApiKey();
-}
-export async function saveApiKey(key: string): Promise<void> {
-  return SecureStore.setItemAsync(API_KEY_KEY, key.trim());
-}
-export async function deleteApiKey(): Promise<void> {
-  return SecureStore.deleteItemAsync(API_KEY_KEY);
-}
-
-/**
- * Validate an API key against the Anthropic API, then save it on success.
- * Returns { valid: true } on success, { valid: false, error } on failure.
- * A warning message is included when the key works but credits are exhausted.
- */
-export interface ApiKeyValidationResult {
-  valid: boolean;
-  error?: string;
-  warning?: string;
-  debug?: {
-    keyPrefix:      string;   // first 20 chars
-    keySuffix:      string;   // last 8 chars
-    keyLength:      number;
-    nonAscii:       string;   // positions/codes of any non-ASCII chars, or 'none'
-    requestUrl:     string;   // the endpoint we hit
-    status:         number;
-    errorType:      string;   // body.error.type if present
-    errorMessage:   string;   // body.error.message if present
-    responseHeaders: string;  // relevant response headers
-    bodySnippet:    string;   // first 500 chars of response body
-    model:          string;
-  };
-}
-
-export async function validateAndSaveApiKey(
-  key: string,
-): Promise<ApiKeyValidationResult> {
-  // Strip surrounding whitespace. Also collapse any internal whitespace —
-  // API keys never contain spaces, so a space in the middle always means a
-  // copy-paste artefact (e.g. a line-break when copying a long key).
-  const trimmed = key.trim().replace(/\s+/g, '');
-
-  // Scan every character for anything that isn't a printable ASCII char that
-  // would appear in a base64url-style API key. Regular spaces (U+0020, code 32)
-  // are included even though they passed the old >127||<32 check.
-  const nonAsciiInfo = (() => {
-    const hits: string[] = [];
-    for (let i = 0; i < trimmed.length; i++) {
-      const code = trimmed.charCodeAt(i);
-      // Valid key chars: printable ASCII 33-126 (no space, no control chars)
-      if (code < 33 || code > 126) hits.push(`pos${i}=U+${code.toString(16).toUpperCase().padStart(4,'0')}`);
-    }
-    return hits.length > 0 ? hits.join(', ') : 'none';
-  })();
-
-  const REQUEST_URL = 'https://api.anthropic.com/v1/models';
-
-  const baseDebug = {
-    keyPrefix:       trimmed.slice(0, 20),
-    keySuffix:       trimmed.slice(-8),
-    keyLength:       trimmed.length,
-    nonAscii:        nonAsciiInfo,
-    model:           MODEL,
-    requestUrl:      REQUEST_URL,
-    status:          0,
-    errorType:       '',
-    errorMessage:    '',
-    responseHeaders: '',
-    bodySnippet:     '',
-  };
-
-  if (!trimmed.startsWith('sk-ant-')) {
-    return {
-      valid: false,
-      error: 'Anthropic API keys start with "sk-ant-".',
-      debug: { ...baseDebug, bodySnippet: '(not sent — format check failed)' },
-    };
-  }
-
-  try {
-    // Use GET /v1/models — a pure authentication check that needs no body or
-    // model name, so a wrong model string can never be the cause of a 401.
-    const response = await fetch(REQUEST_URL, {
-      method: 'GET',
-      headers: {
-        'x-api-key': trimmed,
-        'anthropic-version': '2023-06-01',
-      },
-    });
-
-    const rawBody = await response.text();
-
-    // Capture interesting response headers for diagnostics
-    const HEADER_NAMES = ['x-request-id', 'cf-ray', 'cf-cache-status', 'content-type', 'anthropic-ratelimit-requests-remaining'];
-    const respHeaders = HEADER_NAMES
-      .map(h => { const v = response.headers.get(h); return v ? `${h}: ${v}` : null; })
-      .filter(Boolean)
-      .join('\n');
-
-    let body: any = {};
-    try { body = JSON.parse(rawBody); } catch {}
-
-    const debugInfo = {
-      ...baseDebug,
-      status:          response.status,
-      errorType:       body?.error?.type    ?? '',
-      errorMessage:    body?.error?.message ?? '',
-      responseHeaders: respHeaders || '(none captured)',
-      bodySnippet:     rawBody.slice(0, 500),
-    };
-
-    // 401 = authentication failed (bad key)
-    if (response.status === 401) {
-      const detail = body?.error?.message ?? '';
-      return {
-        valid: false,
-        error: [
-          `API key rejected (401 — ${detail || 'invalid x-api-key'}).`,
-          ``,
-          `Likely causes:`,
-          `• Key was revoked or never activated — check console.anthropic.com`,
-          `• Wrong key pasted (mismatched copy) — generate a new one`,
-          `• Spaces stripped: key is now ${trimmed.length} chars — if that changed, re-paste carefully`,
-          ``,
-          `Tap "Show debug info" for the full API response.`,
-        ].join('\n'),
-        debug: debugInfo,
-      };
-    }
-    // 403 = key valid but no permissions
-    if (response.status === 403) {
-      return { valid: false, error: 'API key has no access (403). Check your Anthropic account.', debug: debugInfo };
-    }
-
-    // GET /v1/models returns 200 for any authenticated key regardless of credits.
-    // Any non-401/403 response means the key is valid.
-    let warning: string | undefined;
-    if (!response.ok) {
-      warning = `Key saved, but received HTTP ${response.status}. Check console.anthropic.com if issues persist.`;
-    }
-
-    await SecureStore.setItemAsync(API_KEY_KEY, trimmed);
-    return { valid: true, warning, debug: debugInfo };
-  } catch (e: any) {
-    return {
-      valid: false,
-      error: `Network error: ${e?.message ?? String(e)}`,
-      debug: { ...baseDebug, bodySnippet: String(e) },
-    };
-  }
 }
 
 const BODY_MASS_KEY  = 'body_mass_kg';
@@ -922,7 +770,7 @@ export async function generateCoachingReport(snap: HealthSnapshot, todayPlan?: T
   return {
     content,
     generatedAt: new Date().toISOString(),
-    model: MODEL, // kept for type compat; actual model is in llm config
+    model: await activeModelLabel(), // the ACTUAL configured provider + model (e.g. "DeepSeek · deepseek-v4-flash")
   };
 }
 
@@ -939,7 +787,7 @@ export async function getChatResponse(
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key. Add one in Settings first.');
 
-  // Agentic mode (when enabled + Anthropic) lets the model pull specific runs/metrics via tools; otherwise
+  // Agentic mode (when enabled on a tool-capable provider) lets the model pull specific runs/metrics via tools; otherwise
   // this is the existing single-shot call. The snapshot is still passed as baseline context either way.
   // The athlete's editable coaching files (incl. the Training Model) are injected so the coach reasons from
   // the SAME knowledge the daily plan uses — one editable source of truth.

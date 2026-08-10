@@ -36,7 +36,7 @@ export interface ChatPersistence {
 }
 
 // ─── toApiMessages ────────────────────────────────────────────────────────────
-// Convert PersistedMessage[] → ChatMessage[] for the Anthropic API.
+// Convert PersistedMessage[] → ChatMessage[] for the LLM API.
 // When two consecutive messages are separated by > GAP_THRESHOLD_MS, a compact
 // date label is prepended to the later message content so Claude knows that
 // time has passed between exchanges.
