@@ -560,9 +560,30 @@ ${hrvLines}${timelineBlock}`;
 
 // ─── Coaching report prompt ───────────────────────────────────────────────────
 
-function buildPrompt(snap: HealthSnapshot): string {
+// TODAY'S STATUS — a coach with the data should know whether today's prescribed session is already run.
+// Ground truth for "did they run" is a workout dated today in snap.runs; the prescription comes from the
+// cached daily plan (passed in). Without this the report blindly re-prescribes a session already completed.
+function buildTodayStatus(snap: HealthSnapshot, todayPlan?: TodayPlanContext): string {
+  const now = new Date();
+  const key = (d: any) => { const x = new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; };
+  const todayKey = key(now);
+  const todayName = now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const todayRun = (snap.runs ?? []).find(r => key(r.date) === todayKey);
+  const prescribed = !todayPlan ? 'unknown (no cached plan)'
+    : todayPlan.intensity === 'rest' ? 'REST (no run prescribed today)'
+    : `${todayPlan.sessionKind ?? todayPlan.intensity}${todayPlan.runMinutes ? ` ~${todayPlan.runMinutes}min` : ''}`;
+  const completed = todayRun
+    ? `✅ DONE — already logged ${LSHORT[todayRun.label ?? 'Unknown'] ?? 'run'} ${(todayRun.distance / 1000).toFixed(1)}km ${fdur(todayRun.duration)}${todayRun.workHR ? ` wHR${todayRun.workHR}` : ''}${(todayRun.workPower ?? 0) > 0 ? ` ${todayRun.workPower}W` : ''}`
+    : (todayPlan?.intensity === 'rest' ? 'rest day — nothing to run' : '❌ NOT YET — no run logged today');
+  const nextNote = todayPlan?.nextRunLabel ? ` · next run day: ${todayPlan.nextRunLabel}` : '';
+  return `TODAY (${todayName}): prescribed ${prescribed} · status: ${completed}${nextNote}`;
+}
+
+function buildPrompt(snap: HealthSnapshot, todayPlan?: TodayPlanContext): string {
   return `You are an expert running coach. Analyse this runner's data and write a structured coaching report.
 wHR=work-only HR (excl. warm-up/recovery). HRV=RMSSD (sleep-stage-weighted).
+
+${buildTodayStatus(snap, todayPlan)}
 
 ${buildDataBlock(snap)}
 
@@ -577,7 +598,10 @@ Write a structured report using EXACTLY these headers:
 **Sleep Quality** — comment on duration and deep/REM balance.
 **Watch Out For** — warning signs: overtraining, poor recovery, injury risk.
 
-Rules: cite real numbers, 2–4 sentences per section, skip sections with no data.`;
+Rules: cite real numbers, 2–4 sentences per section, skip sections with no data. HONOUR TODAY'S STATUS above: \
+if today's session is already DONE, acknowledge it and make **Suggested Workout** the NEXT session (or an \
+optional easy top-up) — never re-prescribe what was just completed; if it's a REST day or the cap defers the \
+next run, say so instead of inventing a workout; only prescribe a session for today when it's NOT yet done.`;
 }
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
@@ -815,7 +839,15 @@ export async function updateMemoryNote(
 
 // ─── Report API call ──────────────────────────────────────────────────────────
 
-export async function generateCoachingReport(snap: HealthSnapshot): Promise<CoachingReport> {
+// Lightweight view of today's cached plan for the report's TODAY status (avoids importing CoachPlan/coach.ts).
+export interface TodayPlanContext {
+  intensity:    string;   // 'rest' | 'easy' | 'moderate' | 'hard'
+  runMinutes?:  number;
+  sessionKind?: string;   // canonical label (e.g. 'tempo', 'long', 'intervals', 'recovery')
+  nextRunLabel?: string;  // when the cap defers the next run
+}
+
+export async function generateCoachingReport(snap: HealthSnapshot, todayPlan?: TodayPlanContext): Promise<CoachingReport> {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No API key found. Add one in Settings first.');
 
@@ -823,7 +855,7 @@ export async function generateCoachingReport(snap: HealthSnapshot): Promise<Coac
     // 1200 was too tight for a multi-section report once a reasoning model (e.g. DeepSeek deepseek-v4-pro)
     // is in play — its hidden thinking spent the whole budget, leaving no answer ("hit output-token limit").
     // max_tokens is a CEILING: flash/Claude stop when done, so a bigger number costs them nothing.
-    messages:  [{ role: 'user', content: buildPrompt(snap) }],
+    messages:  [{ role: 'user', content: buildPrompt(snap, todayPlan) }],
     maxTokens: 8000,   // 4000 still got starved by a heavy reasoning model's thinking; 8000 is ~the provider cap (DeepSeek 8192). Ceiling only.
   });
 

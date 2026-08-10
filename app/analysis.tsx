@@ -23,6 +23,7 @@ import {
 import { HealthSnapshot, CoachingReport } from '../src/types';
 import { TABLE_CELL } from '../src/mdTable';
 import { loadSnapshotCache } from '../src/services/healthkit';
+import { loadCachedPlan } from '../src/services/coach';
 
 export default function AnalysisScreen() {
   const { data } = useLocalSearchParams<{ data: string }>();
@@ -48,7 +49,16 @@ export default function AnalysisScreen() {
     setLoading(true);
     setError(null);
     try {
-      const result = await generateCoachingReport(snap);
+      // Give the report TODAY's prescription + whether it's already been run, so a coach "with all the data"
+      // stops re-prescribing a session the runner already completed.
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const plan = await loadCachedPlan(todayKey).catch(() => null);
+      const todayPlan = plan ? {
+        intensity: plan.intensity, runMinutes: plan.runMinutes,
+        sessionKind: plan.sessionKind, nextRunLabel: plan.nextRunLabel,
+      } : undefined;
+      const result = await generateCoachingReport(snap, todayPlan);
       setReport(result);
     } catch (err: any) {
       setError(err.message);
