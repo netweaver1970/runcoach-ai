@@ -569,14 +569,20 @@ function buildTodayStatus(snap: HealthSnapshot, todayPlan?: TodayPlanContext): s
   const todayKey = key(now);
   const todayName = now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   const todayRun = (snap.runs ?? []).find(r => key(r.date) === todayKey);
+  // CRITICAL: once a run is logged, the cached daily plan REGENERATES to "rest" (= nothing more to do
+  // today), which is NOT the day's original prescription. Reading that post-run 'rest' as "today was a
+  // rest day" made the report claim the runner ran on a rest day. So when a run exists, report it as DONE
+  // and do NOT surface the (now meaningless) plan intensity as a prescription.
+  if (todayRun) {
+    const det = `${LSHORT[todayRun.label ?? 'Unknown'] ?? 'run'} ${(todayRun.distance / 1000).toFixed(1)}km ${fdur(todayRun.duration)}${todayRun.workHR ? ` wHR${todayRun.workHR}` : ''}${(todayRun.workPower ?? 0) > 0 ? ` ${todayRun.workPower}W` : ''}`;
+    return `TODAY (${todayName}): today's run is already logged — ${det}. The session is DONE; treat it as completed. Do NOT say the runner ran on, or despite, a rest day — the daily plan reading "rest" now only means today's run is finished.`;
+  }
+  // No run yet → the cached plan IS today's live prescription (pre-run), so it's safe to state it.
   const prescribed = !todayPlan ? 'unknown (no cached plan)'
-    : todayPlan.intensity === 'rest' ? 'REST (no run prescribed today)'
+    : todayPlan.intensity === 'rest' ? 'a rest / recovery day'
     : `${todayPlan.sessionKind ?? todayPlan.intensity}${todayPlan.runMinutes ? ` ~${todayPlan.runMinutes}min` : ''}`;
-  const completed = todayRun
-    ? `✅ DONE — already logged ${LSHORT[todayRun.label ?? 'Unknown'] ?? 'run'} ${(todayRun.distance / 1000).toFixed(1)}km ${fdur(todayRun.duration)}${todayRun.workHR ? ` wHR${todayRun.workHR}` : ''}${(todayRun.workPower ?? 0) > 0 ? ` ${todayRun.workPower}W` : ''}`
-    : (todayPlan?.intensity === 'rest' ? 'rest day — nothing to run' : '❌ NOT YET — no run logged today');
   const nextNote = todayPlan?.nextRunLabel ? ` · next run day: ${todayPlan.nextRunLabel}` : '';
-  return `TODAY (${todayName}): prescribed ${prescribed} · status: ${completed}${nextNote}`;
+  return `TODAY (${todayName}): no run logged yet · today's live plan: ${prescribed}${nextNote}`;
 }
 
 // Resting HR for the HR-reserve column: median of the recent series (robust to outliers), fallback 57.
@@ -655,7 +661,7 @@ Write the review using EXACTLY these headers:
 **Recovery & Sleep** — today's score + RMSSD/RHR vs baseline + recent sleep. A small table (metric | value | baseline) is welcome.
 **Watch Out For** — only genuine warning signs the numbers actually show (under-recovery, a declining EC trend, ACWR out of range). If nothing is wrong, say so — don't manufacture risk.
 
-Skip any section whose data is missing. Use TODAY's status only to note factually whether a logged run matched the plan.`;
+Skip any section whose data is missing. TODAY's status is context only: if a run is already logged, today's session is DONE — never claim the runner ran on or despite a rest day.`;
 }
 
 // ─── Chat system prompt ───────────────────────────────────────────────────────
