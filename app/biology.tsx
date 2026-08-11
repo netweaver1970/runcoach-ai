@@ -85,12 +85,6 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles, curso
   const readVals = lines.map(l => ({ key: l.key, label: l.label, p: nearestOf(l.points) }));
 
   return (
-    <View>
-      <View style={styles.readout}>
-        <Text style={styles.readDate}>{labelAt(cT, months)}</Text>
-        {readVals.map(r => <Text key={r.key} style={[styles.readVal, { color: SERIES[r.key] }]}>{r.label} {r.p ? r.p.value : '—'}</Text>)}
-        {showEvent && <Text style={[styles.readVal, { color: CAT_COLOR[showEvent.category] ?? CAT_COLOR.other }]}>{CAT_ICON[showEvent.category] ?? '📌'} {showEvent.label}</Text>}
-      </View>
       <View {...pan.panHandlers}>
         <Svg width={innerW} height={CH_H}>
           {bands.map((b, i) => <Rect key={`b${i}`} x={b.x} y={PAD_T} width={b.w} height={plotH} fill={bandFill} opacity={0.04} />)}
@@ -132,7 +126,6 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles, curso
             <SvgText key={`x${i}`} x={PAD_L + (i / (nLab - 1)) * plotW} y={CH_H - 5} fontSize={8} fill={c.textFaint} textAnchor="middle">{labelAt(t, months)}</SvgText>)}
         </Svg>
       </View>
-    </View>
   );
 }
 
@@ -181,6 +174,24 @@ export default function BiologyMode() {
   const leanShare = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) > 0 ? Math.abs(comp.dLean) / (Math.abs(comp.dFat) + Math.abs(comp.dLean)) : 0;
   const sgn = (n: number) => (n > 0 ? '+' : '') + n;
 
+  // ONE shared cursor readout (rendered under the nav bar) — all metrics' values at the cursor + any event,
+  // so it doesn't repeat per graph and never resizes the charts. Defaults to the latest reading.
+  const SHORT: Record<string, string> = { weight: 'Wt', bodyfat: 'BF', lean: 'Lean', bpSys: 'Sys', bpDia: 'Dia' };
+  const rtOf = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
+  const cT = cursorTime != null ? Math.max(t0, Math.min(t1, cursorTime)) : t1;
+  const rPlotW = Math.max(1, innerW - 34 - 10);
+  const readVals = rep ? (['weight', 'bodyfat', 'lean', 'bpSys', 'bpDia']).map(k => {
+    const m = byKey(k); if (!m) return null;
+    const pts = m.points.filter(p => rtOf(p.date) >= t0 && rtOf(p.date) <= t1);
+    if (!pts.length) return null;
+    let best = pts[0], bd = Infinity; for (const p of pts) { const d = Math.abs(rtOf(p.date) - cT); if (d < bd) { bd = d; best = p; } }
+    return { key: k, value: best.value, unit: m.unit };
+  }).filter(Boolean) as { key: string; value: number; unit: string }[] : [];
+  const evList = showEvents && rep ? rep.events.filter(e => rtOf(e.date) <= t1 && rtOf(e.endDate ?? e.date) >= t0) : [];
+  let nearE: (typeof evList)[number] | null = null, nd = Infinity;
+  for (const e of evList) { const es = rtOf(e.date), en = rtOf(e.endDate ?? e.date); const within = cT >= Math.min(es, en) && cT <= Math.max(es, en); const d = within ? 0 : Math.min(Math.abs(cT - es), Math.abs(cT - en)); if (d < nd) { nd = d; nearE = e; } }
+  const readEvent = nearE && nd <= (t1 - t0) * (18 / rPlotW) ? nearE : null;
+
   return (
     <View style={s.screen}>
       <Stack.Screen options={{ title: 'Biology' }} />
@@ -203,6 +214,13 @@ export default function BiologyMode() {
           <Text style={s.navLabel}>{monthYear(t0)} – {monthYear(t1)}</Text>
           <TouchableOpacity style={[s.navBtn, offset === 0 && s.navBtnOff]} disabled={offset === 0} onPress={() => setOffset(o => Math.max(0, o - 1))}><Text style={[s.navTxt, offset === 0 && s.navTxtOff]}>Next ▶</Text></TouchableOpacity>
         </View>
+        {rep && rep.hasAnyData && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.readoutBar} contentContainerStyle={{ alignItems: 'center', gap: 12, paddingRight: 16 }}>
+            <Text style={s.readDate}>{labelAt(cT, months)}</Text>
+            {readVals.map(r => <Text key={r.key} style={[s.readVal, { color: SERIES[r.key] }]}>{SHORT[r.key]} {r.value}{r.unit === '%' ? '%' : ''}</Text>)}
+            {readEvent && <Text style={[s.readVal, { color: CAT_COLOR[readEvent.category] ?? CAT_COLOR.other }]}>{CAT_ICON[readEvent.category] ?? '📌'} {readEvent.label}</Text>}
+          </ScrollView>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 48 }}>
@@ -285,7 +303,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   cardTitle: { color: c.text, fontSize: 15, fontWeight: '700' },
   latest:    { fontSize: 15, fontWeight: '800', marginLeft: 8 },
   li:        { color: c.textSub, fontSize: 13, lineHeight: 20 },
-  readout:   { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, minHeight: 16, marginBottom: 2 },
+  readoutBar:{ height: 22, marginTop: 8, flexGrow: 0 },   // fixed height single row → no per-graph jump
   readDate:  { color: c.text, fontSize: 12, fontWeight: '700' },
   readVal:   { fontSize: 12, fontWeight: '700' },
   loadPill:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
