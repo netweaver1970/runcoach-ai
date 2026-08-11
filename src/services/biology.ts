@@ -154,17 +154,19 @@ const META: Record<BioKey, { label: string; unit: string }> = {
   bpDia:   { label: 'BP diastolic',  unit: 'mmHg' },
 };
 
-export async function computeBiologyReport(months = 12, toDate: Date = new Date()): Promise<BiologyReport> {
+// `ctlMonths` = how far back to compute the fitness (CTL) overlay. Body metrics are always fetched over
+// FULL history (up to ~40 years) so every period the user scrolls to has its data already loaded.
+const METRIC_MONTHS = 480;
+export async function computeBiologyReport(ctlMonths = 120, toDate: Date = new Date()): Promise<BiologyReport> {
   const [snap, events, weight, bodyfat, lean, bp, loadHist] = await Promise.all([
     loadSnapshotCache().catch(() => null),
     loadEvents().catch(() => []),
-    fetchBodyMassHistory(months, toDate).catch(() => []),
-    fetchBodyFatHistory(months, toDate).catch(() => []),
-    fetchLeanBodyMassHistory(months, toDate).catch(() => []),
-    fetchBloodPressureHistory(months, toDate).catch(() => []),
-    // CTL/ATL over the range (cap 24mo) — the cached snapshot only holds ~90 days, so the overlay used to
-    // stop ~2 months back. This recomputes the fitness series to cover the chart.
-    fetchTrainingLoadHistory(Math.min(months, 24), toDate).catch(() => [] as any[]),
+    fetchBodyMassHistory(METRIC_MONTHS, toDate).catch(() => []),
+    fetchBodyFatHistory(METRIC_MONTHS, toDate).catch(() => []),
+    fetchLeanBodyMassHistory(METRIC_MONTHS, toDate).catch(() => []),
+    fetchBloodPressureHistory(METRIC_MONTHS, toDate).catch(() => []),
+    // Fitness (CTL) overlay — cap lifted to `ctlMonths` (full history); the cached snapshot only holds ~90 days.
+    fetchTrainingLoadHistory(ctlMonths, toDate).catch(() => [] as any[]),
   ]);
 
   // Physiological validity gate — a weight-only scale writes 0 (or nothing) for body-fat / lean mass;
@@ -264,7 +266,7 @@ export async function computeBiologyReport(months = 12, toDate: Date = new Date(
   }).filter(ei => ei.effects.some(x => x.delta != null));
 
   return {
-    rangeMonths: months, metrics, ctl, runKm7d,
+    rangeMonths: ctlMonths, metrics, ctl, runKm7d,
     events: relevant.map(e => ({ date: dayKey(e.date), endDate: e.endDate ? dayKey(e.endDate) : undefined, label: e.title || e.category || 'Event', category: e.category || 'other' })),
     eventImpacts, hasAnyData, generatedAt: new Date().toISOString(),
   };

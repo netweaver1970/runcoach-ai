@@ -145,7 +145,6 @@ export default function BiologyMode() {
   const [cursorTime, setCursorTime] = useState<number | null>(null);   // coupled cursor across all charts
   const [rep, setRep] = useState<BiologyReport | null>(null);
   const [loading, setLoading] = useState(true);
-  const cache = useRef<Map<string, BiologyReport>>(new Map());   // per (range,offset) window → skip re-fetching HK
 
   const months = RANGE_MONTHS[range];
   const spanMs = months * 30 * 86_400_000;
@@ -154,19 +153,16 @@ export default function BiologyMode() {
 
   useEffect(() => { requestPermissions().catch(() => {}); }, []);
   useEffect(() => { setCursorTime(null); }, [range, offset]);
+  // Load the FULL history once (metrics ~40y, fitness/CTL ~10y). range + offset are then a pure VIEWPORT
+  // into the loaded data — so scrolling to any period (incl. >10 years back) shows its data instantly, no
+  // per-step re-fetch. The spinner shows once, while that history is pulled from HealthKit.
   useEffect(() => {
-    let alive = true;
-    const key = `${range}:${offset}`;
-    const hit = cache.current.get(key);
-    if (hit) { setRep(hit); setLoading(false); return; }   // already fetched this window → instant, no spinner
-    // Window extends into un-fetched dates → pull them from HealthKit (spinner shows meanwhile).
-    setLoading(true);
-    computeBiologyReport(months, new Date(t1))
-      .then(r => { if (!alive) return; cache.current.set(key, r); setRep(r); setLoading(false); })
+    let alive = true; setLoading(true);
+    computeBiologyReport(60)   // CTL/fitness overlay over 5y (covers full training history); metrics are full ~40y
+      .then(r => { if (alive) { setRep(r); setLoading(false); } })
       .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, offset]);
+  }, []);
 
   const byKey = (k: string): BioMetric | undefined => rep?.metrics.find(m => m.key === k);
   const chartCards: { title: string; keys: string[] }[] = [
@@ -198,7 +194,7 @@ export default function BiologyMode() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 48 }}>
-        {loading && <View style={s.loadCard}><ActivityIndicator color={c.accent} /><Text style={s.loadCardTxt}>Fetching {range} of data from Apple Health…</Text></View>}
+        {loading && <View style={s.loadCard}><ActivityIndicator color={c.accent} /><Text style={s.loadCardTxt}>Loading your full history from Apple Health…</Text></View>}
 
         {!loading && rep && !rep.hasAnyData && (
           <View style={s.card}><Text style={s.cardTitle}>No body data yet</Text>
