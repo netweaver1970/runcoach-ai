@@ -16,6 +16,8 @@ import { exportAllSettings } from './backup';
 import { computeBodyBattery } from './bodyBattery';
 import { buildTrainingLoadCalibration, loadSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot } from './coach';
+import { getPowerZones, getEffectiveMaxHr } from './claude';
+import { getAccountingMode } from './accounting';
 import { getCurrentUser } from './auth';
 
 // A key is a credential if — with separators/casing removed — it contains one of these tokens.
@@ -153,6 +155,69 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
     const snap = await loadSnapshotCache();
     if (!snap) return null;
     return assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
+  });
+  // PER-RUN STRUCTURE — so a run can be correctly interpreted OFF-device: the labelled phases
+  // (Warmup/Work/Recovery/Cooldown/Walk/Drills) with per-segment KPIs, plus the settings that DRIVE
+  // interpretation (power zones + max/rest HR for zone adherence; accounting mode for what counts as
+  // time-on-feet). `countsTof` mirrors the ToF exclusion (by LABEL) and `tofMin` is what ToF should total
+  // for the run — compare to the app's recentTimeOnFeet to catch accounting bugs (e.g. a cool-down leak).
+  await add('runs', async () => {
+    const snap = await loadSnapshotCache();
+    if (!snap) return null;
+    const [pz, maxHR, acct] = await Promise.all([
+      getPowerZones().catch(() => null),
+      getEffectiveMaxHr().catch(() => 190),
+      getAccountingMode().catch(() => 'work' as const),
+    ]);
+    const rv = (snap.restingHR ?? []).map(v => v.value).filter(v => v > 0).sort((a, b) => a - b);
+    const restHR = rv.length ? rv[Math.floor(rv.length / 2)] : 55;
+    const reserve = Math.max(1, maxHR - restHR);
+    const EXCLUDE = /warm|cool|recover|rest|walk|prep/i;   // === healthkit TOF_EXCLUDE_PHASE (segment counts unless its LABEL matches)
+    const r1 = (n: number) => Math.round(n * 10) / 10;
+    const hrr = (hr: number) => hr > 0 ? Math.round(((hr - restHR) / reserve) * 100) / 100 : null;
+    const paceOf = (durSec: number, distM: number) => distM > 0 ? Math.round(durSec / (distM / 1000)) : null; // sec/km
+    const eff = (paceSec: number, power: number, hr: number) => {
+      const spd = paceSec > 0 ? 60000 / paceSec : 0;
+      return {
+        ec: spd > 0 && power > 0 ? r1(spd / power) : null,   // speed÷power (HR-independent)
+        ef: power > 0 && hr > 0  ? r1(power / hr)  : null,   // power÷HR
+        se: spd > 0 && hr > 0    ? r1(spd / hr)    : null,   // speed÷HR
+      };
+    };
+    const runs = (snap.runs ?? []).slice(0, 40).map(r => {
+      const segs = (r.segments ?? []).map(s => ({
+        phase:     s.label,
+        min:       r1(s.durationSec / 60),
+        distM:     Math.round(s.distanceM),
+        paceSec:   paceOf(s.durationSec, s.distanceM),
+        avgHR:     s.avgHR || null,
+        hrr:       hrr(s.avgHR),
+        avgPower:  s.avgPower || null,
+        cadence:   s.cadenceSPM || null,
+        countsTof: acct === 'full' ? true : !EXCLUDE.test(s.label || ''),
+      }));
+      const tofMin = acct === 'full'
+        ? Math.round(r.duration / 60)
+        : r1(segs.filter(s => s.countsTof).reduce((a, s) => a + s.min, 0));
+      const wHR = r.workHR ?? r.avgHeartRate ?? 0;
+      return {
+        date: r.date, uuid: r.uuid, type: r.label ?? null,
+        distanceKm: r1(r.distance / 1000), durationMin: Math.round(r.duration / 60),
+        workMin: r.workDuration ? Math.round(r.workDuration / 60) : null,
+        tofMin,   // ← time-on-feet this run SHOULD contribute (labels + accounting mode); cross-check vs recentTimeOnFeet
+        wHR: wHR || null, wHRr: hrr(wHR), wPower: r.workPower || null,
+        wPaceSec: r.workPace ?? r.pace ?? null, ...eff(r.workPace ?? r.pace ?? 0, r.workPower ?? 0, wHR),
+        estimatedPower: r.isEstimatedPower ?? false, hrUnreliable: r.hrUnreliable ?? false,
+        tempC: r.tempC ?? null, note: r.note ?? null,
+        segments: segs,
+        intervals: r.intervals?.length ? r.intervals.map(i => ({ hr: i.avgHR, paceSec: i.avgPaceSecs, powerW: i.avgPowerW })) : undefined,
+      };
+    });
+    return {
+      context: { powerZones: pz, maxHR, restHR, accountingMode: acct,
+        note: 'EC=speed÷power (HR-indep) · EF=power÷HR · SE=speed÷HR; hrr=HR-reserve; ToF excludes warm/cool/recover/rest/walk/prep by LABEL' },
+      runs,
+    };
   });
   await add('settings', async () => {
     const s = JSON.parse(await exportAllSettings(false));
