@@ -272,6 +272,24 @@ export async function computeBiologyReport(ctlMonths = 120, toDate: Date = new D
   };
 }
 
+// Fat-mass vs lean-mass change over [t0,t1] — only where weight AND body-fat% both exist (a scale writes
+// them together). fatMass = weight × fat%; lean = weight − fatMass. Returns nulls' worth if <2 paired.
+export function compositionChange(weight: BioPoint[], fat: BioPoint[], t0: number, t1: number):
+  { fromT: number; toT: number; dW: number; dFat: number; dLean: number; startW: number; endW: number; startFatPct: number; endFatPct: number } | null {
+  if (weight.length < 1 || fat.length < 2) return null;
+  const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
+  const nearestW = (t: number) => { let best: BioPoint | null = null, bd = Infinity; for (const p of weight) { const d = Math.abs(tt(p.date) - t); if (d < bd) { bd = d; best = p; } } return bd <= 10 * 86_400_000 ? best : null; };
+  const paired = fat
+    .filter(f => tt(f.date) >= t0 && tt(f.date) <= t1)
+    .map(f => { const w = nearestW(tt(f.date)); if (!w) return null; const fatMass = w.value * f.value / 100; return { t: tt(f.date), w: w.value, fatPct: f.value, fatMass, leanMass: w.value - fatMass }; })
+    .filter(Boolean) as { t: number; w: number; fatPct: number; fatMass: number; leanMass: number }[];
+  if (paired.length < 2) return null;
+  paired.sort((a, b) => a.t - b.t);
+  const a = paired[0], b = paired[paired.length - 1];
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  return { fromT: a.t, toT: b.t, dW: r1(b.w - a.w), dFat: r1(b.fatMass - a.fatMass), dLean: r1(b.leanMass - a.leanMass), startW: a.w, endW: b.w, startFatPct: a.fatPct, endFatPct: b.fatPct };
+}
+
 // "flat" threshold per metric (weekly change below this = no meaningful trend).
 function trendEps(key: BioKey): number { return key === 'bodyfat' ? 0.05 : key === 'bpSys' || key === 'bpDia' ? 0.3 : 0.05; }
 function withinDays(aISO: string, bISO: string, win: number): boolean {

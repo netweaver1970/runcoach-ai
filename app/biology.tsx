@@ -3,7 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { requestPermissions } from '../src/services/healthkit';
-import { computeBiologyReport, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
+import { computeBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 type Range = '3M' | '6M' | '1Y' | '5Y' | '10Y';
@@ -12,23 +12,6 @@ const RANGE_MONTHS: Record<Range, number> = { '3M': 3, '6M': 6, '1Y': 12, '5Y': 
 const CAT_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981', travel: '#3b82f6', holiday: '#f59e0b', other: '#9ca3af' };
 const CAT_ICON: Record<string, string> = { medical: '🩺', life: '🎉', travel: '✈️', holiday: '🏖️', other: '📌' };
 const SERIES: Record<string, string> = { weight: '#3b82f6', bodyfat: '#f59e0b', lean: '#10b981', bpSys: '#ef4444', bpDia: '#8b5cf6' };
-
-// Fat-mass vs lean-mass change over the visible window — only where weight AND body-fat% both exist (a
-// smart scale writes them together), so the split is real. fatMass = weight × fat%; lean = weight − fat.
-function compositionChange(weight: BioPoint[], fat: BioPoint[], t0: number, t1: number) {
-  if (weight.length < 1 || fat.length < 2) return null;
-  const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
-  const nearestW = (t: number) => { let best: BioPoint | null = null, bd = Infinity; for (const p of weight) { const d = Math.abs(tt(p.date) - t); if (d < bd) { bd = d; best = p; } } return bd <= 10 * 86_400_000 ? best : null; };
-  const paired = fat
-    .filter(f => tt(f.date) >= t0 && tt(f.date) <= t1)
-    .map(f => { const w = nearestW(tt(f.date)); if (!w) return null; const fatMass = w.value * f.value / 100; return { t: tt(f.date), w: w.value, fatMass, leanMass: w.value - fatMass }; })
-    .filter(Boolean) as { t: number; w: number; fatMass: number; leanMass: number }[];
-  if (paired.length < 2) return null;
-  paired.sort((a, b) => a.t - b.t);
-  const a = paired[0], b = paired[paired.length - 1];
-  const r1 = (n: number) => Math.round(n * 10) / 10;
-  return { fromT: a.t, toT: b.t, dW: r1(b.w - a.w), dFat: r1(b.fatMass - a.fatMass), dLean: r1(b.leanMass - a.leanMass) };
-}
 
 const CH_H = 128, PAD_L = 34, PAD_R = 10, PAD_T = 8, PAD_B = 16;
 const monthYear = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });

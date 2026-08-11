@@ -18,6 +18,7 @@ import { buildTrainingLoadCalibration, loadSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot } from './coach';
 import { getPowerZones, getEffectiveMaxHr } from './claude';
 import { getAccountingMode } from './accounting';
+import { computeBiologyReport, compositionChange } from './biology';
 import { getCurrentUser } from './auth';
 
 // A key is a credential if — with separators/casing removed — it contains one of these tokens.
@@ -219,6 +220,30 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
       context: { powerZones: pz, maxHR, restHR, accountingMode: acct,
         note: 'EC=speed÷power (HR-indep) · EF=power÷HR · SE=speed÷HR; hrr=HR-reserve; ToF excludes warm/cool/recover/rest/walk/prep by LABEL' },
       runs,
+    };
+  });
+  // BIOLOGY — body-composition + BP series (validity-cleaned) + the fat-vs-lean split over standard windows,
+  // so the Biology mode is verifiable off-device (weight/fat%/lean readings aren't in any other section).
+  await add('biology', async () => {
+    const rep = await computeBiologyReport(60).catch(() => null);
+    if (!rep) return null;
+    const now = Date.now();
+    const weight = rep.metrics.find(m => m.key === 'weight')?.points ?? [];
+    const fat    = rep.metrics.find(m => m.key === 'bodyfat')?.points ?? [];
+    const wins: Record<string, number> = { '1M': 30, '3M': 91, '6M': 182, '1Y': 365, all: 100000 };
+    const composition: Record<string, unknown> = {};
+    for (const [k, d] of Object.entries(wins)) {
+      const cc = compositionChange(weight, fat, now - d * 86_400_000, now);
+      composition[k] = cc ? {
+        from: new Date(cc.fromT).toISOString().slice(0, 10), to: new Date(cc.toT).toISOString().slice(0, 10),
+        dWeight: cc.dW, dFatMass: cc.dFat, dLeanMass: cc.dLean,
+        startWeight: cc.startW, endWeight: cc.endW, startFatPct: cc.startFatPct, endFatPct: cc.endFatPct,
+        leanShareOfChangePct: (Math.abs(cc.dFat) + Math.abs(cc.dLean)) > 0 ? Math.round(Math.abs(cc.dLean) / (Math.abs(cc.dFat) + Math.abs(cc.dLean)) * 100) : null,
+      } : null;
+    }
+    return {
+      metrics: rep.metrics.map(m => ({ key: m.key, unit: m.unit, n: m.n, latest: m.latest, latestDate: m.latestDate, trendPerWeek: m.trendPerWeek, points: m.points })),
+      composition,
     };
   });
   await add('settings', async () => {
