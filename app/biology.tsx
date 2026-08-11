@@ -145,6 +145,7 @@ export default function BiologyMode() {
   const [cursorTime, setCursorTime] = useState<number | null>(null);   // coupled cursor across all charts
   const [rep, setRep] = useState<BiologyReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const cache = useRef<Map<string, BiologyReport>>(new Map());   // per (range,offset) window → skip re-fetching HK
 
   const months = RANGE_MONTHS[range];
   const spanMs = months * 30 * 86_400_000;
@@ -154,8 +155,15 @@ export default function BiologyMode() {
   useEffect(() => { requestPermissions().catch(() => {}); }, []);
   useEffect(() => { setCursorTime(null); }, [range, offset]);
   useEffect(() => {
-    let alive = true; setLoading(true);
-    computeBiologyReport(months, new Date(t1)).then(r => { if (alive) { setRep(r); setLoading(false); } }).catch(() => { if (alive) { setRep(null); setLoading(false); } });
+    let alive = true;
+    const key = `${range}:${offset}`;
+    const hit = cache.current.get(key);
+    if (hit) { setRep(hit); setLoading(false); return; }   // already fetched this window → instant, no spinner
+    // Window extends into un-fetched dates → pull them from HealthKit (spinner shows meanwhile).
+    setLoading(true);
+    computeBiologyReport(months, new Date(t1))
+      .then(r => { if (!alive) return; cache.current.set(key, r); setRep(r); setLoading(false); })
+      .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, offset]);
@@ -176,6 +184,8 @@ export default function BiologyMode() {
         <View style={s.headerTop}>
           <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
           <Text style={s.hTitle}>🧬 Biology</Text>
+          <View style={{ flex: 1 }} />
+          {loading && <View style={s.loadPill}><ActivityIndicator size="small" color={c.accent} /><Text style={s.loadTxt}>fetching…</Text></View>}
         </View>
         <View style={s.tabs}>{RANGES.map(r => (
           <TouchableOpacity key={r} onPress={() => setRange(r)} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>
@@ -188,7 +198,7 @@ export default function BiologyMode() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 48 }}>
-        {loading && <ActivityIndicator style={{ marginTop: 40 }} color={c.accent} />}
+        {loading && <View style={s.loadCard}><ActivityIndicator color={c.accent} /><Text style={s.loadCardTxt}>Fetching {range} of data from Apple Health…</Text></View>}
 
         {!loading && rep && !rep.hasAnyData && (
           <View style={s.card}><Text style={s.cardTitle}>No body data yet</Text>
@@ -244,4 +254,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   readout:   { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, minHeight: 16, marginBottom: 2 },
   readDate:  { color: c.text, fontSize: 12, fontWeight: '700' },
   readVal:   { fontSize: 12, fontWeight: '700' },
+  loadPill:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  loadTxt:   { color: c.textSub, fontSize: 12, fontWeight: '600' },
+  loadCard:  { backgroundColor: c.surface, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: c.border, alignItems: 'center', gap: 10, marginTop: 8 },
+  loadCardTxt: { color: c.textSub, fontSize: 13, textAlign: 'center' },
 });
