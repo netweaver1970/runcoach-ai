@@ -154,17 +154,17 @@ const META: Record<BioKey, { label: string; unit: string }> = {
   bpDia:   { label: 'BP diastolic',  unit: 'mmHg' },
 };
 
-export async function computeBiologyReport(months = 12): Promise<BiologyReport> {
+export async function computeBiologyReport(months = 12, toDate: Date = new Date()): Promise<BiologyReport> {
   const [snap, events, weight, bodyfat, lean, bp, loadHist] = await Promise.all([
     loadSnapshotCache().catch(() => null),
     loadEvents().catch(() => []),
-    fetchBodyMassHistory(months).catch(() => []),
-    fetchBodyFatHistory(months).catch(() => []),
-    fetchLeanBodyMassHistory(months).catch(() => []),
-    fetchBloodPressureHistory(months).catch(() => []),
+    fetchBodyMassHistory(months, toDate).catch(() => []),
+    fetchBodyFatHistory(months, toDate).catch(() => []),
+    fetchLeanBodyMassHistory(months, toDate).catch(() => []),
+    fetchBloodPressureHistory(months, toDate).catch(() => []),
     // CTL/ATL over the range (cap 24mo) — the cached snapshot only holds ~90 days, so the overlay used to
     // stop ~2 months back. This recomputes the fitness series to cover the chart.
-    fetchTrainingLoadHistory(Math.min(months, 24)).catch(() => [] as any[]),
+    fetchTrainingLoadHistory(Math.min(months, 24), toDate).catch(() => [] as any[]),
   ]);
 
   // Physiological validity gate — a weight-only scale writes 0 (or nothing) for body-fat / lean mass;
@@ -177,6 +177,13 @@ export async function computeBiologyReport(months = 12): Promise<BiologyReport> 
     bpSys:   clean('bpSys', bp.map(b => ({ date: b.date, value: b.systolic }))),
     bpDia:   clean('bpDia', bp.map(b => ({ date: b.date, value: b.diastolic }))),
   };
+  // Lean mass can't realistically exceed ~97% of body weight (that implies <3% fat). A scale that writes
+  // leanBodyMass == total weight is garbage → drop it by comparing to the nearest weight reading (±14d).
+  if (rawPoints.lean.length && rawPoints.weight.length) {
+    const w = rawPoints.weight;
+    const nearestW = (iso: string) => { const t = new Date(iso).getTime(); let best: BioPoint | null = null, bd = Infinity; for (const p of w) { const d = Math.abs(new Date(p.date).getTime() - t); if (d < bd) { bd = d; best = p; } } return bd <= 14 * 86_400_000 ? best : null; };
+    rawPoints.lean = rawPoints.lean.filter(p => { const nw = nearestW(p.date); return !nw || p.value <= nw.value * 0.97; });
+  }
 
   // Training-load + run-volume drivers (daily). Prefer the longer fetched history; fall back to the snapshot.
   const load = ((loadHist && loadHist.length ? loadHist : (snap?.trainingLoad ?? [])) as { date: string; ctl: number }[]);
@@ -188,7 +195,7 @@ export async function computeBiologyReport(months = 12): Promise<BiologyReport> 
   const bioDates = (Object.keys(META) as BioKey[]).flatMap(k => rawPoints[k].map(p => p.date));
   const allDates = [...bioDates, ...ctlPoints.map(p => p.date), ...runByDay.keys()].map(dayKey).filter(Boolean).sort();
   const hasAnyData = (Object.keys(META) as BioKey[]).some(k => rawPoints[k].length > 0);
-  const today = dayKey(new Date().toISOString());
+  const today = dayKey(toDate.toISOString());
   const start = allDates[0] ?? today;
   const days = dayList(start, today);
 
