@@ -13,6 +13,23 @@ const CAT_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981',
 const CAT_ICON: Record<string, string> = { medical: '🩺', life: '🎉', travel: '✈️', holiday: '🏖️', other: '📌' };
 const SERIES: Record<string, string> = { weight: '#3b82f6', bodyfat: '#f59e0b', lean: '#10b981', bpSys: '#ef4444', bpDia: '#8b5cf6' };
 
+// Fat-mass vs lean-mass change over the visible window — only where weight AND body-fat% both exist (a
+// smart scale writes them together), so the split is real. fatMass = weight × fat%; lean = weight − fat.
+function compositionChange(weight: BioPoint[], fat: BioPoint[], t0: number, t1: number) {
+  if (weight.length < 1 || fat.length < 2) return null;
+  const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
+  const nearestW = (t: number) => { let best: BioPoint | null = null, bd = Infinity; for (const p of weight) { const d = Math.abs(tt(p.date) - t); if (d < bd) { bd = d; best = p; } } return bd <= 10 * 86_400_000 ? best : null; };
+  const paired = fat
+    .filter(f => tt(f.date) >= t0 && tt(f.date) <= t1)
+    .map(f => { const w = nearestW(tt(f.date)); if (!w) return null; const fatMass = w.value * f.value / 100; return { t: tt(f.date), w: w.value, fatMass, leanMass: w.value - fatMass }; })
+    .filter(Boolean) as { t: number; w: number; fatMass: number; leanMass: number }[];
+  if (paired.length < 2) return null;
+  paired.sort((a, b) => a.t - b.t);
+  const a = paired[0], b = paired[paired.length - 1];
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  return { fromT: a.t, toT: b.t, dW: r1(b.w - a.w), dFat: r1(b.fatMass - a.fatMass), dLean: r1(b.leanMass - a.leanMass) };
+}
+
 const CH_H = 128, PAD_L = 34, PAD_R = 10, PAD_T = 8, PAD_B = 16;
 const monthYear = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 const labelAt = (t: number, months: number) => months > 12
@@ -29,18 +46,20 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles, curso
   innerW: number; c: Palette; months: number; styles: any;
   cursorTime: number | null; onCursor: (t: number | null) => void;
 }) {
-  const plotRef = useRef<View>(null);
-  const plotLeft = useRef(0);
-  const measure = () => plotRef.current?.measureInWindow((x) => { plotLeft.current = x; });
   const plotW = Math.max(1, innerW - PAD_L - PAD_R);
   const plotH = CH_H - PAD_T - PAD_B;
   const span = Math.max(1, t1 - t0);
-  const xToT = (x: number) => t0 + ((Math.max(PAD_L, Math.min(PAD_L + plotW, x)) - PAD_L) / plotW) * span;
+  // Map a plot-relative touch x → time. Held in a ref RE-ASSIGNED every render so the once-created
+  // PanResponder always uses the CURRENT window (fixes the cursor drifting / not reaching the left after nav).
+  const mapRef = useRef<(x: number) => number>(() => t0);
+  mapRef.current = (x: number) => t0 + ((Math.max(PAD_L, Math.min(PAD_L + plotW, x)) - PAD_L) / plotW) * span;
   const pan = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
-    onPanResponderGrant: (_e, g) => onCursor(xToT(g.x0 - plotLeft.current)),
-    onPanResponderMove: (_e, g) => onCursor(xToT(g.moveX - plotLeft.current)),
+    // Use the touch x RELATIVE to the plot view (locationX) — no window-measure offset, so the whole width
+    // (incl. the first half) is reachable.
+    onPanResponderGrant: (evt) => onCursor(mapRef.current(evt.nativeEvent.locationX)),
+    onPanResponderMove: (evt) => onCursor(mapRef.current(evt.nativeEvent.locationX)),
     onPanResponderTerminationRequest: () => false,
   })).current;
 
@@ -89,7 +108,7 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles, curso
         {readVals.map(r => <Text key={r.key} style={[styles.readVal, { color: SERIES[r.key] }]}>{r.label} {r.p ? r.p.value : '—'}</Text>)}
         {showEvent && <Text style={[styles.readVal, { color: CAT_COLOR[showEvent.category] ?? CAT_COLOR.other }]}>{CAT_ICON[showEvent.category] ?? '📌'} {showEvent.label}</Text>}
       </View>
-      <View ref={plotRef} onLayout={measure} {...pan.panHandlers}>
+      <View {...pan.panHandlers}>
         <Svg width={innerW} height={CH_H}>
           {bands.map((b, i) => <Rect key={`b${i}`} x={b.x} y={PAD_T} width={b.w} height={plotH} fill={bandFill} opacity={0.04} />)}
           {yTicks.map((v, i) => <React.Fragment key={`y${i}`}>
@@ -143,6 +162,7 @@ export default function BiologyMode() {
   const [range, setRange] = useState<Range>('6M');
   const [offset, setOffset] = useState(0);            // periods shifted back (0 = current)
   const [cursorTime, setCursorTime] = useState<number | null>(null);   // coupled cursor across all charts
+  const [showEvents, setShowEvents] = useState(true);                  // privacy: hide all event markers when showing others
   const [rep, setRep] = useState<BiologyReport | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -171,6 +191,12 @@ export default function BiologyMode() {
     { title: 'Lean mass', keys: ['lean'] },
     { title: 'Blood pressure', keys: ['bpSys', 'bpDia'] },
   ];
+  const comp = rep && rep.hasAnyData ? compositionChange(byKey('weight')?.points ?? [], byKey('bodyfat')?.points ?? [], t0, t1) : null;
+  const compShow = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) >= 0.3;   // only when there's a real move
+  const compFatW = comp ? Math.max(1, Math.abs(comp.dFat)) : 1;
+  const compLeanW = comp ? Math.max(1, Math.abs(comp.dLean)) : 1;
+  const leanShare = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) > 0 ? Math.abs(comp.dLean) / (Math.abs(comp.dFat) + Math.abs(comp.dLean)) : 0;
+  const sgn = (n: number) => (n > 0 ? '+' : '') + n;
 
   return (
     <View style={s.screen}>
@@ -181,7 +207,10 @@ export default function BiologyMode() {
           <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
           <Text style={s.hTitle}>🧬 Biology</Text>
           <View style={{ flex: 1 }} />
-          {loading && <View style={s.loadPill}><ActivityIndicator size="small" color={c.accent} /><Text style={s.loadTxt}>fetching…</Text></View>}
+          {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
+          <TouchableOpacity style={[s.eyeBtn, !showEvents && s.eyeBtnOff]} onPress={() => setShowEvents(v => !v)}>
+            <Text style={[s.eyeTxt, !showEvents && s.eyeTxtOff]}>{showEvents ? '👁 Events' : '🚫 Events'}</Text>
+          </TouchableOpacity>
         </View>
         <View style={s.tabs}>{RANGES.map(r => (
           <TouchableOpacity key={r} onPress={() => setRange(r)} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>
@@ -215,10 +244,36 @@ export default function BiologyMode() {
                     <Text key={m.key} style={[s.latest, { color: SERIES[m.key] }]}>{m.latest}{m.unit === '%' ? '%' : ` ${m.unit}`}</Text>
                   ))}
                 </View>
-                <BioChart lines={lines} t0={t0} t1={t1} ctl={rep.ctl} events={rep.events} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
+                <BioChart lines={lines} t0={t0} t1={t1} ctl={rep.ctl} events={showEvents ? rep.events : []} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
               </View>
             );
           })}
+
+        {/* Fat vs lean change — where weight + body-fat both exist. Relevant on GLP-1: is the loss fat or lean? */}
+        {!loading && compShow && comp && (
+          <View style={s.card}>
+            <View style={s.cardHead}>
+              <Text style={s.cardTitle}>Fat vs lean change</Text>
+              <Text style={[s.latest, { color: comp.dW <= 0 ? SERIES.lean : c.textSub }]}>{sgn(comp.dW)} kg</Text>
+            </View>
+            <Text style={s.compSub}>{monthYear(comp.fromT)} → {monthYear(comp.toT)} · of your {sgn(comp.dW)} kg: <Text style={{ color: SERIES.bodyfat, fontWeight: '700' }}>fat {sgn(comp.dFat)} kg</Text>, <Text style={{ color: SERIES.lean, fontWeight: '700' }}>lean {sgn(comp.dLean)} kg</Text></Text>
+            <View style={s.compRow}>
+              <View style={s.compBar}>
+                <View style={{ flex: compFatW, backgroundColor: SERIES.bodyfat }} />
+                <View style={{ flex: compLeanW, backgroundColor: SERIES.lean }} />
+              </View>
+            </View>
+            {comp.dW < -0.3 && comp.dLean < -0.2 && leanShare > 0.25 && (
+              <Text style={s.compWarn}>⚠ {Math.round(leanShare * 100)}% of the loss is lean mass — on a GLP-1, protect it: ~1.6 g/kg protein + resistance work.</Text>
+            )}
+            {comp.dW < -0.3 && !(comp.dLean < -0.2 && leanShare > 0.25) && (
+              <Text style={[s.compSub, { color: SERIES.lean }]}>Good — the loss is mostly fat, lean largely preserved.</Text>
+            )}
+            {comp.dW >= -0.3 && comp.dFat < -0.2 && comp.dLean > 0.2 && (
+              <Text style={[s.compSub, { color: SERIES.lean }]}>Recomposition — fat down, lean up. Ideal.</Text>
+            )}
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -254,4 +309,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   loadTxt:   { color: c.textSub, fontSize: 12, fontWeight: '600' },
   loadCard:  { backgroundColor: c.surface, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: c.border, alignItems: 'center', gap: 10, marginTop: 8 },
   loadCardTxt: { color: c.textSub, fontSize: 13, textAlign: 'center' },
+  eyeBtn:    { paddingVertical: 5, paddingHorizontal: 10, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
+  eyeBtnOff: { borderColor: c.accent },
+  eyeTxt:    { color: c.text, fontSize: 12, fontWeight: '600' },
+  eyeTxtOff: { color: c.accent },
+  compRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
+  compBar:   { flex: 1, height: 16, borderRadius: 5, overflow: 'hidden', flexDirection: 'row', backgroundColor: c.surfaceAlt },
+  compSub:   { color: c.textSub, fontSize: 12, lineHeight: 18, marginTop: 8 },
+  compWarn:  { color: '#f59e0b', fontSize: 12, lineHeight: 18, marginTop: 6, fontWeight: '600' },
 });
