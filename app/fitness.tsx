@@ -1,0 +1,41 @@
+import React from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { Stack, useRouter } from 'expo-router';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
+
+// Placeholder mode — the structure is here to grow into. For now, all training features live in Home.
+export default function FitnessMode() {
+  const { c } = useTheme();
+  const s = useThemedStyles(makeStyles);
+  const router = useRouter();
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16 }}>
+      <Stack.Screen options={{ title: 'Fitness' }} />
+      <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
+      <Text style={s.emoji}>🏋️</Text>
+      <Text style={s.h1}>Fitness</Text>
+      <Text style={s.sub}>A dedicated space for strength, mobility and cross-training — separate from your running coach.</Text>
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Coming here</Text>
+        <Text style={s.li}>• Strength & mobility sessions and history</Text>
+        <Text style={s.li}>• Cross-training load (dance, cycling, jump sessions)</Text>
+        <Text style={s.li}>• Non-run workout trends</Text>
+      </View>
+      <Text style={s.note}>Your running plan, coach, zones and training-load analysis stay in <Text style={s.bold}>Home</Text> for now.</Text>
+    </ScrollView>
+  );
+}
+
+const makeStyles = (c: Palette) => StyleSheet.create({
+  screen:    { flex: 1, backgroundColor: c.bg },
+  homeBtn:   { alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, marginBottom: 18 },
+  homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 14 },
+  emoji:     { fontSize: 44, textAlign: 'center', marginTop: 8 },
+  h1:        { color: c.text, fontSize: 26, fontWeight: '800', textAlign: 'center', marginTop: 6 },
+  sub:       { color: c.textSub, fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: 8, marginBottom: 20 },
+  card:      { backgroundColor: c.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: c.border },
+  cardTitle: { color: c.text, fontSize: 15, fontWeight: '700', marginBottom: 10 },
+  li:        { color: c.textSub, fontSize: 14, lineHeight: 24 },
+  note:      { color: c.textFaint, fontSize: 13, lineHeight: 19, marginTop: 18, textAlign: 'center' },
+  bold:      { color: c.text, fontWeight: '700' },
+});

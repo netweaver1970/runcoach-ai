@@ -195,6 +195,7 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing]     = useState(false);
   const [bgScan, setBgScan]             = useState(false);   // silent background refresh in flight
   const [hasApiKey, setHasApiKey]       = useState(false);
+  const [modeOpen, setModeOpen]         = useState(false);   // foreground mode-switcher menu
   const llm = useLLMReady();
   const [runFilter, setRunFilter]       = useState<RunFilter>('All');
   const [sportFilter, setSportFilter]   = useState<SportFilter>('Run');
@@ -947,7 +948,50 @@ export default function HomeScreen() {
           ))
         )}
       </ScrollView>
+
+      {/* Foreground mode switcher — floating icon opens the modes menu (Home / Fitness / Food / Biology). */}
+      <TouchableOpacity
+        style={{ position: 'absolute', bottom: 22, right: 18, backgroundColor: c.accent, borderRadius: 26, paddingVertical: 11, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 6, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 }}
+        onPress={() => setModeOpen(true)}
+        accessibilityLabel="Switch mode"
+      >
+        <Text style={{ color: c.onAccent, fontSize: 16, fontWeight: '800' }}>☰</Text>
+        <Text style={{ color: c.onAccent, fontSize: 14, fontWeight: '700' }}>Modes</Text>
+      </TouchableOpacity>
       </View>
+
+      {/* Mode-switcher overlay */}
+      <Modal visible={modeOpen} transparent animationType="fade" onRequestClose={() => setModeOpen(false)}>
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setModeOpen(false)}>
+          <View style={{ backgroundColor: c.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 34, borderTopWidth: 1, borderColor: c.border }}>
+            <Text style={{ color: c.text, fontSize: 17, fontWeight: '800', marginBottom: 4 }}>Modes</Text>
+            <Text style={{ color: c.textFaint, fontSize: 12, marginBottom: 12 }}>Everything training lives in Home for now.</Text>
+            {[
+              { emoji: '🏠', label: 'Home', route: null, desc: 'Running coach, plans, recovery, load' },
+              { emoji: '🏋️', label: 'Fitness', route: '/fitness', desc: 'Strength & cross-training' },
+              { emoji: '🍽️', label: 'Food', route: '/food', desc: 'Fuelling & intake' },
+              { emoji: '🧬', label: 'Biology', route: '/biology', desc: 'Body composition, BP & correlations' },
+            ].map(m => {
+              const current = m.route === null;
+              return (
+                <TouchableOpacity
+                  key={m.label}
+                  disabled={current}
+                  onPress={() => { setModeOpen(false); if (m.route) router.push(m.route as any); }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12, marginBottom: 8, backgroundColor: current ? c.surfaceAlt : 'transparent', borderWidth: 1, borderColor: current ? c.accent : c.border }}
+                >
+                  <Text style={{ fontSize: 24 }}>{m.emoji}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: c.text, fontSize: 15, fontWeight: '700' }}>{m.label}{current ? '  ·  you’re here' : ''}</Text>
+                    <Text style={{ color: c.textFaint, fontSize: 12 }}>{m.desc}</Text>
+                  </View>
+                  {!current && <Text style={{ color: c.textFaint, fontSize: 18 }}>›</Text>}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Day picker */}
       <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>

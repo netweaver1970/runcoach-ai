@@ -18,6 +18,13 @@ const HKQuantityTypeIdentifier = {
   basalEnergyBurned:           'HKQuantityTypeIdentifierBasalEnergyBurned',
   stepCount:                   'HKQuantityTypeIdentifierStepCount',
   appleExerciseTime:           'HKQuantityTypeIdentifierAppleExerciseTime',
+  // Biology mode — body composition + blood pressure (read-only historical analysis)
+  bloodPressureSystolic:       'HKQuantityTypeIdentifierBloodPressureSystolic',
+  bloodPressureDiastolic:      'HKQuantityTypeIdentifierBloodPressureDiastolic',
+  bodyFatPercentage:           'HKQuantityTypeIdentifierBodyFatPercentage',
+  leanBodyMass:                'HKQuantityTypeIdentifierLeanBodyMass',
+  bodyMassIndex:               'HKQuantityTypeIdentifierBodyMassIndex',
+  waistCircumference:          'HKQuantityTypeIdentifierWaistCircumference',
 } as const;
 
 const HKCategoryTypeIdentifier = {
@@ -217,6 +224,13 @@ export async function requestPermissions(): Promise<boolean> {
       'HKQuantityTypeIdentifierActiveEnergyBurned',
       'HKQuantityTypeIdentifierBasalEnergyBurned',
       'HKQuantityTypeIdentifierAppleExerciseTime',
+      // Biology mode — body composition + blood pressure
+      'HKQuantityTypeIdentifierBloodPressureSystolic',
+      'HKQuantityTypeIdentifierBloodPressureDiastolic',
+      'HKQuantityTypeIdentifierBodyFatPercentage',
+      'HKQuantityTypeIdentifierLeanBodyMass',
+      'HKQuantityTypeIdentifierBodyMassIndex',
+      'HKQuantityTypeIdentifierWaistCircumference',
       // Category types
       'HKCategoryTypeIdentifierSleepAnalysis',
       // Heartbeat series — raw R-R intervals for HRV quality filtering
@@ -3568,6 +3582,45 @@ export async function fetchVO2MaxHistory(months: number, toDate?: Date): Promise
     date:  toISOStr(s.startDate),
     value: Math.round(s.quantity * 10) / 10,
   }));
+}
+
+// ─── Biology mode: body composition + blood pressure (read-only history) ───────
+// All return an ascending [{date, value}] series (BP returns paired sys/dia). `since` = months back.
+async function fetchQuantitySeries(id: string, unit: string, months: number, toDate?: Date, round = 1): Promise<{ date: string; value: number }[]> {
+  const endDate = toDate ?? new Date();
+  const since   = new Date(endDate.getTime() - months * 30 * 86_400_000);
+  const samples = await safeQuery(
+    () => (HealthKit.queryQuantitySamples as any)(id, { filter: { startDate: since, endDate: endDate }, unit, ascending: true, limit: 2000 }),
+    [] as any[]
+  );
+  const f = Math.pow(10, round);
+  return (samples as any[])
+    .map((s: any) => ({ date: toISOStr(s.startDate), value: Math.round((s.quantity as number) * f) / f }))
+    .filter(p => Number.isFinite(p.value));
+}
+
+export function fetchBodyMassHistory(months: number, toDate?: Date) {
+  return fetchQuantitySeries(HKQuantityTypeIdentifier.bodyMass, 'kg', months, toDate, 1);
+}
+export function fetchLeanBodyMassHistory(months: number, toDate?: Date) {
+  return fetchQuantitySeries(HKQuantityTypeIdentifier.leanBodyMass, 'kg', months, toDate, 1);
+}
+// Body-fat is stored as a ratio (0–1) under the percent unit; normalise to a 0–100 percentage.
+export async function fetchBodyFatHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {
+  const raw = await fetchQuantitySeries(HKQuantityTypeIdentifier.bodyFatPercentage, '%', months, toDate, 4);
+  return raw.map(p => ({ date: p.date, value: Math.round((p.value <= 1 ? p.value * 100 : p.value) * 10) / 10 }));
+}
+// Blood pressure is a correlation of two samples sharing a timestamp; query each and pair by minute.
+export async function fetchBloodPressureHistory(months: number, toDate?: Date): Promise<{ date: string; systolic: number; diastolic: number }[]> {
+  const [sys, dia] = await Promise.all([
+    fetchQuantitySeries(HKQuantityTypeIdentifier.bloodPressureSystolic, 'mmHg', months, toDate, 0),
+    fetchQuantitySeries(HKQuantityTypeIdentifier.bloodPressureDiastolic, 'mmHg', months, toDate, 0),
+  ]);
+  const key = (iso: string) => iso.slice(0, 16); // to the minute — a BP reading writes sys+dia together
+  const dMap = new Map(dia.map(d => [key(d.date), d.value]));
+  return sys
+    .map(s => ({ date: s.date, systolic: s.value, diastolic: dMap.get(key(s.date)) ?? NaN }))
+    .filter(r => Number.isFinite(r.diastolic));
 }
 
 export async function fetchRestingHRHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {
