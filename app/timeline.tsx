@@ -99,6 +99,16 @@ export default function TimelineScreen() {
     refresh();
   };
 
+  // Duplicate the event currently being edited → a NEW draft dated TODAY with "(dupl)" appended, left open
+  // in the editor to modify before saving (editingId cleared so submit creates a fresh event).
+  const duplicate = () => {
+    setEditingId(null);
+    setTitle(`${(title.trim() || 'Event')} (dupl)`);
+    setStart(new Date());
+    setEnd(null);
+    setPicker(null);
+  };
+
   const remove = (ev: TimelineEvent) => {
     Alert.alert('Delete event', `Remove "${ev.title ?? (ev.status ? STATUS_LABEL[ev.status] : 'event')}"?`, [
       { text: 'Cancel', style: 'cancel' },
@@ -157,6 +167,9 @@ export default function TimelineScreen() {
               value={picker === 'start' ? start : (end ?? start)}
               mode="date"
               display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              themeVariant={c.mode === 'dark' ? 'dark' : 'light'}   // match the app theme so the calendar dates stay legible
+              accentColor={c.accent}
+              textColor={c.text}
               onChange={(_e, d) => {
                 if (Platform.OS !== 'ios') setPicker(null);
                 if (d) { picker === 'start' ? setStart(d) : setEnd(d); }
@@ -180,6 +193,11 @@ export default function TimelineScreen() {
             {editingId && (
               <TouchableOpacity style={[s.addBtn, s.cancelBtn]} onPress={resetForm}>
                 <Text style={[s.addBtnText, { color: c.textSub }]}>Cancel</Text>
+              </TouchableOpacity>
+            )}
+            {editingId && (
+              <TouchableOpacity style={[s.addBtn, s.cancelBtn]} onPress={duplicate}>
+                <Text style={[s.addBtnText, { color: c.accent }]}>Duplicate</Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity style={[s.addBtn, { flex: 1 }]} onPress={submit}>

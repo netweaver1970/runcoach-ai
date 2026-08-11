@@ -15,7 +15,7 @@
  *  • Correlation ≠ causation is stated, and concurrent timeline events (e.g. medication) are surfaced as
  *    confounders rather than hidden.
  */
-import { loadSnapshotCache, fetchBodyMassHistory, fetchBodyFatHistory, fetchLeanBodyMassHistory, fetchBloodPressureHistory } from './healthkit';
+import { loadSnapshotCache, fetchBodyMassHistory, fetchBodyFatHistory, fetchLeanBodyMassHistory, fetchBloodPressureHistory, fetchTrainingLoadHistory } from './healthkit';
 import { loadEvents } from './timelineEvents';
 
 export type BioKey = 'weight' | 'bodyfat' | 'lean' | 'bpSys' | 'bpDia';
@@ -138,6 +138,14 @@ function bestLagSpearman(metric: (number | null)[], driver: (number | null)[], m
 }
 
 const STALE_CAP: Record<BioKey, number> = { weight: 10, bodyfat: 21, lean: 21, bpSys: 7, bpDia: 7 };
+// Physiologically plausible ranges — readings outside are garbage (0 = "not measured", etc.) and dropped.
+const VALID: Record<BioKey, [number, number]> = {
+  weight:  [25, 400],   // kg
+  bodyfat: [2, 75],     // %
+  lean:    [15, 250],   // kg
+  bpSys:   [50, 260],   // mmHg
+  bpDia:   [30, 200],   // mmHg
+};
 const META: Record<BioKey, { label: string; unit: string }> = {
   weight:  { label: 'Weight',        unit: 'kg' },
   bodyfat: { label: 'Body fat',      unit: '%' },
@@ -147,32 +155,39 @@ const META: Record<BioKey, { label: string; unit: string }> = {
 };
 
 export async function computeBiologyReport(months = 12): Promise<BiologyReport> {
-  const [snap, events, weight, bodyfat, lean, bp] = await Promise.all([
+  const [snap, events, weight, bodyfat, lean, bp, loadHist] = await Promise.all([
     loadSnapshotCache().catch(() => null),
     loadEvents().catch(() => []),
     fetchBodyMassHistory(months).catch(() => []),
     fetchBodyFatHistory(months).catch(() => []),
     fetchLeanBodyMassHistory(months).catch(() => []),
     fetchBloodPressureHistory(months).catch(() => []),
+    // CTL/ATL over the range (cap 24mo) — the cached snapshot only holds ~90 days, so the overlay used to
+    // stop ~2 months back. This recomputes the fitness series to cover the chart.
+    fetchTrainingLoadHistory(Math.min(months, 24)).catch(() => [] as any[]),
   ]);
 
+  // Physiological validity gate — a weight-only scale writes 0 (or nothing) for body-fat / lean mass;
+  // near-zero on any of these is nonsense, so drop it entirely (never plot or correlate a bogus 0).
+  const clean = (key: BioKey, pts: BioPoint[]) => pts.filter(p => p.value >= VALID[key][0] && p.value <= VALID[key][1]);
   const rawPoints: Record<BioKey, BioPoint[]> = {
-    weight, bodyfat, lean,
-    bpSys: bp.map(b => ({ date: b.date, value: b.systolic })),
-    bpDia: bp.map(b => ({ date: b.date, value: b.diastolic })),
+    weight:  clean('weight', weight),
+    bodyfat: clean('bodyfat', bodyfat),
+    lean:    clean('lean', lean),
+    bpSys:   clean('bpSys', bp.map(b => ({ date: b.date, value: b.systolic }))),
+    bpDia:   clean('bpDia', bp.map(b => ({ date: b.date, value: b.diastolic }))),
   };
 
-  // Training-load + run-volume drivers (daily).
-  const load = (snap?.trainingLoad ?? []) as { date: string; ctl: number }[];
+  // Training-load + run-volume drivers (daily). Prefer the longer fetched history; fall back to the snapshot.
+  const load = ((loadHist && loadHist.length ? loadHist : (snap?.trainingLoad ?? [])) as { date: string; ctl: number }[]);
   const ctlPoints: BioPoint[] = load.map(l => ({ date: dayKey(l.date), value: Math.round(l.ctl * 10) / 10 }));
   const runByDay = new Map<string, number>();
   for (const r of (snap?.runs ?? [])) { const k = dayKey(r.date); runByDay.set(k, (runByDay.get(k) ?? 0) + (r.distance ?? 0) / 1000); }
 
-  // Window = from the earliest data point to today.
-  const allDates = [
-    ...weight, ...bodyfat, ...lean, ...bp.map(b => ({ date: b.date })), ...ctlPoints, ...[...runByDay.keys()].map(d => ({ date: d })),
-  ].map(p => dayKey((p as any).date)).filter(Boolean).sort();
-  const hasAnyData = weight.length + bodyfat.length + lean.length + bp.length > 0;
+  // Window = from the earliest data point to today (cleaned readings only).
+  const bioDates = (Object.keys(META) as BioKey[]).flatMap(k => rawPoints[k].map(p => p.date));
+  const allDates = [...bioDates, ...ctlPoints.map(p => p.date), ...runByDay.keys()].map(dayKey).filter(Boolean).sort();
+  const hasAnyData = (Object.keys(META) as BioKey[]).some(k => rawPoints[k].length > 0);
   const today = dayKey(new Date().toISOString());
   const start = allDates[0] ?? today;
   const days = dayList(start, today);

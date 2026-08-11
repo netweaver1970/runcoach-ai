@@ -10,6 +10,7 @@ type Range = '3M' | '6M' | '1Y' | '5Y' | '10Y';
 const RANGES: Range[] = ['3M', '6M', '1Y', '5Y', '10Y'];
 const RANGE_MONTHS: Record<Range, number> = { '3M': 3, '6M': 6, '1Y': 12, '5Y': 60, '10Y': 120 };
 const CAT_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981', travel: '#3b82f6', holiday: '#f59e0b', other: '#9ca3af' };
+const CAT_ICON: Record<string, string> = { medical: '🩺', life: '🎉', travel: '✈️', holiday: '🏖️', other: '📌' };
 const SERIES: Record<string, string> = { weight: '#3b82f6', bodyfat: '#f59e0b', lean: '#10b981', bpSys: '#ef4444', bpDia: '#8b5cf6' };
 
 const CH_H = 190, PAD_L = 34, PAD_R = 10, PAD_T = 12, PAD_B = 22;
@@ -27,7 +28,7 @@ const cursorDateLabel = (t: number, months: number) => {
 function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles }: {
   lines: { key: string; label: string; points: BioPoint[] }[];
   t0: number; t1: number; ctl: BioPoint[];
-  events: { date: string; label: string; category: string }[];
+  events: { date: string; endDate?: string; label: string; category: string }[];
   innerW: number; c: Palette; months: number; styles: any;
 }) {
   const [cursorX, setCursorX] = useState<number | null>(null);
@@ -81,9 +82,16 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles }: {
   const cx = scrubbing ? Math.max(PAD_L, Math.min(PAD_L + plotW, cursorX!)) : PAD_L + plotW;
   const cursorT = t0 + ((cx - PAD_L) / plotW) * span;
   const nearestOf = (pts: BioPoint[]) => { let best: BioPoint | null = null, bd = Infinity; for (const p of pts) { if (!inRange(p.date)) continue; const d = Math.abs(tOf(p.date) - cursorT); if (d < bd) { bd = d; best = p; } } return best; };
-  const evInR = events.filter(e => inRange(e.date));
-  const nearEv = evInR.map(e => ({ e, dx: Math.abs(xOf(e.date) - cx) })).sort((a, b) => a.dx - b.dx)[0];
+  // Events whose span overlaps the window (a range event may start before t0 / end after t1).
+  const evInR = events.filter(e => tOf(e.date) <= t1 && tOf(e.endDate ?? e.date) >= t0);
+  const nearEv = evInR.map(e => {
+    const xs = xOf(e.date), xe = e.endDate ? xOf(e.endDate) : xs;
+    const loX = Math.min(xs, xe), hiX = Math.max(xs, xe);
+    const dx = cx >= loX - 2 && cx <= hiX + 2 ? 0 : Math.min(Math.abs(cx - xs), Math.abs(cx - xe));   // inside a zone = hit
+    return { e, dx };
+  }).sort((a, b) => a.dx - b.dx)[0];
   const showEvent = nearEv && nearEv.dx < 16 ? nearEv.e : null;
+  const sameEv = (a: { date: string; label: string }, b: { date: string; label: string }) => a.date === b.date && a.label === b.label;
   const readVals = lines.map(l => ({ key: l.key, label: l.label, p: nearestOf(l.points) }));
 
   return (
@@ -104,13 +112,28 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles }: {
             <SvgText x={PAD_L - 4} y={yOf(v) + 3} fontSize={8} fill={c.textFaint} textAnchor="end">{Math.round(v * 10) / 10}</SvgText>
           </React.Fragment>)}
           {/* event verticals — the one under the cursor is drawn solid + bright */}
+          {/* events: range events → shaded ZONE (start→end); point events → vertical line. Each gets a category ICON. */}
           {evInR.map((e, i) => {
-            const on = showEvent && e.date === showEvent.date && e.label === showEvent.label;
-            return <Line key={`e${i}`} x1={xOf(e.date)} y1={PAD_T} x2={xOf(e.date)} y2={PAD_T + plotH}
-              stroke={CAT_COLOR[e.category] ?? CAT_COLOR.other} strokeWidth={on ? 2 : 1} strokeDasharray={on ? undefined : '2,3'} opacity={on ? 0.95 : 0.55} />;
+            const on = !!showEvent && sameEv(e, showEvent);
+            const col = CAT_COLOR[e.category] ?? CAT_COLOR.other;
+            const icon = CAT_ICON[e.category] ?? CAT_ICON.other;
+            const xs = xOf(e.date);
+            if (e.endDate && e.endDate !== e.date) {
+              const xe = xOf(e.endDate); const x = Math.min(xs, xe); const w = Math.max(1, Math.abs(xe - xs));
+              return <React.Fragment key={`e${i}`}>
+                <Rect x={x} y={PAD_T} width={w} height={plotH} fill={col} opacity={on ? 0.16 : 0.09} />
+                <Line x1={x} y1={PAD_T} x2={x} y2={PAD_T + plotH} stroke={col} strokeWidth={on ? 1.5 : 1} opacity={on ? 0.9 : 0.5} />
+                <Line x1={x + w} y1={PAD_T} x2={x + w} y2={PAD_T + plotH} stroke={col} strokeWidth={on ? 1.5 : 1} opacity={on ? 0.9 : 0.5} />
+                <SvgText x={Math.max(PAD_L + 6, Math.min(PAD_L + plotW - 6, x + w / 2))} y={PAD_T + 9} fontSize={11} textAnchor="middle">{icon}</SvgText>
+              </React.Fragment>;
+            }
+            return <React.Fragment key={`e${i}`}>
+              <Line x1={xs} y1={PAD_T + 6} x2={xs} y2={PAD_T + plotH} stroke={col} strokeWidth={on ? 2 : 1} strokeDasharray={on ? undefined : '2,3'} opacity={on ? 0.95 : 0.55} />
+              <SvgText x={Math.max(PAD_L + 5, Math.min(PAD_L + plotW - 5, xs))} y={PAD_T + 3} fontSize={11} textAnchor="middle">{icon}</SvgText>
+            </React.Fragment>;
           })}
-          {/* CTL overlay */}
-          {ctlPts && <Polyline points={ctlPts} fill="none" stroke={c.textFaint} strokeWidth={1.25} opacity={0.55} strokeDasharray="5,3" />}
+          {/* CTL overlay — slightly accentuated */}
+          {ctlPts && <Polyline points={ctlPts} fill="none" stroke={c.textSub} strokeWidth={1.8} opacity={0.8} strokeDasharray="6,3" />}
           {/* metric lines + dots (BOLD) */}
           {lines.map(l => {
             const pts = l.points.filter(p => inRange(p.date));
@@ -178,7 +201,9 @@ export default function BiologyMode() {
         </View>
       )}
 
-      {!loading && rep && rep.hasAnyData && chartCards.map(card => {
+      {!loading && rep && rep.hasAnyData && chartCards
+        .filter(card => card.keys.some(k => (byKey(k)?.points.length ?? 0) > 0))   // only plot metrics that actually have valid readings
+        .map(card => {
         const metrics = card.keys.map(byKey).filter(Boolean) as BioMetric[];
         const lines = metrics.filter(m => m.points.length > 0).map(m => ({ key: m.key, label: m.label, points: m.points }));
         const anyData = lines.length > 0;
