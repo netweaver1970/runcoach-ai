@@ -45,7 +45,8 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles }: {
   const plotW = Math.max(1, innerW - PAD_L - PAD_R);
   const plotH = CH_H - PAD_T - PAD_B;
   const span = Math.max(1, t1 - t0);
-  const tOf = (iso: string) => new Date(iso + 'T00:00:00').getTime();
+  // HealthKit readings carry full ISO timestamps; CTL/events are date-only 'YYYY-MM-DD'. Parse both.
+  const tOf = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
   const inRange = (iso: string) => tOf(iso) >= t0 && tOf(iso) <= t1;
   const xOf = (iso: string) => PAD_L + Math.max(0, Math.min(1, (tOf(iso) - t0) / span)) * plotW;
 
