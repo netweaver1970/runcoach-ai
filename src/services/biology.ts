@@ -272,10 +272,33 @@ export async function computeBiologyReport(ctlMonths = 120, toDate: Date = new D
   };
 }
 
+// Keep only comparable, non-outlier readings for the composition split:
+//  1) MORNING readings (first-thing, local hour 2–9) — a post-run / evening weigh-in isn't comparable to a
+//     fasted morning baseline. Falls back to all readings if too few mornings exist.
+//  2) OUTLIER rejection — drop a reading that deviates > relTol from the median of its ±10-day neighbours
+//     (dehydration after a run, a mis-entry). This is what stops today's post-run dip from skewing the split.
+function cleanReadings(pts: BioPoint[], relTol: number): BioPoint[] {
+  const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
+  const hourOf = (iso: string) => iso.length <= 10 ? 8 : new Date(iso).getHours();   // date-only → treat as morning
+  let m = pts.filter(p => { const h = hourOf(p.date); return h >= 2 && h < 10; });
+  if (m.length < 3) m = pts.slice();
+  m.sort((a, b) => tt(a.date) - tt(b.date));
+  const med = (arr: number[]) => { const s = [...arr].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  return m.filter(p => {
+    const t = tt(p.date);
+    const near = m.filter(q => q !== p && Math.abs(tt(q.date) - t) <= 10 * 86_400_000).map(q => q.value);
+    if (near.length < 2) return true;
+    const mm = med(near);
+    return mm <= 0 || Math.abs(p.value - mm) <= mm * relTol;
+  });
+}
+
 // Fat-mass vs lean-mass change over [t0,t1] — only where weight AND body-fat% both exist (a scale writes
 // them together). fatMass = weight × fat%; lean = weight − fatMass. Returns nulls' worth if <2 paired.
-export function compositionChange(weight: BioPoint[], fat: BioPoint[], t0: number, t1: number):
+export function compositionChange(weightRaw: BioPoint[], fatRaw: BioPoint[], t0: number, t1: number):
   { fromT: number; toT: number; dW: number; dFat: number; dLean: number; startW: number; endW: number; startFatPct: number; endFatPct: number } | null {
+  const weight = cleanReadings(weightRaw, 0.03);   // ±3% around neighbours (water swings are bigger)
+  const fat    = cleanReadings(fatRaw, 0.15);      // BIA fat% is noisier
   if (weight.length < 1 || fat.length < 2) return null;
   const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
   const nearestW = (t: number) => { let best: BioPoint | null = null, bd = Infinity; for (const p of weight) { const d = Math.abs(tt(p.date) - t); if (d < bd) { bd = d; best = p; } } return bd <= 10 * 86_400_000 ? best : null; };

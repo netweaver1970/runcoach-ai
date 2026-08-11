@@ -247,7 +247,7 @@ export default function BiologyMode() {
               </View>
             </View>
             {comp.dW < -0.3 && comp.dLean < -0.2 && leanShare > 0.25 && (
-              <Text style={s.compWarn}>⚠ {Math.round(leanShare * 100)}% of the loss is lean mass — on a GLP-1, protect it: ~1.6 g/kg protein + resistance work.</Text>
+              <Text style={s.compWarn}>⚠ {Math.round(leanShare * 100)}% of the loss is lean mass — protect it with protein (~1.6 g/kg) + resistance work.</Text>
             )}
             {comp.dW < -0.3 && !(comp.dLean < -0.2 && leanShare > 0.25) && (
               <Text style={[s.compSub, { color: SERIES.lean }]}>Good — the loss is mostly fat, lean largely preserved.</Text>
