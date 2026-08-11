@@ -3429,11 +3429,17 @@ function workDrillsTotals(w: any, regime: AccountingMode = 'work'): { seconds: n
     const aStart = new Date(toISOStr(act.startDate)).getTime();
     const aEnd   = act.endDate ? new Date(toISOStr(act.endDate)).getTime() : aStart;
     const durationSec = (act as any).duration > 0 ? (act as any).duration : Math.max(0, (aEnd - aStart) / 1000);
-    let label = title || stepName
+    // Phase authority MUST match fetchWorkoutDetail (the detail screen): the WorkoutStep NAME/TYPE is the
+    // truth, NOT the generic step `title`. Prioritising `title` here made an open-target Cooldown (real
+    // WorkoutStepType=3) get mislabelled by its title and COUNTED into time-on-feet, while the detail
+    // screen correctly showed "Cooldown". A labelled warm-up/cool-down/recovery must be excluded on its
+    // LABEL alone — never gated on segment length. `title` is a last-resort display fallback only.
+    let label = stepName
       || (['Warmup', 'Work', 'Recovery', 'Cooldown'][stepType] ?? '')
       || (stepActType === HK_COOLDOWN ? 'Cooldown'
           : HK_PREP_REC_SET.has(stepActType) ? 'Warmup'
-          : stepActType === HK_WALKING ? 'Walk' : '');
+          : stepActType === HK_WALKING ? 'Walk' : '')
+      || title;
     return { label, durationSec, distanceM };
   }).filter((s) => s.durationSec >= 5);
 
