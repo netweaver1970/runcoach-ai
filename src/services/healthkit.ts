@@ -3590,7 +3590,7 @@ async function fetchQuantitySeries(id: string, unit: string, months: number, toD
   const endDate = toDate ?? new Date();
   const since   = new Date(endDate.getTime() - months * 30 * 86_400_000);
   const samples = await safeQuery(
-    () => (HealthKit.queryQuantitySamples as any)(id, { filter: { startDate: since, endDate: endDate }, unit, ascending: true, limit: 2000 }),
+    () => (HealthKit.queryQuantitySamples as any)(id, { filter: { startDate: since, endDate: endDate }, unit, ascending: true, limit: 12000 }),
     [] as any[]
   );
   const f = Math.pow(10, round);
