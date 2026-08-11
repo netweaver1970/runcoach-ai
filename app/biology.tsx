@@ -176,8 +176,8 @@ export default function BiologyMode() {
   ];
   const comp = rep && rep.hasAnyData ? compositionChange(byKey('weight')?.points ?? [], byKey('bodyfat')?.points ?? [], t0, t1) : null;
   const compShow = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) >= 0.3;   // only when there's a real move
-  const compFatW = comp ? Math.max(1, Math.abs(comp.dFat)) : 1;
-  const compLeanW = comp ? Math.max(1, Math.abs(comp.dLean)) : 1;
+  const compFatW = comp ? Math.abs(comp.dFat) : 1;    // true magnitudes → bar matches the numbers (no floor)
+  const compLeanW = comp ? Math.abs(comp.dLean) : 1;
   const leanShare = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) > 0 ? Math.abs(comp.dLean) / (Math.abs(comp.dFat) + Math.abs(comp.dLean)) : 0;
   const sgn = (n: number) => (n > 0 ? '+' : '') + n;
 
