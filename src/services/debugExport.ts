@@ -176,12 +176,14 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
     const r1 = (n: number) => Math.round(n * 10) / 10;
     const hrr = (hr: number) => hr > 0 ? Math.round(((hr - restHR) / reserve) * 100) / 100 : null;
     const paceOf = (durSec: number, distM: number) => distM > 0 ? Math.round(durSec / (distM / 1000)) : null; // sec/km
+    const r3 = (n: number) => Math.round(n * 1000) / 1000;   // EC ~0.70 → 3 decimals so 0.70 vs 0.71 is visible
+    const r2 = (n: number) => Math.round(n * 100) / 100;
     const eff = (paceSec: number, power: number, hr: number) => {
       const spd = paceSec > 0 ? 60000 / paceSec : 0;
       return {
-        ec: spd > 0 && power > 0 ? r1(spd / power) : null,   // speed÷power (HR-independent)
-        ef: power > 0 && hr > 0  ? r1(power / hr)  : null,   // power÷HR
-        se: spd > 0 && hr > 0    ? r1(spd / hr)    : null,   // speed÷HR
+        ec: spd > 0 && power > 0 ? r3(spd / power) : null,   // speed÷power (HR-independent — the economy trend; needs resolution)
+        ef: power > 0 && hr > 0  ? r2(power / hr)  : null,   // power÷HR
+        se: spd > 0 && hr > 0    ? r3(spd / hr)    : null,   // speed÷HR
       };
     };
     const runs = (snap.runs ?? []).slice(0, 40).map(r => {
