@@ -21,20 +21,25 @@ async function saveLabs(store: LabStore): Promise<void> {
   try { await FileSystem.writeAsStringAsync(LABS_FILE, JSON.stringify(store)); } catch { /* ignore */ }
 }
 
-// Merge selected analytes into the store — dedup by analyte key + date (incoming wins on a same-date
-// conflict, e.g. a corrected re-import). Metadata (unit / ref range / note) is refreshed from incoming.
-export async function mergeLabsImport(incoming: LabAnalyte[]): Promise<LabStore> {
+export interface MergeStats { store: LabStore; added: number; existing: number }
+
+// Merge selected analytes into the store, keyed by analyte + date. A reading whose (analyte, date) is
+// already present is LEFT UNTOUCHED — only genuinely new readings are added, so a re-import never
+// duplicates. (To replace/correct values, import with the "Wipe existing labs first" option.) Analyte
+// metadata (unit / ref range / note) is refreshed from incoming.
+export async function mergeLabsImport(incoming: LabAnalyte[]): Promise<MergeStats> {
   const store = await loadLabs();
   const byKey = new Map(store.analytes.map(a => [a.key, a]));
+  let added = 0, existing = 0;
   for (const inc of incoming) {
     const ex = byKey.get(inc.key);
-    if (!ex) { byKey.set(inc.key, inc); continue; }
+    if (!ex) { byKey.set(inc.key, inc); added += inc.series.length + (inc.textSeries?.length ?? 0); continue; }
     const sv = new Map(ex.series.map(v => [v.date, v.value]));
-    for (const v of inc.series) sv.set(v.date, v.value);
+    for (const v of inc.series) { if (sv.has(v.date)) existing++; else { sv.set(v.date, v.value); added++; } }
     ex.series = [...sv].map(([date, value]) => ({ date, value })).sort((a, b) => a.date.localeCompare(b.date));
     if (inc.textSeries?.length || ex.textSeries?.length) {
       const tv = new Map((ex.textSeries ?? []).map(v => [v.date, v.text]));
-      for (const v of inc.textSeries ?? []) tv.set(v.date, v.text);
+      for (const v of inc.textSeries ?? []) { if (tv.has(v.date)) existing++; else { tv.set(v.date, v.text); added++; } }
       ex.textSeries = [...tv].map(([date, text]) => ({ date, text })).sort((a, b) => a.date.localeCompare(b.date));
     }
     Object.assign(ex, { label: inc.label, category: inc.category, unit: inc.unit, kind: inc.kind,
@@ -45,7 +50,20 @@ export async function mergeLabsImport(incoming: LabAnalyte[]): Promise<LabStore>
     updatedAt: new Date().toISOString(),
   };
   await saveLabs(merged);
-  return merged;
+  return { store: merged, added, existing };
+}
+
+// Last-used Google Drive import link — remembered so a re-upload just re-fetches the same file.
+const DRIVE_URL_FILE = `${FileSystem.documentDirectory}runcoach-labs-driveurl.json`;
+export async function loadDriveUrl(): Promise<string> {
+  try {
+    const info = await FileSystem.getInfoAsync(DRIVE_URL_FILE);
+    if (!info.exists) return '';
+    return (JSON.parse(await FileSystem.readAsStringAsync(DRIVE_URL_FILE)).url as string) ?? '';
+  } catch { return ''; }
+}
+export async function saveDriveUrl(url: string): Promise<void> {
+  try { await FileSystem.writeAsStringAsync(DRIVE_URL_FILE, JSON.stringify({ url })); } catch { /* ignore */ }
 }
 
 export async function clearLabs(): Promise<void> {

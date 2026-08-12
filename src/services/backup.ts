@@ -60,6 +60,7 @@ const FILES = [
   'runcoach-supplements.json',      // supplement list + daily intake log
   'runcoach-labs.json',             // imported blood-test / clinical-lab history
   'runcoach-lab-templates.json',    // saved lab marker templates (named selections)
+  'runcoach-labs-driveurl.json',    // remembered Google Drive import link
 ];
 // Per-date files captured by prefix — the prescription plan-logs that drive deterministic
 // run-detail phase labels (HealthKit has no record of the prescribed structure).

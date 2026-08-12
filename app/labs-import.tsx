@@ -5,7 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as XLSX from 'xlsx';
 import { parseClinicalGrid, ParsedLabs, LabAnalyte, Cell } from '../src/services/labs';
-import { mergeLabsImport, clearLabs, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
+import { mergeLabsImport, clearLabs, loadTemplates, saveTemplate, deleteTemplate, LabTemplate, loadDriveUrl, saveDriveUrl } from '../src/services/labsStore';
 import { mirrorLabsToHealth } from '../src/services/healthkit';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
@@ -35,13 +35,14 @@ export default function LabsImport() {
   const [selDates, setSelDates] = useState<Set<string>>(new Set());
   const [selKeys, setSelKeys] = useState<Set<string>>(new Set());
   const [hkChosen, setHkChosen] = useState<LabAnalyte[]>([]);
-  const [result, setResult] = useState<{ analytes: number; points: number; mirrorEligible: number } | null>(null);
+  const [result, setResult] = useState<{ analytes: number; points: number; mirrorEligible: number; added: number; existing: number; wiped: boolean } | null>(null);
   const [mirror, setMirror] = useState<{ busy: boolean; written?: number; skipped?: number }>({ busy: false });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [templates, setTemplates] = useState<LabTemplate[]>([]);
   const [wipeFirst, setWipeFirst] = useState(false);
 
   React.useEffect(() => { loadTemplates().then(setTemplates); }, []);
+  React.useEffect(() => { loadDriveUrl().then(u => { if (u) setDriveUrl(u); }); }, []);
 
   const groups = useMemo(() => {
     const m = new Map<string, LabAnalyte[]>();
@@ -101,6 +102,7 @@ export default function LabsImport() {
       const dest = FileSystem.cacheDirectory + 'labs-import-download.xlsx';
       const dl = await FileSystem.downloadAsync(url, dest);
       if (dl.status !== 200) { setPhase('idle'); Alert.alert('Download failed', `Drive returned ${dl.status}. Make sure the file is shared “anyone with the link”.`); return; }
+      saveDriveUrl(driveUrl.trim());   // remember it for the next re-upload
       const b64 = await FileSystem.readAsStringAsync(dl.uri, { encoding: 'base64' });
       loadWorkbook(b64);
     } catch (e: any) { setPhase('idle'); Alert.alert("Couldn't fetch from Drive", `${e?.message ?? e}. Check the link is shared “anyone with the link”.`); }
@@ -150,11 +152,11 @@ export default function LabsImport() {
         chosen.push({ ...a, series, textSeries: textSeries.length ? textSeries : undefined });
       }
       if (wipeFirst) await clearLabs();          // start from a clean slate when requested
-      await mergeLabsImport(chosen);
+      const stats = await mergeLabsImport(chosen);
       const hk = chosen.filter(a => a.hkType);
       setHkChosen(hk);
       setResult({ analytes: chosen.length, points: chosen.reduce((n, a) => n + a.series.length + (a.textSeries?.length ?? 0), 0),
-        mirrorEligible: hk.reduce((n, a) => n + a.series.length, 0) });
+        mirrorEligible: hk.reduce((n, a) => n + a.series.length, 0), added: stats.added, existing: stats.existing, wiped: wipeFirst });
       setPhase('done');
     } catch (e: any) { setPhase('review'); Alert.alert('Import failed', e?.message ?? String(e)); }
   }
@@ -304,7 +306,12 @@ export default function LabsImport() {
       {phase === 'done' && result && (
         <ScrollView contentContainerStyle={s.pad}>
           <Text style={s.h1}>✅ Imported</Text>
-          <Text style={s.p}>{result.points} values across {result.analytes} markers are now in your Labs store (Biology → Labs).</Text>
+          <Text style={s.p}>
+            {result.wiped
+              ? `Replaced your labs — ${result.added} values across ${result.analytes} markers are now in the Labs store.`
+              : `${result.added} new value${result.added === 1 ? '' : 's'} added across ${result.analytes} markers`
+                + (result.existing ? ` · ${result.existing} were already there and left unchanged.` : '.')}
+          </Text>
 
           {result.mirrorEligible > 0 && (
             <View style={s.card}>
