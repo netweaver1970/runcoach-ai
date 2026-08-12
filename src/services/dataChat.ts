@@ -8,6 +8,7 @@ import * as FileSystem from 'expo-file-system';
 import { callLLM, callLLMTools, agenticSupported } from './llm';
 import { loadLabs } from './labsStore';
 import { getBiologyReport } from './biology';
+import { loadEvents } from './timelineEvents';
 
 export type ChatMode = 'labs' | 'biology';
 export interface ChatMsg { role: 'user' | 'assistant'; content: string }
@@ -47,8 +48,12 @@ async function labsKit(): Promise<ToolKit> {
     const trend = first && l && first.date !== l.date ? `, was ${f(first.value)} in ${first.date.slice(0, 4)}` : '';
     if (!l && a.textSeries?.length) { const t = a.textSeries[a.textSeries.length - 1]; return `${a.label} [${a.category}]: ${t.text} (${t.date})`; }
     return `${a.label} [${a.category}]: ${l ? f(l.value) : '—'} ${a.unit}${st === 'HIGH' || st === 'LOW' ? ` «${st}»` : ''} (ref ${a.refLow ?? '–'}–${a.refHigh ?? '–'}, ${a.series.length}×${trend})`; };
+  const events = await loadEvents().catch(() => [] as any[]);
+  const evLines = events.filter((e: any) => e.type === 'event' && (e.category === 'medical' || e.category === 'life'))
+    .map((e: any) => `${String(e.date).slice(0, 10)}${e.endDate ? `–${String(e.endDate).slice(0, 10)}` : ''} ${e.title || e.category} (${e.category})`);
   const context = `Blood-lab panel (updated ${store.updatedAt?.slice(0, 10) || '—'}, ${store.analytes.length} markers, ${oob.length} out of range):\n`
-    + store.analytes.map(line).join('\n');
+    + store.analytes.map(line).join('\n')
+    + (evLines.length ? `\n\nMedical/life timeline (dates to line up against lab changes):\n${evLines.join('\n')}` : '');
   return {
     context,
     schemas: [
@@ -100,8 +105,9 @@ const SYSTEM: Record<ChatMode, string> = {
     "BELOW — it lists every marker's latest value, status, reference range, count and earliest value. Keep replies " +
     'BRIEF and conversational — a few sentences or a short bulleted list; the user can ask follow-ups, so do NOT ' +
     'dump a full report unless asked. Flag out-of-range values and connect related markers (iron, lipids, thyroid, ' +
-    'liver, glucose). For a marker\'s full year-by-year series call get_marker_history. Never invent values. You are ' +
-    'NOT a physician — give context and "raise with your GP" pointers, never a diagnosis or treatment. Use light markdown.',
+    'liver, glucose). When a lab change lines up in time with a medical/life event below (e.g. a medication start), ' +
+    'point it out — but note association≠causation. For a marker\'s full year-by-year series call get_marker_history. ' +
+    'Never invent values. You are NOT a physician — give context and "raise with your GP" pointers, never a diagnosis. Use light markdown.',
   biology:
     'You are a data assistant for an athlete reviewing their OWN body composition (weight, body-fat %, lean mass) ' +
     'and blood pressure, alongside training (fitness/CTL) and medical/life events. Answer from THE DATA BELOW ' +
