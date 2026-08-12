@@ -248,6 +248,67 @@ export async function requestPermissions(): Promise<boolean> {
   }
 }
 
+// ── Mirror imported labs → Apple Health ───────────────────────────────────────
+// Only the HK-writable analytes (Weight, Blood Pressure, Glucose). Writes carry a stable SyncIdentifier so
+// re-importing the same reading REPLACES rather than duplicates. Unit fixes from the sheet's own conventions:
+// BP is in cmHg (14/8 = 140/80 → ×10 to mmHg); glucose canonical is mmol/L → mg/dL (×18.0156) for HK.
+const MMOL_TO_MGDL = 18.0156;
+export async function requestLabsWriteAuth(): Promise<boolean> {
+  try {
+    await HealthKit.requestAuthorization(
+      ['HKQuantityTypeIdentifierBodyMass', 'HKQuantityTypeIdentifierBloodGlucose',
+       'HKQuantityTypeIdentifierBloodPressureSystolic', 'HKQuantityTypeIdentifierBloodPressureDiastolic',
+       'HKCorrelationTypeIdentifierBloodPressure'] as any,
+      [] as any,
+    );
+    return true;
+  } catch (e) { console.warn('labs write auth failed', e); return false; }
+}
+
+export interface LabMirrorAnalyte { hkType?: string; label: string; series: { date: string; value: number }[] }
+
+export async function mirrorLabsToHealth(analytes: LabMirrorAnalyte[]): Promise<{ written: number; skipped: number }> {
+  const eligible = analytes.filter(a => a.hkType);
+  const total = eligible.reduce((n, a) => n + a.series.length, 0);
+  if (!total) return { written: 0, skipped: 0 };
+  if (!(await requestLabsWriteAuth())) return { written: 0, skipped: total };
+
+  const at = (iso: string) => new Date(iso.length <= 10 ? iso + 'T12:00:00' : iso);
+  const toMmHg = (v: number) => (v < 30 ? v * 10 : v);           // cmHg → mmHg (guarded, in case some rows already mmHg)
+  const meta = (id: string) => ({ HKMetadataKeySyncIdentifier: id, HKMetadataKeySyncVersion: 1 } as any);
+  let written = 0, skipped = 0;
+
+  // Blood pressure → correlations (pair systolic+diastolic by date)
+  const sys = eligible.find(a => a.hkType!.includes('Systolic'));
+  const dia = eligible.find(a => a.hkType!.includes('Diastolic'));
+  if (sys && dia) {
+    const diaBy = new Map(dia.series.map(v => [v.date, v.value]));
+    for (const s of sys.series) {
+      const d = diaBy.get(s.date); if (d == null) { skipped++; continue; }
+      const t = at(s.date);
+      try {
+        const ok = await (HealthKit as any).saveCorrelationSample('HKCorrelationTypeIdentifierBloodPressure', [
+          { startDate: t, endDate: t, quantityType: 'HKQuantityTypeIdentifierBloodPressureSystolic', quantity: toMmHg(s.value), unit: 'mmHg', metadata: meta(`labs-bp-sys-${s.date}`) },
+          { startDate: t, endDate: t, quantityType: 'HKQuantityTypeIdentifierBloodPressureDiastolic', quantity: toMmHg(d), unit: 'mmHg', metadata: meta(`labs-bp-dia-${s.date}`) },
+        ], t, t, meta(`labs-bp-${s.date}`));
+        ok ? written++ : skipped++;
+      } catch { skipped++; }
+    }
+  }
+  // Simple quantities
+  for (const a of eligible) {
+    const hk = a.hkType!;
+    if (hk.includes('BodyMass')) {
+      for (const v of a.series) { const t = at(v.date);
+        try { (await (HealthKit as any).saveQuantitySample('HKQuantityTypeIdentifierBodyMass', 'kg', v.value, t, t, meta(`labs-weight-${v.date}`))) ? written++ : skipped++; } catch { skipped++; } }
+    } else if (hk.includes('BloodGlucose')) {
+      for (const v of a.series) { const t = at(v.date);
+        try { (await (HealthKit as any).saveQuantitySample('HKQuantityTypeIdentifierBloodGlucose', 'mg/dL', v.value * MMOL_TO_MGDL, t, t, meta(`labs-glucose-${v.date}`))) ? written++ : skipped++; } catch { skipped++; } }
+    }
+  }
+  return { written, skipped };
+}
+
 // ─── Body mass ────────────────────────────────────────────────────────────────
 
 export async function resolveBodyMassKg(): Promise<number> {
