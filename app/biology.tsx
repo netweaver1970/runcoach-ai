@@ -208,6 +208,9 @@ export default function BiologyMode() {
           <Text style={s.hTitle}>Biology</Text>
           <View style={{ flex: 1 }} />
           {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
+          <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/data-chat?mode=biology' as any)}>
+            <Text style={s.eyeTxt}>💬</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/labs' as any)}>
             <Text style={s.eyeTxt}>Labs</Text>
           </TouchableOpacity>

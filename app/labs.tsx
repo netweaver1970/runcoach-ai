@@ -7,6 +7,8 @@ import { LabAnalyte } from '../src/services/labs';
 import { analyseLab } from '../src/services/labsAnalysis';
 import { loadEvents } from '../src/services/timelineEvents';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import MarkdownBody from '../src/MarkdownBody';
+import { TABLE_CELL } from '../src/mdTable';
 
 const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
 const yr = (t: number) => new Date(t).getFullYear();
@@ -110,6 +112,7 @@ function LabChart({ a, width, c, t0, t1, events }: { a: LabAnalyte; width: numbe
 export default function LabsScreen() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
+  const md = useThemedStyles(makeMarkdownStyles);
   const router = useRouter();
   const { width } = useWindowDimensions();
   const [store, setStore] = useState<LabStore | null>(null);
@@ -214,6 +217,7 @@ export default function LabsScreen() {
         <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeTxt}>‹ Biology</Text></TouchableOpacity>
         <Text style={s.title}>🧪 Labs</Text>
         <View style={{ flex: 1 }} />
+        <TouchableOpacity style={s.importBtn} onPress={() => router.push('/data-chat?mode=labs' as any)}><Text style={s.importTxt}>💬 Chat</Text></TouchableOpacity>
         <TouchableOpacity style={s.importBtn} onPress={() => router.push('/labs-import' as any)}><Text style={s.importTxt}>Import</Text></TouchableOpacity>
       </View>
       <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="Search markers…" placeholderTextColor={c.textFaint} autoCapitalize="none" />
@@ -305,7 +309,7 @@ export default function LabsScreen() {
                               {an?.loading ? <ActivityIndicator color={c.onAccent} size="small" /> : <Text style={s.analyseTxt}>{an?.text ? '↻ Re-analyse' : '✨ Analyse'}</Text>}
                             </TouchableOpacity>
                             {an?.error && <Text style={s.err}>{an.error}</Text>}
-                            {an?.text && <Text style={s.analysis}>{an.text}</Text>}
+                            {an?.text && <View style={{ marginTop: 10 }}><MarkdownBody content={an.text} style={md} c={c} /></View>}
                           </View>
                         )}
                       </View>
@@ -387,6 +391,25 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   clip:     { color: c.accent, fontSize: 11.5, marginTop: 6, fontWeight: '600' },
   analyseBtn:{ backgroundColor: c.accent, borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 10 },
   analyseTxt:{ color: c.onAccent, fontSize: 14, fontWeight: '800' },
-  analysis: { color: c.text, fontSize: 13.5, lineHeight: 20, marginTop: 10 },
   err:      { color: '#ef4444', fontSize: 12.5, marginTop: 8 },
+});
+
+const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
+  body: { color: c.text, fontSize: 13.5, lineHeight: 20 },
+  heading1: { fontSize: 16, fontWeight: '800', color: c.text, marginTop: 8, marginBottom: 4 },
+  heading2: { fontSize: 15, fontWeight: '700', color: c.accent, marginTop: 10, marginBottom: 3 },
+  heading3: { fontSize: 14, fontWeight: '700', color: c.text, marginTop: 8, marginBottom: 2 },
+  strong: { fontWeight: '800', color: c.text },
+  em: { fontStyle: 'italic', color: c.text },
+  paragraph: { marginBottom: 7 },
+  bullet_list: { marginBottom: 7, color: c.text },
+  ordered_list: { marginBottom: 7, color: c.text },
+  list_item: { marginBottom: 3, color: c.text },
+  code_inline: { fontFamily: 'Courier', fontSize: 12.5, color: c.text, backgroundColor: c.surfaceAlt, borderRadius: 3, paddingHorizontal: 4 },
+  hr: { borderBottomWidth: 1, borderColor: c.border, marginVertical: 8 },
+  table: { borderWidth: 1, borderColor: c.border, borderRadius: 4, marginBottom: 8, overflow: 'hidden' },
+  thead: { backgroundColor: c.surfaceAlt },
+  th: { ...TABLE_CELL, fontWeight: '700', padding: 4, fontSize: 10, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  td: { ...TABLE_CELL, padding: 4, fontSize: 10, color: c.text, borderRightWidth: 1, borderColor: c.border },
+  tr: { borderBottomWidth: 1, borderColor: c.border },
 });
