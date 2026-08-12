@@ -1442,6 +1442,17 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Bevel Calibration */}
+        <Section title="Blood Tests / Labs" cat="profile">
+          <Text style={styles.hint}>
+            Import your clinical-lab spreadsheet (.xlsx/.csv). Each row is matched to a standard marker,
+            duplicate units are collapsed into one line, and you choose which dates and markers to keep.
+            Stored in the app's Biology → Labs; Weight, Blood Pressure and Glucose also mirror to Apple Health.
+          </Text>
+          <TouchableOpacity style={styles.btn} onPress={() => router.push('/labs-import' as any)}>
+            <Text style={styles.btnText}>Import blood tests</Text>
+          </TouchableOpacity>
+        </Section>
+
         <Section title="Bevel Calibration" cat="zones">
           <Text style={styles.hint}>
             Import Bevel screenshots (the AI reads the values) or manually enter daily scores, to reverse-engineer scoring weights and improve RunCoach AI's algorithms.

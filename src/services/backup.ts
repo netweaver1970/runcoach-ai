@@ -58,6 +58,7 @@ const FILES = [
   'runcoach-run-meta.json',         // per-run notes + manual temps (user-entered)
   'runcoach-timeline.json',         // timeline events (injuries / races / notes)
   'runcoach-supplements.json',      // supplement list + daily intake log
+  'runcoach-labs.json',             // imported blood-test / clinical-lab history
 ];
 // Per-date files captured by prefix — the prescription plan-logs that drive deterministic
 // run-detail phase labels (HealthKit has no record of the prescribed structure).
