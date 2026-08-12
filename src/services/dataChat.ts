@@ -12,7 +12,7 @@ import { getBiologyReport } from './biology';
 export type ChatMode = 'labs' | 'biology';
 export interface ChatMsg { role: 'user' | 'assistant'; content: string }
 
-const MAX_TOKENS = 1400, MAX_STEPS = 6;
+const MAX_TOKENS = 900, MAX_STEPS = 5;
 const f = (v: number | null) => (v == null ? null : Number(v.toPrecision(4)));
 
 // ── history persistence (per mode) ─────────────────────────────────────────────
@@ -32,7 +32,7 @@ export async function clearChatHistory(m: ChatMode): Promise<void> {
   try { await FileSystem.deleteAsync(histFile(m), { idempotent: true }); } catch { /* ignore */ }
 }
 
-interface ToolKit { schemas: any[]; run: (name: string, input: any) => any; summary: string }
+interface ToolKit { schemas: any[]; run: (name: string, input: any) => any; context: string }
 
 // ── LABS tools ──────────────────────────────────────────────────────────────
 async function labsKit(): Promise<ToolKit> {
@@ -40,8 +40,17 @@ async function labsKit(): Promise<ToolKit> {
   const latest = (a: any) => a.series[a.series.length - 1];
   const status = (a: any) => { const l = latest(a); if (!l) return 'na'; if (a.refHigh != null && l.value > a.refHigh) return 'HIGH'; if (a.refLow != null && l.value < a.refLow) return 'LOW'; return a.refLow != null || a.refHigh != null ? 'in-range' : 'na'; };
   const oob = store.analytes.filter((a: any) => status(a) === 'HIGH' || status(a) === 'LOW');
+  // Full compact snapshot in the context so the model can always answer even if it can't call tools
+  // (some providers don't reliably emit tool_use). Each line: latest value + status + ref + count + earliest
+  // value for a rough trend. get_marker_history gives the full year-by-year series on demand.
+  const line = (a: any) => { const l = latest(a); const first = a.series[0]; const st = status(a);
+    const trend = first && l && first.date !== l.date ? `, was ${f(first.value)} in ${first.date.slice(0, 4)}` : '';
+    if (!l && a.textSeries?.length) { const t = a.textSeries[a.textSeries.length - 1]; return `${a.label} [${a.category}]: ${t.text} (${t.date})`; }
+    return `${a.label} [${a.category}]: ${l ? f(l.value) : '—'} ${a.unit}${st === 'HIGH' || st === 'LOW' ? ` «${st}»` : ''} (ref ${a.refLow ?? '–'}–${a.refHigh ?? '–'}, ${a.series.length}×${trend})`; };
+  const context = `Blood-lab panel (updated ${store.updatedAt?.slice(0, 10) || '—'}, ${store.analytes.length} markers, ${oob.length} out of range):\n`
+    + store.analytes.map(line).join('\n');
   return {
-    summary: `The athlete has ${store.analytes.length} blood-lab markers (updated ${store.updatedAt?.slice(0, 10) || '—'}); ${oob.length} are currently out of range.`,
+    context,
     schemas: [
       { name: 'list_markers', description: 'Every marker with category, unit, reference range, latest value/date and in/out-of-range status.', input_schema: { type: 'object', properties: {} } },
       { name: 'get_out_of_range', description: 'Only the markers whose latest value is outside the reference range.', input_schema: { type: 'object', properties: {} } },
@@ -61,8 +70,16 @@ async function biologyKit(): Promise<ToolKit> {
   const rep = await getBiologyReport();
   const ctlLatest = rep.ctl.length ? f(rep.ctl[rep.ctl.length - 1].value) : null;
   const byKey = (k: string) => rep.metrics.find(m => m.key === k);
+  const mLine = (m: any) => { const first = m.points[0];
+    const trend = first && m.latest != null ? `, was ${f(first.value)} in ${String(first.date).slice(0, 4)}` : '';
+    const corr = m.correlations.filter((c: any) => c.significant).map((c: any) => `${c.against} rho ${f(c.rho)} (${c.strength}, lag ${c.lagDays}d)`).join('; ');
+    return `${m.label}: ${f(m.latest)}${m.unit === '%' ? '%' : ' ' + m.unit} (${m.n}×, trend ${f(m.trendPerWeek) ?? 0}/wk ${m.trendDir ?? ''}${trend})${corr ? ` — correlates: ${corr}` : ''}`; };
+  const context = `Body metrics (latest, updated ${rep.generatedAt?.slice(0, 10) || '—'}):\n`
+    + rep.metrics.filter(m => m.n > 0).map(mLine).join('\n')
+    + `\nFitness CTL ≈ ${ctlLatest ?? '—'}.`
+    + (rep.events.length ? `\nTimeline events: ${rep.events.map(e => `${e.date} ${e.label} (${e.category})`).join('; ')}` : '');
   return {
-    summary: `Body metrics (latest): ${rep.metrics.filter(m => m.latest != null).map(m => `${m.label} ${f(m.latest)}${m.unit === '%' ? '%' : ' ' + m.unit}`).join(', ') || 'none'}. Fitness CTL ≈ ${ctlLatest ?? '—'}.`,
+    context,
     schemas: [
       { name: 'list_metrics', description: 'Body-composition & BP metrics with latest value, trend/week, n readings and any significant correlations vs training (CTL) or run volume.', input_schema: { type: 'object', properties: {} } },
       { name: 'get_metric_series', description: "One metric's full dated history (key: weight|bodyfat|lean|bpSys|bpDia).", input_schema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } },
@@ -79,28 +96,29 @@ async function biologyKit(): Promise<ToolKit> {
 
 const SYSTEM: Record<ChatMode, string> = {
   labs:
-    'You are a careful health-data assistant for an athlete reading their OWN long-term blood-lab history. ' +
-    'Be concise and concrete. Use the tools to pull whatever markers/history you need before answering; do not ' +
-    'invent values. Read trends over years, flag out-of-range values, and connect related markers (iron, lipids, ' +
-    'thyroid, liver, glucose/insulin) into a picture. You are NOT a physician — give context and "raise with your ' +
-    'GP" pointers, never a diagnosis or treatment. Use markdown (short paragraphs, bullets, small tables).',
+    "You are a health-data assistant for an athlete reading their OWN blood-lab history. Answer from THE DATA " +
+    "BELOW — it lists every marker's latest value, status, reference range, count and earliest value. Keep replies " +
+    'BRIEF and conversational — a few sentences or a short bulleted list; the user can ask follow-ups, so do NOT ' +
+    'dump a full report unless asked. Flag out-of-range values and connect related markers (iron, lipids, thyroid, ' +
+    'liver, glucose). For a marker\'s full year-by-year series call get_marker_history. Never invent values. You are ' +
+    'NOT a physician — give context and "raise with your GP" pointers, never a diagnosis or treatment. Use light markdown.',
   biology:
     'You are a data assistant for an athlete reviewing their OWN body composition (weight, body-fat %, lean mass) ' +
-    'and blood pressure, in the context of their training (fitness/CTL, run volume) and medical/life events. Be ' +
-    'concise and concrete. Use the tools to pull metric histories, correlations and event effects before answering. ' +
-    'Explain trends and plausible drivers, but note association≠causation and flag confounders. Not medical advice. ' +
-    'Use markdown (short paragraphs, bullets, small tables).',
+    'and blood pressure, alongside training (fitness/CTL) and medical/life events. Answer from THE DATA BELOW ' +
+    '(latest values, trends, correlations, events). Keep replies BRIEF and conversational — a few sentences or a ' +
+    'short list; the user can ask follow-ups. For a full series call get_metric_series. Note association≠causation ' +
+    'and flag confounders. Not medical advice. Use light markdown.',
 };
 
 export async function runDataChat(mode: ChatMode, history: ChatMsg[]): Promise<string> {
   const kit = mode === 'labs' ? await labsKit() : await biologyKit();
-  const system = SYSTEM[mode];
+  const system = `${SYSTEM[mode]}\n\n=== THE ATHLETE'S DATA ===\n${kit.context}`;
   try {
     if (await agenticSupported()) {
       const messages: any[] = history.map(m => ({ role: m.role, content: m.content }));
       for (let step = 0; step < MAX_STEPS; step++) {
         const res = await callLLMTools({ system, messages, tools: kit.schemas, maxTokens: MAX_TOKENS, temperature: 0.4 });
-        if (res.stopReason !== 'tool_use') return res.text;
+        if (res.stopReason !== 'tool_use') return res.text;   // has data in context, so a plain answer is fine
         messages.push({ role: 'assistant', content: res.content });
         const uses = res.content.filter((b: any) => b.type === 'tool_use');
         messages.push({ role: 'user', content: uses.map((u: any) => {
@@ -109,9 +127,9 @@ export async function runDataChat(mode: ChatMode, history: ChatMsg[]): Promise<s
         }) });
       }
       const final = await callLLMTools({ system, messages, tools: [], maxTokens: MAX_TOKENS, temperature: 0.4 });
-      return final.text || 'I pulled the data but ran out of steps — please ask again.';
+      return final.text || 'I ran out of steps — please ask again.';
     }
   } catch (e: any) { if (!/AGENTIC_UNSUPPORTED/.test(e?.message ?? '')) throw e; }
-  // single-shot fallback: prepend a data summary to the system prompt
-  return callLLM({ system: `${system}\n\nData snapshot: ${kit.summary}`, messages: history, maxTokens: MAX_TOKENS, temperature: 0.4 });
+  // single-shot fallback (no tool support) — the data is already in the system prompt
+  return callLLM({ system, messages: history, maxTokens: MAX_TOKENS, temperature: 0.4 });
 }

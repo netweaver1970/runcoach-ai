@@ -61,7 +61,8 @@ export default function DataChat() {
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
-        <ScrollView ref={scrollRef} contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
+        <ScrollView ref={scrollRef} contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
           {msgs.length === 0 && (
             <View style={s.empty}>
               <Text style={s.emptyTitle}>Ask about your {mode === 'biology' ? 'body metrics & blood pressure' : 'blood-lab history'}.</Text>
