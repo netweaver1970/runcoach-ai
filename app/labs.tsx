@@ -244,6 +244,12 @@ export default function LabsScreen() {
                             {a.series.length >= 2 ? <LabChart a={a} width={cardW} c={c} t0={t0} t1={t1} events={showEvents ? events : []} />
                               : a.textSeries?.length ? a.textSeries.slice().reverse().map((t, i) => <Text key={i} style={s.textRow}>{t.date}: <Text style={{ color: c.text }}>{t.text}</Text></Text>)
                               : <Text style={s.textRow}>Not enough data to chart.</Text>}
+                            {(() => {
+                              const shown = a.series.filter(p => { const t = tOf(p.date); return t >= t0 && t <= t1; }).length;
+                              return a.series.length >= 2 && shown < a.series.length
+                                ? <TouchableOpacity onPress={() => setRange('All')}><Text style={s.clip}>Showing {shown} of {a.series.length} readings in this window — tap for the full history.</Text></TouchableOpacity>
+                                : null;
+                            })()}
                             {a.note && <Text style={s.note}>{a.note}</Text>}
                             <TouchableOpacity style={s.analyseBtn} disabled={an?.loading} onPress={() => runAnalysis(a)}>
                               {an?.loading ? <ActivityIndicator color={c.onAccent} size="small" /> : <Text style={s.analyseTxt}>{an?.text ? '↻ Re-analyse' : '✨ Analyse'}</Text>}
@@ -328,6 +334,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   chartWrap:{ borderTopWidth: 1, borderTopColor: c.border, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: c.surfaceAlt },
   textRow:  { color: c.textSub, fontSize: 12.5, lineHeight: 20 },
   note:     { color: c.textFaint, fontSize: 11, marginTop: 6, fontStyle: 'italic' },
+  clip:     { color: c.accent, fontSize: 11.5, marginTop: 6, fontWeight: '600' },
   analyseBtn:{ backgroundColor: c.accent, borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 10 },
   analyseTxt:{ color: c.onAccent, fontSize: 14, fontWeight: '800' },
   analysis: { color: c.text, fontSize: 13.5, lineHeight: 20, marginTop: 10 },
