@@ -39,3 +39,6 @@ expo-env.d.ts
 # @end expo-cli
 # Coach repro harness — real device exports (personal data)
 harness/fixture/*.local.json
+
+# personal medical data — never commit
+harness/fixture/clinical.json
