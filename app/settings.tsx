@@ -1874,7 +1874,7 @@ const CATEGORIES: { id: string; label: string; icon: string; desc: string }[] = 
   { id: 'coaching',   label: 'Self-coaching & AI',         icon: '🧠', desc: 'Provider, knowledge, memory, reports, history depth' },
   { id: 'zones',      label: 'Zones & Training',           icon: '🏃', desc: 'Power zones, long-run threshold, Bevel calibration' },
   { id: 'automation', label: 'Notifications & Automation', icon: '🔔', desc: 'Daily recovery alert, auto day view' },
-  { id: 'profile',    label: 'Profile',                    icon: '👤', desc: 'Body weight' },
+  { id: 'profile',    label: 'Profile',                    icon: '👤', desc: 'Body weight, blood-test / lab import' },
   { id: 'appearance', label: 'Appearance',                 icon: '🎨', desc: 'Theme & text size' },
   { id: 'data',       label: 'Data & Backup',              icon: '💾', desc: 'Backup/restore, export, privacy' },
   { id: 'cloud',      label: 'Cloud & Human Coach',        icon: '☁️', desc: 'Account, sync, external human coach' },
