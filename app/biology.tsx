@@ -204,15 +204,15 @@ export default function BiologyMode() {
       {/* Sticky header — always visible regardless of scroll */}
       <View style={s.header}>
         <View style={s.headerTop}>
-          <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
-          <Text style={s.hTitle}>🧬 Biology</Text>
+          <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠</Text></TouchableOpacity>
+          <Text style={s.hTitle}>Biology</Text>
           <View style={{ flex: 1 }} />
           {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
           <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/labs' as any)}>
-            <Text style={s.eyeTxt}>🧪 Labs</Text>
+            <Text style={s.eyeTxt}>Labs</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} disabled={loading} onPress={() => load(true)}>
-            <Text style={[s.eyeTxt, loading && s.eyeTxtOff]}>↻ Refresh</Text>
+            <Text style={[s.eyeTxt, loading && s.eyeTxtOff]}>↻</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[s.eyeBtn, !showEvents && s.eyeBtnOff]} onPress={() => setShowEvents(v => !v)}>
             <Text style={[s.eyeTxt, !showEvents && s.eyeTxtOff]}>{showEvents ? '👁 Events' : '🚫 Events'}</Text>
