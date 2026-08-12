@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, useWindowDimensions, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, useWindowDimensions, ActivityIndicator, Alert } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
-import { loadLabs, LabStore } from '../src/services/labsStore';
+import { loadLabs, LabStore, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
 import { LabAnalyte } from '../src/services/labs';
 import { analyseLab } from '../src/services/labsAnalysis';
 import { loadEvents } from '../src/services/timelineEvents';
@@ -71,8 +71,11 @@ export default function LabsScreen() {
   const [range, setRange] = useState<Range>('All');
   const [offset, setOffset] = useState(0);
   const [analysis, setAnalysis] = useState<Record<string, { loading: boolean; text?: string; error?: string }>>({});
+  const [templates, setTemplates] = useState<LabTemplate[]>([]);
+  const [activeTpl, setActiveTpl] = useState<string | null>(null);
 
   useEffect(() => { loadLabs().then(setStore); }, []);
+  useEffect(() => { loadTemplates().then(setTemplates); }, []);
   useEffect(() => { loadEvents().then(list => setEvents(
     list.filter((e: any) => e.type === 'event' && (e.category === 'medical' || e.category === 'life'))
       .map((e: any) => ({ t: tOf(e.date), label: e.title || e.category, category: e.category })))).catch(() => {}); }, []);
@@ -91,17 +94,40 @@ export default function LabsScreen() {
   const t1 = years ? gMax - offset * spanMs : gMax;
   const t0 = years ? t1 - spanMs : gMin;
 
-  const groups = useMemo(() => {
+  // markers passing search + out-of-range filter (BEFORE the panel/template filter) — this is what "Save panel" captures
+  const visibleForSave = useMemo(() => {
     const ql = q.trim().toLowerCase();
+    return (store?.analytes ?? []).filter(a =>
+      (!ql || a.label.toLowerCase().includes(ql) || a.category.toLowerCase().includes(ql)) &&
+      (!oobOnly || oobNow(a) === 'low' || oobNow(a) === 'high'));
+  }, [store, q, oobOnly]);
+
+  const groups = useMemo(() => {
+    const tplKeys = activeTpl ? new Set(templates.find(t => t.name === activeTpl)?.keys ?? []) : null;
     const m = new Map<string, LabAnalyte[]>();
-    for (const a of store?.analytes ?? []) {
-      if (ql && !a.label.toLowerCase().includes(ql) && !a.category.toLowerCase().includes(ql)) continue;
-      if (oobOnly && !(oobNow(a) === 'low' || oobNow(a) === 'high')) continue;
+    for (const a of visibleForSave) {
+      if (tplKeys && !tplKeys.has(a.key)) continue;
       if (!m.has(a.category)) m.set(a.category, []);
       m.get(a.category)!.push(a);
     }
     return [...m.entries()];
-  }, [store, q, oobOnly]);
+  }, [visibleForSave, activeTpl, templates]);
+
+  function savePanel() {
+    const keys = visibleForSave.map(a => a.key);
+    if (!keys.length) { Alert.alert('Nothing to save', 'Narrow the list (search / out-of-range) to the markers you want, then save them as a panel.'); return; }
+    if (Alert.prompt) {
+      Alert.prompt('Save panel', `Save these ${keys.length} markers as a named panel.`, async (name?: string) => {
+        if (!name?.trim()) return; const list = await saveTemplate(name, keys); setTemplates(list); setActiveTpl(name.trim());
+      });
+    } else { Alert.alert('Not available', 'Naming panels needs iOS.'); }
+  }
+  function removePanel(t: LabTemplate) {
+    Alert.alert('Delete panel', `Delete “${t.name}”?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => { setTemplates(await deleteTemplate(t.name)); if (activeTpl === t.name) setActiveTpl(null); } },
+    ]);
+  }
 
   async function runAnalysis(a: LabAnalyte) {
     if (!store) return;
@@ -139,6 +165,14 @@ export default function LabsScreen() {
           <TouchableOpacity style={[s.navBtn, offset === 0 && s.navOff]} disabled={offset === 0} onPress={() => setOffset(o => Math.max(0, o - 1))}><Text style={[s.navTxt, offset === 0 && s.navTxtOff]}>▶</Text></TouchableOpacity>
         </View>
       )}
+
+      {/* Panels — save the current filtered set, recall a saved one */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.panelRow} contentContainerStyle={s.panelRowInner} keyboardShouldPersistTaps="handled">
+        <TouchableOpacity style={s.savePanel} onPress={savePanel}><Text style={s.savePanelTxt}>＋ Save panel</Text></TouchableOpacity>
+        {templates.map(t => { const on = activeTpl === t.name;
+          return <TouchableOpacity key={t.name} style={[s.tpl, on && s.tplOn]} onPress={() => setActiveTpl(on ? null : t.name)} onLongPress={() => removePanel(t)}>
+            <Text style={[s.tplTxt, on && s.tplTxtOn]}>{t.name}</Text><Text style={[s.tplN, on && s.tplTxtOn]}>{t.keys.length}</Text></TouchableOpacity>; })}
+      </ScrollView>
 
       {!store ? <View style={s.center}><ActivityIndicator color={c.accent} /></View>
         : store.analytes.length === 0 ? (
@@ -220,6 +254,15 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   navTxt:   { color: c.text, fontSize: 14, fontWeight: '800' },
   navTxtOff:{ color: c.textFaint },
   navLabel: { color: c.textSub, fontSize: 12.5, fontWeight: '600' },
+  panelRow: { maxHeight: 40, marginTop: 8, flexGrow: 0 },
+  panelRowInner:{ paddingHorizontal: 14, gap: 6, alignItems: 'center' },
+  savePanel:{ paddingVertical: 6, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
+  savePanelTxt:{ color: c.accent, fontSize: 12.5, fontWeight: '700' },
+  tpl:      { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surface, borderWidth: 1, borderColor: c.accent },
+  tplOn:    { backgroundColor: c.accent, borderColor: c.accent },
+  tplTxt:   { color: c.accent, fontSize: 12.5, fontWeight: '700' },
+  tplTxtOn: { color: c.onAccent },
+  tplN:     { color: c.textFaint, fontSize: 11, fontWeight: '600' },
   center:   { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
   empty:    { color: c.textSub, fontSize: 15 },
   none:     { color: c.textFaint, fontSize: 14, textAlign: 'center', marginTop: 30 },
