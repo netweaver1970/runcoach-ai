@@ -215,7 +215,7 @@ export default function BiologyMode() {
             <Text style={[s.eyeTxt, loading && s.eyeTxtOff]}>↻</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[s.eyeBtn, !showEvents && s.eyeBtnOff]} onPress={() => setShowEvents(v => !v)}>
-            <Text style={[s.eyeTxt, !showEvents && s.eyeTxtOff]}>{showEvents ? '👁 Events' : '🚫 Events'}</Text>
+            <Text style={[s.eyeTxt, !showEvents && s.eyeTxtOff]}>{showEvents ? '👁' : '🚫'}</Text>
           </TouchableOpacity>
         </View>
         <View style={s.tabs}>{RANGES.map(r => (

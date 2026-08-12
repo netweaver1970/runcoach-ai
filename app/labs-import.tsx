@@ -5,7 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as XLSX from 'xlsx';
 import { parseClinicalGrid, ParsedLabs, LabAnalyte, Cell } from '../src/services/labs';
-import { mergeLabsImport } from '../src/services/labsStore';
+import { mergeLabsImport, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
 import { mirrorLabsToHealth } from '../src/services/healthkit';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
@@ -37,6 +37,10 @@ export default function LabsImport() {
   const [hkChosen, setHkChosen] = useState<LabAnalyte[]>([]);
   const [result, setResult] = useState<{ analytes: number; points: number; mirrorEligible: number } | null>(null);
   const [mirror, setMirror] = useState<{ busy: boolean; written?: number; skipped?: number }>({ busy: false });
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [templates, setTemplates] = useState<LabTemplate[]>([]);
+
+  React.useEffect(() => { loadTemplates().then(setTemplates); }, []);
 
   const groups = useMemo(() => {
     const m = new Map<string, LabAnalyte[]>();
@@ -104,6 +108,31 @@ export default function LabsImport() {
   function toggleDate(d: string) { setSelDates(p => { const n = new Set(p); n.has(d) ? n.delete(d) : n.add(d); return n; }); }
   function toggleKey(k: string) { setSelKeys(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; }); }
   function setCat(items: LabAnalyte[], on: boolean) { setSelKeys(p => { const n = new Set(p); for (const a of items) on ? n.add(a.key) : n.delete(a.key); return n; }); }
+  function toggleCollapse(cat: string) { setCollapsed(p => { const n = new Set(p); n.has(cat) ? n.delete(cat) : n.add(cat); return n; }); }
+
+  function applyTemplate(t: LabTemplate) {
+    if (!rep) return;
+    const avail = new Set(rep.analytes.map(a => a.key));
+    setSelKeys(new Set(t.keys.filter(k => avail.has(k))));
+  }
+  function saveCurrentTemplate() {
+    const keys = [...selKeys];
+    if (!keys.length) { Alert.alert('Nothing selected', 'Select some markers first, then save them as a template.'); return; }
+    if (Alert.prompt) {
+      Alert.prompt('Save template', `Save these ${keys.length} markers as a named template.`, async (name?: string) => {
+        if (!name?.trim()) return;
+        setTemplates(await saveTemplate(name, keys));
+      });
+    } else {
+      Alert.alert('Not available', 'Naming templates needs iOS.');
+    }
+  }
+  function removeTemplate(t: LabTemplate) {
+    Alert.alert('Delete template', `Delete “${t.name}”?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => setTemplates(await deleteTemplate(t.name)) },
+    ]);
+  }
 
   async function doImport() {
     if (!rep) return;
@@ -202,6 +231,18 @@ export default function LabsImport() {
                   <Text style={[s.chipTxt, on && s.chipTxtOn]}>{d}</Text></TouchableOpacity>; })}
             </View>
 
+            {/* Templates — recall a saved marker selection */}
+            <View style={s.rowBetween}>
+              <Text style={s.h2}>Templates</Text>
+              <TouchableOpacity onPress={saveCurrentTemplate}><Text style={s.link}>＋ Save selection</Text></TouchableOpacity>
+            </View>
+            {templates.length === 0
+              ? <Text style={s.pFaint}>Save the current marker selection as a named template, then recall it here on a future import.</Text>
+              : <View style={s.chips}>{templates.map(t => (
+                  <TouchableOpacity key={t.name} style={s.tpl} onPress={() => applyTemplate(t)} onLongPress={() => removeTemplate(t)}>
+                    <Text style={s.tplTxt}>{t.name}</Text><Text style={s.tplN}>{t.keys.length}</Text>
+                  </TouchableOpacity>))}</View>}
+
             <View style={s.rowBetween}>
               <Text style={s.h2}>Markers</Text>
               <View style={s.rowGap}>
@@ -210,14 +251,20 @@ export default function LabsImport() {
               </View>
             </View>
             {groups.map(([cat, items]) => {
-              const allOn = items.every(a => selKeys.has(a.key));
+              const selN = items.filter(a => selKeys.has(a.key)).length;
+              const tri = selN === 0 ? '' : selN === items.length ? '✓' : '–';
+              const isCollapsed = collapsed.has(cat);
               return (
                 <View key={cat} style={s.catBlock}>
-                  <TouchableOpacity style={s.catHead} onPress={() => setCat(items, !allOn)}>
-                    <Text style={[s.cbBox, allOn && s.cbBoxOn]}>{allOn ? '✓' : ''}</Text>
-                    <Text style={s.catTitle}>{cat}</Text><Text style={s.catCount}>{items.length}</Text>
-                  </TouchableOpacity>
-                  {items.map(a => { const on = selKeys.has(a.key); const n = pointsIn(a);
+                  <View style={s.catHead}>
+                    <TouchableOpacity onPress={() => setCat(items, selN !== items.length)}><Text style={[s.cbBox, tri && s.cbBoxOn]}>{tri}</Text></TouchableOpacity>
+                    <TouchableOpacity style={s.catHeadMain} onPress={() => toggleCollapse(cat)}>
+                      <Text style={s.catTitle}>{cat}</Text>
+                      <Text style={s.catCount}>{selN}/{items.length}</Text>
+                      <Text style={s.chevron}>{isCollapsed ? '▸' : '▾'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {!isCollapsed && items.map(a => { const on = selKeys.has(a.key); const n = pointsIn(a);
                     return (
                       <TouchableOpacity key={a.key} style={s.aRow} onPress={() => toggleKey(a.key)}>
                         <Text style={[s.cbBox, on && s.cbBoxOn]}>{on ? '✓' : ''}</Text>
@@ -297,8 +344,13 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   chipTxtOn:{ color: c.onAccent },
   catBlock: { marginTop: 10, backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
   catHead:  { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, paddingHorizontal: 12, backgroundColor: c.surfaceAlt },
+  catHeadMain:{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
   catTitle: { color: c.text, fontSize: 14, fontWeight: '700', flex: 1 },
   catCount: { color: c.textFaint, fontSize: 12, fontWeight: '600' },
+  chevron:  { color: c.textFaint, fontSize: 12, fontWeight: '700', width: 14, textAlign: 'center' },
+  tpl:      { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surface, borderWidth: 1, borderColor: c.accent },
+  tplTxt:   { color: c.accent, fontSize: 13, fontWeight: '700' },
+  tplN:     { color: c.textFaint, fontSize: 11, fontWeight: '600' },
   aRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: c.border },
   cbBox:    { width: 20, height: 20, borderRadius: 5, borderWidth: 1.5, borderColor: c.textFaint, color: c.onAccent, textAlign: 'center', fontSize: 13, fontWeight: '800', overflow: 'hidden', lineHeight: 18 },
   cbBoxOn:  { backgroundColor: c.accent, borderColor: c.accent },

@@ -64,6 +64,8 @@ function numOf(c: Cell): number | null {
   return null;
 }
 function textOf(c: Cell): string { return c == null ? '' : String(c).replace(/\s+/g, ' ').trim(); }
+const sig4 = (x: number): number => (Number.isFinite(x) ? Number(x.toPrecision(4)) : x);   // 4 significant digits
+const sig4n = (x: number | null): number | null => (x == null ? null : sig4(x));
 function cleanUnit(u: Cell): string {
   let s = textOf(u); if (!s) return '';
   s = s.split('\n')[0];                                    // drop trailing note lines ("ng/mL\n(sec…")
@@ -165,14 +167,23 @@ export function parseClinicalGrid(rows: Cell[][]): ParsedLabs {
         const isCanon = normUnit(r.unit) === canonical;
         for (const v of r.values) {
           const n = numOf(v.raw); if (n == null) continue;
-          const conv2 = n * factorTo(r.unit);
+          const conv2 = sig4(n * factorTo(r.unit));
           if (isCanon || !byDate.has(v.date)) byDate.set(v.date, conv2);   // canonical row wins ties
         }
       }
-      const ref = keepRow ?? group.find(r => normUnit(r.unit) === canonical) ?? group[0];
+      // Ref range in the canonical unit = the OUTER union of every row's (converted) bounds. The two unit
+      // rows were hand-entered and rounded independently (mg/dL 70–99 vs mmol/L 3.85–5.44), so converting a
+      // value with the exact factor could push it just past the other row's tighter bound; the union prevents
+      // a reading that's in-range in its own unit from flagging out-of-range after conversion.
+      let refLow: number | null = null, refHigh: number | null = null;
+      for (const r of group) {
+        const f = factorTo(r.unit);
+        if (r.min != null) refLow  = refLow  == null ? r.min * f : Math.min(refLow,  r.min * f);
+        if (r.max != null) refHigh = refHigh == null ? r.max * f : Math.max(refHigh, r.max * f);
+      }
       analytes.push(finish({
         base, category: group[0].category, label: group[0].name, unit: displayUnit(canonical, group), kind,
-        refLow: ref.min, refHigh: ref.max, series: toSeries(byDate),
+        refLow: sig4n(refLow), refHigh: sig4n(refHigh), series: toSeries(byDate),
         mergedUnits: unitsInGroup, note: `merged ${unitsInGroup.join(' + ')} → ${displayUnit(canonical, group)}`,
       }));
     } else if (group.length > 1) {

@@ -51,3 +51,28 @@ export async function mergeLabsImport(incoming: LabAnalyte[]): Promise<LabStore>
 export async function clearLabs(): Promise<void> {
   try { await FileSystem.deleteAsync(LABS_FILE, { idempotent: true }); } catch { /* ignore */ }
 }
+
+// ── Named marker templates (a saved set of analytes to recall as a selection) ──
+const TPL_FILE = `${FileSystem.documentDirectory}runcoach-lab-templates.json`;
+export interface LabTemplate { name: string; keys: string[] }
+
+export async function loadTemplates(): Promise<LabTemplate[]> {
+  try {
+    const info = await FileSystem.getInfoAsync(TPL_FILE);
+    if (!info.exists) return [];
+    const t = JSON.parse(await FileSystem.readAsStringAsync(TPL_FILE)) as LabTemplate[];
+    return Array.isArray(t) ? t : [];
+  } catch { return []; }
+}
+export async function saveTemplate(name: string, keys: string[]): Promise<LabTemplate[]> {
+  const list = (await loadTemplates()).filter(t => t.name.toLowerCase() !== name.trim().toLowerCase());
+  list.push({ name: name.trim(), keys });
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  try { await FileSystem.writeAsStringAsync(TPL_FILE, JSON.stringify(list)); } catch { /* ignore */ }
+  return list;
+}
+export async function deleteTemplate(name: string): Promise<LabTemplate[]> {
+  const list = (await loadTemplates()).filter(t => t.name !== name);
+  try { await FileSystem.writeAsStringAsync(TPL_FILE, JSON.stringify(list)); } catch { /* ignore */ }
+  return list;
+}

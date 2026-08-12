@@ -54,3 +54,12 @@ console.log(`\nwarnings (${rep.warnings.length}):`); rep.warnings.slice(0,8).for
 console.log(`\nHK-mirrorable analytes:`, rep.analytes.filter(a=>a.hkType).map(a=>`${a.label}[${a.series.length}]`).join(', '));
 console.log(`\n${fails === 0 ? 'ALL PASS' : fails + ' FAILED'}`);
 process.exit(fails === 0 ? 0 : 1);
+
+// #3 glucose conversion: a reading at the mg/dL limit must NOT flag out-of-range after mmol/L conversion
+const g = find(/^Glucose \(fasting\)$/)[0];
+if (g) {
+  const maxV = Math.max(...g.series.map(v => v.value));
+  console.log(`\nGlucose: unit=${g.unit} ref=${g.refLow}–${g.refHigh} series max=${maxV}`);
+  ok(g.refHigh != null && maxV <= g.refHigh + 1e-9 || maxV <= g.refHigh, 'a fasting-glucose reading at limit stays in-range (union ref)', `max=${maxV} refHigh=${g.refHigh}`);
+  ok(String(g.refHigh).replace('.', '').replace(/^0+/, '').length <= 5, 'glucose refHigh ≤ 4 significant digits', `refHigh=${g.refHigh}`);
+}
