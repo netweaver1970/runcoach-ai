@@ -38,6 +38,32 @@ export interface ZoneRow { z: string; name: string; hrLow: number; hrHigh: numbe
 // every load number was computed with the other — worth ~1.3x on its own, and it made prescribedTrimp
 // read 90 against a measured 38 on the same session. Same 50/60/70/80/90% breakpoints, applied to the
 // reserve, so the ZONE_HRR anchors (0.50/0.62/0.72/0.85/0.93) now each land inside their own band.
+// Map a running-power value → its HR-reserve fraction, using the SAME power↔HR band edges as zoneTable
+// (Z1 0.50→0.60 · Z2 0.60→0.70 · Z3 0.70→0.80 · Z4 0.80→0.90 · Z5 0.90→1.0). Piecewise-linear and
+// monotonic, so a power sample lands at the reserve its zone implies. Used to rebuild TRIMP from POWER
+// when a run's measured HR is unreliable (flat-lined / dropped beats) — see trainingLoad.powerTrimp.
+export function powerToHrrFrac(pz: PowerZones): (w: number) => number {
+  const pts: [number, number][] = [
+    [0,                    0.50],
+    [pz.recoveryMax,       0.60],
+    [pz.z2Max,             0.70],
+    [pz.tempoMin,          0.70],
+    [pz.tempoMax,          0.80],
+    [pz.intervalsMin,      0.90],
+    [pz.intervalsMin + 60, 1.00],
+  ];
+  return (w: number) => {
+    if (w <= pts[0][0]) return pts[0][1];
+    for (let i = 1; i < pts.length; i++) {
+      if (w <= pts[i][0]) {
+        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+        return x1 <= x0 ? y1 : y0 + (y1 - y0) * (w - x0) / (x1 - x0);
+      }
+    }
+    return 1.0;
+  };
+}
+
 export function zoneTable(maxHR: number, pz: PowerZones, restHR = 50): ZoneRow[] {
   const rest = restHR > 0 && restHR < maxHR ? restHR : 50;
   const hr = (p: number) => Math.round(rest + (maxHR - rest) * p);

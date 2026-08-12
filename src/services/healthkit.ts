@@ -54,7 +54,8 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, activityFactor, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp } from './trainingLoad';
+import { activityName, activityFactor, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, assessHrReliability, powerTrimp, TrimpRepair, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp } from './trainingLoad';
+import { powerToHrrFrac } from './zones';
 import { getForecastPairs } from './forecastLog';
 import { getLocalWeather } from './weather';
 import { computePersonalSleepGoal, computeAdjustedGoal } from './bevelCalibration';
@@ -1439,7 +1440,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
         if (refined.wPower > 0) run.workPower  = refined.wPower;
       }
     }
-    if ((hrUnreliableMap as Record<string, boolean>)[run.uuid]) {
+    // Manual tag OR auto-detected flat-lining/dropout (when the raw HR series is on hand for this run).
+    let autoBadHr = false;
+    const prd = perRunData.get(run.uuid);
+    if (prd && prd.hrValues.length >= 3 && prd.hrTimestampsMs.length === prd.hrValues.length) {
+      const ws = new Date(run.date).getTime();
+      const we = ws + (run.duration ?? 0) * 1000;
+      const series = prd.hrValues.map((hr, i) => ({ t: prd.hrTimestampsMs[i], hr }));
+      autoBadHr = assessHrReliability(series, ws, we).unreliable;
+    }
+    if (autoBadHr || (hrUnreliableMap as Record<string, boolean>)[run.uuid]) {
       run.hrUnreliable = true;
     }
   }
@@ -2778,7 +2788,7 @@ const CARDIO_WARM_DAYS = 120;
  * sample cap (which would truncate and corrupt long windows).
  */
 async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?: (day: string) => number): Promise<Map<string, number>> {
-  const [hrRaw, restingRaw, workouts] = await Promise.all([
+  const [hrRaw, restingRaw, workouts, powerRaw, pz] = await Promise.all([
     safeQuery(() => (HealthKit.queryQuantitySamples as any)(
       HKQuantityTypeIdentifier.heartRate,
       { filter: { startDate: fromDate, endDate: toDate }, unit: 'count/min', ascending: false, limit: 200_000 },
@@ -2790,6 +2800,12 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?
     safeQuery(() => (HealthKit.queryWorkoutSamples as any)({
       filter: { startDate: fromDate, endDate: toDate }, limit: 1500, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
     }), [] as any[]),
+    // Running power — used to REPAIR TRIMP on run windows whose measured HR is unreliable (flat/dropped).
+    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+      HKQuantityTypeIdentifier.runningPower,
+      { filter: { startDate: fromDate, endDate: toDate }, unit: 'W', ascending: true, limit: 200_000 },
+    ), [] as any[]),
+    getPowerZones().catch(() => null),
   ]);
 
   const out = new Map<string, number>();
@@ -2820,11 +2836,34 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?
     windowsByDay.get(day)!.push({ s: wd.getTime(), e: wd.getTime() + workoutDurationSec(w) * 1000 });
   }
 
+  // Power samples grouped by local day (only runs have power) → used to repair unreliable-HR run windows.
+  const powerByDay = new Map<string, { t: number; w: number }[]>();
+  for (const s of (powerRaw as any[])) {
+    const day = toLocalDateStr(new Date(toISOStr(s.startDate)));
+    if (!powerByDay.has(day)) powerByDay.set(day, []);
+    powerByDay.get(day)!.push({ t: new Date(toISOStr(s.startDate)).getTime(), w: s.quantity as number });
+  }
+  const p2h = pz && isPowerZonesConfigured(pz) ? powerToHrrFrac(pz) : null;
+
   for (const [day, samples] of byDay) {
     samples.sort((a, b) => a.t - b.t); // TRIMP integration needs time order
     const dm = maxForDay?.(day);
     const maxHR = dm && dm > 0 ? dm : fallbackMax;
-    out.set(day, computeStrainTrimp(samples, restHR, maxHR, windowsByDay.get(day) ?? []));
+    const windows = windowsByDay.get(day) ?? [];
+    // Repair: for each workout window whose measured HR is untrustworthy AND has running power, swap the
+    // HR-integrated TRIMP for a power-derived one (keeps flat-lined / dropped-beat runs from under-counting).
+    const repairs: TrimpRepair[] = [];
+    if (p2h && windows.length) {
+      const dayPower = powerByDay.get(day) ?? [];
+      for (const win of windows) {
+        if (!assessHrReliability(samples, win.s, win.e).unreliable) continue;
+        const winPow = dayPower.filter(p => p.t >= win.s && p.t <= win.e);
+        if (winPow.length < 5) continue;               // no/too-little power (not a run) → can't repair
+        const tr = powerTrimp(winPow, win.s, win.e, p2h);
+        if (tr > 0) repairs.push({ s: win.s, e: win.e, trimp: tr });
+      }
+    }
+    out.set(day, computeStrainTrimp(samples, restHR, maxHR, windows, repairs));
   }
   return out;
 }
@@ -2876,7 +2915,7 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMa
   // changed, drop the whole cache and recompute — otherwise old days keep stale, differently-scaled
   // values. `__maxHr` is a sentinel (not a date key, so it's never iterated as a day).
   const tag = history.length ? 'k:' + history.map((h) => `${h.from}@${h.maxHR}`).join(',') : `s:${fallback}`;
-  const TRIMP_CACHE_VER = 3; // v3: date-keyed max-HR resolver (2026-07-08)
+  const TRIMP_CACHE_VER = 4; // v4: power-repair of unreliable-HR run windows (2026-08-12)
   if ((cache as any)['__maxHr'] !== tag || cache['__ver'] !== TRIMP_CACHE_VER) cache = { '__maxHr': tag, '__ver': TRIMP_CACHE_VER } as any;
   let changed = false;
 

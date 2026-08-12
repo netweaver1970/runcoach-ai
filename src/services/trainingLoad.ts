@@ -462,18 +462,28 @@ const PASSIVE_MIN_HRR = 0.40; // …and only above ~40% HR reserve
  * Banister TRIMP, exercise-weighted.
  * @param windows workout time spans {s,e} in the SAME ms units as sample `t`
  */
+// A workout window whose measured HR is untrustworthy (flat-lined / dropped beats): its HR samples are
+// SKIPPED in the Banister integration and `trimp` (a power-derived replacement) is added instead. This is
+// how the CTL path stops under-counting runs where the optical HR held a low value — see assessHrReliability
+// + powerTrimp. Empty list → identical behaviour to before.
+export interface TrimpRepair { s: number; e: number; trimp: number }
+
 export function computeStrainTrimp(
   samples: { t: number; hr: number }[],
   restHR: number,
   maxHR: number,
   windows: { s: number; e: number }[],
+  repairs: TrimpRepair[] = [],
 ): number {
   if (samples.length < 2 || maxHR <= restHR) return 0;
   const sorted = [...samples].sort((a, b) => a.t - b.t);
   const inWorkout = (t: number) => windows.some(w => t >= w.s && t <= w.e);
+  const inRepair  = (t: number) => repairs.some(r => t >= r.s && t <= r.e);
   const MAX_GAP_MS = 8 * 60_000;
   let trimp = 0;
   for (let i = 1; i < sorted.length; i++) {
+    // Drop any interval that touches a repaired window — its power-derived TRIMP is added below instead.
+    if (inRepair(sorted[i].t) || inRepair(sorted[i - 1].t)) continue;
     const dt = Math.min(MAX_GAP_MS, sorted[i].t - sorted[i - 1].t);
     if (dt <= 0) continue;
     const hrr = Math.max(0, Math.min(1, (sorted[i].hr - restHR) / (maxHR - restHR)));
@@ -485,7 +495,76 @@ export function computeStrainTrimp(
       trimp += base * PASSIVE_FACTOR;                  // background — discounted
     }
   }
+  for (const r of repairs) trimp += r.trimp;           // power-derived load for the unreliable windows
   return Math.round(trimp);
+}
+
+// ── HR reliability + power-derived TRIMP (repair for flat-lined / dropped-beat runs) ──────────────────
+// Optical wrist HR intermittently "holds" a value (a razor-flat plateau in the graph) or drops beats
+// (long gaps). Either way the averaged HR reads LOW, so the Banister TRIMP — and therefore CTL — is
+// under-counted. We detect it from the raw HR series and, for a run window (power is reliable there),
+// substitute a power-derived TRIMP. Pure + deterministic → unit-tested in the harness.
+export interface HrReliability { unreliable: boolean; flatFrac: number; gapFrac: number; badSec: number; winSec: number }
+
+const HRREL_FLAT_MIN_SEC = 25;   // a constant-HR run longer than this = sensor holding a value
+const HRREL_FLAT_MIN_N   = 4;    // …and it must be ≥4 samples (not just two equal readings across a gap)
+const HRREL_GAP_MIN_SEC  = 20;   // no sample for longer than this = a dropout
+const HRREL_BAD_FRAC     = 0.25; // ≥25% of the effort held/absent → the whole window's HR is untrustworthy
+
+export function assessHrReliability(
+  samples: { t: number; hr: number }[],
+  winS: number,
+  winE: number,
+): HrReliability {
+  const winSec = Math.max(1, (winE - winS) / 1000);
+  const win = samples.filter(s => s.t >= winS && s.t <= winE).sort((a, b) => a.t - b.t);
+  if (win.length < 3) return { unreliable: true, flatFrac: 0, gapFrac: 1, badSec: winSec, winSec };
+  // Flat runs: maximal stretches of an identical HR value spanning ≥ FLAT_MIN_SEC with ≥ FLAT_MIN_N samples.
+  let flatSec = 0, run = 0;
+  for (let i = 1; i <= win.length; i++) {
+    const broke = i === win.length || win[i].hr !== win[run].hr;
+    if (broke) {
+      const span = (win[i - 1].t - win[run].t) / 1000;
+      if (i - run >= HRREL_FLAT_MIN_N && span >= HRREL_FLAT_MIN_SEC) flatSec += span;
+      run = i;
+    }
+  }
+  // Gaps: inter-sample intervals longer than GAP_MIN_SEC (missing beats).
+  let gapSec = 0;
+  for (let i = 1; i < win.length; i++) {
+    const g = (win[i].t - win[i - 1].t) / 1000;
+    if (g >= HRREL_GAP_MIN_SEC) gapSec += g;
+  }
+  const badSec = Math.min(winSec, flatSec + gapSec);
+  return {
+    unreliable: badSec / winSec >= HRREL_BAD_FRAC,
+    flatFrac: flatSec / winSec,
+    gapFrac: Math.min(1, gapSec / winSec),
+    badSec, winSec,
+  };
+}
+
+// Power-derived Banister TRIMP over [winS,winE]: map each running-power sample → an HR-reserve fraction
+// (the athlete's own power↔HR zone model, via powerToHrrFrac in zones.ts) and integrate the SAME
+// 0.64/1.92 impulse used for measured HR, so the two are on one currency for CTL. Returns unrounded.
+export function powerTrimp(
+  power: { t: number; w: number }[],
+  winS: number,
+  winE: number,
+  powerToHrrFrac: (w: number) => number,
+): number {
+  const p = power.filter(s => s.t >= winS && s.t <= winE).sort((a, b) => a.t - b.t);
+  if (p.length < 2) return 0;
+  const MAX_GAP_MS = 8 * 60_000;
+  let trimp = 0;
+  for (let i = 1; i < p.length; i++) {
+    const dt = Math.min(MAX_GAP_MS, p[i].t - p[i - 1].t);
+    if (dt <= 0) continue;
+    const hrr = Math.max(0, Math.min(1, powerToHrrFrac(p[i].w)));
+    if (hrr <= 0) continue;
+    trimp += (dt / 60_000) * hrr * 0.64 * Math.exp(1.92 * hrr);
+  }
+  return trimp;
 }
 
 // Log scale: strain% = A·ln(1 + B·TRIMP). Calibrated against Bevel's own history
