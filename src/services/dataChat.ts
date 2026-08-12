@@ -112,13 +112,13 @@ const SYSTEM: Record<ChatMode, string> = {
     'dump a full report unless asked. Flag out-of-range values and connect related markers (iron, lipids, thyroid, ' +
     'liver, glucose). When a lab change lines up in time with a medical/life event below (e.g. a medication start), ' +
     'point it out — but note association≠causation. For a marker\'s full year-by-year series call get_marker_history. ' +
-    'Never invent values. You are NOT a physician — give context and "raise with your GP" pointers, never a diagnosis. Use light markdown — short paragraphs and bullet lists ONLY, never tables (they don't fit a chat bubble).',
+    'Never invent values. You are NOT a physician — give context and "raise with your GP" pointers, never a diagnosis. Use light markdown — short paragraphs and bullet lists ONLY, never tables (they do not fit a chat bubble).',
   biology:
     'You are a data assistant for an athlete reviewing their OWN body composition (weight, body-fat %, lean mass) ' +
     'and blood pressure, alongside training (fitness/CTL) and medical/life events. Answer from THE DATA BELOW ' +
     '(latest values, trends, correlations, events). Keep replies BRIEF and conversational — a few sentences or a ' +
     'short list; the user can ask follow-ups. For a full series call get_metric_series. Note association≠causation ' +
-    'and flag confounders. Not medical advice. Use light markdown — short paragraphs and bullet lists ONLY, never tables (they don't fit a chat bubble).',
+    'and flag confounders. Not medical advice. Use light markdown — short paragraphs and bullet lists ONLY, never tables (they do not fit a chat bubble).',
 };
 
 export async function runDataChat(mode: ChatMode, history: ChatMsg[]): Promise<string> {
