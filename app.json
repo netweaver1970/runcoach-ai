@@ -17,7 +17,7 @@
       "appleTeamId": "DF5WZ9PTMP",
       "infoPlist": {
         "NSHealthShareUsageDescription": "RunCoach AI reads your running workouts, heart rate, VO2 max, HRV, and sleep data to provide personalised coaching advice.",
-        "NSHealthUpdateUsageDescription": "RunCoach AI does not write to Apple Health.",
+        "NSHealthUpdateUsageDescription": "RunCoach AI can write imported blood-test values you choose (weight, blood pressure, glucose) into Apple Health.",
         "NSLocationWhenInUseUsageDescription": "RunCoach AI uses your location to fetch the current weather so it can factor temperature and conditions into today's training recommendation.",
         "UIBackgroundModes": [
           "fetch",
@@ -54,7 +54,7 @@
         "@kingstinct/react-native-healthkit",
         {
           "NSHealthShareUsageDescription": "RunCoach AI reads your running workouts, heart rate, VO2 max, HRV, and sleep data to provide personalised coaching advice.",
-          "NSHealthUpdateUsageDescription": "RunCoach AI does not write to Apple Health."
+          "NSHealthUpdateUsageDescription": "RunCoach AI can write imported blood-test values you choose (weight, blood pressure, glucose) into Apple Health."
         }
       ],
       "@react-native-community/datetimepicker"

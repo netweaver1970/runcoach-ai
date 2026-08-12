@@ -255,10 +255,11 @@ export async function requestPermissions(): Promise<boolean> {
 const MMOL_TO_MGDL = 18.0156;
 export async function requestLabsWriteAuth(): Promise<boolean> {
   try {
+    // Quantity types only — a BP correlation is authorised via its systolic/diastolic components, and
+    // requesting the correlation type itself is a needless extra that we keep out of the write path.
     await HealthKit.requestAuthorization(
       ['HKQuantityTypeIdentifierBodyMass', 'HKQuantityTypeIdentifierBloodGlucose',
-       'HKQuantityTypeIdentifierBloodPressureSystolic', 'HKQuantityTypeIdentifierBloodPressureDiastolic',
-       'HKCorrelationTypeIdentifierBloodPressure'] as any,
+       'HKQuantityTypeIdentifierBloodPressureSystolic', 'HKQuantityTypeIdentifierBloodPressureDiastolic'] as any,
       [] as any,
     );
     return true;
@@ -275,9 +276,21 @@ export async function mirrorLabsToHealth(analytes: LabMirrorAnalyte[]): Promise<
 
   const at = (iso: string) => new Date(iso.length <= 10 ? iso + 'T12:00:00' : iso);
   const toMmHg = (v: number) => (v < 30 ? v * 10 : v);           // cmHg → mmHg (guarded, in case some rows already mmHg)
-  const meta = (id: string) => ({ HKMetadataKeySyncIdentifier: id, HKMetadataKeySyncVersion: 1 } as any);
+  const NO_META = {} as any;   // NB: HKMetadataKeySync* threw a native NSException (hard crash) — omit it
   let written = 0, skipped = 0;
 
+  // Simple quantities FIRST (weight, glucose) — the most reliable writes, so they land even if the BP
+  // correlation below turns out to be problematic on this device.
+  for (const a of eligible) {
+    const hk = a.hkType!;
+    if (hk.includes('BodyMass')) {
+      for (const v of a.series) { const t = at(v.date);
+        try { (await (HealthKit as any).saveQuantitySample('HKQuantityTypeIdentifierBodyMass', 'kg', v.value, t, t, NO_META)) ? written++ : skipped++; } catch { skipped++; } }
+    } else if (hk.includes('BloodGlucose')) {
+      for (const v of a.series) { const t = at(v.date);
+        try { (await (HealthKit as any).saveQuantitySample('HKQuantityTypeIdentifierBloodGlucose', 'mg/dL', v.value * MMOL_TO_MGDL, t, t, NO_META)) ? written++ : skipped++; } catch { skipped++; } }
+    }
+  }
   // Blood pressure → correlations (pair systolic+diastolic by date)
   const sys = eligible.find(a => a.hkType!.includes('Systolic'));
   const dia = eligible.find(a => a.hkType!.includes('Diastolic'));
@@ -288,22 +301,11 @@ export async function mirrorLabsToHealth(analytes: LabMirrorAnalyte[]): Promise<
       const t = at(s.date);
       try {
         const ok = await (HealthKit as any).saveCorrelationSample('HKCorrelationTypeIdentifierBloodPressure', [
-          { startDate: t, endDate: t, quantityType: 'HKQuantityTypeIdentifierBloodPressureSystolic', quantity: toMmHg(s.value), unit: 'mmHg', metadata: meta(`labs-bp-sys-${s.date}`) },
-          { startDate: t, endDate: t, quantityType: 'HKQuantityTypeIdentifierBloodPressureDiastolic', quantity: toMmHg(d), unit: 'mmHg', metadata: meta(`labs-bp-dia-${s.date}`) },
-        ], t, t, meta(`labs-bp-${s.date}`));
+          { startDate: t, endDate: t, quantityType: 'HKQuantityTypeIdentifierBloodPressureSystolic', quantity: toMmHg(s.value), unit: 'mmHg', metadata: NO_META },
+          { startDate: t, endDate: t, quantityType: 'HKQuantityTypeIdentifierBloodPressureDiastolic', quantity: toMmHg(d), unit: 'mmHg', metadata: NO_META },
+        ], t, t, NO_META);
         ok ? written++ : skipped++;
       } catch { skipped++; }
-    }
-  }
-  // Simple quantities
-  for (const a of eligible) {
-    const hk = a.hkType!;
-    if (hk.includes('BodyMass')) {
-      for (const v of a.series) { const t = at(v.date);
-        try { (await (HealthKit as any).saveQuantitySample('HKQuantityTypeIdentifierBodyMass', 'kg', v.value, t, t, meta(`labs-weight-${v.date}`))) ? written++ : skipped++; } catch { skipped++; } }
-    } else if (hk.includes('BloodGlucose')) {
-      for (const v of a.series) { const t = at(v.date);
-        try { (await (HealthKit as any).saveQuantitySample('HKQuantityTypeIdentifierBloodGlucose', 'mg/dL', v.value * MMOL_TO_MGDL, t, t, meta(`labs-glucose-${v.date}`))) ? written++ : skipped++; } catch { skipped++; } }
     }
   }
   return { written, skipped };
