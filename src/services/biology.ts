@@ -272,6 +272,31 @@ export async function computeBiologyReport(ctlMonths = 120, toDate: Date = new D
   };
 }
 
+// ── Single source of truth for the biology report ────────────────────────────
+// Both the Biology graphs AND the debug/backup export read the report through HERE, so they always agree
+// and we don't pull ~40y of HealthKit twice. There is NO on-disk cache — this only memoises the last live
+// compute in-memory (readings deleted/edited in Health are picked up the moment the cache is bypassed).
+//   • normal call        → returns the memo if it's younger than maxAgeMs (default 5 min), else recomputes
+//   • { force: true }    → always recomputes live and refreshes the memo (this is what the Refresh button
+//                          calls, wired at the SERVICE level so the next backup sees the fresh data too)
+let _bioMemo: { report: BiologyReport; ctlMonths: number; at: number } | null = null;
+
+export async function getBiologyReport(
+  opts: { force?: boolean; ctlMonths?: number; maxAgeMs?: number } = {},
+): Promise<BiologyReport> {
+  const ctlMonths = opts.ctlMonths ?? 60;
+  const maxAgeMs  = opts.maxAgeMs ?? 5 * 60_000;
+  if (!opts.force && _bioMemo && _bioMemo.ctlMonths === ctlMonths && Date.now() - _bioMemo.at < maxAgeMs) {
+    return _bioMemo.report;
+  }
+  const report = await computeBiologyReport(ctlMonths);
+  _bioMemo = { report, ctlMonths, at: Date.now() };
+  return report;
+}
+
+// Drop the memo so the very next read re-queries HealthKit (e.g. after deleting bad readings).
+export function invalidateBiologyReport() { _bioMemo = null; }
+
 // Keep only comparable, non-outlier readings for the composition split:
 //  1) MORNING readings (first-thing, local hour 2–9) — a post-run / evening weigh-in isn't comparable to a
 //     fasted morning baseline. Falls back to all readings if too few mornings exist.

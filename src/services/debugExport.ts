@@ -18,7 +18,7 @@ import { buildTrainingLoadCalibration, loadSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot } from './coach';
 import { getPowerZones, getEffectiveMaxHr } from './claude';
 import { getAccountingMode } from './accounting';
-import { computeBiologyReport, compositionChange } from './biology';
+import { getBiologyReport, compositionChange } from './biology';
 import { getCurrentUser } from './auth';
 
 // A key is a credential if — with separators/casing removed — it contains one of these tokens.
@@ -225,7 +225,9 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
   // BIOLOGY — body-composition + BP series (validity-cleaned) + the fat-vs-lean split over standard windows,
   // so the Biology mode is verifiable off-device (weight/fat%/lean readings aren't in any other section).
   await add('biology', async () => {
-    const rep = await computeBiologyReport(60).catch(() => null);
+    // Same shared provider the graphs use → the backup reflects a just-Refreshed report (and reuses it
+    // instead of pulling ~40y of HealthKit again); otherwise it recomputes live within the memo TTL.
+    const rep = await getBiologyReport().catch(() => null);
     if (!rep) return null;
     const now = Date.now();
     const weight = rep.metrics.find(m => m.key === 'weight')?.points ?? [];

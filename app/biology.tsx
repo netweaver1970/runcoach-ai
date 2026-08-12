@@ -3,7 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { requestPermissions } from '../src/services/healthkit';
-import { computeBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
+import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 type Range = '3M' | '6M' | '1Y' | '5Y' | '10Y';
@@ -161,9 +161,9 @@ export default function BiologyMode() {
   // into the loaded data — so scrolling to any period (incl. >10 years back) shows its data instantly, no
   // per-step re-fetch. The report is queried live from HealthKit; there's no on-disk cache, so a Refresh
   // simply re-runs this (picks up readings you've since deleted/edited in Health).
-  const load = useCallback(() => {
+  const load = useCallback((force = false) => {
     let alive = true; setLoading(true);
-    computeBiologyReport(60)   // CTL/fitness overlay over 5y (covers full training history); metrics are full ~40y
+    getBiologyReport({ force })   // shared source (same report feeds the backup export); force = bypass memo
       .then(r => { if (alive) { setRep(r); setLoading(false); } })
       .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
@@ -208,7 +208,7 @@ export default function BiologyMode() {
           <Text style={s.hTitle}>🧬 Biology</Text>
           <View style={{ flex: 1 }} />
           {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
-          <TouchableOpacity style={s.eyeBtn} disabled={loading} onPress={() => load()}>
+          <TouchableOpacity style={s.eyeBtn} disabled={loading} onPress={() => load(true)}>
             <Text style={[s.eyeTxt, loading && s.eyeTxtOff]}>↻ Refresh</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[s.eyeBtn, !showEvents && s.eyeBtnOff]} onPress={() => setShowEvents(v => !v)}>
