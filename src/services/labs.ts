@@ -36,7 +36,7 @@ export interface ParsedLabs {
   warnings: string[];
 }
 
-const CAT = 0, KEEP = 1, UNIT = 2, MIN = 3, MAX = 4, NAME = 5, DATA_C0 = 8, DATE_ROW = 3;
+const CAT = 0, KEEP = 1, UNIT = 2, MIN = 3, MAX = 4, NAME = 5, DATA_C0 = 8, YEAR_ROW = 1, DATE_ROW = 3;
 
 // ── cell helpers ──────────────────────────────────────────────────────────────
 function isoOf(c: Cell): string | null {
@@ -64,6 +64,18 @@ function numOf(c: Cell): number | null {
   return null;
 }
 function textOf(c: Cell): string { return c == null ? '' : String(c).replace(/\s+/g, ' ').trim(); }
+// Month+day from a header cell — a full date (ISO/Date/serial) OR a European "d/m", "d-m", "d.m" string.
+function monthDayOf(c: Cell): { m: number; d: number } | null {
+  const iso = isoOf(c);
+  if (iso) { const m = +iso.slice(5, 7), d = +iso.slice(8, 10); if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return { m, d }; }
+  if (typeof c === 'string') { const mm = c.trim().match(/^(\d{1,2})[\/\-.](\d{1,2})$/); if (mm) { const d = +mm[1], m = +mm[2]; if (m >= 1 && m <= 12 && d >= 1 && d <= 31) return { m, d }; } }
+  return null;
+}
+function yearCellOf(c: Cell): number | null {
+  if (typeof c === 'number' && c > 1900 && c < 2100) return Math.round(c);
+  if (typeof c === 'string') { const m = c.trim().match(/^(\d{4})$/); if (m) { const y = +m[1]; if (y > 1900 && y < 2100) return y; } }
+  return null;
+}
 const sig4 = (x: number): number => (Number.isFinite(x) ? Number(x.toPrecision(4)) : x);   // 4 significant digits
 const sig4n = (x: number | null): number | null => (x == null ? null : sig4(x));
 function cleanUnit(u: Cell): string {
@@ -119,12 +131,27 @@ interface RawRow { category: string; keep: boolean; unit: string; min: number | 
 
 export function parseClinicalGrid(rows: Cell[][]): ParsedLabs {
   const warnings: string[] = [];
-  // 1) date columns from the header row
-  const dateCols: { col: number; iso: string }[] = [];
+  // 1) date columns. The full-date row (DATE_ROW) is unreliable in this sheet — some cells carry the wrong
+  //    YEAR (2017/18/19 stored as 2022) and some carry only a day/month with no year at all. The dedicated
+  //    YEAR row (row index 1, "Jaar") is the athlete's authoritative year, so: year ← year-row (carried
+  //    forward), month/day ← date cell. Fall back to the date cell's own year only when no year-row exists
+  //    (keeps other layouts working).
+  const yearRow = rows[YEAR_ROW] ?? [];
   const hdr = rows[DATE_ROW] ?? [];
-  for (let ci = DATA_C0; ci < hdr.length; ci++) { const iso = isoOf(hdr[ci]); if (iso) dateCols.push({ col: ci, iso }); }
+  const dateCols: { col: number; iso: string }[] = [];
+  let carryYear: number | null = null; let fixedYears = 0;
+  for (let ci = DATA_C0; ci < hdr.length; ci++) {
+    const yv = yearCellOf(yearRow[ci]); if (yv) carryYear = yv;
+    const md = monthDayOf(hdr[ci]); if (!md) continue;
+    const isoYear = (() => { const iso = isoOf(hdr[ci]); return iso ? +iso.slice(0, 4) : null; })();
+    const year = carryYear ?? isoYear;
+    if (!year) continue;
+    if (isoYear && carryYear && isoYear !== carryYear) fixedYears++;   // year-row corrected a bad date-cell year
+    dateCols.push({ col: ci, iso: `${year}-${String(md.m).padStart(2, '0')}-${String(md.d).padStart(2, '0')}` });
+  }
   const dates = [...new Set(dateCols.map(d => d.iso))].sort();
   if (!dateCols.length) warnings.push('No date columns found on the header row — is this the clinical-tests layout?');
+  if (fixedYears) warnings.push(`${fixedYears} test date(s) had a wrong year in the date row — corrected from the year row.`);
 
   // 2) raw analyte rows (category carries forward; skip nameless / all-empty rows)
   const raws: RawRow[] = [];

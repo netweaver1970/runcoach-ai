@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, useWindowDimensions, ActivityIndicator, Alert } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, useWindowDimensions, ActivityIndicator, Alert, PanResponder } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { loadLabs, LabStore, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
@@ -25,11 +25,26 @@ const RANGE_YEARS: Record<Range, number> = { All: 0, '10Y': 10, '5Y': 5, '1Y': 1
 const EV_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981' };
 interface Ev { t: number; label: string; category: string }
 
+const mLabel = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+
 function LabChart({ a, width, c, t0, t1, events }: { a: LabAnalyte; width: number; c: Palette; t0: number; t1: number; events: Ev[] }) {
-  const H = 160, PL = 42, PR = 12, PT = 12, PB = 20;
-  const pts = a.series.filter(p => { const t = tOf(p.date); return t >= t0 && t <= t1; });
-  if (pts.length < 2) return <Text style={{ color: c.textFaint, fontSize: 12, paddingVertical: 8 }}>Fewer than 2 readings in this period.</Text>;
+  const H = 186, PL = 46, PR = 12, PT = 12, PB = 22;
   const plotW = Math.max(1, width - PL - PR), plotH = H - PT - PB, span = Math.max(1, t1 - t0);
+  const pts = a.series.filter(p => { const t = tOf(p.date); return t >= t0 && t <= t1; });
+
+  // scrub cursor (local): map a plot-relative touch x → time; held in a ref reassigned every render
+  const [cur, setCur] = useState<number | null>(null);
+  const mapRef = useRef<(x: number) => number>(() => t0);
+  mapRef.current = (x: number) => t0 + ((Math.max(PL, Math.min(PL + plotW, x)) - PL) / plotW) * span;
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+    onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+    onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+  })).current;
+
+  if (pts.length < 2) return <Text style={{ color: c.textFaint, fontSize: 12, paddingVertical: 8 }}>Fewer than 2 readings in this period.</Text>;
+
   const vals = pts.map(p => p.value);
   const lo = Math.min(...vals, a.refLow ?? Infinity), hi = Math.max(...vals, a.refHigh ?? -Infinity);
   const pad = (hi - lo) * 0.1 || Math.abs(hi) * 0.1 || 1;
@@ -38,22 +53,57 @@ function LabChart({ a, width, c, t0, t1, events }: { a: LabAnalyte; width: numbe
   const y = (v: number) => PT + (1 - (v - yLo) / (yHi - yLo)) * plotH;
   const line = pts.map(p => `${x(tOf(p.date)).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
   const evIn = events.filter(e => e.t >= t0 && e.t <= t1);
+
+  // year/month vertical shading bands
+  const yearly = span > 2.2 * 365 * 86400000;
+  const bands: { x: number; w: number; mid: number }[] = [];
+  { const d = new Date(t0); if (yearly) d.setMonth(0, 1); else d.setDate(1); d.setHours(0, 0, 0, 0); let i = 0;
+    while (d.getTime() <= t1) { const sMs = Math.max(t0, d.getTime()); const n = new Date(d);
+      if (yearly) n.setFullYear(n.getFullYear() + 1); else n.setMonth(n.getMonth() + 1);
+      const eMs = Math.min(t1, n.getTime());
+      bands.push({ x: PL + ((sMs - t0) / span) * plotW, w: Math.max(0, ((eMs - sMs) / span) * plotW), mid: (sMs + eMs) / 2 });
+      if (yearly) d.setFullYear(d.getFullYear() + 1); else d.setMonth(d.getMonth() + 1); i++; } }
+  const bandFill = c.mode === 'dark' ? '#FFFFFF' : '#000000';
+  const labelStep = Math.max(1, Math.ceil(bands.length / 6));   // ≤ ~6 x labels
+
+  // Y gridlines — 5 divisions
+  const yTicks = Array.from({ length: 5 }, (_, i) => yLo + ((yHi - yLo) * i) / 4);
+
+  // cursor → nearest point
+  const nearest = (() => { if (cur == null) return pts[pts.length - 1]; let best = pts[0], bd = Infinity;
+    for (const p of pts) { const dd = Math.abs(tOf(p.date) - cur); if (dd < bd) { bd = dd; best = p; } } return best; })();
+  const cx = x(tOf(nearest.date));
+  const nearEv = cur != null ? evIn.map(e => ({ e, dx: Math.abs(x(e.t) - x(cur)) })).sort((p, q) => p.dx - q.dx)[0] : null;
+  const readEv = nearEv && nearEv.dx < 14 ? nearEv.e : null;
+
   return (
-    <Svg width={width} height={H}>
-      {a.refLow != null && a.refHigh != null &&
-        <Rect x={PL} y={y(a.refHigh)} width={plotW} height={Math.max(1, y(a.refLow) - y(a.refHigh))} fill="#22c55e" opacity={0.12} />}
-      {a.refLow != null && a.refHigh == null && <Line x1={PL} y1={y(a.refLow)} x2={PL + plotW} y2={y(a.refLow)} stroke="#22c55e" strokeOpacity={0.5} strokeDasharray="4 4" />}
-      {a.refHigh != null && a.refLow == null && <Line x1={PL} y1={y(a.refHigh)} x2={PL + plotW} y2={y(a.refHigh)} stroke="#ef4444" strokeOpacity={0.5} strokeDasharray="4 4" />}
-      {evIn.map((e, i) => <Line key={`e${i}`} x1={x(e.t)} y1={PT} x2={x(e.t)} y2={PT + plotH} stroke={EV_COLOR[e.category] ?? c.textFaint} strokeOpacity={0.35} strokeWidth={1} strokeDasharray="2 3" />)}
-      <SvgText x={PL - 5} y={y(yHi) + 4} fontSize={9} fill={c.textFaint} textAnchor="end">{sig4(yHi)}</SvgText>
-      <SvgText x={PL - 5} y={y(yLo) + 4} fontSize={9} fill={c.textFaint} textAnchor="end">{sig4(yLo)}</SvgText>
-      {Array.from({ length: 4 }, (_, i) => t0 + (span * i) / 3).map((t, i) =>
-        <SvgText key={`x${i}`} x={PL + (i / 3) * plotW} y={H - 6} fontSize={9} fill={c.textFaint}
-          textAnchor={i === 0 ? 'start' : i === 3 ? 'end' : 'middle'}>{yr(t)}</SvgText>)}
-      <Polyline points={line} fill="none" stroke={c.accent} strokeWidth={2} />
-      {pts.map((p, i) => <Circle key={i} cx={x(tOf(p.date))} cy={y(p.value)} r={i === pts.length - 1 ? 3.5 : 2}
-        fill={i === pts.length - 1 ? c.accent : c.surface} stroke={c.accent} strokeWidth={1.2} />)}
-    </Svg>
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', paddingHorizontal: 2, marginBottom: 2 }}>
+        <Text style={{ color: c.textSub, fontSize: 12, fontWeight: '700' }}>{nearest.date}</Text>
+        {readEv
+          ? <Text style={{ color: EV_COLOR[readEv.category] ?? c.textSub, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>{readEv.label}</Text>
+          : <Text style={{ color: c.accent, fontSize: 13, fontWeight: '800' }}>{sig4(nearest.value)} <Text style={{ color: c.textFaint, fontSize: 11 }}>{a.unit}</Text></Text>}
+      </View>
+      <View {...pan.panHandlers}>
+        <Svg width={width} height={H}>
+          {bands.map((b, i) => i % 2 === 0 ? <Rect key={`b${i}`} x={b.x} y={PT} width={b.w} height={plotH} fill={bandFill} opacity={0.04} /> : null)}
+          {yTicks.map((v, i) => <Line key={`g${i}`} x1={PL} y1={y(v)} x2={PL + plotW} y2={y(v)} stroke={c.gridline} strokeWidth={1} />)}
+          {yTicks.map((v, i) => <SvgText key={`yl${i}`} x={PL - 5} y={y(v) + 3} fontSize={9.5} fill={c.textSub} textAnchor="end">{sig4(v)}</SvgText>)}
+          {a.refLow != null && a.refHigh != null &&
+            <Rect x={PL} y={y(a.refHigh)} width={plotW} height={Math.max(1, y(a.refLow) - y(a.refHigh))} fill="#22c55e" opacity={0.13} />}
+          {a.refLow != null && a.refHigh == null && <Line x1={PL} y1={y(a.refLow)} x2={PL + plotW} y2={y(a.refLow)} stroke="#22c55e" strokeOpacity={0.6} strokeDasharray="4 4" />}
+          {a.refHigh != null && a.refLow == null && <Line x1={PL} y1={y(a.refHigh)} x2={PL + plotW} y2={y(a.refHigh)} stroke="#ef4444" strokeOpacity={0.6} strokeDasharray="4 4" />}
+          {evIn.map((e, i) => <Line key={`e${i}`} x1={x(e.t)} y1={PT} x2={x(e.t)} y2={PT + plotH} stroke={EV_COLOR[e.category] ?? c.textFaint} strokeOpacity={0.5} strokeWidth={1.5} strokeDasharray="2 3" />)}
+          {bands.filter((_, i) => i % labelStep === 0).map((b, i) =>
+            <SvgText key={`x${i}`} x={Math.min(PL + plotW - 8, Math.max(PL + 8, b.mid <= t1 && b.mid >= t0 ? x(b.mid) : b.x))} y={H - 6} fontSize={9.5} fill={c.textSub} textAnchor="middle">{yearly ? yr(b.mid) : mLabel(b.mid)}</SvgText>)}
+          <Polyline points={line} fill="none" stroke={c.accent} strokeWidth={2.2} />
+          {pts.map((p, i) => <Circle key={i} cx={x(tOf(p.date))} cy={y(p.value)} r={2} fill={c.surface} stroke={c.accent} strokeWidth={1.2} />)}
+          {/* cursor */}
+          <Line x1={cx} y1={PT} x2={cx} y2={PT + plotH} stroke={c.accent} strokeOpacity={0.5} strokeWidth={1} />
+          <Circle cx={cx} cy={y(nearest.value)} r={4.5} fill={c.accent} stroke={c.surface} strokeWidth={1.5} />
+        </Svg>
+      </View>
+    </View>
   );
 }
 

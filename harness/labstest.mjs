@@ -12,7 +12,8 @@ const find = (labelRe) => rep.analytes.filter(a => labelRe.test(a.label));
 console.log(`\ndates: ${rep.dates.length}  (${rep.dates[0]} → ${rep.dates.at(-1)})`);
 console.log(`analytes: ${rep.analytes.length}  (numeric ${rep.analytes.filter(a=>a.kind==='numeric').length} · derived ${rep.analytes.filter(a=>a.kind==='derived').length} · categorical ${rep.analytes.filter(a=>a.kind==='categorical').length})`);
 
-ok(rep.dates.length === 35, '35 test dates', `got ${rep.dates.length}`);
+ok(rep.dates.length === 43, '43 test dates (year-row corrected + day/month-only recovered)', `got ${rep.dates.length}`);
+ok(find(/^Cholesterol Total$/)[0]?.series.some(p => p.date === '2017-02-17'), 'cholesterol 2017-02-17 recovered (was mis-dated 2022)');
 ok(rep.dates[0] === '1999-10-01' && rep.dates.at(-1) === '2026-04-22', 'span 1999→2026');
 
 // Cholesterol Total: two same-date unit rows → ONE merged series (union of dates, no duplicates)
