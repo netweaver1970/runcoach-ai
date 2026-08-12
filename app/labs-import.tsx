@@ -5,7 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as XLSX from 'xlsx';
 import { parseClinicalGrid, ParsedLabs, LabAnalyte, Cell } from '../src/services/labs';
-import { mergeLabsImport, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
+import { mergeLabsImport, clearLabs, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
 import { mirrorLabsToHealth } from '../src/services/healthkit';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
@@ -39,6 +39,7 @@ export default function LabsImport() {
   const [mirror, setMirror] = useState<{ busy: boolean; written?: number; skipped?: number }>({ busy: false });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [templates, setTemplates] = useState<LabTemplate[]>([]);
+  const [wipeFirst, setWipeFirst] = useState(false);
 
   React.useEffect(() => { loadTemplates().then(setTemplates); }, []);
 
@@ -118,14 +119,16 @@ export default function LabsImport() {
   function saveCurrentTemplate() {
     const keys = [...selKeys];
     if (!keys.length) { Alert.alert('Nothing selected', 'Select some markers first, then save them as a template.'); return; }
-    if (Alert.prompt) {
-      Alert.prompt('Save template', `Save these ${keys.length} markers as a named template.`, async (name?: string) => {
-        if (!name?.trim()) return;
-        setTemplates(await saveTemplate(name, keys));
-      });
-    } else {
-      Alert.alert('Not available', 'Naming templates needs iOS.');
-    }
+    if (!Alert.prompt) { Alert.alert('Not available', 'Naming templates needs iOS.'); return; }
+    const existing = templates.length ? `\n\nExisting: ${templates.map(t => t.name).join(', ')}` : '';
+    Alert.prompt('Save template', `Save these ${keys.length} markers as a named template.${existing}`, async (name?: string) => {
+      const nm = name?.trim(); if (!nm) return;
+      const clash = templates.some(t => t.name.toLowerCase() === nm.toLowerCase());
+      const doSave = async () => setTemplates(await saveTemplate(nm, keys));
+      if (clash) Alert.alert('Overwrite template?', `A template named “${nm}” already exists. Overwrite it?`,
+        [{ text: 'Cancel', style: 'cancel' }, { text: 'Overwrite', style: 'destructive', onPress: doSave }]);
+      else await doSave();
+    });
   }
   function removeTemplate(t: LabTemplate) {
     Alert.alert('Delete template', `Delete “${t.name}”?`, [
@@ -146,6 +149,7 @@ export default function LabsImport() {
         if (!series.length && !textSeries.length) continue;
         chosen.push({ ...a, series, textSeries: textSeries.length ? textSeries : undefined });
       }
+      if (wipeFirst) await clearLabs();          // start from a clean slate when requested
       await mergeLabsImport(chosen);
       const hk = chosen.filter(a => a.hkType);
       setHkChosen(hk);
@@ -285,8 +289,12 @@ export default function LabsImport() {
             <View style={{ height: 88 }} />
           </ScrollView>
           <View style={s.footer}>
+            <TouchableOpacity style={s.wipeRow} onPress={() => setWipeFirst(v => !v)}>
+              <Text style={[s.cbBox, wipeFirst && s.cbBoxOn, { borderColor: wipeFirst ? '#ef4444' : c.textFaint, backgroundColor: wipeFirst ? '#ef4444' : 'transparent' }]}>{wipeFirst ? '✓' : ''}</Text>
+              <Text style={s.wipeTxt}>Wipe existing labs before importing</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={[s.btnPrimary, selAnalyteCount === 0 && s.btnDisabled]} disabled={selAnalyteCount === 0} onPress={doImport}>
-              <Text style={s.btnPrimaryTxt}>Import {selPointCount} values</Text></TouchableOpacity>
+              <Text style={s.btnPrimaryTxt}>{wipeFirst ? 'Wipe & import' : 'Import'} {selPointCount} values</Text></TouchableOpacity>
           </View>
         </>
       )}
@@ -364,6 +372,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   aUnit:    { color: c.textFaint, fontSize: 11, minWidth: 42, textAlign: 'right' },
   aN:       { color: c.textSub, fontSize: 12, fontWeight: '700', minWidth: 22, textAlign: 'right' },
   footer:   { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 12, paddingBottom: 26, backgroundColor: c.bg, borderTopWidth: 1, borderTopColor: c.border },
+  wipeRow:  { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 8, paddingHorizontal: 2 },
+  wipeTxt:  { color: c.textSub, fontSize: 13, fontWeight: '600' },
   btnPrimary:{ backgroundColor: c.accent, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   btnPrimaryTxt:{ color: c.onAccent, fontSize: 15, fontWeight: '800' },
   btnSecondary:{ backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, borderRadius: 12, paddingVertical: 13, alignItems: 'center' },

@@ -11,7 +11,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
 const yr = (t: number) => new Date(t).getFullYear();
 const sig4 = (v: number) => Number(v.toPrecision(4)).toString();
-const TOL = 0.005;   // 0.5% boundary tolerance so unit-rounding at a limit doesn't false-flag
+const TOL = 0.005;
 type Status = 'low' | 'high' | 'in' | 'na';
 function statusOf(v: number, lo: number | null, hi: number | null): Status {
   if (hi != null && v > hi * (1 + TOL)) return 'high';
@@ -72,7 +72,8 @@ export default function LabsScreen() {
   const [offset, setOffset] = useState(0);
   const [analysis, setAnalysis] = useState<Record<string, { loading: boolean; text?: string; error?: string }>>({});
   const [templates, setTemplates] = useState<LabTemplate[]>([]);
-  const [activeTpl, setActiveTpl] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedOnly, setSelectedOnly] = useState(false);
 
   useEffect(() => { loadLabs().then(setStore); }, []);
   useEffect(() => { loadTemplates().then(setTemplates); }, []);
@@ -84,7 +85,6 @@ export default function LabsScreen() {
   const latestOf = (a: LabAnalyte) => a.series[a.series.length - 1];
   const oobNow = (a: LabAnalyte) => { const l = latestOf(a); return l ? statusOf(l.value, a.refLow, a.refHigh) : 'na'; };
 
-  // shared time window (anchored to the newest reading, not "today", since labs are historical)
   const [gMin, gMax] = useMemo(() => {
     const ts = (store?.analytes ?? []).flatMap(a => a.series.map(p => tOf(p.date)));
     return ts.length ? [Math.min(...ts), Math.max(...ts)] : [Date.now() - 365 * 86400000, Date.now()];
@@ -94,8 +94,8 @@ export default function LabsScreen() {
   const t1 = years ? gMax - offset * spanMs : gMax;
   const t0 = years ? t1 - spanMs : gMin;
 
-  // markers passing search + out-of-range filter (BEFORE the panel/template filter) — this is what "Save panel" captures
-  const visibleForSave = useMemo(() => {
+  // markers passing search + out-of-range filter (BEFORE the "selected only" view filter)
+  const baseVisible = useMemo(() => {
     const ql = q.trim().toLowerCase();
     return (store?.analytes ?? []).filter(a =>
       (!ql || a.label.toLowerCase().includes(ql) || a.category.toLowerCase().includes(ql)) &&
@@ -103,29 +103,46 @@ export default function LabsScreen() {
   }, [store, q, oobOnly]);
 
   const groups = useMemo(() => {
-    const tplKeys = activeTpl ? new Set(templates.find(t => t.name === activeTpl)?.keys ?? []) : null;
     const m = new Map<string, LabAnalyte[]>();
-    for (const a of visibleForSave) {
-      if (tplKeys && !tplKeys.has(a.key)) continue;
+    for (const a of baseVisible) {
+      if (selectedOnly && !selected.has(a.key)) continue;
       if (!m.has(a.category)) m.set(a.category, []);
       m.get(a.category)!.push(a);
     }
     return [...m.entries()];
-  }, [visibleForSave, activeTpl, templates]);
+  }, [baseVisible, selectedOnly, selected]);
+
+  const toggleSel = (k: string) => setSelected(p => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const setGroup = (items: LabAnalyte[], on: boolean) => setSelected(p => { const n = new Set(p); for (const a of items) on ? n.add(a.key) : n.delete(a.key); return n; });
+  const selectAllVisible = () => setSelected(p => { const n = new Set(p); for (const a of baseVisible) n.add(a.key); return n; });
+  const clearSel = () => { setSelected(new Set()); setSelectedOnly(false); };
 
   function savePanel() {
-    const keys = visibleForSave.map(a => a.key);
-    if (!keys.length) { Alert.alert('Nothing to save', 'Narrow the list (search / out-of-range) to the markers you want, then save them as a panel.'); return; }
-    if (Alert.prompt) {
-      Alert.prompt('Save panel', `Save these ${keys.length} markers as a named panel.`, async (name?: string) => {
-        if (!name?.trim()) return; const list = await saveTemplate(name, keys); setTemplates(list); setActiveTpl(name.trim());
-      });
-    } else { Alert.alert('Not available', 'Naming panels needs iOS.'); }
+    const keys = [...selected];
+    if (!keys.length) { Alert.alert('Nothing selected', 'Tick some markers (or “All”) first, then save them as a panel.'); return; }
+    if (!Alert.prompt) { Alert.alert('Not available', 'Naming panels needs iOS.'); return; }
+    const existing = templates.length ? `\n\nExisting panels: ${templates.map(t => t.name).join(', ')}` : '';
+    Alert.prompt('Save panel', `Name this panel of ${keys.length} markers.${existing}`, async (name?: string) => {
+      const nm = name?.trim(); if (!nm) return;
+      const clash = templates.some(t => t.name.toLowerCase() === nm.toLowerCase());
+      const doSave = async () => setTemplates(await saveTemplate(nm, keys));
+      if (clash) Alert.alert('Overwrite panel?', `A panel named “${nm}” already exists. Overwrite it?`,
+        [{ text: 'Cancel', style: 'cancel' }, { text: 'Overwrite', style: 'destructive', onPress: doSave }]);
+      else await doSave();
+    });
+  }
+  function restorePanel(t: LabTemplate) {
+    const avail = new Set((store?.analytes ?? []).map(a => a.key));
+    const present = t.keys.filter(k => avail.has(k));
+    setSelected(new Set(present));
+    setSelectedOnly(true);
+    const missing = t.keys.length - present.length;
+    if (missing > 0) Alert.alert('Panel partly available', `${missing} of ${t.keys.length} markers in “${t.name}” aren't in your current data — showing the ${present.length} that are. The panel is kept as-is.`);
   }
   function removePanel(t: LabTemplate) {
     Alert.alert('Delete panel', `Delete “${t.name}”?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { setTemplates(await deleteTemplate(t.name)); if (activeTpl === t.name) setActiveTpl(null); } },
+      { text: 'Delete', style: 'destructive', onPress: async () => setTemplates(await deleteTemplate(t.name)) },
     ]);
   }
 
@@ -151,7 +168,6 @@ export default function LabsScreen() {
       </View>
       <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="Search markers…" placeholderTextColor={c.textFaint} autoCapitalize="none" />
 
-      {/* shared window + filters — applies to every chart */}
       <View style={s.ctrlRow}>
         {RANGES.map(r => <TouchableOpacity key={r} onPress={() => setRange(r)} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>)}
         <View style={{ flex: 1 }} />
@@ -166,13 +182,24 @@ export default function LabsScreen() {
         </View>
       )}
 
-      {/* Panels — save the current filtered set, recall a saved one */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.panelRow} contentContainerStyle={s.panelRowInner} keyboardShouldPersistTaps="handled">
+      {/* Selection toolbar */}
+      <View style={s.selRow}>
+        <TouchableOpacity style={s.selBtn} onPress={selectAllVisible}><Text style={s.selBtnTxt}>Select all</Text></TouchableOpacity>
+        <TouchableOpacity style={s.selBtn} onPress={clearSel}><Text style={s.selBtnTxt}>Clear</Text></TouchableOpacity>
+        <TouchableOpacity style={[s.selBtn, selectedOnly && s.selBtnOn]} onPress={() => setSelectedOnly(v => !v)}><Text style={[s.selBtnTxt, selectedOnly && s.selBtnTxtOn]}>Selected only ({selected.size})</Text></TouchableOpacity>
+        <View style={{ flex: 1 }} />
         <TouchableOpacity style={s.savePanel} onPress={savePanel}><Text style={s.savePanelTxt}>＋ Save panel</Text></TouchableOpacity>
-        {templates.map(t => { const on = activeTpl === t.name;
-          return <TouchableOpacity key={t.name} style={[s.tpl, on && s.tplOn]} onPress={() => setActiveTpl(on ? null : t.name)} onLongPress={() => removePanel(t)}>
-            <Text style={[s.tplTxt, on && s.tplTxtOn]}>{t.name}</Text><Text style={[s.tplN, on && s.tplTxtOn]}>{t.keys.length}</Text></TouchableOpacity>; })}
-      </ScrollView>
+      </View>
+      {/* Panels — tap to restore a saved selection, long-press to delete */}
+      {templates.length > 0 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.panelRow} contentContainerStyle={s.panelRowInner} keyboardShouldPersistTaps="handled">
+          <Text style={s.panelLbl}>Panels:</Text>
+          {templates.map(t => (
+            <TouchableOpacity key={t.name} style={s.tpl} onPress={() => restorePanel(t)} onLongPress={() => removePanel(t)}>
+              <Text style={s.tplTxt}>{t.name}</Text><Text style={s.tplN}>{t.keys.length}</Text>
+            </TouchableOpacity>))}
+        </ScrollView>
+      )}
 
       {!store ? <View style={s.center}><ActivityIndicator color={c.accent} /></View>
         : store.analytes.length === 0 ? (
@@ -183,44 +210,54 @@ export default function LabsScreen() {
         ) : (
           <ScrollView contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
             {groups.length === 0 && <Text style={s.none}>No markers match.</Text>}
-            {groups.map(([cat, items]) => (
-              <View key={cat}>
-                <Text style={s.catTitle}>{cat}</Text>
-                {items.map(a => {
-                  const isOpen = open === a.key;
-                  const last = latestOf(a); const lastText = a.textSeries?.[a.textSeries.length - 1];
-                  const st = last ? statusOf(last.value, a.refLow, a.refHigh) : 'na';
-                  const an = analysis[a.key];
-                  return (
-                    <View key={a.key} style={s.card}>
-                      <TouchableOpacity style={s.cardHead} onPress={() => setOpen(isOpen ? null : a.key)}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.aLabel} numberOfLines={1}>{a.label}</Text>
-                          <Text style={s.aMeta}>{a.series.length + (a.textSeries?.length ?? 0)} readings{a.refLow != null || a.refHigh != null ? ` · ref ${a.refLow != null ? sig4(a.refLow) : '—'}–${a.refHigh != null ? sig4(a.refHigh) : '—'}` : ''}</Text>
-                        </View>
-                        {last && <View style={s.lastWrap}>
-                          <Text style={[s.lastVal, { color: STATUS_COLOR[st] }]}>{sig4(last.value)}<Text style={s.lastUnit}> {a.unit}</Text></Text>
-                          <Text style={s.lastDate}>{last.date}</Text></View>}
-                        {!last && lastText && <View style={s.lastWrap}><Text style={s.lastText}>{lastText.text}</Text><Text style={s.lastDate}>{lastText.date}</Text></View>}
-                      </TouchableOpacity>
-                      {isOpen && (
-                        <View style={s.chartWrap}>
-                          {a.series.length >= 2 ? <LabChart a={a} width={cardW} c={c} t0={t0} t1={t1} events={showEvents ? events : []} />
-                            : a.textSeries?.length ? a.textSeries.slice().reverse().map((t, i) => <Text key={i} style={s.textRow}>{t.date}: <Text style={{ color: c.text }}>{t.text}</Text></Text>)
-                            : <Text style={s.textRow}>Not enough data to chart.</Text>}
-                          {a.note && <Text style={s.note}>{a.note}</Text>}
-                          <TouchableOpacity style={s.analyseBtn} disabled={an?.loading} onPress={() => runAnalysis(a)}>
-                            {an?.loading ? <ActivityIndicator color={c.onAccent} size="small" /> : <Text style={s.analyseTxt}>{an?.text ? '↻ Re-analyse' : '✨ Analyse'}</Text>}
+            {groups.map(([cat, items]) => {
+              const selN = items.filter(a => selected.has(a.key)).length;
+              const tri = selN === 0 ? '' : selN === items.length ? '✓' : '–';
+              return (
+                <View key={cat}>
+                  <View style={s.catRow}>
+                    <TouchableOpacity onPress={() => setGroup(items, selN !== items.length)}><Text style={[s.cbBox, tri && s.cbBoxOn]}>{tri}</Text></TouchableOpacity>
+                    <Text style={s.catTitle}>{cat}</Text><Text style={s.catCount}>{selN}/{items.length}</Text>
+                  </View>
+                  {items.map(a => {
+                    const isOpen = open === a.key; const sel = selected.has(a.key);
+                    const last = latestOf(a); const lastText = a.textSeries?.[a.textSeries.length - 1];
+                    const st = last ? statusOf(last.value, a.refLow, a.refHigh) : 'na';
+                    const an = analysis[a.key];
+                    return (
+                      <View key={a.key} style={s.card}>
+                        <View style={s.cardHead}>
+                          <TouchableOpacity onPress={() => toggleSel(a.key)}><Text style={[s.cbBox, sel && s.cbBoxOn]}>{sel ? '✓' : ''}</Text></TouchableOpacity>
+                          <TouchableOpacity style={s.cardMain} onPress={() => setOpen(isOpen ? null : a.key)}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={s.aLabel} numberOfLines={1}>{a.label}</Text>
+                              <Text style={s.aMeta}>{a.series.length + (a.textSeries?.length ?? 0)} readings{a.refLow != null || a.refHigh != null ? ` · ref ${a.refLow != null ? sig4(a.refLow) : '—'}–${a.refHigh != null ? sig4(a.refHigh) : '—'}` : ''}</Text>
+                            </View>
+                            {last && <View style={s.lastWrap}>
+                              <Text style={[s.lastVal, { color: STATUS_COLOR[st] }]}>{sig4(last.value)}<Text style={s.lastUnit}> {a.unit}</Text></Text>
+                              <Text style={s.lastDate}>{last.date}</Text></View>}
+                            {!last && lastText && <View style={s.lastWrap}><Text style={s.lastText}>{lastText.text}</Text><Text style={s.lastDate}>{lastText.date}</Text></View>}
                           </TouchableOpacity>
-                          {an?.error && <Text style={s.err}>{an.error}</Text>}
-                          {an?.text && <Text style={s.analysis}>{an.text}</Text>}
                         </View>
-                      )}
-                    </View>
-                  );
-                })}
-              </View>
-            ))}
+                        {isOpen && (
+                          <View style={s.chartWrap}>
+                            {a.series.length >= 2 ? <LabChart a={a} width={cardW} c={c} t0={t0} t1={t1} events={showEvents ? events : []} />
+                              : a.textSeries?.length ? a.textSeries.slice().reverse().map((t, i) => <Text key={i} style={s.textRow}>{t.date}: <Text style={{ color: c.text }}>{t.text}</Text></Text>)
+                              : <Text style={s.textRow}>Not enough data to chart.</Text>}
+                            {a.note && <Text style={s.note}>{a.note}</Text>}
+                            <TouchableOpacity style={s.analyseBtn} disabled={an?.loading} onPress={() => runAnalysis(a)}>
+                              {an?.loading ? <ActivityIndicator color={c.onAccent} size="small" /> : <Text style={s.analyseTxt}>{an?.text ? '↻ Re-analyse' : '✨ Analyse'}</Text>}
+                            </TouchableOpacity>
+                            {an?.error && <Text style={s.err}>{an.error}</Text>}
+                            {an?.text && <Text style={s.analysis}>{an.text}</Text>}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })}
             <View style={{ height: 24 }} />
           </ScrollView>
         )}
@@ -254,14 +291,18 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   navTxt:   { color: c.text, fontSize: 14, fontWeight: '800' },
   navTxtOff:{ color: c.textFaint },
   navLabel: { color: c.textSub, fontSize: 12.5, fontWeight: '600' },
-  panelRow: { maxHeight: 40, marginTop: 8, flexGrow: 0 },
+  selRow:   { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, marginTop: 8 },
+  selBtn:   { paddingVertical: 5, paddingHorizontal: 9, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
+  selBtnOn: { backgroundColor: c.accent, borderColor: c.accent },
+  selBtnTxt:{ color: c.textSub, fontSize: 12, fontWeight: '700' },
+  selBtnTxtOn:{ color: c.onAccent },
+  savePanel:{ paddingVertical: 5, paddingHorizontal: 10, borderRadius: 8, backgroundColor: c.surface, borderWidth: 1, borderColor: c.accent },
+  savePanelTxt:{ color: c.accent, fontSize: 12.5, fontWeight: '800' },
+  panelRow: { height: 42, marginTop: 8, flexGrow: 0 },
   panelRowInner:{ paddingHorizontal: 14, gap: 6, alignItems: 'center' },
-  savePanel:{ paddingVertical: 6, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
-  savePanelTxt:{ color: c.accent, fontSize: 12.5, fontWeight: '700' },
+  panelLbl: { color: c.textFaint, fontSize: 12, fontWeight: '700', marginRight: 2 },
   tpl:      { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surface, borderWidth: 1, borderColor: c.accent },
-  tplOn:    { backgroundColor: c.accent, borderColor: c.accent },
   tplTxt:   { color: c.accent, fontSize: 12.5, fontWeight: '700' },
-  tplTxtOn: { color: c.onAccent },
   tplN:     { color: c.textFaint, fontSize: 11, fontWeight: '600' },
   center:   { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
   empty:    { color: c.textSub, fontSize: 15 },
@@ -269,15 +310,20 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   importBtnBig:{ backgroundColor: c.accent, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 22 },
   importTxtBig:{ color: c.onAccent, fontSize: 15, fontWeight: '800' },
   pad:      { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 20 },
-  catTitle: { color: c.textSub, fontSize: 13, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 16, marginBottom: 6 },
+  catRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, marginBottom: 6 },
+  catTitle: { color: c.textSub, fontSize: 13, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, flex: 1 },
+  catCount: { color: c.textFaint, fontSize: 12, fontWeight: '700' },
   card:     { backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: c.border, marginBottom: 8, overflow: 'hidden' },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
+  cardMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  cbBox:    { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: c.textFaint, color: c.onAccent, textAlign: 'center', fontSize: 14, fontWeight: '800', overflow: 'hidden', lineHeight: 19 },
+  cbBoxOn:  { backgroundColor: c.accent, borderColor: c.accent },
   aLabel:   { color: c.text, fontSize: 14, fontWeight: '700' },
   aMeta:    { color: c.textFaint, fontSize: 11.5, marginTop: 2 },
   lastWrap: { alignItems: 'flex-end' },
   lastVal:  { fontSize: 16, fontWeight: '800' },
   lastUnit: { fontSize: 11, fontWeight: '600', color: c.textFaint },
-  lastText: { color: c.text, fontSize: 14, fontWeight: '700', maxWidth: 140, textAlign: 'right' },
+  lastText: { color: c.text, fontSize: 14, fontWeight: '700', maxWidth: 120, textAlign: 'right' },
   lastDate: { color: c.textFaint, fontSize: 10.5, marginTop: 1 },
   chartWrap:{ borderTopWidth: 1, borderTopColor: c.border, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: c.surfaceAlt },
   textRow:  { color: c.textSub, fontSize: 12.5, lineHeight: 20 },

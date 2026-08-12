@@ -19,6 +19,7 @@ import { assembleCoachSnapshot } from './coach';
 import { getPowerZones, getEffectiveMaxHr } from './claude';
 import { getAccountingMode } from './accounting';
 import { getBiologyReport, compositionChange } from './biology';
+import { loadLabs, loadTemplates } from './labsStore';
 import { getCurrentUser } from './auth';
 
 // A key is a credential if — with separators/casing removed — it contains one of these tokens.
@@ -246,6 +247,20 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
     return {
       metrics: rep.metrics.map(m => ({ key: m.key, unit: m.unit, n: m.n, latest: m.latest, latestDate: m.latestDate, trendPerWeek: m.trendPerWeek, points: m.points })),
       composition,
+    };
+  });
+  // LABS — imported blood-test history + saved panels, so it's recoverable/inspectable off-device.
+  await add('labs', async () => {
+    const [store, templates] = await Promise.all([loadLabs(), loadTemplates()]);
+    return {
+      updatedAt: store.updatedAt,
+      analyteCount: store.analytes.length,
+      templates,   // named marker panels (keys)
+      analytes: store.analytes.map(a => ({
+        key: a.key, label: a.label, category: a.category, unit: a.unit, kind: a.kind,
+        refLow: a.refLow, refHigh: a.refHigh, hkType: a.hkType, note: a.note,
+        series: a.series, textSeries: a.textSeries,
+      })),
     };
   });
   await add('settings', async () => {
