@@ -255,13 +255,13 @@ export async function requestPermissions(): Promise<boolean> {
 const MMOL_TO_MGDL = 18.0156;
 export async function requestLabsWriteAuth(): Promise<boolean> {
   try {
-    // Quantity types only — a BP correlation is authorised via its systolic/diastolic components, and
-    // requesting the correlation type itself is a needless extra that we keep out of the write path.
-    await HealthKit.requestAuthorization(
-      ['HKQuantityTypeIdentifierBodyMass', 'HKQuantityTypeIdentifierBloodGlucose',
-       'HKQuantityTypeIdentifierBloodPressureSystolic', 'HKQuantityTypeIdentifierBloodPressureDiastolic'] as any,
-      [] as any,
-    );
+    // Request READ **and** WRITE for the same types. Passing an empty read list here disturbed the existing
+    // read grants for Body Mass / Blood Pressure (Biology's weight & BP charts went blank) — re-affirming
+    // read alongside write keeps those intact. (Quantity types only; a BP correlation is authorised via its
+    // systolic/diastolic components.)
+    const rw = ['HKQuantityTypeIdentifierBodyMass', 'HKQuantityTypeIdentifierBloodGlucose',
+      'HKQuantityTypeIdentifierBloodPressureSystolic', 'HKQuantityTypeIdentifierBloodPressureDiastolic'];
+    await HealthKit.requestAuthorization(rw as any, rw as any);
     return true;
   } catch (e) { console.warn('labs write auth failed', e); return false; }
 }
