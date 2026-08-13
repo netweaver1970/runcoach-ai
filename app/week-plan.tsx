@@ -440,10 +440,10 @@ function ProjChart({ hist, rows, c }: { hist: Hist[]; rows: Row[]; c: Palette })
         const y = T + (H - B - T) * f;
         return <Line key={k} x1={L} y1={y} x2={W - R} y2={y} stroke={c.border} strokeWidth={0.5} />;
       })}
-      <SvgText x={2} y={yAt(yMax) + 4} fontSize={9} fill={c.textFaint}>{Math.round(yMax)}</SvgText>
-      <SvgText x={2} y={yAt(0)} fontSize={9} fill={c.textFaint}>0</SvgText>
+      <SvgText x={2} y={yAt(yMax) + 4} fontSize={9} fill={c.textSub} fontWeight="600">{Math.round(yMax)}</SvgText>
+      <SvgText x={2} y={yAt(0)} fontSize={9} fill={c.textSub} fontWeight="600">0</SvgText>
       <Line x1={todayX} y1={T} x2={todayX} y2={H - B} stroke={c.textFaint} strokeWidth={1} strokeDasharray="2 3" />
-      <SvgText x={todayX} y={H - 6} fontSize={9} fill={c.textFaint} textAnchor="middle">today</SvgText>
+      <SvgText x={todayX} y={H - 6} fontSize={9} fill={c.textSub} fontWeight="600" textAnchor="middle">today</SvgText>
       {/* strain bars for the forecast days */}
       {rows.map((r, i) => {
         const x = xAt(hN + i) - barW / 2, y = yAt(r.strain);

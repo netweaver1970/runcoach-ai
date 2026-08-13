@@ -90,14 +90,14 @@ function LabChart({ a, width, c, t0, t1, events }: { a: LabAnalyte; width: numbe
         <Svg width={width} height={H}>
           {bands.map((b, i) => i % 2 === 0 ? <Rect key={`b${i}`} x={b.x} y={PT} width={b.w} height={plotH} fill={bandFill} opacity={0.04} /> : null)}
           {yTicks.map((v, i) => <Line key={`g${i}`} x1={PL} y1={y(v)} x2={PL + plotW} y2={y(v)} stroke={c.gridline} strokeWidth={1} />)}
-          {yTicks.map((v, i) => <SvgText key={`yl${i}`} x={PL - 5} y={y(v) + 3} fontSize={9.5} fill={c.textSub} textAnchor="end">{sig4(v)}</SvgText>)}
+          {yTicks.map((v, i) => <SvgText key={`yl${i}`} x={PL - 5} y={y(v) + 3} fontSize={9.5} fill={c.textSub} fontWeight="600" textAnchor="end">{sig4(v)}</SvgText>)}
           {a.refLow != null && a.refHigh != null &&
             <Rect x={PL} y={y(a.refHigh)} width={plotW} height={Math.max(1, y(a.refLow) - y(a.refHigh))} fill="#22c55e" opacity={0.13} />}
           {a.refLow != null && a.refHigh == null && <Line x1={PL} y1={y(a.refLow)} x2={PL + plotW} y2={y(a.refLow)} stroke="#22c55e" strokeOpacity={0.6} strokeDasharray="4 4" />}
           {a.refHigh != null && a.refLow == null && <Line x1={PL} y1={y(a.refHigh)} x2={PL + plotW} y2={y(a.refHigh)} stroke="#ef4444" strokeOpacity={0.6} strokeDasharray="4 4" />}
           {evIn.map((e, i) => <Line key={`e${i}`} x1={x(e.t)} y1={PT} x2={x(e.t)} y2={PT + plotH} stroke={EV_COLOR[e.category] ?? c.textFaint} strokeOpacity={0.5} strokeWidth={1.5} strokeDasharray="2 3" />)}
           {bands.filter((_, i) => i % labelStep === 0).map((b, i) =>
-            <SvgText key={`x${i}`} x={Math.min(PL + plotW - 8, Math.max(PL + 8, b.mid <= t1 && b.mid >= t0 ? x(b.mid) : b.x))} y={H - 6} fontSize={9.5} fill={c.textSub} textAnchor="middle">{yearly ? yr(b.mid) : mLabel(b.mid)}</SvgText>)}
+            <SvgText key={`x${i}`} x={Math.min(PL + plotW - 8, Math.max(PL + 8, b.mid <= t1 && b.mid >= t0 ? x(b.mid) : b.x))} y={H - 6} fontSize={9.5} fill={c.textSub} fontWeight="600" textAnchor="middle">{yearly ? yr(b.mid) : mLabel(b.mid)}</SvgText>)}
           <Polyline points={line} fill="none" stroke={c.accent} strokeWidth={2.2} />
           {pts.map((p, i) => <Circle key={i} cx={x(tOf(p.date))} cy={y(p.value)} r={2} fill={c.surface} stroke={c.accent} strokeWidth={1.2} />)}
           {/* cursor */}

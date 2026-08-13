@@ -97,7 +97,7 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles, curso
           {bands.map((b, i) => <Rect key={`b${i}`} x={b.x} y={PAD_T} width={b.w} height={plotH} fill={bandFill} opacity={0.04} />)}
           {yTicks.map((v, i) => <React.Fragment key={`y${i}`}>
             <Line x1={PAD_L} y1={yOf(v)} x2={PAD_L + plotW} y2={yOf(v)} stroke={c.gridline} strokeWidth={0.5} />
-            <SvgText x={PAD_L - 4} y={yOf(v) + 3} fontSize={8} fill={c.textFaint} textAnchor="end">{Math.round(v * 10) / 10}</SvgText>
+            <SvgText x={PAD_L - 4} y={yOf(v) + 3} fontSize={9} fill={c.textSub} fontWeight="600" textAnchor="end">{Math.round(v * 10) / 10}</SvgText>
           </React.Fragment>)}
           {evInR.map((e, i) => {
             const on = !!showEvent && sameEv(e, showEvent);
@@ -130,7 +130,7 @@ function BioChart({ lines, t0, t1, ctl, events, innerW, c, months, styles, curso
           <Line x1={cx} y1={PAD_T} x2={cx} y2={PAD_T + plotH} stroke={c.textSub} strokeWidth={1} opacity={scrubbing ? 0.85 : 0.3} />
           {readVals.map(r => r.p && inRange(r.p.date) ? <Circle key={`c${r.key}`} cx={xOf(r.p.date)} cy={yOf(r.p.value)} r={4.5} fill={SERIES[r.key]} stroke={c.surface} strokeWidth={1.5} /> : null)}
           {Array.from({ length: nLab }, (_, k) => t0 + (span * k) / (nLab - 1)).map((t, i) =>
-            <SvgText key={`x${i}`} x={PAD_L + (i / (nLab - 1)) * plotW} y={CH_H - 5} fontSize={8} fill={c.textFaint} textAnchor="middle">{labelAt(t, months)}</SvgText>)}
+            <SvgText key={`x${i}`} x={PAD_L + (i / (nLab - 1)) * plotW} y={CH_H - 5} fontSize={9} fill={c.textSub} fontWeight="600" textAnchor="middle">{labelAt(t, months)}</SvgText>)}
         </Svg>
       </View>
     </View>

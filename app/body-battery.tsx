@@ -269,7 +269,7 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
         {[0, 25, 50, 75, 100].map(v => (
           <React.Fragment key={v}>
             <Line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke={grid} strokeWidth={0.5} />
-            <SvgText x={2} y={y(v) + 3} fontSize={8} fill={axis}>{v}</SvgText>
+            <SvgText x={2} y={y(v) + 3} fontSize={8} fill={axis} fontWeight="600">{v}</SvgText>
           </React.Fragment>
         ))}
         {/* sleep bands */}
@@ -283,7 +283,7 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
         <Circle cx={x(cur.t)} cy={y(cur.battery)} r={3.5} fill={levelColor(cur.battery)} />
         {/* hour ticks */}
         {hourLabels.map((h, i) => (
-          <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} textAnchor="middle">{h.label}</SvgText>
+          <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} fontWeight="600" textAnchor="middle">{h.label}</SvgText>
         ))}
       </Svg>
       <Text style={s.graphCaption}>Last 24h · shaded = asleep</Text>
@@ -351,7 +351,7 @@ function StressGraph({ data }: { data: BodyBattery }) {
         {[0, 25, 50, 75, 100].map(v => (
           <React.Fragment key={v}>
             <Line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke={grid} strokeWidth={0.5} />
-            <SvgText x={2} y={y(v) + 3} fontSize={8} fill={axis}>{v}</SvgText>
+            <SvgText x={2} y={y(v) + 3} fontSize={8} fill={axis} fontWeight="600">{v}</SvgText>
           </React.Fragment>
         ))}
         {bands.map((b, i) => (
@@ -375,7 +375,7 @@ function StressGraph({ data }: { data: BodyBattery }) {
         ))}
         <Circle cx={x(cur.t)} cy={y(cur.stress)} r={3.5} fill={stressColor(cur.stress)} />
         {hourLabels.map((h, i) => (
-          <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} textAnchor="middle">{h.label}</SvgText>
+          <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} fontWeight="600" textAnchor="middle">{h.label}</SvgText>
         ))}
       </Svg>
       <Text style={s.graphCaption}>Stress · last 24h · blue = asleep · orange = workout (excluded +15m)</Text>
