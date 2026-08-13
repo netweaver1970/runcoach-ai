@@ -5,6 +5,7 @@ import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native
 import { requestPermissions } from '../src/services/healthkit';
 import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Range = '1M' | '3M' | '6M' | '1Y' | '5Y' | '10Y';
 const RANGES: Range[] = ['1M', '3M', '6M', '1Y', '5Y', '10Y'];
@@ -141,12 +142,13 @@ export default function BiologyMode() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const innerW = width - 32 - 24;
   const [range, setRange] = useState<Range>('6M');
   const [offset, setOffset] = useState(0);            // periods shifted back (0 = current)
   const [cursorTime, setCursorTime] = useState<number | null>(null);   // coupled cursor across all charts
-  const [showEvents, setShowEvents] = useState(true);                  // privacy: hide all event markers when showing others
+  const [showEvents, setShowEvents] = useState(false);                 // default OFF; toggle 👁 to overlay events
   const [rep, setRep] = useState<BiologyReport | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -200,9 +202,9 @@ export default function BiologyMode() {
 
   return (
     <View style={s.screen}>
-      <Stack.Screen options={{ title: 'Biology' }} />
-      {/* Sticky header — always visible regardless of scroll */}
-      <View style={s.header}>
+      <Stack.Screen options={{ headerShown: false }} />
+      {/* Sticky header — the ONLY header (native one hidden to avoid duplicate title/back) */}
+      <View style={[s.header, { paddingTop: insets.top + 4 }]}>
         <View style={s.headerTop}>
           <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠</Text></TouchableOpacity>
           <Text style={s.hTitle}>Biology</Text>

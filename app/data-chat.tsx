@@ -5,6 +5,9 @@ import { runDataChat, loadChatHistory, saveChatHistory, clearChatHistory, ChatMo
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import MarkdownBody from '../src/MarkdownBody';
 import { TABLE_CELL } from '../src/mdTable';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
+import { startRecording, stopRecording, ensureMicPermission } from '../src/services/voiceRecorder';
 
 const SUGGEST: Record<ChatMode, string[]> = {
   labs: ['Summarise what stands out across all my labs', 'How is my iron panel trending?', 'Read my lipids / cardiovascular risk', 'Anything I should raise with my GP?'],
@@ -23,7 +26,9 @@ export default function DataChat() {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [voice, setVoice] = useState<'idle' | 'recording' | 'transcribing'>('idle');
   const scrollRef = useRef<ScrollView>(null);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => { loadChatHistory(mode).then(setMsgs); }, [mode]);
   useEffect(() => { const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80); return () => clearTimeout(t); }, [msgs, sending]);
@@ -50,10 +55,29 @@ export default function DataChat() {
     ]);
   }
 
+  // Voice input — record → transcribe → auto-send, mirroring the coach chat.
+  async function handleMic() {
+    if (voice === 'transcribing') return;
+    if (voice === 'recording') {
+      setVoice('transcribing');
+      try {
+        const uri = await stopRecording();
+        if (!uri) { setVoice('idle'); return; }
+        const text = (await transcribeAudio(uri)).trim();
+        setVoice('idle');
+        if (text) send(text); else Alert.alert('Voice input', 'No speech detected — try again.');
+      } catch (e: any) { setVoice('idle'); Alert.alert('Voice input', e?.message ?? 'Could not transcribe.'); }
+      return;
+    }
+    if (!(await transcriptionReady())) { Alert.alert('Voice input not set up', "Add a transcription key in Settings → Voice input first — it's free with Groq."); return; }
+    if (!(await ensureMicPermission())) { Alert.alert('Microphone needed', 'Enable microphone access for RunCoachAI in iOS Settings to use voice input.'); return; }
+    try { await startRecording(); setVoice('recording'); } catch (e: any) { Alert.alert('Voice input', e?.message ?? 'Could not start recording.'); }
+  }
+
   return (
     <View style={s.screen}>
-      <Stack.Screen options={{ title: mode === 'biology' ? 'Biology chat' : 'Labs chat' }} />
-      <View style={s.header}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={[s.header, { paddingTop: insets.top + 4 }]}>
         <TouchableOpacity onPress={() => router.back()}><Text style={s.back}>‹ Back</Text></TouchableOpacity>
         <Text style={s.title}>{title}</Text>
         <View style={{ flex: 1 }} />
@@ -90,9 +114,13 @@ export default function DataChat() {
           )}
         </ScrollView>
 
+        {voice !== 'idle' && <Text style={s.listening}>{voice === 'recording' ? '● Listening… tap ⏹ to send' : 'Transcribing…'}</Text>}
         <View style={s.inputBar}>
-          <TextInput style={s.input} value={input} onChangeText={setInput} placeholder="Ask a question…" placeholderTextColor={c.textFaint}
+          <TextInput style={s.input} value={input} onChangeText={setInput} placeholder="Ask, or tap 🎤…" placeholderTextColor={c.textFaint}
             multiline onSubmitEditing={() => send(input)} blurOnSubmit returnKeyType="send" />
+          <TouchableOpacity style={[s.micBtn, voice === 'recording' && s.micRec]} onPress={handleMic} disabled={sending && voice === 'idle'}>
+            <Text style={s.micTxt}>{voice === 'recording' ? '⏹' : voice === 'transcribing' ? '…' : '🎤'}</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={[s.sendBtn, (!input.trim() || sending) && s.sendOff]} disabled={!input.trim() || sending} onPress={() => send(input)}>
             <Text style={s.sendTxt}>↑</Text>
           </TouchableOpacity>
@@ -127,6 +155,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   sendBtn:  { width: 40, height: 40, borderRadius: 20, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
   sendOff:  { opacity: 0.4 },
   sendTxt:  { color: c.onAccent, fontSize: 20, fontWeight: '800' },
+  micBtn:   { width: 40, height: 40, borderRadius: 20, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
+  micRec:   { backgroundColor: '#ef4444', borderColor: '#ef4444' },
+  micTxt:   { fontSize: 18 },
+  listening:{ color: c.accent, fontSize: 12.5, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 4 },
 });
 
 const makeMarkdownStyles = (c: Palette) => StyleSheet.create({

@@ -9,6 +9,7 @@ import { loadEvents } from '../src/services/timelineEvents';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import MarkdownBody from '../src/MarkdownBody';
 import { TABLE_CELL } from '../src/mdTable';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
 const yr = (t: number) => new Date(t).getFullYear();
@@ -114,13 +115,14 @@ export default function LabsScreen() {
   const s = useThemedStyles(makeStyles);
   const md = useThemedStyles(makeMarkdownStyles);
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [store, setStore] = useState<LabStore | null>(null);
   const [events, setEvents] = useState<Ev[]>([]);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState<string | null>(null);
   const [oobOnly, setOobOnly] = useState(false);
-  const [showEvents, setShowEvents] = useState(true);
+  const [showEvents, setShowEvents] = useState(false);   // default OFF; ⚪/👁 toggles the event overlay
   const [range, setRange] = useState<Range>('All');
   const [offset, setOffset] = useState(0);
   const [analysis, setAnalysis] = useState<Record<string, { loading: boolean; text?: string; error?: string }>>({});
@@ -212,8 +214,8 @@ export default function LabsScreen() {
 
   return (
     <View style={s.screen}>
-      <Stack.Screen options={{ title: 'Labs' }} />
-      <View style={s.header}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={[s.header, { paddingTop: insets.top + 4 }]}>
         <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeTxt}>‹ Biology</Text></TouchableOpacity>
         <Text style={s.title}>🧪 Labs</Text>
         <View style={{ flex: 1 }} />
@@ -241,19 +243,17 @@ export default function LabsScreen() {
         <TouchableOpacity style={s.selBtn} onPress={selectAllVisible}><Text style={s.selBtnTxt}>Select all</Text></TouchableOpacity>
         <TouchableOpacity style={s.selBtn} onPress={clearSel}><Text style={s.selBtnTxt}>Clear</Text></TouchableOpacity>
         <TouchableOpacity style={[s.selBtn, selectedOnly && s.selBtnOn]} onPress={() => setSelectedOnly(v => !v)}><Text style={[s.selBtnTxt, selectedOnly && s.selBtnTxtOn]}>Selected only ({selected.size})</Text></TouchableOpacity>
-        <View style={{ flex: 1 }} />
-        <TouchableOpacity style={s.savePanel} onPress={savePanel}><Text style={s.savePanelTxt}>＋ Save panel</Text></TouchableOpacity>
       </View>
-      {/* Panels — tap to restore a saved selection, long-press to delete */}
-      {templates.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.panelRow} contentContainerStyle={s.panelRowInner} keyboardShouldPersistTaps="handled">
-          <Text style={s.panelLbl}>Panels:</Text>
-          {templates.map(t => (
-            <TouchableOpacity key={t.name} style={s.tpl} onPress={() => restorePanel(t)} onLongPress={() => removePanel(t)}>
-              <Text style={s.tplTxt}>{t.name}</Text><Text style={s.tplN}>{t.keys.length}</Text>
-            </TouchableOpacity>))}
-        </ScrollView>
-      )}
+      {/* Panels — Save the current selection; tap a chip to restore it, long-press to delete. Always visible. */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.panelRow} contentContainerStyle={s.panelRowInner} keyboardShouldPersistTaps="handled">
+        <TouchableOpacity style={s.savePanel} onPress={savePanel}><Text style={s.savePanelTxt}>＋ Save panel</Text></TouchableOpacity>
+        {templates.length === 0
+          ? <Text style={s.panelHint}>Save a selection to recall it here</Text>
+          : templates.map(t => (
+              <TouchableOpacity key={t.name} style={s.tpl} onPress={() => restorePanel(t)} onLongPress={() => removePanel(t)}>
+                <Text style={s.tplTxt}>{t.name}</Text><Text style={s.tplN}>{t.keys.length}</Text>
+              </TouchableOpacity>))}
+      </ScrollView>
 
       {!store ? <View style={s.center}><ActivityIndicator color={c.accent} /></View>
         : store.analytes.length === 0 ? (
@@ -361,6 +361,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   panelRow: { height: 42, marginTop: 8, flexGrow: 0 },
   panelRowInner:{ paddingHorizontal: 14, gap: 6, alignItems: 'center' },
   panelLbl: { color: c.textFaint, fontSize: 12, fontWeight: '700', marginRight: 2 },
+  panelHint:{ color: c.textFaint, fontSize: 12, fontStyle: 'italic', alignSelf: 'center' },
   tpl:      { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surface, borderWidth: 1, borderColor: c.accent },
   tplTxt:   { color: c.accent, fontSize: 12.5, fontWeight: '700' },
   tplN:     { color: c.textFaint, fontSize: 11, fontWeight: '600' },
