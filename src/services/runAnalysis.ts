@@ -17,6 +17,7 @@ import { buildAppModelPrompt } from './appModel';
 import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadSupplements, hrOffsetByDay } from './supplements';
 import { loadPrescriptionAt, CoachPlan, assembleCoachSnapshot } from './coach';
+import { efficiencyTrend } from './runStats';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
 
 export interface RunAnalysis {
@@ -138,6 +139,7 @@ Write a sharp, specific post-run review grounded in the numbers. Crucially:
 • Recognise the planned warm-up, drills, work reps and cool-down. Refer to the drills explicitly as the prescribed drills block.
 • The prescription already accounts for HRV/recovery/load/heat — respect it. wHR = work-only HR.
 • The APP MODEL block (in the data) is authoritative on how ToF / the cap / load / the athlete's settings work — use it, never guess at the app's accounting.
+• If an EFFICIENCY TRENDS line is provided, state the EC/EF/SE direction (improving / flat / declining) in "What stood out" — LEAD with EC (speed÷power, HR-independent, the truest economy signal); mention EF/SE only if they diverge from EC.
 
 BREVITY IS REQUIRED — this is read on a phone, glanceable. Lead with the point; cut filler, hedging and throat-clearing. No "it's worth noting", no restating the data back. Every bullet carries a number and a consequence.
 
@@ -147,6 +149,27 @@ Return ONLY minified JSON — no markdown fences — with EXACTLY these keys:
  "full": string (markdown, ≤120 words TOTAL, using these headers: "## Verdict vs plan" (1 sentence), "## What stood out" (2–3 number-rich bullets, one line each), "## Next" (1 sentence, one concrete cue). No other prose.)}`;
 
 /** Generate the analysis for one run. Throws on LLM/auth errors. */
+// EC/EF/SE trend DIRECTION over recent aerobic runs (OLS slope × window). Same maths as the Statistics
+// trendlines, handed to the analysis so its efficiency-trend verdict states the real direction, not a guess.
+function efficiencyTrendContext(runs: RunWorkout[]): string {
+  const pts = efficiencyTrend(runs).filter(p => p.aerobic).slice(-12);
+  if (pts.length < 3) return '';
+  const dir = (key: 'ec' | 'ef' | 'se', dp: number): string | null => {
+    const v = pts.map(p => p[key]).filter(x => x > 0);
+    if (v.length < 3) return null;
+    const n = v.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sx += i; sy += v[i]; sxx += i * i; sxy += i * v[i]; }
+    const den = n * sxx - sx * sx; if (!den) return null;
+    const change = ((n * sxy - sx * sy) / den) * (n - 1), mean = sy / n;
+    const d = Math.abs(change) < mean * 0.01 ? 'flat' : change > 0 ? 'improving' : 'declining';
+    return `${key.toUpperCase()} ${change >= 0 ? '+' : ''}${change.toFixed(dp)} (${d})`;
+  };
+  const parts = [dir('ec', 3), dir('ef', 2), dir('se', 2)].filter(Boolean);
+  if (!parts.length) return '';
+  return `EFFICIENCY TRENDS over the last ${pts.length} aerobic runs (OLS change across the window; higher = better): ${parts.join(' · ')}. `
+    + `EC = speed÷power is HR-INDEPENDENT — trust it most for the true economy trend; EF & SE are HR-based.`;
+}
+
 export async function analyzeRun(
   snap: HealthSnapshot,
   run: RunWorkout,
@@ -162,7 +185,8 @@ export async function analyzeRun(
     buildAppModelPrompt().catch(() => ''),
     assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null),
   ]);
-  const userMsg = [appModel, recoveryLoadContext(snap), buildBudgetContext(cs), prescription, runBlock].filter(Boolean).join('\n\n');
+  const effTrend = efficiencyTrendContext([...(snap.runs ?? []), run]);
+  const userMsg = [appModel, recoveryLoadContext(snap), buildBudgetContext(cs), effTrend, prescription, runBlock].filter(Boolean).join('\n\n');
 
   // Same shape as Chat, only the SYSTEM_PROMPT differs: run through agentComplete so agentic mode (when on)
   // can pull prior runs / metric series via tools to ground the analysis; else single-shot.
