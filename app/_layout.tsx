@@ -100,6 +100,8 @@ function RootStack() {
         <Stack.Screen name="account" options={{ headerShown: false }} />
         <Stack.Screen name="coach" options={{ headerShown: false }} />
         <Stack.Screen name="coach-athlete" options={{ headerShown: false }} />
+        <Stack.Screen name="bevel-calibration" options={{ headerShown: false }} />
+        <Stack.Screen name="debug" options={{ headerShown: false }} />
         <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
       </Stack>
     </>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Stack } from 'expo-router';
-import { computeCapHistory, CapWeek } from '../src/services/coach';
+import { computeCapHistory, computeRolling7d, CapWeek, Rolling7d } from '../src/services/coach';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 type Span = 8 | 12 | 26;
@@ -11,6 +11,7 @@ export default function CapHistoryScreen() {
   const { c } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [weeks, setWeeks] = useState<CapWeek[] | null>(null);
+  const [roll, setRoll] = useState<Rolling7d | null>(null);
   const [span, setSpan] = useState<Span>(12);
   const [loading, setLoading] = useState(true);
 
@@ -21,6 +22,10 @@ export default function CapHistoryScreen() {
       .catch(() => { if (alive) { setWeeks([]); setLoading(false); } });
     return () => { alive = false; };
   }, [span]);
+  useEffect(() => { let alive = true; computeRolling7d().then(r => { if (alive) setRoll(r); }).catch(() => {}); return () => { alive = false; }; }, []);
+
+  const curWeek = (weeks ?? []).find(w => w.isCurrent) ?? null;
+  const barColor = (pct: number) => pct >= 90 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
 
   // Bar scale: the largest of ceiling/actual across the window, so bars are comparable week to week.
   const maxVal = Math.max(60, ...(weeks ?? []).flatMap(w => [w.ceilingMin, w.actualMin]));
@@ -39,6 +44,26 @@ export default function CapHistoryScreen() {
         vs what you actually ran. You need to reach ~<Text style={styles.bold}>90%</Text> of the ceiling to hold volume flat;
         under that, and next week's ceiling drifts down.
       </Text>
+
+      {(curWeek || roll) && (
+        <View style={styles.nowCard}>
+          <Text style={styles.nowTitle}>Right now</Text>
+          {curWeek && (
+            <View style={styles.nowRow}>
+              <Text style={styles.nowLbl}>Calendar week{'\n'}(Mon→now)</Text>
+              <View style={styles.nowTrack}><View style={[styles.nowFill, { width: `${Math.min(100, curWeek.hitPct)}%`, backgroundColor: barColor(curWeek.hitPct) }]} /></View>
+              <Text style={styles.nowNum}>{curWeek.actualMin}/{curWeek.ceilingMin}m · {curWeek.hitPct}%</Text>
+            </View>
+          )}
+          {roll && (
+            <View style={styles.nowRow}>
+              <Text style={styles.nowLbl}>Rolling{'\n'}7 days</Text>
+              <View style={styles.nowTrack}><View style={[styles.nowFill, { width: `${Math.min(100, roll.hitPct)}%`, backgroundColor: barColor(roll.hitPct) }]} /></View>
+              <Text style={styles.nowNum}>{roll.actualMin}/{roll.ceilingMin}m · {roll.hitPct}%</Text>
+            </View>
+          )}
+        </View>
+      )}
 
       <View style={styles.spanRow}>
         {SPANS.map(s => (
@@ -103,6 +128,13 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   sub:      { color: c.textSub, fontSize: 13, lineHeight: 19, marginBottom: 14 },
   bold:     { color: c.text, fontWeight: '700' },
   summary:  { color: c.textSub, fontSize: 13, marginBottom: 12 },
+  nowCard:  { backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: 12, marginBottom: 14 },
+  nowTitle: { color: c.text, fontSize: 14, fontWeight: '800', marginBottom: 8 },
+  nowRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  nowLbl:   { color: c.textSub, fontSize: 11.5, fontWeight: '600', width: 78 },
+  nowTrack: { flex: 1, height: 16, borderRadius: 5, backgroundColor: c.surfaceAlt, overflow: 'hidden', justifyContent: 'center' },
+  nowFill:  { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 5 },
+  nowNum:   { color: c.text, fontSize: 11.5, fontWeight: '700', width: 96, textAlign: 'right' },
   spanRow:  { flexDirection: 'row', gap: 8, marginBottom: 14 },
   spanBtn:  { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
   spanBtnOn:{ backgroundColor: c.accent, borderColor: c.accent },

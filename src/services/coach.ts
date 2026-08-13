@@ -1986,6 +1986,27 @@ export async function computeCapHistory(weeks = 12, toDate = new Date()): Promis
   return out;
 }
 
+export interface Rolling7d { actualMin: number; ceilingMin: number; hitPct: number }
+// Rolling (trailing) 7-day time-on-feet vs the same +cap% ceiling — the "am I over the cap right now"
+// view, complementing the calendar-week bars. Reuses the identical daily engine as computeCapHistory.
+export async function computeRolling7d(toDate = new Date()): Promise<Rolling7d> {
+  const [periodization, capPct] = await Promise.all([getPeriodization(), getLoadCapPct()]);
+  const [dur, weatherHist] = await Promise.all([
+    fetchDailyDurationHistory(toDate, 35),
+    fetchDailyRunWeatherHistory(toDate, 35).catch(() => ({} as Record<string, { tempC: number; humidity?: number }>)),
+  ]);
+  const heatCredit: Record<string, number> = {};
+  for (const [date, w] of Object.entries(weatherHist)) heatCredit[date] = heatStrainFactor({ tempC: w.tempC, humidity: w.humidity });
+  const map = new Map(dur.map(d => [d.date, d.value]));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  let actual = 0;
+  for (let j = 0; j < 7; j++) { const d = new Date(toDate); d.setDate(d.getDate() - j); actual += map.get(iso(d)) ?? 0; }
+  const plan = computeTimeOnFeetPlan(dur, toDate, { capPct, baseWindows: BASE_WINDOWS, heatCredit, heatCreditMax: HEAT_CREDIT_MAX, periodization });
+  const ceiling = Math.round(plan.cap7dMin);
+  return { actualMin: Math.round(actual), ceilingMin: ceiling, hitPct: ceiling > 0 ? Math.round((actual / ceiling) * 100) : 0 };
+}
+
 /**
  * Build the full coach snapshot from HealthKit + weather for a given day's strain.
  * Single source used by both the Strain screen and the background day-view updater, so

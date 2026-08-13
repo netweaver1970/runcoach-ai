@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 // Placeholder mode — nutrition / intake. Structure is here to grow into.
@@ -8,9 +9,10 @@ export default function FoodMode() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   return (
-    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16 }}>
-      <Stack.Screen options={{ title: 'Food' }} />
+    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12 }}>
+      <Stack.Screen options={{ headerShown: false }} />
       <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
       <Text style={s.emoji}>🍽️</Text>
       <Text style={s.h1}>Food</Text>

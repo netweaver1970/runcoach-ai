@@ -10,8 +10,8 @@ import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
 } from '../src/services/powerCurve';
 import {
-  efficiencyTrend, zoneSummary, hrvTrend, acwrSeries, decouplingTrend,
-  EfPoint, ZoneSummary, HrvPoint, AcwrPoint, DecouplePoint,
+  efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend,
+  EfPoint, ZoneSummary, AcwrPoint, DecouplePoint,
 } from '../src/services/runStats';
 import type { PowerZones } from '../src/types';
 
@@ -100,10 +100,10 @@ function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz
 // ─── Generic time-series (line + optional dots, band, reference lines) ────────────
 const TS_H = 130;
 const TS_YW = 34;
-function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt }: {
+function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
   vals: number[]; colors?: string[]; innerW: number;
   band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
-  yfmt?: (v: number) => string; dotAt?: (i: number) => boolean;
+  yfmt?: (v: number) => string; dotAt?: (i: number) => boolean; trend?: boolean;
 }) {
   const ch = useThemedStyles(makeCh);
   const { c } = useTheme();
@@ -138,6 +138,16 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt }: {
         {vals.map((v, i) => (dotAt?.(i) ?? (i === vals.length - 1)) ? (
           <View key={`d${i}`} style={{ position: 'absolute', left: xOf(i) - 3, top: toY(v) - 3, width: 6, height: 6, borderRadius: 3, backgroundColor: colors?.[i] ?? CTL_BLUE, borderWidth: 1, borderColor: c.surface }} />
         ) : null)}
+        {trend && vals.length >= 3 && (() => {
+          // OLS trendline over (index, value)
+          const n = vals.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+          for (let i = 0; i < n; i++) { sx += i; sy += vals[i]; sxx += i * i; sxy += i * vals[i]; }
+          const den = n * sxx - sx * sx; if (!den) return null;
+          const m = (n * sxy - sx * sy) / den, b0 = (sy - m * sx) / n;
+          const x1 = xOf(0), y1 = toY(b0), x2 = xOf(n - 1), y2 = toY(b0 + m * (n - 1));
+          const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
+          return <View pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c.textSub, opacity: 0.75, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
+        })()}
       </View>
     </View>
   );
@@ -179,7 +189,6 @@ export default function StatisticsScreen() {
   const [pz, setPz] = useState<PowerZones | undefined>(undefined);
   const [ef, setEf] = useState<EfPoint[]>([]);
   const [zones, setZones] = useState<ZoneSummary | null>(null);
-  const [hrv, setHrv] = useState<HrvPoint[]>([]);
   const [acwr, setAcwr] = useState<AcwrPoint[]>([]);
   const [dc, setDc] = useState<DecouplePoint[] | null>(null);
 
@@ -193,8 +202,6 @@ export default function StatisticsScreen() {
       // Cheap snapshot-derived series first (instant).
       setEf(efficiencyTrend(runs));
       setZones(zoneSummary(runs));
-      const nightly = ((snap as any)?.recentNightlyHRV ?? []).map((n: any) => ({ date: n.date, rmssd: n.weightedRMSSD }));
-      setHrv(hrvTrend(nightly));
       setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));
       // Power curve (fetches run detail with progress).
       const cur = await computePowerCurve(runs, (done, total) => setProgress({ done, total }));
@@ -288,10 +295,10 @@ export default function StatisticsScreen() {
               innerW={innerW} vals={ef.map(p => p.ef)}
               colors={ef.map(p => p.aerobic ? '#22c55e' : '#cbd5e1')}
               dotAt={(i) => ef[i].aerobic}
-              yfmt={(v) => v.toFixed(2)}
+              yfmt={(v) => v.toFixed(2)} trend
             />
             <Text style={s.foot}>
-              Green = steady aerobic runs (the meaningful ones). Latest {ef[ef.length - 1].ef.toFixed(2)}
+              Grey line = trend. Green = steady aerobic runs. Latest {ef[ef.length - 1].ef.toFixed(2)}
               {ef.filter(p => p.aerobic).length >= 2 ? ((): string => {
                 const a = ef.filter(p => p.aerobic); const d = a[a.length - 1].ef - a[0].ef;
                 return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
@@ -299,6 +306,26 @@ export default function StatisticsScreen() {
             </Text>
           </View>
         )}
+
+        {/* ── Running economy (EC = speed ÷ power, HR-independent) ── */}
+        {ef.filter(p => p.ec > 0).length >= 2 && (() => { const p = ef.filter(x => x.ec > 0); return (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Running Economy (EC)</Text>
+            <Text style={s.cardSub}>Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy. Rising = more speed per watt.</Text>
+            <TSChart innerW={innerW} vals={p.map(x => x.ec)} colors={p.map(x => x.aerobic ? '#22c55e' : '#cbd5e1')} dotAt={(i) => p[i].aerobic} yfmt={(v) => v.toFixed(3)} trend />
+            <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).</Text>
+          </View>
+        ); })()}
+
+        {/* ── Speed efficiency (SE = speed ÷ HR) ── */}
+        {ef.filter(p => p.se > 0).length >= 2 && (() => { const p = ef.filter(x => x.se > 0); return (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Speed Efficiency (SE)</Text>
+            <Text style={s.cardSub}>Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).</Text>
+            <TSChart innerW={innerW} vals={p.map(x => x.se)} colors={p.map(x => x.aerobic ? '#22c55e' : '#cbd5e1')} dotAt={(i) => p[i].aerobic} yfmt={(v) => v.toFixed(2)} trend />
+            <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).</Text>
+          </View>
+        ); })()}
 
         {/* ── Time-in-zone / polarization ── */}
         {zones && (
@@ -311,20 +338,6 @@ export default function StatisticsScreen() {
               {zones.modPct > 35 ? '  ·  a lot of moderate "gray zone" — the classic flat-fitness trap.'
                 : zones.easyPct >= 75 ? '  ·  nicely polarised (lots of easy).' : ''}
             </Text>
-          </View>
-        )}
-
-        {/* ── HRV trend ── */}
-        {hrv.length >= 3 && (
-          <View style={s.card}>
-            <Text style={s.cardTitle}>HRV Trend (lnRMSSD)</Text>
-            <Text style={s.cardSub}>Nightly HRV (log) with its 7-night mean. Rising mean = adapting; dropping = accumulating strain.</Text>
-            <TSChart
-              innerW={innerW} vals={hrv.map(p => p.mean7)}
-              band={[hrv[hrv.length - 1].mean7 - hrv[hrv.length - 1].sd7, hrv[hrv.length - 1].mean7 + hrv[hrv.length - 1].sd7]}
-              yfmt={(v) => v.toFixed(2)}
-            />
-            <Text style={s.foot}>Shaded = normal range (±1 SD of the last week). Latest 7-night mean {hrv[hrv.length - 1].mean7.toFixed(2)}.</Text>
           </View>
         )}
 

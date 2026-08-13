@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
 // Placeholder mode — the structure is here to grow into. For now, all training features live in Home.
@@ -8,9 +9,10 @@ export default function FitnessMode() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   return (
-    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16 }}>
-      <Stack.Screen options={{ title: 'Fitness' }} />
+    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12 }}>
+      <Stack.Screen options={{ headerShown: false }} />
       <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
       <Text style={s.emoji}>🏋️</Text>
       <Text style={s.h1}>Fitness</Text>

@@ -13,17 +13,26 @@ import type { RunWorkout, DailyLoad } from '../types';
 // ── Efficiency Factor: work power ÷ work HR. Rising EF at the same HR = a better aerobic engine — the
 // direct read on "am I getting fitter?" even when CTL looks flat. Most meaningful on aerobic runs, so we
 // tag each point with its type and let the screen show the aerobic ones prominently. ─────────────────────
-export interface EfPoint { date: string; ef: number; label: string; aerobic: boolean; }
+// Per-run efficiency ratios (higher = better). EC = speed÷power (HR-INDEPENDENT running economy),
+// EF = power÷HR, SE = speed÷HR. speed is metres/min = 60000 ÷ pace(sec/km). ec/se are 0 when pace is
+// missing so an EF-only run still contributes to the EF chart.
+export interface EfPoint { date: string; ef: number; ec: number; se: number; label: string; aerobic: boolean; }
 const AEROBIC = new Set(['Z2', 'Recovery', 'LongRun', 'Tempo']);
 export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
   return (runs ?? [])
     .filter(r => (r.workPower ?? 0) > 0 && (r.workHR ?? 0) > 0)
-    .map(r => ({
-      date: r.date.slice(0, 10),
-      ef: Math.round((r.workPower! / r.workHR!) * 1000) / 1000,
-      label: r.label ?? 'Run',
-      aerobic: AEROBIC.has(r.label ?? ''),
-    }))
+    .map(r => {
+      const speed = (r.workPace ?? 0) > 0 ? 60000 / r.workPace! : 0;   // m/min
+      const r3 = (x: number) => Math.round(x * 1000) / 1000;
+      return {
+        date: r.date.slice(0, 10),
+        ef: r3(r.workPower! / r.workHR!),
+        ec: speed > 0 ? r3(speed / r.workPower!) : 0,
+        se: speed > 0 ? r3(speed / r.workHR!) : 0,
+        label: r.label ?? 'Run',
+        aerobic: AEROBIC.has(r.label ?? ''),
+      };
+    })
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 

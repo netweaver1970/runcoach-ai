@@ -884,7 +884,7 @@ export default function WorkoutDetailScreen() {
 
   return (
     <SafeAreaView style={st.container} {...swipe.panHandlers}>
-      <Stack.Screen options={{ title: 'Workout Details' }} />
+      <Stack.Screen options={{ headerShown: false }} />
       {/* Header */}
       <View style={st.header}>
         <TouchableOpacity onPress={() => router.back()} style={st.backBtn}>
