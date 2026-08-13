@@ -13,7 +13,7 @@ import { loadEvents } from './timelineEvents';
 export type ChatMode = 'labs' | 'biology';
 export interface ChatMsg { role: 'user' | 'assistant'; content: string }
 
-const MAX_TOKENS = 900, MAX_STEPS = 5;
+const MAX_TOKENS = 1600, MAX_STEPS = 5;   // enough to finish a table + prose without truncating mid-answer
 const f = (v: number | null) => (v == null ? null : Number(v.toPrecision(4)));
 
 // ── history persistence (per mode) ─────────────────────────────────────────────
