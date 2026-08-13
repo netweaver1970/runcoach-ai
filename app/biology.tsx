@@ -6,9 +6,9 @@ import { requestPermissions } from '../src/services/healthkit';
 import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 
-type Range = '3M' | '6M' | '1Y' | '5Y' | '10Y';
-const RANGES: Range[] = ['3M', '6M', '1Y', '5Y', '10Y'];
-const RANGE_MONTHS: Record<Range, number> = { '3M': 3, '6M': 6, '1Y': 12, '5Y': 60, '10Y': 120 };
+type Range = '1M' | '3M' | '6M' | '1Y' | '5Y' | '10Y';
+const RANGES: Range[] = ['1M', '3M', '6M', '1Y', '5Y', '10Y'];
+const RANGE_MONTHS: Record<Range, number> = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12, '5Y': 60, '10Y': 120 };
 const CAT_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981', travel: '#3b82f6', holiday: '#f59e0b', other: '#9ca3af' };
 const CAT_ICON: Record<string, string> = { medical: '🩺', life: '🎉', travel: '✈️', holiday: '🏖️', other: '📌' };
 const SERIES: Record<string, string> = { weight: '#3b82f6', bodyfat: '#f59e0b', lean: '#10b981', bpSys: '#ef4444', bpDia: '#8b5cf6' };

@@ -72,10 +72,22 @@ export default function DataChat() {
               ))}
             </View>
           )}
-          {msgs.map((m, i) => m.role === 'user'
-            ? <View key={i} style={[s.bubble, s.userBubble]}><Text style={s.userTxt}>{m.content}</Text></View>
-            : <View key={i} style={[s.bubble, s.aiBubble]}><MarkdownBody content={m.content} style={md} c={c} /></View>)}
-          {sending && <View style={[s.bubble, s.aiBubble, s.thinking]}><ActivityIndicator color={c.accent} size="small" /><Text style={s.thinkTxt}>Thinking…</Text></View>}
+          {msgs.map((m, i) => (
+            <View key={i} style={[s.bubbleRow, m.role === 'user' && s.bubbleRowUser]}>
+              <View style={{ maxWidth: m.role === 'user' ? '84%' : '96%' }}>
+                <View style={[s.bubble, m.role === 'user' ? s.userBubble : s.aiBubble]}>
+                  {m.role === 'user'
+                    ? <Text style={s.userTxt}>{m.content}</Text>
+                    : <MarkdownBody content={m.content} style={md} c={c} />}
+                </View>
+              </View>
+            </View>
+          ))}
+          {sending && (
+            <View style={s.bubbleRow}>
+              <View style={[s.bubble, s.aiBubble, s.thinking]}><ActivityIndicator color={c.accent} size="small" /><Text style={s.thinkTxt}>Thinking…</Text></View>
+            </View>
+          )}
         </ScrollView>
 
         <View style={s.inputBar}>
@@ -102,10 +114,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   emptyHint:{ color: c.textFaint, fontSize: 13, lineHeight: 19, marginBottom: 6 },
   suggest:  { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 13 },
   suggestTxt:{ color: c.accent, fontSize: 14, fontWeight: '600' },
-  bubble:   { borderRadius: 14, paddingHorizontal: 13, paddingVertical: 10, marginBottom: 8 },
-  userBubble:{ alignSelf: 'flex-end', maxWidth: '90%', backgroundColor: c.accent },
+  bubbleRow:{ marginBottom: 8, flexDirection: 'row' },
+  bubbleRowUser:{ justifyContent: 'flex-end' },
+  bubble:   { borderRadius: 14, paddingHorizontal: 13, paddingVertical: 10 },
+  userBubble:{ backgroundColor: c.accent },
   userTxt:  { color: c.onAccent, fontSize: 14.5, lineHeight: 20 },
-  aiBubble: { alignSelf: 'stretch', overflow: 'hidden', backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
+  aiBubble: { backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, minWidth: 48 },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   thinkTxt: { color: c.textFaint, fontSize: 13 },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 24, borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.bg },
