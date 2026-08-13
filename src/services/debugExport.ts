@@ -15,7 +15,7 @@
 import { exportAllSettings } from './backup';
 import { computeBodyBattery } from './bodyBattery';
 import { buildTrainingLoadCalibration, loadSnapshotCache } from './healthkit';
-import { assembleCoachSnapshot } from './coach';
+import { assembleCoachSnapshot, computeCapHistory } from './coach';
 import { getPowerZones, getEffectiveMaxHr } from './claude';
 import { getAccountingMode } from './accounting';
 import { getBiologyReport, compositionChange } from './biology';
@@ -163,6 +163,12 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
   // interpretation (power zones + max/rest HR for zone adherence; accounting mode for what counts as
   // time-on-feet). `countsTof` mirrors the ToF exclusion (by LABEL) and `tofMin` is what ToF should total
   // for the run — compare to the app's recentTimeOnFeet to catch accounting bugs (e.g. a cool-down leak).
+  // CAP — Volume vs Budget per CALENDAR week (Mon-based): actual time-on-feet vs the +cap% rolling ceiling.
+  // The current (in-progress) week is isCurrent:true; actualMin is the week-to-date, ceilingMin the budget.
+  await add('cap', async () => (await computeCapHistory(8)).map(w => ({
+    weekStart: w.weekStart, label: w.label, actualMin: w.actualMin, ceilingMin: w.ceilingMin,
+    hitPct: w.hitPct, phase: w.phase, heatTaxPct: w.heatTaxPct, isCurrent: w.isCurrent,
+  })));
   await add('runs', async () => {
     const snap = await loadSnapshotCache();
     if (!snap) return null;
