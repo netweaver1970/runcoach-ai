@@ -178,10 +178,22 @@ export async function analyzeRun(
       verdict  = String(o.verdict ?? '').trim();
       headline = String(o.headline ?? '').trim();
       full     = String(o.full ?? '').trim();
-    } catch { /* fall through to raw */ }
+    } catch { /* fall through to lenient extraction below */ }
   }
   if (!full) {
-    // Couldn't parse JSON — treat the whole response as the body.
+    // JSON.parse failed — almost always because the model put RAW newlines (or stray quotes) inside the
+    // markdown `full` string, which is invalid JSON. Recover the three fields by hand rather than dumping
+    // the whole JSON wrapper into the card. `full` is the LAST field, so take everything after `"full":"`.
+    const un = (s: string) => s.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\//g, '/').replace(/\\\\/g, '\\');
+    const vm = raw.match(/"verdict"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    const hm = raw.match(/"headline"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    const fm = raw.match(/"full"\s*:\s*"/);
+    if (vm) verdict = un(vm[1]).trim();
+    if (hm) headline = un(hm[1]).trim();
+    if (fm && fm.index != null) full = un(raw.slice(fm.index + fm[0].length).replace(/"\s*\}?\s*$/, '')).trim();
+  }
+  if (!full) {
+    // Still nothing → show the whole response rather than an empty card.
     full = raw.trim();
     headline = headline || full.split('\n').find(l => l.trim())?.replace(/[#*]/g, '').trim().slice(0, 90) || 'Run analysed';
     verdict = verdict || 'Reviewed';
