@@ -6,7 +6,7 @@ import { callLLM, callLLMTools, agenticSupported } from './llm';
 import { LabAnalyte } from './labs';
 import { LabStore } from './labsStore';
 
-const MAX_TOKENS = 1600;                 // raised from 700 — room for the multi-marker synthesis
+const MAX_TOKENS = 3000;                 // generous — multi-marker synthesis + tables without truncation
 const MAX_STEPS = 6;                     // tool round-trips before a forced final answer
 const f = (v: number) => Number(v.toPrecision(4));
 const latestOf = (a: LabAnalyte) => a.series[a.series.length - 1];
