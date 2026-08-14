@@ -396,7 +396,16 @@ function Chart({
     return { line1: formatDM(mon), line2: formatYY(mon) };
   };
 
-  const xAxisH = 34;
+  // Comparing two periods → dodge the bars side-by-side (slight overlap) so BOTH heights are visible
+  // instead of the current bar hiding the previous one. Also drives coloured x-labels + a 2nd date row.
+  const hasPrev  = !!(prevData && prevData.length);
+  const dodgeW   = hasPrev ? Math.max(3, barW * 0.72) : barW;   // sub-bar width when both periods are shown
+  const fmtRange = (pts: DataPoint[]) => {
+    if (!pts.length) return '';
+    const f = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return `${f(pts[0].fullDate)} – ${f(pts[pts.length - 1].fullDate)}`;
+  };
+  const xAxisH = hasPrev ? 50 : 34;
   // Font size: reduce by 1pt vs previous (was 8/11); dense daily view uses smaller
   const valueFontSize = showAllValues && data.length > 20 ? 7 : 10;
   const valueOffset   = showAllValues && data.length > 20 ? 11 : 15;
@@ -560,7 +569,7 @@ function Chart({
                   left: cxOf(i) - 16, width: 32,
                   alignItems: 'center',
                 }}>
-                  <Text style={ch.xLabel} numberOfLines={1}>{xl.line1}</Text>
+                  <Text style={[ch.xLabel, hasPrev && { color, fontWeight: '700' as const }]} numberOfLines={1}>{xl.line1}</Text>
                   <Text style={ch.xLabelYear} numberOfLines={1}>{xl.line2}</Text>
                 </View>
               );
@@ -569,15 +578,15 @@ function Chart({
         ) : (
           // ── BAR CHART (absolute mode) ───────────────────────────────────────
           <>
-            {/* Previous-period grey bars (behind current bars) */}
+            {/* Previous-period grey bars — LEFT-dodged so both heights read */}
             {prevData && prevData.map((d, i) => {
               const x    = i * (barW + barGap);
               const barH = Math.max(2, CHART_H - toY(d.value));
               return (
                 <View key={`prev-${i}`} style={{
                   position: 'absolute', left: x, top: CHART_H - barH,
-                  width: barW, height: barH,
-                  backgroundColor: '#bbb', borderRadius: 3, opacity: 0.45,
+                  width: dodgeW, height: barH,
+                  backgroundColor: '#9aa0a6', borderRadius: 3, opacity: 0.55,
                 }} />
               );
             })}
@@ -592,12 +601,13 @@ function Chart({
 
               return (
                 <View key={i}>
-                  {/* Bar — skip no-data days so the slot stays empty but the day keeps its axis position */}
+                  {/* Bar — RIGHT-dodged over the previous bar (slight overlap) so both heights read.
+                      When there's no previous period it fills the whole slot as before. */}
                   {!d.missing && (
                   <View style={{
-                    position: 'absolute', left: x, top: CHART_H - barH,
-                    width: barW, height: barH,
-                    backgroundColor: color, borderRadius: 3, opacity: 0.88,
+                    position: 'absolute', left: x + (barW - dodgeW), top: CHART_H - barH,
+                    width: dodgeW, height: barH,
+                    backgroundColor: color, borderRadius: 3, opacity: 0.9,
                   }} />
                   )}
 
@@ -628,6 +638,14 @@ function Chart({
               );
             })}
           </>
+        )}
+
+        {/* 2nd x-axis row: the PREVIOUS period's date range (grey), so the grey series is dated too. */}
+        {hasPrev && (
+          <View pointerEvents="none" style={{ position: 'absolute', top: CHART_H + 34, left: 0, width: plotW, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5 }}>
+            <View style={{ width: 12, height: 4, borderRadius: 2, backgroundColor: '#9aa0a6' }} />
+            <Text style={ch.prevRange} numberOfLines={1}>prev: {fmtRange(prevData!)}</Text>
+          </View>
         )}
 
         {/* Scrubber cursor — only the thin line + dot; the value is shown in the readout line above. */}
@@ -1153,6 +1171,7 @@ const makeCh = (c: Palette) => StyleSheet.create({
   yLabel:     { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
   xLabel:     { fontSize: 10, color: c.textSub, fontWeight: '600' },
   xLabelYear: { fontSize: 9,  color: c.textSub, fontWeight: '600' },
+  prevRange:  { fontSize: 10, color: '#9aa0a6', fontWeight: '700' },
   // Fixed readout line above the chart — replaces the floating bubble so nothing covers the bars.
   readout:     { flexDirection: 'row', alignItems: 'baseline', columnGap: 8, marginBottom: 6, minHeight: 18 },
   readoutDate: { fontSize: 11, color: c.textSub, fontWeight: '700' },
