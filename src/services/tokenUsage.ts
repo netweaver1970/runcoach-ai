@@ -33,22 +33,41 @@ const MAX_CALLS = 400;
 // USD per MILLION tokens. These are ESTIMATES for display only — provider prices change, and the app
 // cannot fetch them, so treat the cost figure as an indication and the console as authoritative.
 // Matched longest-prefix-first, so 'claude-haiku' wins over the 'claude' fallback.
-export const PRICES_AS_OF = '2026-01';
-const PRICING: { match: string; in: number; out: number }[] = [
-  { match: 'claude-opus',    in: 15,   out: 75 },
-  { match: 'claude-sonnet',  in: 3,    out: 15 },
-  { match: 'claude-haiku',   in: 1,    out: 5 },
-  { match: 'gpt-4o-mini',    in: 0.15, out: 0.6 },
-  { match: 'gpt-4o',         in: 2.5,  out: 10 },
-  { match: 'claude',         in: 3,    out: 15 },   // unknown Claude → Sonnet-ish
+export const PRICES_AS_OF = '2026-08';
+// USD per MILLION tokens. `in` = uncached input (cache-MISS); `out` = output. Optional per-model overrides:
+//   cacheIn        — explicit cache-HIT input price (else the generic input × 0.1 is used)
+//   cacheWriteMult — cache-write premium over `in` (Anthropic ~1.25; DeepSeek has none → 1)
+//   peak           — DeepSeek's peak-hours surcharge: EVERY price doubles during 01:00–04:00 & 06:00–10:00 UTC.
+// First MATCH in array order wins (m.includes), so list more-specific model prefixes FIRST.
+const PRICING: { match: string; in: number; out: number; cacheIn?: number; cacheWriteMult?: number; peak?: boolean }[] = [
+  { match: 'claude-opus',      in: 15,    out: 75 },
+  { match: 'claude-sonnet',    in: 3,     out: 15 },
+  { match: 'claude-haiku',     in: 1,     out: 5 },
+  { match: 'gpt-4o-mini',      in: 0.15,  out: 0.6 },
+  { match: 'gpt-4o',           in: 2.5,   out: 10 },
+  // DeepSeek-V4 (effective 2026-08-16). Off-peak base; peak doubles. Cache-hit input priced explicitly.
+  { match: 'deepseek-v4-pro',  in: 0.66,  out: 1.98, cacheIn: 0.022, cacheWriteMult: 1, peak: true },
+  { match: 'deepseek',         in: 0.22,  out: 0.66, cacheIn: 0.007, cacheWriteMult: 1, peak: true },  // Flash (default) — also matches -flash / -chat / -reasoner
+  { match: 'claude',           in: 3,     out: 15 },   // unknown Claude → Sonnet-ish
 ];
 
-/** Estimated USD for one call. Cache reads bill ~0.1x input, cache writes ~1.25x. */
+// DeepSeek peak window: 01:00–04:00 and 06:00–10:00 UTC (all other hours off-peak).
+function isPeakUtc(iso: string): boolean {
+  const h = new Date(iso).getUTCHours();
+  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+/** Estimated USD for one call. Cache reads use the model's cache-hit price (else ~0.1x input); cache
+ *  writes use `in` × cacheWriteMult (Anthropic ~1.25, DeepSeek 1). DeepSeek doubles during peak UTC hours. */
 export function costOf(u: CallUsage): number {
   const m = (u.model ?? '').toLowerCase();
   const p = PRICING.find(x => m.includes(x.match));
   if (!p) return 0;
-  return (u.input * p.in + u.cacheRead * p.in * 0.1 + u.cacheWrite * p.in * 1.25 + u.output * p.out) / 1_000_000;
+  const mult = p.peak && isPeakUtc(u.at) ? 2 : 1;
+  const inP = p.in * mult;
+  const readP  = (p.cacheIn ?? p.in * 0.1) * mult;
+  const writeP = p.in * (p.cacheWriteMult ?? 1.25) * mult;
+  return (u.input * inP + u.cacheRead * readP + u.cacheWrite * writeP + u.output * p.out * mult) / 1_000_000;
 }
 
 export const totalTokens = (u: CallUsage): number => u.input + u.cacheRead + u.cacheWrite + u.output;
