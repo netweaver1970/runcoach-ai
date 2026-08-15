@@ -87,6 +87,28 @@ export function hrvTrend(nightly: { date: string; rmssd: number }[]): HrvPoint[]
 
 // ── ACWR: acute (ATL) ÷ chronic (CTL) load ratio per day. The 0.8–1.3 band is the injury-risk sweet spot;
 // above ~1.5 is the danger zone. Straight from the CTL/ATL series. ──────────────────────────────────────
+// Intensity mix per WEEK over a window — easy/moderate/hard minutes, for the "distribution over time" chart.
+export interface ZoneWeek { weekStart: string; t: number; easyMin: number; modMin: number; hardMin: number; total: number; }
+export function zoneDistributionOverTime(runs: RunWorkout[], t0: number, t1: number): ZoneWeek[] {
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const mondayOf = (ms: number) => { const d = new Date(ms); const day = (d.getDay() + 6) % 7; d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - day); return d; };
+  const byWeek = new Map<string, { t: number; easy: number; mod: number; hard: number }>();
+  for (const r of runs ?? []) {
+    if (!r.zones) continue;
+    const ms = new Date(r.date).getTime();
+    if (ms < t0 || ms > t1) continue;
+    const mins = (r.workDuration ?? r.duration ?? 0) / 60; if (mins <= 0) continue;
+    const z = r.zones, sum = z.z1 + z.z2 + z.z3 + z.z4 + z.z5; if (sum <= 0) continue;
+    const mon = mondayOf(ms), key = iso(mon);
+    const e = byWeek.get(key) ?? { t: mon.getTime(), easy: 0, mod: 0, hard: 0 };
+    e.easy += ((z.z1 + z.z2) / sum) * mins; e.mod += (z.z3 / sum) * mins; e.hard += ((z.z4 + z.z5) / sum) * mins;
+    byWeek.set(key, e);
+  }
+  return [...byWeek.entries()]
+    .map(([weekStart, v]) => ({ weekStart, t: v.t, easyMin: Math.round(v.easy), modMin: Math.round(v.mod), hardMin: Math.round(v.hard), total: Math.round(v.easy + v.mod + v.hard) }))
+    .sort((a, b) => a.t - b.t);
+}
+
 export interface AcwrPoint { date: string; ratio: number; }
 export function acwrSeries(load: DailyLoad[]): AcwrPoint[] {
   return (load ?? [])

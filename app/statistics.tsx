@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator, LayoutChangeEvent, PanResponder,
 } from 'react-native';
+import { loadEvents } from '../src/services/timelineEvents';
 import { useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
@@ -10,14 +11,22 @@ import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
 } from '../src/services/powerCurve';
 import {
-  efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend,
-  EfPoint, ZoneSummary, AcwrPoint, DecouplePoint,
+  efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, zoneDistributionOverTime,
+  EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek,
 } from '../src/services/runStats';
 import type { PowerZones } from '../src/types';
 
 const CHART_H = 210;
 const Y_AXIS_W = 38;
 const CTL_BLUE = '#3B82F6';
+const EV_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981' };
+type Range = 'All' | '1Y' | '6M' | '3M' | '1M';
+const RANGES: Range[] = ['All', '1Y', '6M', '3M', '1M'];
+const RANGE_DAYS: Record<Range, number> = { All: 0, '1Y': 365, '6M': 182, '3M': 91, '1M': 31 };
+interface Ev { t: number; label: string; category: string }
+const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
+const dLabel = (t: number, yearly: boolean) =>
+  new Date(t).toLocaleDateString('en-GB', yearly ? { month: 'short', year: '2-digit' } : { day: 'numeric', month: 'short' });
 
 // ─── Power-Duration chart ───────────────────────────────────────────────────────
 function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz?: PowerZones }) {
@@ -153,6 +162,142 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
   );
 }
 
+// ─── Time-windowed series chart: cursor + events + date x-axis + optional band/refs/trend ─────────
+const TX_H = 20;
+interface TPt { t: number; v: number; color?: string }
+function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW }: {
+  pts: TPt[]; t0: number; t1: number; color: string;
+  band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
+  trend?: boolean; events: Ev[]; showEvents: boolean; yfmt: (v: number) => string; innerW: number;
+}) {
+  const { c } = useTheme();
+  const ch = useThemedStyles(makeCh);
+  const plotW = Math.max(1, innerW - TS_YW);
+  const span = Math.max(1, t1 - t0);
+  const [cur, setCur] = useState<number | null>(null);
+  const mapRef = useRef<(lx: number) => number>(() => t0);
+  mapRef.current = (lx) => t0 + (Math.max(0, Math.min(plotW, lx - TS_YW)) / plotW) * span;
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+    onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+    onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+  })).current;
+
+  const win = pts.filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
+  if (innerW <= 0) return <View style={{ height: TS_H + TX_H + 20 }} />;
+  if (win.length < 2) return <View style={{ height: TS_H + TX_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint, fontSize: 12 }}>Fewer than 2 points in this range.</Text></View>;
+
+  const vals = win.map(p => p.v);
+  const lo = Math.min(...vals, band ? band[0] : Infinity, ...(refs?.map(r => r.y) ?? []));
+  const hi = Math.max(...vals, band ? band[1] : -Infinity, ...(refs?.map(r => r.y) ?? []));
+  const pad = (hi - lo) * 0.15 || 1, yLo = lo - pad, yHi = hi + pad;
+  const x = (t: number) => ((t - t0) / span) * plotW;
+  const toY = (v: number) => TS_H * (1 - (v - yLo) / (yHi - yLo));
+  const yTicks = [yLo + (yHi - yLo) * 0.15, (yLo + yHi) / 2, yHi - (yHi - yLo) * 0.15];
+  const yearly = span > 2.2 * 365 * 86400000;
+  const evIn = showEvents ? events.filter(e => e.t >= t0 && e.t <= t1) : [];
+  const nearest = cur == null ? win[win.length - 1] : win.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win[0]);
+  const nearEv = cur != null ? evIn.map(e => ({ e, dx: Math.abs(x(e.t) - x(cur)) })).sort((a, b) => a.dx - b.dx)[0] : null;
+  const readEv = nearEv && nearEv.dx < 12 ? nearEv.e : null;
+  let trendEl: React.ReactNode = null;
+  if (trend && win.length >= 3) {
+    const n = win.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sx += i; sy += win[i].v; sxx += i * i; sxy += i * win[i].v; }
+    const den = n * sxx - sx * sx;
+    if (den) { const m = (n * sxy - sx * sy) / den, b0 = (sy - m * sx) / n;
+      const x1 = x(win[0].t), y1 = toY(b0), x2 = x(win[n - 1].t), y2 = toY(b0 + m * (n - 1));
+      const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
+      trendEl = <View pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c.textSub, opacity: 0.7, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
+    }
+  }
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, marginBottom: 2 }}>
+        <Text style={{ color: c.textSub, fontSize: 11.5, fontWeight: '700' }}>{dLabel(nearest.t, yearly)}</Text>
+        {readEv ? <Text style={{ color: EV_COLOR[readEv.category] ?? c.textSub, fontSize: 11.5, fontWeight: '700' }} numberOfLines={1}>{readEv.label}</Text>
+                : <Text style={{ color, fontSize: 13, fontWeight: '800' }}>{yfmt(nearest.v)}</Text>}
+      </View>
+      <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
+        <View style={{ width: TS_YW, height: TS_H }}>
+          {yTicks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(t) - 7, right: 4 }]}>{yfmt(t)}</Text>)}
+        </View>
+        <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
+          {yTicks.map((t, i) => <View key={`g${i}`} style={{ position: 'absolute', top: toY(t), left: 0, right: 0, height: 1, backgroundColor: c.gridline }} />)}
+          {band && <View style={{ position: 'absolute', left: 0, right: 0, top: toY(band[1]), height: Math.max(1, toY(band[0]) - toY(band[1])), backgroundColor: '#22c55e18' }} />}
+          {refs?.map((r, i) => <View key={`r${i}`} style={{ position: 'absolute', left: 0, right: 0, top: toY(r.y), height: 1, backgroundColor: r.color, opacity: r.dash ? 0.5 : 0.9 }} />)}
+          {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
+          {win.map((p, i) => { if (i === 0) return null; const x1 = x(win[i - 1].t), y1 = toY(win[i - 1].v), x2 = x(p.t), y2 = toY(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s${i}`} style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
+          {win.map((p, i) => <View key={`d${i}`} style={{ position: 'absolute', left: x(p.t) - 2.5, top: toY(p.v) - 2.5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.color ?? color, borderWidth: 1, borderColor: c.surface }} />)}
+          {trendEl}
+          <View pointerEvents="none" style={{ position: 'absolute', left: x(nearest.t), top: 0, width: 1, height: TS_H, backgroundColor: color, opacity: 0.5 }} />
+          <View pointerEvents="none" style={{ position: 'absolute', left: x(nearest.t) - 4, top: toY(nearest.v) - 4, width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1.5, borderColor: c.surface }} />
+          {[0, 1, 2, 3].map(i => { const t = t0 + (span * i) / 3; return <Text key={`x${i}`} style={[ch.xLabel, { position: 'absolute', top: TS_H + 4, width: 64, textAlign: i === 0 ? 'left' : i === 3 ? 'right' : 'center', left: i === 0 ? 0 : i === 3 ? plotW - 64 : x(t) - 32 }]} numberOfLines={1}>{dLabel(t, yearly)}</Text>; })}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Stacked intensity-mix over time: easy/moderate/hard SHARE per week ────────────────────────────
+function StackedZoneChart({ weeks, t0, t1, events, showEvents, innerW }: {
+  weeks: ZoneWeek[]; t0: number; t1: number; events: Ev[]; showEvents: boolean; innerW: number;
+}) {
+  const { c } = useTheme();
+  const ch = useThemedStyles(makeCh);
+  const plotW = Math.max(1, innerW - TS_YW);
+  const span = Math.max(1, t1 - t0);
+  const [cur, setCur] = useState<number | null>(null);
+  const mapRef = useRef<(lx: number) => number>(() => t0);
+  mapRef.current = (lx) => t0 + (Math.max(0, Math.min(plotW, lx - TS_YW)) / plotW) * span;
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+    onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+    onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+  })).current;
+
+  const win = weeks.filter(w => w.total > 0 && w.t >= t0 - 4 * 86400000 && w.t <= t1);
+  if (innerW <= 0) return <View style={{ height: TS_H + TX_H + 20 }} />;
+  if (win.length < 1) return <View style={{ height: TS_H + TX_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint, fontSize: 12 }}>No zone data in this range.</Text></View>;
+  const yearly = span > 2.2 * 365 * 86400000;
+  const x = (t: number) => ((t - t0) / span) * plotW;
+  const barW = Math.max(3, Math.min(28, (plotW / Math.max(1, win.length)) * 0.7));
+  const evIn = showEvents ? events.filter(e => e.t >= t0 && e.t <= t1) : [];
+  const nearest = cur == null ? win[win.length - 1] : win.reduce((b, w) => Math.abs(w.t - cur) < Math.abs(b.t - cur) ? w : b, win[0]);
+  const pctOf = (w: ZoneWeek) => ({ easy: Math.round(w.easyMin / w.total * 100), mod: Math.round(w.modMin / w.total * 100), hard: Math.round(w.hardMin / w.total * 100) });
+  const np = pctOf(nearest);
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, marginBottom: 2 }}>
+        <Text style={{ color: c.textSub, fontSize: 11.5, fontWeight: '700' }}>wk {dLabel(nearest.t, yearly)}</Text>
+        <Text style={{ fontSize: 12, fontWeight: '800' }}><Text style={{ color: '#22c55e' }}>{np.easy}% </Text><Text style={{ color: '#f59e0b' }}>{np.mod}% </Text><Text style={{ color: '#ef4444' }}>{np.hard}%</Text><Text style={{ color: c.textFaint, fontWeight: '600' }}> · {nearest.total}m</Text></Text>
+      </View>
+      <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
+        <View style={{ width: TS_YW, height: TS_H }}>
+          {[0, 50, 100].map((p, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: TS_H * (1 - p / 100) - 7, right: 4 }]}>{p}%</Text>)}
+        </View>
+        <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
+          {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
+          {win.map((w, i) => {
+            const p = pctOf(w); const left = x(w.t) - barW / 2;
+            const hH = TS_H * p.hard / 100, mH = TS_H * p.mod / 100, eH = TS_H - hH - mH;
+            return (
+              <View key={i} style={{ position: 'absolute', left, top: 0, width: barW, height: TS_H }}>
+                <View style={{ height: hH, backgroundColor: '#ef4444', opacity: 0.9 }} />
+                <View style={{ height: mH, backgroundColor: '#f59e0b', opacity: 0.9 }} />
+                <View style={{ height: eH, backgroundColor: '#22c55e', opacity: 0.9 }} />
+              </View>
+            );
+          })}
+          <View pointerEvents="none" style={{ position: 'absolute', left: x(nearest.t), top: 0, width: 1, height: TS_H, backgroundColor: c.text, opacity: 0.35 }} />
+          {[0, 1, 2, 3].map(i => { const t = t0 + (span * i) / 3; return <Text key={`x${i}`} style={[ch.xLabel, { position: 'absolute', top: TS_H + 4, width: 64, textAlign: i === 0 ? 'left' : i === 3 ? 'right' : 'center', left: i === 0 ? 0 : i === 3 ? plotW - 64 : x(t) - 32 }]} numberOfLines={1}>{dLabel(t, yearly)}</Text>; })}
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function ZoneBar({ z }: { z: ZoneSummary }) {
   const s = useThemedStyles(makeS);
   const segs = [
@@ -191,6 +336,11 @@ export default function StatisticsScreen() {
   const [zones, setZones] = useState<ZoneSummary | null>(null);
   const [acwr, setAcwr] = useState<AcwrPoint[]>([]);
   const [dc, setDc] = useState<DecouplePoint[] | null>(null);
+  const [allRuns, setAllRuns] = useState<any[]>([]);
+  const [events, setEvents] = useState<Ev[]>([]);
+  const [range, setRange] = useState<Range>('1Y');
+  const [offset, setOffset] = useState(0);
+  const [showEvents, setShowEvents] = useState(false);
 
   const build = useCallback(async () => {
     setLoading(true); setError(null);
@@ -198,6 +348,7 @@ export default function StatisticsScreen() {
       const snap = await loadSnapshotCache();
       getPowerZones().then(setPz).catch(() => {});
       const runs = (snap as any)?.runs ?? [];
+      setAllRuns(runs);
       if (!runs.length) { setError('No runs found. Record some runs with power, then check back.'); setLoading(false); return; }
       // Cheap snapshot-derived series first (instant).
       setEf(efficiencyTrend(runs));
@@ -215,6 +366,22 @@ export default function StatisticsScreen() {
   }, []);
 
   useEffect(() => { build(); }, [build]);
+  useEffect(() => { loadEvents().then(list => setEvents(
+    list.filter((e: any) => e.type === 'event' && (e.category === 'medical' || e.category === 'life'))
+      .map((e: any) => ({ t: tOf(e.date), label: e.title || e.category, category: e.category })))).catch(() => {}); }, []);
+  useEffect(() => { setOffset(0); }, [range]);
+
+  // Shared time window (all charts move together), anchored to the newest data point across the series.
+  const [gMin, gMax] = useMemo(() => {
+    const ts = [...ef.map(p => tOf(p.date)), ...acwr.map(p => tOf(p.date)), ...(dc ?? []).map(p => tOf(p.date))];
+    return ts.length ? [Math.min(...ts), Math.max(...ts)] : [Date.now() - 365 * 86400000, Date.now()];
+  }, [ef, acwr, dc]);
+  const days = RANGE_DAYS[range];
+  const spanMs = days ? days * 86400000 : Math.max(1, gMax - gMin);
+  const t1 = days ? gMax - offset * spanMs : gMax;
+  const t0 = days ? t1 - spanMs : gMin;
+  const zoneWeeks = useMemo(() => zoneDistributionOverTime(allRuns, 0, gMax + 86400000), [allRuns, gMax]);
+  const monthYear = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 
   const onLayout = (e: LayoutChangeEvent) => {
     const w = e.nativeEvent.layout.width - 24;   // minus card padding
@@ -232,6 +399,20 @@ export default function StatisticsScreen() {
         <Text style={s.title}>Statistics</Text>
         <View style={{ width: 44 }} />
       </View>
+
+      {/* Shared time-window controls — every chart below moves together */}
+      <View style={s.ctrlRow}>
+        {RANGES.map(r => <TouchableOpacity key={r} onPress={() => setRange(r)} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>)}
+        <View style={{ flex: 1 }} />
+        <TouchableOpacity onPress={() => setShowEvents(v => !v)} style={[s.tab, !showEvents && { opacity: 0.5 }]}><Text style={s.tabTxt}>{showEvents ? '👁' : '🚫'}</Text></TouchableOpacity>
+      </View>
+      {days > 0 && (
+        <View style={s.navRow}>
+          <TouchableOpacity style={s.navBtn} onPress={() => setOffset(o => o + 1)}><Text style={s.navTxt}>◀</Text></TouchableOpacity>
+          <Text style={s.navLabel}>{monthYear(t0)} – {monthYear(t1)}</Text>
+          <TouchableOpacity style={[s.navBtn, offset === 0 && { opacity: 0.4 }]} disabled={offset === 0} onPress={() => setOffset(o => Math.max(0, o - 1))}><Text style={s.navTxt}>▶</Text></TouchableOpacity>
+        </View>
+      )}
 
       <ScrollView contentContainerStyle={s.scroll}>
         <View style={s.card} onLayout={onLayout}>
@@ -291,12 +472,8 @@ export default function StatisticsScreen() {
           <View style={s.card}>
             <Text style={s.cardTitle}>Efficiency Factor</Text>
             <Text style={s.cardSub}>Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.</Text>
-            <TSChart
-              innerW={innerW} vals={ef.map(p => p.ef)}
-              colors={ef.map(p => p.aerobic ? '#22c55e' : '#cbd5e1')}
-              dotAt={(i) => ef[i].aerobic}
-              yfmt={(v) => v.toFixed(2)} trend
-            />
+            <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
+              pts={ef.map(p => ({ t: tOf(p.date), v: p.ef, color: p.aerobic ? '#22c55e' : '#cbd5e1' }))} />
             <Text style={s.foot}>
               Grey line = trend. Green = steady aerobic runs. Latest {ef[ef.length - 1].ef.toFixed(2)}
               {ef.filter(p => p.aerobic).length >= 2 ? ((): string => {
@@ -312,7 +489,8 @@ export default function StatisticsScreen() {
           <View style={s.card}>
             <Text style={s.cardTitle}>Running Economy (EC)</Text>
             <Text style={s.cardSub}>Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy. Rising = more speed per watt.</Text>
-            <TSChart innerW={innerW} vals={p.map(x => x.ec)} colors={p.map(x => x.aerobic ? '#22c55e' : '#cbd5e1')} dotAt={(i) => p[i].aerobic} yfmt={(v) => v.toFixed(3)} trend />
+            <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
+              pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
             <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).</Text>
           </View>
         ); })()}
@@ -322,7 +500,8 @@ export default function StatisticsScreen() {
           <View style={s.card}>
             <Text style={s.cardTitle}>Speed Efficiency (SE)</Text>
             <Text style={s.cardSub}>Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).</Text>
-            <TSChart innerW={innerW} vals={p.map(x => x.se)} colors={p.map(x => x.aerobic ? '#22c55e' : '#cbd5e1')} dotAt={(i) => p[i].aerobic} yfmt={(v) => v.toFixed(2)} trend />
+            <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
+              pts={p.map(x => ({ t: tOf(x.date), v: x.se, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
             <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).</Text>
           </View>
         ); })()}
@@ -341,17 +520,26 @@ export default function StatisticsScreen() {
           </View>
         )}
 
+        {/* ── Intensity mix over time (workload distribution) ── */}
+        {zoneWeeks.length >= 1 && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Intensity Mix Over Time</Text>
+            <Text style={s.cardSub}>Easy / moderate / hard share of each week's running. A mostly-green base with a little red = well polarised.</Text>
+            <StackedZoneChart weeks={zoneWeeks} t0={t0} t1={t1} events={events} showEvents={showEvents} innerW={innerW} />
+            <View style={s.zone3}>
+              <Text style={s.zone3Txt}>🟢 Easy</Text><Text style={s.zone3Txt}>🟠 Moderate</Text><Text style={s.zone3Txt}>🔴 Hard</Text>
+            </View>
+          </View>
+        )}
+
         {/* ── ACWR ── */}
         {acwr.length >= 3 && (
           <View style={s.card}>
             <Text style={s.cardTitle}>Load Ratio (ACWR)</Text>
             <Text style={s.cardSub}>Acute ÷ chronic load. The 0.8–1.3 band is the injury-risk sweet spot.</Text>
-            <TSChart
-              innerW={innerW} vals={acwr.map(p => p.ratio)}
-              band={[0.8, 1.3]}
-              refs={[{ y: 1.5, color: '#ef4444', dash: true }]}
-              yfmt={(v) => v.toFixed(1)}
-            />
+            <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
+              band={[0.8, 1.3]} refs={[{ y: 1.5, color: '#ef4444', dash: true }]} yfmt={(v) => v.toFixed(1)}
+              pts={acwr.map(p => ({ t: tOf(p.date), v: p.ratio }))} />
             <Text style={s.foot}>
               Latest {acwr[acwr.length - 1].ratio.toFixed(2)}. Green band = sweet spot; red dashed = 1.5 (spike-risk).
             </Text>
@@ -366,7 +554,9 @@ export default function StatisticsScreen() {
             <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…</Text></View>
           ) : dc.length >= 2 ? (
             <>
-              <TSChart innerW={innerW} vals={dc.map(p => p.pct)} refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} dotAt={() => true} yfmt={(v) => `${Math.round(v)}%`} />
+              <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
+                refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} yfmt={(v) => `${Math.round(v)}%`}
+                pts={dc.map(p => ({ t: tOf(p.date), v: p.pct }))} />
               <Text style={s.foot}>
                 One point per steady run ≥30 min. Green line = 5% threshold. Latest {dc[dc.length - 1].pct.toFixed(1)}%
                 {dc[dc.length - 1].pct < 5 ? ' — well-coupled aerobic base.' : ' — some drift; more Z2 volume helps.'}
@@ -393,6 +583,15 @@ const makeS = (c: Palette) => StyleSheet.create({
   back: { color: c.accent, fontSize: 16, fontWeight: '600', width: 60 },
   title: { fontSize: 17, fontWeight: '700', color: c.text },
   scroll: { padding: 12, paddingBottom: 40 },
+  ctrlRow:  { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingBottom: 6 },
+  tab:      { paddingVertical: 5, paddingHorizontal: 11, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
+  tabOn:    { backgroundColor: c.accent, borderColor: c.accent },
+  tabTxt:   { color: c.textSub, fontSize: 12.5, fontWeight: '700' },
+  tabTxtOn: { color: c.onAccent },
+  navRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingBottom: 8 },
+  navBtn:   { paddingVertical: 4, paddingHorizontal: 16, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
+  navTxt:   { color: c.text, fontSize: 14, fontWeight: '800' },
+  navLabel: { color: c.textSub, fontSize: 12.5, fontWeight: '600' },
   card: { backgroundColor: c.surface, borderRadius: 16, padding: 12, marginBottom: 12 },
   zoneBar: { flexDirection: 'row', height: 26, borderRadius: 6, overflow: 'hidden', marginTop: 12 },
   zoneBarTxt: { fontSize: 10, color: '#fff', fontWeight: '700' },
