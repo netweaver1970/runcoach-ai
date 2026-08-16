@@ -91,21 +91,36 @@ function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz
           }} />
         )}
         {pts.map((_, i) => i === 0 ? null : seg(i, CTL_BLUE)).filter(Boolean)}
-        {/* anchor dots + labels */}
-        {pts.filter(p => PDC_ANCHORS.has(p.sec)).map((p) => (
-          <View key={`a-${p.sec}`}>
-            <View style={{
-              position: 'absolute', left: lx(p.sec) - 4, top: toY(p.watts) - 4,
-              width: 8, height: 8, borderRadius: 4, backgroundColor: CTL_BLUE, borderWidth: 1.5, borderColor: '#fff',
-            }} />
-            <Text style={[ch.anchor, { position: 'absolute', left: Math.min(plotW - 46, Math.max(0, lx(p.sec) - 16)), top: toY(p.watts) - 24 }]}>
-              {p.watts}W
-            </Text>
-          </View>
-        ))}
+        {/* Anchor: a drop-line to the axis, the watts, and the date read vertically alongside the line —
+            this replaces the separate reference table below the chart. */}
+        {pts.filter(p => PDC_ANCHORS.has(p.sec)).map((p) => {
+          const ax = lx(p.sec), ay = toY(p.watts);
+          // The topmost anchor's label used to be drawn 24px ABOVE the point, which for the sprint best
+          // lands outside the plot and collides with the card title — flip it below when there's no room.
+          const above = ay >= 26;
+          return (
+            <View key={`a-${p.sec}`}>
+              <View style={{ position: 'absolute', left: ax, top: ay, width: 1, height: Math.max(0, CHART_H - ay), backgroundColor: c.gridline }} />
+              <View style={{
+                position: 'absolute', left: ax - 4, top: ay - 4,
+                width: 8, height: 8, borderRadius: 4, backgroundColor: CTL_BLUE, borderWidth: 1.5, borderColor: '#fff',
+              }} />
+              <Text style={[ch.anchor, { position: 'absolute', left: Math.min(plotW - 46, Math.max(0, ax - 16)), top: above ? ay - 22 : ay + 7 }]}>
+                {p.watts}W
+              </Text>
+              {/* date, rotated to run up the drop-line so six of them fit without colliding; the rightmost
+                  anchor flips to the left of its line so it doesn't overflow the plot */}
+              <Text style={{
+                position: 'absolute', left: ax > plotW - 20 ? ax - 33 : ax - 17, top: CHART_H - 40,
+                width: 50, height: 12,
+                fontSize: 9, color: c.textFaint, textAlign: 'left', transform: [{ rotate: '-90deg' }],
+              }} numberOfLines={1}>{p.date.slice(5)}</Text>
+            </View>
+          );
+        })}
         {/* x labels */}
         {xTicks.map((s, i) => (
-          <Text key={i} style={[ch.xLabel, { position: 'absolute', top: CHART_H + 4, left: Math.min(plotW - 30, Math.max(0, lx(s) - 15)), width: 30, textAlign: 'center' }]}>
+          <Text key={i} style={[ch.xLabel, { position: 'absolute', top: CHART_H + 4, left: Math.min(plotW - 40, Math.max(0, lx(s) - 20)), width: 40, textAlign: 'center' }]} numberOfLines={1}>
             {fmtDur(s)}
           </Text>
         ))}
@@ -489,7 +504,6 @@ export default function StatisticsScreen() {
     if (Math.abs(w - innerW) > 1) setInnerW(w);
   };
 
-  const anchorFor = (sec: number) => curve?.points.find(p => p.sec === sec);
 
   return (
     <SafeAreaView style={s.safe}>
@@ -539,26 +553,14 @@ export default function StatisticsScreen() {
             <>
               <PdcChart curve={curve} innerW={innerW} pz={pz} />
 
-              {/* Reference points — a compact table beats five big tiles for five numbers. */}
-              <View style={s.tbl}>
-                {([[5, 'Sprint'], [60, '1-min'], [300, 'VO₂ (5-min)'], [1200, 'Threshold (20-min)'], [3600, 'Aerobic (60-min)']] as const).map(([sec, lbl]) => {
-                  const a = anchorFor(sec);
-                  return (
-                    <View key={sec} style={s.tblRow}>
-                      <Text style={s.tblLbl} numberOfLines={1}>{lbl}</Text>
-                      <Text style={s.tblVal}>{a ? `${a.watts} W` : '—'}</Text>
-                      <Text style={s.tblDate}>{a ? a.date.slice(5) : ''}</Text>
-                    </View>
-                  );
-                })}
-                {curve.cp != null && (
-                  <View style={[s.tblRow, s.tblRowCp]}>
-                    <Text style={[s.tblLbl, s.tblCpTxt]} numberOfLines={1}>Critical Power</Text>
-                    <Text style={[s.tblVal, s.tblCpTxt]}>{curve.cp} W</Text>
-                    <Text style={s.tblDate}>{curve.wPrime ? `W′ ${(curve.wPrime / 1000).toFixed(1)}kJ` : ''}</Text>
-                  </View>
-                )}
-              </View>
+              {/* Per-duration bests + their dates now live ON the chart (drop-lines), so only the derived
+                  Critical Power needs a line of its own. */}
+              {curve.cp != null && (
+                <Text style={s.cpLine}>
+                  Critical Power <Text style={s.cpLineVal}>{curve.cp} W</Text>
+                  {curve.wPrime ? `   ·   W′ ${(curve.wPrime / 1000).toFixed(1)} kJ` : ''}
+                </Text>
+              )}
 
               <TouchableOpacity style={s.rebuild} onPress={rebuildDeep}>
                 <Text style={s.rebuildText}>↻ Rebuild + load full history</Text>
@@ -702,14 +704,9 @@ const makeS = (c: Palette) => StyleSheet.create({
   center: { height: CHART_H, alignItems: 'center', justifyContent: 'center' },
   loadingText: { color: c.textSub, marginTop: 10, fontSize: 13 },
   errorText: { color: c.textSub, fontSize: 13, paddingVertical: 20, textAlign: 'center' },
-  // Compact reference table (replaced the five large tiles + the separate Critical-Power box).
-  tbl:      { marginTop: 10, backgroundColor: c.bg, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 2 },
-  tblRow:   { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
-  tblRowCp: { borderBottomWidth: 0 },
-  tblLbl:   { flex: 1, fontSize: 12, color: c.textSub, fontWeight: '600' },
-  tblVal:   { width: 62, textAlign: 'right', fontSize: 13, fontWeight: '800', color: c.text },
-  tblDate:  { width: 62, textAlign: 'right', fontSize: 10, color: c.textFaint },
-  tblCpTxt: { color: CTL_BLUE },
+  // Derived Critical Power — the per-duration bests are drawn on the chart itself now.
+  cpLine:    { marginTop: 10, fontSize: 12, color: c.textSub, fontWeight: '600' },
+  cpLineVal: { fontSize: 14, fontWeight: '800', color: CTL_BLUE },
   rebuild: { marginTop: 12, alignSelf: 'flex-start' },
   rebuildText: { fontSize: 12, color: c.accent, fontWeight: '600' },
 });
