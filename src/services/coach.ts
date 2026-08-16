@@ -203,8 +203,11 @@ export async function shrinkWantsQualityToday(snap: CoachSnapshot): Promise<bool
   if (await raceActive()) { const rs = await raceSlotForToday(snap); return !!rs && rs.intensity !== 'rest'; }
   if (!(await getShrinkToFit())) return false;
   if ((snap.readiness ?? 0) < 60) return false;
-  const tmpl = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
+  const md = await readKnowledgeContent('running-schedule').catch(() => '');
+  const tmpl = parseWeeklyTemplate(md), cm = parseWeeklyCommitments(md);
   const dow = new Date(snap.date + 'T00:00:00').getDay();
+  // Never force a quality session onto a standing-commitment day (or the day after a hard one).
+  if (cm[dow] || cm[(dow + 6) % 7]?.hard) return false;
   return ['intervals', 'tempo', 'long'].includes(tmpl[dow] as string);
 }
 
@@ -715,6 +718,33 @@ export function parseWeeklyTemplate(text: string): Record<number, WeekKind> {
   return out;
 }
 
+// ── Recurring NON-RUNNING commitments (dance class, football, gym…) ──────────────────────────────────
+// A standing weekly commitment is training load the planner has to schedule AROUND, not just react to
+// after the fact. Written on the same running-schedule line, e.g. "- Thu: rest + dancing (evening)".
+// `hard` marks the impact-heavy ones: they also protect the FOLLOWING day, because that is when the legs
+// pay for them. Running sessions listed on the same line still parse normally — this is additive.
+export interface WeeklyCommitment { label: string; hard: boolean }
+const COMMITMENTS: { re: RegExp; label: string; hard: boolean }[] = [
+  { re: /\bdanc(e|ing)\b/i,                     label: 'dancing',    hard: true  },
+  { re: /\bfootball|soccer|basketbal|tennis|padel|squash\b/i, label: 'team sport', hard: true },
+  { re: /\bclimb(ing)?|bouldering\b/i,          label: 'climbing',   hard: true  },
+  { re: /\bgym|strength|weights|crossfit\b/i,   label: 'gym',        hard: true  },
+  { re: /\bswim(ming)?|yoga|pilates|cycl(e|ing)|spinning\b/i, label: 'cross-training', hard: false },
+];
+/** weekday → recurring commitment, parsed from the same schedule file the template comes from. */
+export function parseWeeklyCommitments(text: string): Record<number, WeeklyCommitment> {
+  const out: Record<number, WeeklyCommitment> = {};
+  for (const line of (text ?? '').split('\n')) {
+    const m = line.match(/\b(mon|tue|wed|thu|fri|sat|sun)\b/i);
+    if (!m) continue;
+    const dow = DOW_IX[m[1].toLowerCase()];
+    if (out[dow]) continue;                       // first mention per weekday wins, like the template
+    const hit = COMMITMENTS.find(c => c.re.test(line));
+    if (hit) out[dow] = { label: hit.label, hard: hit.hard };
+  }
+  return out;
+}
+
 // ── SHAPE ENVELOPE — who decides what ─────────────────────────────────────────
 // Three layers, deliberately separated:
 //   1. YOU pick the session TYPE per weekday (running-schedule.md → parseWeeklyTemplate).
@@ -824,7 +854,10 @@ export async function getWeekPlan(
   // quality. The daily plan refines each morning by that day's actual recovery; here we lay out the
   // intended easy-run days so the forecast doesn't either slam intervals or show an empty week.
   const reentry = (snap.tof7d ?? 0) < 30;
-  const template = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
+  const scheduleMd = await readKnowledgeContent('running-schedule').catch(() => '');
+  const template = parseWeeklyTemplate(scheduleMd);
+  // Standing weekly commitments (dance night, team sport…) — planned around, not just absorbed afterwards.
+  const commitments = parseWeeklyCommitments(scheduleMd);
   const fxBy = new Map((forecast ?? []).map(f => [f.date, f]));
   const p = (n: number) => String(n).padStart(2, '0');
 
@@ -916,7 +949,13 @@ export async function getWeekPlan(
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
 
     const kind = template[d.getDay()];
-    const spaced = (i - lastQ) >= 2; // ≥1 non-quality day since the last quality session
+    // A recurring commitment TODAY is itself a load, and a hard one (dance, team sport) also compromises
+    // TOMORROW — that's when the legs pay for it. Both cases block quality so the week's hard days don't
+    // stack against it; the session is DEFERRED rather than dropped, so the shuffle re-places it later.
+    const commitToday = commitments[d.getDay()];
+    const commitYday  = commitments[(d.getDay() + 6) % 7];
+    const commitBlock = !!commitToday || !!(commitYday?.hard);
+    const spaced = (i - lastQ) >= 2 && !commitBlock; // ≥1 non-quality day since the last quality session
     let intensity: CoachIntensity = 'rest'; let base = 0; let placed: WeekKind = 'rest';
     let shifted = false, deferredHere = false, banked = false, shrunk = false, forcePlaced = false;
     if (reentry) {
@@ -976,6 +1015,12 @@ export async function getWeekPlan(
       : intensity === 'moderate' ? `${runMinutes}min ${isLong ? 'long-ish aerobic' : 'tempo'}`
       :                            `${runMinutes}min easy @ Z2`;
     const note =
+      // Commitment days explain themselves first — otherwise "deferred past the cap" reads as a volume
+      // problem when the real reason is the standing commitment on the calendar.
+      commitToday && intensity === 'rest'  ? `Rest — ${commitToday.label} tonight` :
+      commitToday                          ? `Easy — ${commitToday.label} tonight, keep the legs fresh` :
+      commitYday?.hard && intensity === 'rest' ? `Recovery — day after ${commitYday.label}` :
+      commitYday?.hard                     ? `Easy recovery — day after ${commitYday.label}` :
       reentry && intensity === 'easy' ? 'Easy Z2 — rebuilding after the break (recovery-gated)' :
       reentry                         ? 'Recovery day — rebuilding' :
       shifted                         ? `${qName(placed)} — rescheduled here as the cap freed up` :
@@ -1061,8 +1106,15 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const wkName      = weekdayName(snap.date);
   const reentry     = (snap.tof7d ?? 0) < 30;
   const shrinkOn    = await getShrinkToFit();
-  const template    = parseWeeklyTemplate(await readKnowledgeContent('running-schedule').catch(() => ''));
+  const schedMd     = await readKnowledgeContent('running-schedule').catch(() => '');
+  const template    = parseWeeklyTemplate(schedMd);
+  const commits     = parseWeeklyCommitments(schedMd);
   const dow         = new Date(snap.date + 'T00:00:00').getDay();
+  // Standing commitment today (dance night) or a hard one yesterday → today is NOT a quality day, whatever
+  // the template says. Mirrors getWeekPlan so the daily card and the 7-day plan can't disagree.
+  const commitToday = commits[dow];
+  const commitYday  = commits[(dow + 6) % 7];
+  const commitBlock = !!commitToday || !!(commitYday?.hard);
   const todaySlot   = reentry ? null : await loadTodaysWeekPlanSlot(snap.date);
   const todayDone   = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
   // Shrink-to-fit FORCE-PLACES today's scheduled quality (short) even over the cap — driven by the
@@ -1072,6 +1124,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // if one WAS found, else the shrink default.
   const honourSlot  = shrinkOn
     && ['intervals', 'tempo', 'long'].includes(template[dow] as string)
+    && !commitBlock                      // never force quality onto a dance night / the day after one
     && (snap.readiness ?? 60) >= 60
     && todayDone < 8;
   // RACE MODE: today's session comes from the LLM race week (overrides the leisure template + cap).
