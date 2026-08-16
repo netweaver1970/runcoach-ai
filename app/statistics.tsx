@@ -170,18 +170,26 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
   );
 }
 
-// ─── Collapsible per-chart note ───────────────────────────────────────────────────────────────────
-// The explanatory footnotes are useful the first few times and clutter afterwards, so each one folds
-// away behind a single tappable line and the charts stay dense.
-function Note({ children }: { children: React.ReactNode }) {
+// ─── Card header with a collapsible note ──────────────────────────────────────────────────────────
+// Both the "what is this chart" blurb and the per-chart footnote are useful the first few times and
+// clutter afterwards, so they live together behind one ▸ Notes toggle sitting on the TITLE row — the
+// card then costs a single line of chrome and the charts stay dense.
+function CardHead({ title, children }: { title: string; children?: React.ReactNode }) {
   const { c } = useTheme();
+  const s = useThemedStyles(makeS);
   const [open, setOpen] = useState(false);
+  const has = React.Children.toArray(children).length > 0;
   return (
-    <View style={{ marginTop: 6 }}>
-      <TouchableOpacity onPress={() => setOpen(o => !o)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-        <Text style={{ color: c.textFaint, fontSize: 11.5, fontWeight: '700' }}>{open ? '▾ Notes' : '▸ Notes'}</Text>
-      </TouchableOpacity>
-      {open && <Text style={{ color: c.textSub, fontSize: 11.5, lineHeight: 16, marginTop: 4 }}>{children}</Text>}
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={[s.cardTitle, { flex: 1 }]} numberOfLines={1}>{title}</Text>
+        {has && (
+          <TouchableOpacity onPress={() => setOpen(o => !o)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Text style={{ color: c.textFaint, fontSize: 11.5, fontWeight: '700' }}>{open ? '▾ Notes' : '▸ Notes'}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      {has && open && <Text style={{ color: c.textSub, fontSize: 11.5, lineHeight: 16, marginTop: 5 }}>{children}</Text>}
     </View>
   );
 }
@@ -511,8 +519,12 @@ export default function StatisticsScreen() {
 
       <ScrollView contentContainerStyle={s.scroll}>
         <View style={s.card} onLayout={onLayout}>
-          <Text style={s.cardTitle}>Power–Duration Curve</Text>
-          <Text style={s.cardSub}>Best average running power you've held for each duration, across your runs.</Text>
+          <CardHead title="Power–Duration Curve">
+            Best average running power you've held for each duration, across your runs.
+            {curve ? ` From ${curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4). A fed, paced 20-min test refines the long end of this curve.` : ''}
+            {curve?.cp != null ? ' Critical Power = estimated sustainable power (3+12-min bests).' : ''}
+            {pz && pz.tempoMax > 0 ? ` Your set threshold band is ${pz.tempoMax}–${pz.intervalsMin} W (shaded).` : ''}
+          </CardHead>
 
           {loading ? (
             <View style={s.center}>
@@ -548,12 +560,6 @@ export default function StatisticsScreen() {
                 )}
               </View>
 
-              <Note>
-                {curve.cp != null ? `Critical Power = estimated sustainable power (3+12-min bests). ` : ''}
-                {pz && pz.tempoMax > 0 ? `Your set threshold band is ${pz.tempoMax}–${pz.intervalsMin} W (shaded). ` : ''}
-                From {curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4).
-                A fed, paced 20-min test refines the long end of this curve.
-              </Note>
               <TouchableOpacity style={s.rebuild} onPress={rebuildDeep}>
                 <Text style={s.rebuildText}>↻ Rebuild + load full history</Text>
               </TouchableOpacity>
@@ -564,102 +570,100 @@ export default function StatisticsScreen() {
         {/* ── Efficiency Factor ── */}
         {ef.filter(p => p.ef > 0).length >= 2 && (() => { const p = ef.filter(x => x.ef > 0); return (
           <View style={s.card}>
-            <Text style={s.cardTitle}>Efficiency Factor</Text>
-            <Text style={s.cardSub}>Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.</Text>
-            <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
-              pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
-            <Note>
-              Grey line = trend. Green = steady aerobic runs. Latest {p[p.length - 1].ef.toFixed(2)}
+            <CardHead title="Efficiency Factor">
+              Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.
+              {' '}Grey line = trend. Green = steady aerobic runs. Latest {p[p.length - 1].ef.toFixed(2)}
               {p.filter(x => x.aerobic).length >= 2 ? ((): string => {
                 const a = p.filter(x => x.aerobic); const d = a[a.length - 1].ef - a[0].ef;
                 return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
               })() : ''}
               {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat lifts HR, so those sit LOW for reasons other than fitness.` : ''}
-            </Note>
+            </CardHead>
+            <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
+              pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
           </View>
         ); })()}
 
         {/* ── Running economy (EC = speed ÷ power, HR-independent) ── */}
         {ef.filter(p => p.ec > 0).length >= 2 && (() => { const p = ef.filter(x => x.ec > 0); return (
           <View style={s.card}>
-            <Text style={s.cardTitle}>Running Economy (EC)</Text>
-            <Text style={s.cardSub}>Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy (and heat-proof: no 🟠 flags needed here). Rising = more speed per watt.</Text>
+            <CardHead title="Running Economy (EC)">
+              Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy (and heat-proof: no 🟠 flags needed here). Rising = more speed per watt.
+              {' '}Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).
+              {wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}
+            </CardHead>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
               pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))}
               pts2={wt} color2="#a855f7" y2fmt={(v) => v.toFixed(1)} y2label="kg" />
-            <Note>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).{wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}</Note>
           </View>
         ); })()}
 
         {/* ── Speed efficiency (SE = speed ÷ HR) ── */}
         {ef.filter(p => p.se > 0).length >= 2 && (() => { const p = ef.filter(x => x.se > 0); return (
           <View style={s.card}>
-            <Text style={s.cardTitle}>Speed Efficiency (SE)</Text>
-            <Text style={s.cardSub}>Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).</Text>
+            <CardHead title="Speed Efficiency (SE)">
+              Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).
+              {' '}Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).
+              {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}
+            </CardHead>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
               pts={p.map(x => ({ t: tOf(x.date), v: x.se, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
-            <Note>Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).{p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}</Note>
           </View>
         ); })()}
 
         {/* ── Time-in-zone / polarization ── */}
         {zones && (
           <View style={s.card}>
-            <Text style={s.cardTitle}>Intensity Distribution</Text>
-            <Text style={s.cardSub}>Where your running time goes (last 8 weeks). Most endurance plans want ~80% easy.</Text>
-            <ZoneBar z={zones} />
-            <Note>
-              PI = Seiler polarization index (&gt;0 leans polarised).
+            <CardHead title="Intensity Distribution">
+              Where your running time goes (last 8 weeks). Most endurance plans want ~80% easy.
+              {' '}PI = Seiler polarization index (&gt;0 leans polarised).
               {zones.modPct > 35 ? ' You have a lot of moderate "gray zone" — the classic flat-fitness trap.'
                 : zones.easyPct >= 75 ? ' Nicely polarised (lots of easy).' : ''}
-            </Note>
+            </CardHead>
+            <ZoneBar z={zones} />
           </View>
         )}
 
         {/* ── Intensity mix over time (workload distribution) ── */}
         {zoneWeeks.length >= 1 && (
           <View style={s.card}>
-            <Text style={s.cardTitle}>Intensity Mix Over Time</Text>
-            <Text style={s.cardSub}>Easy / moderate / hard share of each week's running. A mostly-green base with a little red = well polarised.</Text>
+            <CardHead title="Intensity Mix Over Time">
+              Easy / moderate / hard share of each week's running (🟢 easy · 🟠 moderate · 🔴 hard).
+              A mostly-green base with a little red = well polarised.
+            </CardHead>
             <StackedZoneChart weeks={zoneWeeks} t0={t0} t1={t1} events={events} showEvents={showEvents} innerW={innerW} />
-            <View style={s.zone3}>
-              <Text style={s.zone3Txt}>🟢 Easy</Text><Text style={s.zone3Txt}>🟠 Moderate</Text><Text style={s.zone3Txt}>🔴 Hard</Text>
-            </View>
           </View>
         )}
 
         {/* ── ACWR ── */}
         {acwr.length >= 3 && (
           <View style={s.card}>
-            <Text style={s.cardTitle}>Load Ratio (ACWR)</Text>
-            <Text style={s.cardSub}>Acute ÷ chronic load. The 0.8–1.3 band is the injury-risk sweet spot.</Text>
+            <CardHead title="Load Ratio (ACWR)">
+              Acute ÷ chronic load. The 0.8–1.3 band is the injury-risk sweet spot.
+              {' '}Latest {acwr[acwr.length - 1].ratio.toFixed(2)}. Green band = sweet spot; red dashed = 1.5 (spike-risk).
+            </CardHead>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
               band={[0.8, 1.3]} refs={[{ y: 1.5, color: '#ef4444', dash: true }]} yfmt={(v) => v.toFixed(1)}
               pts={acwr.map(p => ({ t: tOf(p.date), v: p.ratio }))} />
-            <Note>
-              Latest {acwr[acwr.length - 1].ratio.toFixed(2)}. Green band = sweet spot; red dashed = 1.5 (spike-risk).
-            </Note>
           </View>
         )}
 
         {/* ── Aerobic decoupling ── */}
         <View style={s.card}>
-          <Text style={s.cardTitle}>Aerobic Decoupling (Pw:HR)</Text>
-          <Text style={s.cardSub}>How much HR drifts up relative to power over a steady run. Under 5% = strong aerobic base.</Text>
+          <CardHead title="Aerobic Decoupling (Pw:HR)">
+            How much HR drifts up relative to power over a steady run. Under 5% = strong aerobic base.
+            One point per steady run ≥30 min; green line = 5% threshold.
+            {dcClean.length >= 2 ? `  ${dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of last ${Math.min(8, dcClean.length)}), ` : ''}latest run ${dcClean[dcClean.length - 1].pct.toFixed(1)}%.` : ''}
+            {dcClean.length >= 2 ? ((dcMed ?? dcClean[dcClean.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.') : ''}
+            {dc ? `  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dc.length - dcClean.length} run${dc.length - dcClean.length === 1 ? '' : 's'} cut as unusable (stop-and-go, HR dropout, or not steady).` : ''}
+            {dcClean.some(p => p.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat drives extra cardiac drift, so those read HIGH.` : ''}
+          </CardHead>
           {dc == null ? (
             <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…{dcProg && dcProg.total ? ` ${dcProg.done}/${dcProg.total}` : ''}</Text></View>
           ) : dcClean.length >= 2 ? (
-            <>
               <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
                 refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} yfmt={(v) => `${Math.round(v)}%`}
                 bandSeries={dcBand} pts={dcClean.map(p => ({ t: tOf(p.date), v: p.pct, color: p.hot ? HEAT_ORANGE : undefined }))} />
-              <Note>
-                One point per steady run ≥30 min. Green line = 5% threshold. {dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of last ${Math.min(8, dcClean.length)})` : ''}, latest run {dcClean[dcClean.length - 1].pct.toFixed(1)}%.
-                {(dcMed ?? dcClean[dcClean.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.'}
-                {`  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dc.length - dcClean.length} run${dc.length - dcClean.length === 1 ? '' : 's'} cut as unusable (stop-and-go, HR dropout, or not steady).`}
-                {dcClean.some(p => p.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat drives extra cardiac drift, so those read HIGH.` : ''}
-              </Note>
-            </>
           ) : (
             <Text style={s.errorText}>Need a couple of steady runs ≥30 min with power to show decoupling.</Text>
           )}
@@ -695,7 +699,6 @@ const makeS = (c: Palette) => StyleSheet.create({
   zoneBarTxt: { fontSize: 9, color: '#fff', fontWeight: '700' },
   zone3Txt: { fontSize: 11.5, color: c.text, fontWeight: '600', marginTop: 6 },
   cardTitle: { fontSize: 16, fontWeight: '800', color: c.text },
-  cardSub: { fontSize: 12, color: c.textSub, marginTop: 2, marginBottom: 12 },
   center: { height: CHART_H, alignItems: 'center', justifyContent: 'center' },
   loadingText: { color: c.textSub, marginTop: 10, fontSize: 13 },
   errorText: { color: c.textSub, fontSize: 13, paddingVertical: 20, textAlign: 'center' },
@@ -707,7 +710,6 @@ const makeS = (c: Palette) => StyleSheet.create({
   tblVal:   { width: 62, textAlign: 'right', fontSize: 13, fontWeight: '800', color: c.text },
   tblDate:  { width: 62, textAlign: 'right', fontSize: 10, color: c.textFaint },
   tblCpTxt: { color: CTL_BLUE },
-  foot: { fontSize: 11, color: c.textFaint, marginTop: 12, lineHeight: 15 },
   rebuild: { marginTop: 12, alignSelf: 'flex-start' },
   rebuildText: { fontSize: 12, color: c.accent, fontWeight: '600' },
 });
