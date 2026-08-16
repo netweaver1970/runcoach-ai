@@ -714,7 +714,12 @@ export function parseWeeklyTemplate(text: string): Record<number, WeekKind> {
       recover                   ? 'easy' :
       rest                      ? 'rest' : 'flex';
   }
-  for (let d = 0; d < 7; d++) if (out[d] === undefined) out[d] = FALLBACK_TEMPLATE[d];
+  // Gap-fill: the FALLBACK is only for a file that yielded NOTHING (unreadable/empty). Once the athlete's
+  // file has defined any day, an unmatched weekday must fall back to 'flex' — never to a quality kind.
+  // FALLBACK_TEMPLATE[5] is 'long', so the old blanket fill INVENTED a Friday long run whenever that line
+  // failed to parse, and no amount of editing the schedule could remove it.
+  const parsedAny = Object.keys(out).length > 0;
+  for (let d = 0; d < 7; d++) if (out[d] === undefined) out[d] = parsedAny ? 'flex' : FALLBACK_TEMPLATE[d];
   return out;
 }
 
