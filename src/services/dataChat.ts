@@ -168,6 +168,7 @@ async function statsKit(): Promise<ToolKit> {
     + (curve ? `POWER-DURATION (best W): 5s ${watt(5)}, 1min ${watt(60)}, 5min ${watt(300)}, 20min ${watt(1200)}, 60min ${watt(3600)}; Critical Power ≈ ${curve.cp ?? '—'} W.\n` : '')
     + (pz ? `POWER ZONES (W): recovery≤${pz.recoveryMax}, Z2≤${pz.z2Max}, tempo ${pz.tempoMin}–${pz.tempoMax}, intervals≥${pz.intervalsMin}.\n` : '')
     + (dc.length ? `AEROBIC DECOUPLING (Pw:HR drift, <5% strong base): latest ${f(dc[dc.length - 1].pct)}%, recent median ${f(dcMed)}%.\n` : '')
+    + `HEAT: runs ≥19°C are flagged hot (tempC/hot on the efficiency + decoupling tools). Heat raises HR for the same effort, so hot runs read LOW on EF/SE and HIGH on decoupling — weather, not fitness. EC (speed÷power) is HR-independent and unaffected: prefer it across a hot spell.\n`
     + (wt ? `BODY WEIGHT: latest ${f(wt.latest)} kg${wt.points?.[0] ? `, was ${f(wt.points[0].value)} kg in ${String(wt.points[0].date).slice(0, 7)}` : ''} (${wt.n ?? wt.points?.length ?? 0} readings, trend ${f(wt.trendPerWeek) ?? 0} kg/wk ${wt.trendDir ?? ''}). Power is estimated from mass, so weight change shifts EC — call get_body_series(weight) to line the full series up against EC.\n` : '')
     + (ecWtRho != null ? `EC↔WEIGHT: Spearman rho ${f(ecWtRho)} across ${ecW.length} paired runs (strong NEGATIVE ⇒ EC rises as weight falls = mass-estimate artifact; near 0 ⇒ EC change is real/pace/device).\n` : '')
     + (evLines.length ? `TIMELINE: ${evLines.join('; ')}\n` : '');
@@ -182,10 +183,10 @@ async function statsKit(): Promise<ToolKit> {
       { name: 'get_body_series', description: 'Full dated body-metric series to line up against runs (key: weight|bodyfat|lean|bpSys|bpDia). Use weight to test whether an EC change is a mass-estimate artifact.', input_schema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } },
     ],
     run: (name, input) => {
-      if (name === 'get_efficiency_history') return ef.map((p: any) => ({ date: p.date, type: p.label, ec: p.ec || null, ef: p.ef || null, se: p.se || null }));
+      if (name === 'get_efficiency_history') return ef.map((p: any) => ({ date: p.date, type: p.label, ec: p.ec || null, ef: p.ef || null, se: p.se || null, tempC: p.tempC ?? null, hot: !!p.hot }));
       if (name === 'get_body_series') { const m = bio?.metrics?.find((x: any) => x.key === String(input?.key ?? '')); if (!m) return { error: 'no metric; use weight|bodyfat|lean|bpSys|bpDia' }; return { key: m.key, unit: m.unit, series: (m.points ?? []).map((p: any) => `${String(p.date).slice(0, 10)}:${f(p.value)}`) }; }
       if (name === 'get_power_curve') return curve ? curve.points.map((p: any) => ({ sec: p.sec, watts: p.watts, date: p.date })) : { error: 'no power curve' };
-      if (name === 'get_decoupling_history') return dc.map((d: any) => ({ date: d.date, pct: d.pct, type: d.label }));
+      if (name === 'get_decoupling_history') return dc.map((d: any) => ({ date: d.date, pct: d.pct, type: d.label, tempC: d.tempC ?? null, hot: !!d.hot }));
       if (name === 'get_intensity_weeks') return weeks.map((w: any) => ({ week: w.weekStart, easy: w.easyMin, mod: w.modMin, hard: w.hardMin, total: w.total }));
       if (name === 'get_recent_runs') { const n = Math.min(30, Math.max(1, Number(input?.n) || 12)); return runs.slice(0, n).map((r: any) => ({ date: String(r.date).slice(0, 10), type: r.label, workPower: r.workPower, workHR: r.workHR, workPaceSec: r.workPace, km: r.distance ? Math.round(r.distance / 100) / 10 : null })); }
       return { error: `unknown tool ${name}` };

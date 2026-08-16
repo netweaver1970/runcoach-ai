@@ -16,7 +16,12 @@ import type { RunWorkout, DailyLoad } from '../types';
 // Per-run efficiency ratios (higher = better). EC = speed÷power (HR-INDEPENDENT running economy),
 // EF = power÷HR, SE = speed÷HR. speed is metres/min = 60000 ÷ pace(sec/km). ec/se are 0 when pace is
 // missing so an EF-only run still contributes to the EF chart.
-export interface EfPoint { date: string; ef: number; ec: number; se: number; label: string; aerobic: boolean; }
+// Above this run-time temperature HR is meaningfully elevated for the same effort (heat-sensitive athlete),
+// so the HR-BASED reads (EF, SE, decoupling) are depressed/inflated by the weather rather than by fitness.
+// EC (speed÷power) is HR-independent and is NOT affected — deliberately never heat-flagged.
+// Same threshold analyzeAerobicBase uses for its "hot" exclusion.
+export const HEAT_C = 19;
+export interface EfPoint { date: string; ef: number; ec: number; se: number; label: string; aerobic: boolean; hot: boolean; tempC?: number; }
 const AEROBIC = new Set(['Z2', 'Recovery', 'LongRun', 'Tempo']);
 
 // Hampel despike: zero any point that deviates from its LOCAL (temporal-neighbour) median by more than
@@ -92,6 +97,8 @@ export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
         se: (!hrBad && speed > 0) ? r3(speed / r.workHR!) : 0,
         label: r.label ?? 'Run',
         aerobic: AEROBIC.has(r.label ?? ''),
+        hot: (r.tempC ?? -99) >= HEAT_C,   // HR-based reads on this run are weather-affected
+        tempC: r.tempC,
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -222,7 +229,7 @@ export function acwrSeries(load: DailyLoad[]): AcwrPoint[] {
 // HR recovers at each stop and scrambles the drift. Bump discards v4 (which trusted those broken runs).
 const DC_CACHE = `${FileSystem.documentDirectory}decoupling-cache-v5.json`;
 const DC_AEROBIC = new Set(['Z2', 'Recovery', 'LongRun']);   // steady aerobic only — decoupling is noise on quality days
-export interface DecouplePoint { date: string; pct: number; label: string; }
+export interface DecouplePoint { date: string; pct: number; label: string; hot?: boolean; tempC?: number; }
 
 async function readDc(): Promise<Record<string, number | null>> {
   try { return JSON.parse(await FileSystem.readAsStringAsync(DC_CACHE)); } catch { return {}; }
@@ -251,7 +258,8 @@ export async function decouplingTrend(
   if (toFetch.length) await writeDc(cache);
   return candidates
     .filter(r => cache[r.uuid] != null)
-    .map(r => ({ date: r.date.slice(0, 10), pct: cache[r.uuid] as number, label: r.label ?? 'Run' }))
+    .map(r => ({ date: r.date.slice(0, 10), pct: cache[r.uuid] as number, label: r.label ?? 'Run',
+                 hot: (r.tempC ?? -99) >= HEAT_C, tempC: r.tempC }))
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
