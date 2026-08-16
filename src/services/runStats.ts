@@ -57,11 +57,16 @@ export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
     .map(r => {
       const speed = (r.workPace ?? 0) > 0 ? 60000 / r.workPace! : 0;   // m/min
       const r3 = (x: number) => Math.round(x * 1000) / 1000;
+      // A run the user MANUALLY flagged "HR unreliable" has a known-wrong HR, which inflates (or deflates)
+      // the HR-based ratios — so drop its EF/SE. EC is speed÷power, HR-independent, so it stays. We use the
+      // manual flag only, NOT the auto-detector: the latter over-fires on older/sparser HR recordings and
+      // would blank months of EF/SE history.
+      const hrBad = !!r.hrUnreliableManual;
       return {
         date: r.date.slice(0, 10),
-        ef: r3(r.workPower! / r.workHR!),
+        ef: hrBad ? 0 : r3(r.workPower! / r.workHR!),
         ec: speed > 0 ? r3(speed / r.workPower!) : 0,
-        se: speed > 0 ? r3(speed / r.workHR!) : 0,
+        se: (!hrBad && speed > 0) ? r3(speed / r.workHR!) : 0,
         label: r.label ?? 'Run',
         aerobic: AEROBIC.has(r.label ?? ''),
       };

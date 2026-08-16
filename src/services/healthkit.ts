@@ -1513,9 +1513,13 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       const series = prd.hrValues.map((hr, i) => ({ t: prd.hrTimestampsMs[i], hr }));
       autoBadHr = assessHrReliability(series, ws, we).unreliable;
     }
-    if (autoBadHr || (hrUnreliableMap as Record<string, boolean>)[run.uuid]) {
-      run.hrUnreliable = true;
-    }
+    const manualBad = !!(hrUnreliableMap as Record<string, boolean>)[run.uuid];
+    if (autoBadHr || manualBad) run.hrUnreliable = true;
+    // Track the MANUAL flag separately: the auto-detector over-fires on older/sparser HR recordings, so
+    // dropping every auto-flagged run would blank months of EF/SE. A run the user flagged by hand is a
+    // definite "this HR is wrong" — the HR-based charts (EF/SE) must exclude it, while EC (speed÷power,
+    // HR-independent) stays valid and is kept.
+    if (manualBad) run.hrUnreliableManual = true;
   }
 
   if (uncached.length > 0) {

@@ -123,7 +123,8 @@ export interface RunWorkout {
   intervals?: IntervalRep[];  // per-rep data (Intervals sessions only)
   segments?: WorkoutSegment[]; // HK structured workout phases (empty for standard runs)
   kmSplits?:     KmSplit[];
-  hrUnreliable?: boolean;
+  hrUnreliable?: boolean;       // auto-detected OR user-flagged bad HR
+  hrUnreliableManual?: boolean; // user flagged it by hand — a definite "this HR is wrong" (excludes EF/SE)
   tempC?:        number;       // temperature at run time (°C) — HK weather metadata, live capture, or manual
   note?:         string;       // user note for this run
 }
