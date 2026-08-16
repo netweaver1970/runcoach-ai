@@ -14,6 +14,7 @@ import { efficiencyTrend, zoneSummary, zoneDistributionOverTime, acwrSeries, dec
 import { computePowerCurve } from './powerCurve';
 import { getPowerZones } from './claude';
 import { loadStatsRuns, mergeRuns } from './statsRunsCache';
+import { repairWorkStats } from './workStatsRepair';
 
 export type ChatMode = 'labs' | 'biology' | 'stats';
 export interface ChatMsg { role: 'user' | 'assistant'; content: string }
@@ -115,7 +116,10 @@ async function statsKit(): Promise<ToolKit> {
   const runs: any[] = mergeRuns(snap?.runs ?? [], await loadStatsRuns());   // full durable history, like the screen
   const maxHR = snap?.estimatedMaxHR ?? 188;
   const pz = await getPowerZones().catch(() => null as any);
-  const ef = efficiencyTrend(runs);
+  // Same stationary-time repair the Statistics screen uses (cache is warm after that screen has run), so
+  // the chat reasons on the corrected work stats rather than phone-call-diluted ones.
+  const repairs = await repairWorkStats(runs).catch(() => ({} as any));
+  const ef = efficiencyTrend(runs, repairs);
   const zs = zoneSummary(runs);
   const tl: any[] = snap?.trainingLoad ?? [];
   const acwr = acwrSeries(tl);
@@ -183,7 +187,7 @@ async function statsKit(): Promise<ToolKit> {
       { name: 'get_body_series', description: 'Full dated body-metric series to line up against runs (key: weight|bodyfat|lean|bpSys|bpDia). Use weight to test whether an EC change is a mass-estimate artifact.', input_schema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } },
     ],
     run: (name, input) => {
-      if (name === 'get_efficiency_history') return ef.map((p: any) => ({ date: p.date, type: p.label, ec: p.ec || null, ef: p.ef || null, se: p.se || null, tempC: p.tempC ?? null, hot: !!p.hot }));
+      if (name === 'get_efficiency_history') return ef.map((p: any) => ({ date: p.date, type: p.label, ec: p.ec || null, ef: p.ef || null, se: p.se || null, tempC: p.tempC ?? null, hot: !!p.hot, repaired: !!p.repaired, stationaryPct: p.stationaryPct ?? 0 }));
       if (name === 'get_body_series') { const m = bio?.metrics?.find((x: any) => x.key === String(input?.key ?? '')); if (!m) return { error: 'no metric; use weight|bodyfat|lean|bpSys|bpDia' }; return { key: m.key, unit: m.unit, series: (m.points ?? []).map((p: any) => `${String(p.date).slice(0, 10)}:${f(p.value)}`) }; }
       if (name === 'get_power_curve') return curve ? curve.points.map((p: any) => ({ sec: p.sec, watts: p.watts, date: p.date })) : { error: 'no power curve' };
       if (name === 'get_decoupling_history') return dc.map((d: any) => ({ date: d.date, pct: d.pct, type: d.label, tempC: d.tempC ?? null, hot: !!d.hot }));
