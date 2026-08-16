@@ -21,7 +21,10 @@ import type { RunWorkout, DailyLoad } from '../types';
 // EC (speed÷power) is HR-independent and is NOT affected — deliberately never heat-flagged.
 // Same threshold analyzeAerobicBase uses for its "hot" exclusion.
 export const HEAT_C = 19;
-export interface EfPoint { date: string; ef: number; ec: number; se: number; label: string; aerobic: boolean; hot: boolean; tempC?: number; }
+export interface EfPoint { date: string; ef: number; ec: number; se: number; label: string; aerobic: boolean; hot: boolean; tempC?: number;
+  repaired?: boolean;       // work stats re-derived over running-only seconds
+  stationaryPct?: number;   // how much of the work window was stopped
+}
 const AEROBIC = new Set(['Z2', 'Recovery', 'LongRun', 'Tempo']);
 
 // Hampel despike: zero any point that deviates from its LOCAL (temporal-neighbour) median by more than
@@ -63,7 +66,19 @@ function workCadence(r: RunWorkout): number {
   return den > 0 ? num / den : 0;
 }
 
-export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
+/** Work stats to use for a run: the stationary-time REPAIR when we have one, else what the scan produced. */
+function statsFor(r: RunWorkout, repairs?: Record<string, RepairedWorkLike | null>) {
+  const rep = repairs?.[r.uuid ?? ''];
+  if (rep && rep.wPower > 0 && rep.wPaceSec > 0) {
+    return { power: rep.wPower, hr: rep.wHR || (r.workHR ?? 0), pace: rep.wPaceSec, repaired: true, stationaryPct: rep.stationaryPct };
+  }
+  return { power: r.workPower ?? 0, hr: r.workHR ?? 0, pace: r.workPace ?? 0, repaired: false, stationaryPct: 0 };
+}
+
+/** Shape of a repair (kept structural so runStats doesn't import the fetching module). */
+export interface RepairedWorkLike { wPower: number; wHR: number; wPaceSec: number; stationaryPct: number }
+
+export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, RepairedWorkLike | null>): EfPoint[] {
   // The athlete's own normal running cadence (median over runs that have one) — a personal baseline, so
   // this works for any runner without a hard-coded threshold.
   const cads = (runs ?? []).map(workCadence).filter(v => v > 0).sort((a, b) => a - b);
@@ -73,17 +88,20 @@ export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
   const base = (runs ?? [])
     // Genuine RUNNING efforts only — exclude walk-pace / very-low-power / estimated-power / mislabeled-tiny-work
     // runs whose work stats aren't a real run (they otherwise plot as huge false dips, e.g. a 26:51/km "recovery").
-    .filter(r => (r.workPower ?? 0) >= 140 && (r.workHR ?? 0) > 0
-      && (r.workPace ?? 0) >= 200 && (r.workPace ?? 0) <= 600
-      && !r.isEstimatedPower
-      // Reject runs whose WORK window is contaminated by stationary time (an unpaused phone call, a long
-      // traffic stop, a mislabelled cooldown): the standing minutes dilute pace AND power, so the ratios
-      // read as an economy dip that never happened. Cadence exposes it — 17 & 24 Jul 2026 averaged 141/138
-      // spm vs a normal 163. INTERVAL sessions are exempt: standing/jogging between reps drops their mean
-      // cadence by design, so the test would wrongly reject a perfectly good workout.
-      && (cadFloor <= 0 || /interval/i.test(r.label ?? '') || workCadence(r) === 0 || workCadence(r) >= cadFloor))
+    // Judged on the REPAIRED stats when available, so a run that only looked bad because of stationary time
+    // now passes on its true numbers.
+    .filter(r => {
+      const st = statsFor(r, repairs);
+      if (!(st.power >= 140) || !(st.hr > 0) || !(st.pace >= 200 && st.pace <= 600) || r.isEstimatedPower) return false;
+      // A REPAIRED run has already had its stationary seconds removed, so the cadence gate no longer applies
+      // to it — that gate is the fallback for runs we could not re-derive (no structured work window, or no
+      // detail available). Interval sessions stay exempt: between-rep standing lowers their mean by design.
+      if (st.repaired) return true;
+      return cadFloor <= 0 || /interval/i.test(r.label ?? '') || workCadence(r) === 0 || workCadence(r) >= cadFloor;
+    })
     .map(r => {
-      const speed = (r.workPace ?? 0) > 0 ? 60000 / r.workPace! : 0;   // m/min
+      const st = statsFor(r, repairs);
+      const speed = st.pace > 0 ? 60000 / st.pace : 0;   // m/min
       const r3 = (x: number) => Math.round(x * 1000) / 1000;
       // A run the user MANUALLY flagged "HR unreliable" has a known-wrong HR, which inflates (or deflates)
       // the HR-based ratios — so drop its EF/SE. EC is speed÷power, HR-independent, so it stays. We use the
@@ -92,13 +110,15 @@ export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
       const hrBad = !!r.hrUnreliableManual;
       return {
         date: r.date.slice(0, 10),
-        ef: hrBad ? 0 : r3(r.workPower! / r.workHR!),
-        ec: speed > 0 ? r3(speed / r.workPower!) : 0,
-        se: (!hrBad && speed > 0) ? r3(speed / r.workHR!) : 0,
+        ef: hrBad ? 0 : r3(st.power / st.hr),
+        ec: speed > 0 ? r3(speed / st.power) : 0,
+        se: (!hrBad && speed > 0) ? r3(speed / st.hr) : 0,
         label: r.label ?? 'Run',
         aerobic: AEROBIC.has(r.label ?? ''),
         hot: (r.tempC ?? -99) >= HEAT_C,   // HR-based reads on this run are weather-affected
         tempC: r.tempC,
+        repaired: st.repaired,
+        stationaryPct: st.stationaryPct,
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date));

@@ -7,6 +7,7 @@ import { useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache, fetchTrainingLoadHistory, fetchBodyMassHistory } from '../src/services/healthkit';
 import { loadStatsRuns, saveStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
+import { repairWorkStats, clearWorkStatsRepairCache, RepairedWork } from '../src/services/workStatsRepair';
 import { getPowerZones } from '../src/services/claude';
 import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
@@ -419,6 +420,7 @@ export default function StatisticsScreen() {
   const [allRuns, setAllRuns] = useState<any[]>([]);
   const [maxHR, setMaxHR] = useState(188);
   const [wt, setWt] = useState<TPt[]>([]);   // body-weight overlay for the EC chart
+  const [repairs, setRepairs] = useState<Record<string, RepairedWork | null>>({});
   const [events, setEvents] = useState<Ev[]>([]);
   const [range, setRange] = useState<Range>('1Y');
   const [offset, setOffset] = useState(0);
@@ -440,6 +442,11 @@ export default function StatisticsScreen() {
       if (!runs.length) { setError('No runs found. Record some runs with power, then check back.'); setLoading(false); return; }
       // Cheap snapshot-derived series first (instant).
       setEf(efficiencyTrend(runs));
+      // Stationary-time repair (needs a detail fetch per run, cached by uuid) — re-derives work stats over
+      // running-only seconds so a phone-call run keeps a CORRECT point instead of being discarded.
+      repairWorkStats(runs)
+        .then(rep => { setRepairs(rep); setEf(efficiencyTrend(runs, rep)); })
+        .catch(() => {});
       setZones(zoneSummary(runs, 56, (snap as any)?.estimatedMaxHR || 188));
       setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));   // instant, short (~45d) — replaced below
       // Full-history CTL/ATL for ACWR (snapshot only holds ~45d), + body-weight overlay for the EC chart.
@@ -467,6 +474,7 @@ export default function StatisticsScreen() {
       await saveSnapshotCache(snap);
       await saveStatsRuns(mergeRuns((snap as any).runs ?? [], await loadStatsRuns()));   // seed durable history
       await clearPowerCurveCache();
+      await clearWorkStatsRepairCache();
     } catch (e: any) {
       setError(e?.message ?? 'Could not load full history.'); setLoading(false); setStepMsg(null); return;
     }
@@ -593,6 +601,7 @@ export default function StatisticsScreen() {
               Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy (and heat-proof: no 🟠 flags needed here). Rising = more speed per watt.
               {' '}Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).
               {wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}
+              {p.some(x => x.repaired) ? `  ${p.filter(x => x.repaired).length} run${p.filter(x => x.repaired).length === 1 ? '' : 's'} had stationary time (unpaused stops) removed from the work averages before plotting.` : ''}
             </CardHead>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
               pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))}
