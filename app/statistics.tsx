@@ -370,11 +370,9 @@ function ZoneBar({ z }: { z: ZoneSummary }) {
           </View>
         ) : null)}
       </View>
-      <View style={s.zone3}>
-        <Text style={s.zone3Txt}>🟢 Easy {z.easyPct}%</Text>
-        <Text style={s.zone3Txt}>🟠 Moderate {z.modPct}%</Text>
-        <Text style={s.zone3Txt}>🔴 Hard {z.hardPct}%</Text>
-      </View>
+      <Text style={s.zone3Txt} numberOfLines={1}>
+        🟢 {z.easyPct}%  ·  🟠 {z.modPct}%  ·  🔴 {z.hardPct}%  ·  {z.minutes} min  ·  PI {z.polarizationIndex.toFixed(2)}
+      </Text>
     </View>
   );
 }
@@ -529,31 +527,30 @@ export default function StatisticsScreen() {
             <>
               <PdcChart curve={curve} innerW={innerW} pz={pz} />
 
-              {/* Reference points */}
-              <View style={s.grid}>
+              {/* Reference points — a compact table beats five big tiles for five numbers. */}
+              <View style={s.tbl}>
                 {([[5, 'Sprint'], [60, '1-min'], [300, 'VO₂ (5-min)'], [1200, 'Threshold (20-min)'], [3600, 'Aerobic (60-min)']] as const).map(([sec, lbl]) => {
                   const a = anchorFor(sec);
                   return (
-                    <View key={sec} style={s.gridCell}>
-                      <Text style={s.gridVal}>{a ? `${a.watts} W` : '—'}</Text>
-                      <Text style={s.gridLbl}>{lbl}</Text>
-                      {a ? <Text style={s.gridDate}>{a.date.slice(5)}</Text> : null}
+                    <View key={sec} style={s.tblRow}>
+                      <Text style={s.tblLbl} numberOfLines={1}>{lbl}</Text>
+                      <Text style={s.tblVal}>{a ? `${a.watts} W` : '—'}</Text>
+                      <Text style={s.tblDate}>{a ? a.date.slice(5) : ''}</Text>
                     </View>
                   );
                 })}
+                {curve.cp != null && (
+                  <View style={[s.tblRow, s.tblRowCp]}>
+                    <Text style={[s.tblLbl, s.tblCpTxt]} numberOfLines={1}>Critical Power</Text>
+                    <Text style={[s.tblVal, s.tblCpTxt]}>{curve.cp} W</Text>
+                    <Text style={s.tblDate}>{curve.wPrime ? `W′ ${(curve.wPrime / 1000).toFixed(1)}kJ` : ''}</Text>
+                  </View>
+                )}
               </View>
 
-              {curve.cp != null && (
-                <View style={s.cpBox}>
-                  <Text style={s.cpVal}>Critical Power ≈ {curve.cp} W</Text>
-                  <Text style={s.cpSub}>
-                    Estimated sustainable power (3+12-min bests){curve.wPrime ? ` · W′ ${(curve.wPrime / 1000).toFixed(1)} kJ` : ''}.
-                    {pz && pz.tempoMax > 0 ? `  Your set threshold band is ${pz.tempoMax}–${pz.intervalsMin} W (shaded).` : ''}
-                  </Text>
-                </View>
-              )}
-
               <Note>
+                {curve.cp != null ? `Critical Power = estimated sustainable power (3+12-min bests). ` : ''}
+                {pz && pz.tempoMax > 0 ? `Your set threshold band is ${pz.tempoMax}–${pz.intervalsMin} W (shaded). ` : ''}
                 From {curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4).
                 A fed, paced 20-min test refines the long end of this curve.
               </Note>
@@ -612,9 +609,9 @@ export default function StatisticsScreen() {
             <Text style={s.cardSub}>Where your running time goes (last 8 weeks). Most endurance plans want ~80% easy.</Text>
             <ZoneBar z={zones} />
             <Note>
-              {zones.minutes} min · polarization index {zones.polarizationIndex.toFixed(2)}
-              {zones.modPct > 35 ? '  ·  a lot of moderate "gray zone" — the classic flat-fitness trap.'
-                : zones.easyPct >= 75 ? '  ·  nicely polarised (lots of easy).' : ''}
+              PI = Seiler polarization index (&gt;0 leans polarised).
+              {zones.modPct > 35 ? ' You have a lot of moderate "gray zone" — the classic flat-fitness trap.'
+                : zones.easyPct >= 75 ? ' Nicely polarised (lots of easy).' : ''}
             </Note>
           </View>
         )}
@@ -694,23 +691,22 @@ const makeS = (c: Palette) => StyleSheet.create({
   navTxt:   { color: c.text, fontSize: 14, fontWeight: '800' },
   navLabel: { color: c.textSub, fontSize: 12.5, fontWeight: '600' },
   card: { backgroundColor: c.surface, borderRadius: 16, padding: 12, marginBottom: 12 },
-  zoneBar: { flexDirection: 'row', height: 26, borderRadius: 6, overflow: 'hidden', marginTop: 12 },
-  zoneBarTxt: { fontSize: 10, color: '#fff', fontWeight: '700' },
-  zone3: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
-  zone3Txt: { fontSize: 12, color: c.text, fontWeight: '600' },
+  zoneBar: { flexDirection: 'row', height: 16, borderRadius: 4, overflow: 'hidden', marginTop: 8 },
+  zoneBarTxt: { fontSize: 9, color: '#fff', fontWeight: '700' },
+  zone3Txt: { fontSize: 11.5, color: c.text, fontWeight: '600', marginTop: 6 },
   cardTitle: { fontSize: 16, fontWeight: '800', color: c.text },
   cardSub: { fontSize: 12, color: c.textSub, marginTop: 2, marginBottom: 12 },
   center: { height: CHART_H, alignItems: 'center', justifyContent: 'center' },
   loadingText: { color: c.textSub, marginTop: 10, fontSize: 13 },
   errorText: { color: c.textSub, fontSize: 13, paddingVertical: 20, textAlign: 'center' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 16, gap: 8 },
-  gridCell: { flexGrow: 1, flexBasis: '30%', backgroundColor: c.bg, borderRadius: 10, paddingVertical: 8, alignItems: 'center' },
-  gridVal: { fontSize: 16, fontWeight: '800', color: c.text },
-  gridLbl: { fontSize: 10, color: c.textSub, marginTop: 1, fontWeight: '600' },
-  gridDate: { fontSize: 9, color: c.textFaint, marginTop: 1 },
-  cpBox: { marginTop: 14, backgroundColor: c.bg, borderRadius: 10, padding: 10 },
-  cpVal: { fontSize: 15, fontWeight: '800', color: c.text },
-  cpSub: { fontSize: 11, color: c.textSub, marginTop: 3, lineHeight: 15 },
+  // Compact reference table (replaced the five large tiles + the separate Critical-Power box).
+  tbl:      { marginTop: 10, backgroundColor: c.bg, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 2 },
+  tblRow:   { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
+  tblRowCp: { borderBottomWidth: 0 },
+  tblLbl:   { flex: 1, fontSize: 12, color: c.textSub, fontWeight: '600' },
+  tblVal:   { width: 62, textAlign: 'right', fontSize: 13, fontWeight: '800', color: c.text },
+  tblDate:  { width: 62, textAlign: 'right', fontSize: 10, color: c.textFaint },
+  tblCpTxt: { color: CTL_BLUE },
   foot: { fontSize: 11, color: c.textFaint, marginTop: 12, lineHeight: 15 },
   rebuild: { marginTop: 12, alignSelf: 'flex-start' },
   rebuildText: { fontSize: 12, color: c.accent, fontWeight: '600' },
