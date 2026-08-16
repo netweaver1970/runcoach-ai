@@ -21,9 +21,12 @@ const CHART_H = 210;
 const Y_AXIS_W = 38;
 const CTL_BLUE = '#3B82F6';
 const EV_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981' };
-type Range = 'All' | '1Y' | '6M' | '3M' | '1M';
-const RANGES: Range[] = ['All', '1Y', '6M', '3M', '1M'];
-const RANGE_DAYS: Record<Range, number> = { All: 0, '1Y': 365, '6M': 182, '3M': 91, '1M': 31 };
+// Ordered shortest→longest to match the other history screens (app/history.tsx '1M','3M','6M','1Y' and
+// app/biology.tsx '1M'…'10Y') so the range tabs read the same way everywhere. 'All' closes the row for the
+// full-history view these charts support; month lengths match biology's RANGE_MONTHS (30d/month).
+type Range = '1M' | '3M' | '6M' | '1Y' | '5Y' | 'All';
+const RANGES: Range[] = ['1M', '3M', '6M', '1Y', '5Y', 'All'];
+const RANGE_DAYS: Record<Range, number> = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, '5Y': 1825, All: 0 };
 interface Ev { t: number; label: string; category: string }
 const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
 const dLabel = (t: number, yearly: boolean) =>

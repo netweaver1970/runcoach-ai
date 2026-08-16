@@ -47,13 +47,36 @@ function despikeLocal(vals: number[], floor: number, radius = 3, k = 3.5): numbe
   return out;
 }
 
+// Mean cadence over a run's WORK segments (steps/min, duration-weighted); 0 when unknown. Standing still
+// records ~0 spm, so stationary time buried inside a work segment drags this well below the athlete's
+// normal running cadence — the cheapest reliable signal that the work averages aren't pure running.
+function workCadence(r: RunWorkout): number {
+  const segs = (r.segments ?? []).filter(s => /work/i.test(s.label ?? '') && (s.cadenceSPM ?? 0) > 0 && (s.durationSec ?? 0) > 0);
+  if (!segs.length) return 0;
+  let num = 0, den = 0;
+  for (const s of segs) { num += s.cadenceSPM * s.durationSec; den += s.durationSec; }
+  return den > 0 ? num / den : 0;
+}
+
 export function efficiencyTrend(runs: RunWorkout[]): EfPoint[] {
+  // The athlete's own normal running cadence (median over runs that have one) — a personal baseline, so
+  // this works for any runner without a hard-coded threshold.
+  const cads = (runs ?? []).map(workCadence).filter(v => v > 0).sort((a, b) => a - b);
+  const normCad = cads.length ? cads[Math.floor(cads.length / 2)] : 0;
+  const cadFloor = normCad > 0 ? normCad * 0.88 : 0;   // >12% below your normal ⇒ stationary time mixed in
+
   const base = (runs ?? [])
     // Genuine RUNNING efforts only — exclude walk-pace / very-low-power / estimated-power / mislabeled-tiny-work
     // runs whose work stats aren't a real run (they otherwise plot as huge false dips, e.g. a 26:51/km "recovery").
     .filter(r => (r.workPower ?? 0) >= 140 && (r.workHR ?? 0) > 0
       && (r.workPace ?? 0) >= 200 && (r.workPace ?? 0) <= 600
-      && !r.isEstimatedPower)
+      && !r.isEstimatedPower
+      // Reject runs whose WORK window is contaminated by stationary time (an unpaused phone call, a long
+      // traffic stop, a mislabelled cooldown): the standing minutes dilute pace AND power, so the ratios
+      // read as an economy dip that never happened. Cadence exposes it — 17 & 24 Jul 2026 averaged 141/138
+      // spm vs a normal 163. INTERVAL sessions are exempt: standing/jogging between reps drops their mean
+      // cadence by design, so the test would wrongly reject a perfectly good workout.
+      && (cadFloor <= 0 || /interval/i.test(r.label ?? '') || workCadence(r) === 0 || workCadence(r) >= cadFloor))
     .map(r => {
       const speed = (r.workPace ?? 0) > 0 ? 60000 / r.workPace! : 0;   // m/min
       const r3 = (x: number) => Math.round(x * 1000) / 1000;
