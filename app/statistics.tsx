@@ -17,7 +17,7 @@ import {
 } from '../src/services/runStats';
 import type { PowerZones } from '../src/types';
 
-const CHART_H = 210;
+const CHART_H = 160;
 const Y_AXIS_W = 38;
 const CTL_BLUE = '#3B82F6';
 // Runs above HEAT_C: HR is elevated by the weather, so the HR-BASED reads (EF, SE, decoupling) look worse
@@ -115,7 +115,7 @@ function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz
 }
 
 // ─── Generic time-series (line + optional dots, band, reference lines) ────────────
-const TS_H = 130;
+const TS_H = 96;
 const TS_YW = 34;
 function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
   vals: number[]; colors?: string[]; innerW: number;
@@ -166,6 +166,22 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
           return <View pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c.textSub, opacity: 0.75, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
         })()}
       </View>
+    </View>
+  );
+}
+
+// ─── Collapsible per-chart note ───────────────────────────────────────────────────────────────────
+// The explanatory footnotes are useful the first few times and clutter afterwards, so each one folds
+// away behind a single tappable line and the charts stay dense.
+function Note({ children }: { children: React.ReactNode }) {
+  const { c } = useTheme();
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ marginTop: 6 }}>
+      <TouchableOpacity onPress={() => setOpen(o => !o)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+        <Text style={{ color: c.textFaint, fontSize: 11.5, fontWeight: '700' }}>{open ? '▾ Notes' : '▸ Notes'}</Text>
+      </TouchableOpacity>
+      {open && <Text style={{ color: c.textSub, fontSize: 11.5, lineHeight: 16, marginTop: 4 }}>{children}</Text>}
     </View>
   );
 }
@@ -537,10 +553,10 @@ export default function StatisticsScreen() {
                 </View>
               )}
 
-              <Text style={s.foot}>
+              <Note>
                 From {curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4).
                 A fed, paced 20-min test refines the long end of this curve.
-              </Text>
+              </Note>
               <TouchableOpacity style={s.rebuild} onPress={rebuildDeep}>
                 <Text style={s.rebuildText}>↻ Rebuild + load full history</Text>
               </TouchableOpacity>
@@ -555,14 +571,14 @@ export default function StatisticsScreen() {
             <Text style={s.cardSub}>Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.</Text>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
               pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
-            <Text style={s.foot}>
+            <Note>
               Grey line = trend. Green = steady aerobic runs. Latest {p[p.length - 1].ef.toFixed(2)}
               {p.filter(x => x.aerobic).length >= 2 ? ((): string => {
                 const a = p.filter(x => x.aerobic); const d = a[a.length - 1].ef - a[0].ef;
                 return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
               })() : ''}
               {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat lifts HR, so those sit LOW for reasons other than fitness.` : ''}
-            </Text>
+            </Note>
           </View>
         ); })()}
 
@@ -574,7 +590,7 @@ export default function StatisticsScreen() {
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
               pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))}
               pts2={wt} color2="#a855f7" y2fmt={(v) => v.toFixed(1)} y2label="kg" />
-            <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).{wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}</Text>
+            <Note>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).{wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}</Note>
           </View>
         ); })()}
 
@@ -585,7 +601,7 @@ export default function StatisticsScreen() {
             <Text style={s.cardSub}>Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).</Text>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
               pts={p.map(x => ({ t: tOf(x.date), v: x.se, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
-            <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).{p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}</Text>
+            <Note>Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).{p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}</Note>
           </View>
         ); })()}
 
@@ -595,11 +611,11 @@ export default function StatisticsScreen() {
             <Text style={s.cardTitle}>Intensity Distribution</Text>
             <Text style={s.cardSub}>Where your running time goes (last 8 weeks). Most endurance plans want ~80% easy.</Text>
             <ZoneBar z={zones} />
-            <Text style={s.foot}>
+            <Note>
               {zones.minutes} min · polarization index {zones.polarizationIndex.toFixed(2)}
               {zones.modPct > 35 ? '  ·  a lot of moderate "gray zone" — the classic flat-fitness trap.'
                 : zones.easyPct >= 75 ? '  ·  nicely polarised (lots of easy).' : ''}
-            </Text>
+            </Note>
           </View>
         )}
 
@@ -623,9 +639,9 @@ export default function StatisticsScreen() {
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
               band={[0.8, 1.3]} refs={[{ y: 1.5, color: '#ef4444', dash: true }]} yfmt={(v) => v.toFixed(1)}
               pts={acwr.map(p => ({ t: tOf(p.date), v: p.ratio }))} />
-            <Text style={s.foot}>
+            <Note>
               Latest {acwr[acwr.length - 1].ratio.toFixed(2)}. Green band = sweet spot; red dashed = 1.5 (spike-risk).
-            </Text>
+            </Note>
           </View>
         )}
 
@@ -640,12 +656,12 @@ export default function StatisticsScreen() {
               <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
                 refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} yfmt={(v) => `${Math.round(v)}%`}
                 bandSeries={dcBand} pts={dcClean.map(p => ({ t: tOf(p.date), v: p.pct, color: p.hot ? HEAT_ORANGE : undefined }))} />
-              <Text style={s.foot}>
+              <Note>
                 One point per steady run ≥30 min. Green line = 5% threshold. {dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of last ${Math.min(8, dcClean.length)})` : ''}, latest run {dcClean[dcClean.length - 1].pct.toFixed(1)}%.
                 {(dcMed ?? dcClean[dcClean.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.'}
                 {`  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dc.length - dcClean.length} run${dc.length - dcClean.length === 1 ? '' : 's'} cut as unusable (stop-and-go, HR dropout, or not steady).`}
                 {dcClean.some(p => p.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat drives extra cardiac drift, so those read HIGH.` : ''}
-              </Text>
+              </Note>
             </>
           ) : (
             <Text style={s.errorText}>Need a couple of steady runs ≥30 min with power to show decoupling.</Text>
