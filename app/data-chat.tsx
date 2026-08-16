@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Platform, Alert, Keyboard, KeyboardEvent, useWindowDimensions } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import { runDataChat, loadChatHistory, saveChatHistory, clearChatHistory, ChatMode, ChatMsg } from '../src/services/dataChat';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -8,10 +8,14 @@ import { TABLE_CELL } from '../src/mdTable';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
 import { startRecording, stopRecording, ensureMicPermission } from '../src/services/voiceRecorder';
+import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 const SUGGEST: Record<ChatMode, string[]> = {
   labs: ['Summarise what stands out across all my labs', 'How is my iron panel trending?', 'Read my lipids / cardiovascular risk', 'Anything I should raise with my GP?'],
   biology: ['How is my weight trend vs my training?', 'Is my recent loss fat or lean mass?', 'How does my blood pressure look over time?', 'Any event that clearly moved a metric?'],
+  stats: ['Is my running economy actually declining, or is it my weight?', 'How is my aerobic fitness (EF/EC) trending?', 'Is my intensity mix well polarised?', 'What do my power curve and critical power say about my zones?'],
 };
 
 export default function DataChat() {
@@ -20,8 +24,8 @@ export default function DataChat() {
   const md = useThemedStyles(makeMarkdownStyles);
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
-  const mode: ChatMode = params.mode === 'biology' ? 'biology' : 'labs';
-  const title = mode === 'biology' ? '🧬 Biology chat' : '🧪 Labs chat';
+  const mode: ChatMode = params.mode === 'biology' ? 'biology' : params.mode === 'stats' ? 'stats' : 'labs';
+  const title = mode === 'biology' ? '🧬 Biology chat' : mode === 'stats' ? '📊 Stats chat' : '🧪 Labs chat';
 
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -29,6 +33,43 @@ export default function DataChat() {
   const [voice, setVoice] = useState<'idle' | 'recording' | 'transcribing'>('idle');
   const scrollRef = useRef<ScrollView>(null);
   const insets = useSafeAreaInsets();
+  const { height: screenHeight } = useWindowDimensions();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  // Same dynamic keyboard handling as the coach chat (chat.tsx) — measure the real keyboard frame instead
+  // of KeyboardAvoidingView + a guessed offset, which floated the input bar ~90px too high on this screen
+  // (its custom header sits OUTSIDE the avoiding view, so the offset was double-counted).
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e: KeyboardEvent) => setKeyboardHeight(Math.max(0, screenHeight - e.endCoordinates.screenY));
+    const sub1 = Keyboard.addListener(showEvent, onShow);
+    const sub2 = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+    return () => { sub1.remove(); sub2.remove(); };
+  }, [screenHeight]);
+
+  const copyMessage = async (text: string) => {
+    try { await Clipboard.setStringAsync(text); Alert.alert('Copied', 'Message copied to clipboard.'); }
+    catch { Alert.alert('Copy failed', 'Could not access the clipboard.'); }
+  };
+
+  // Save the whole conversation as a shareable markdown document.
+  const exportChat = async () => {
+    if (!msgs.length) return;
+    try {
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+      const body = [`# ${title} — ${new Date().toLocaleString()}`, '',
+        ...msgs.map(m => `## ${m.role === 'user' ? 'Me' : 'Assistant'}\n\n${m.content}`)].join('\n\n');
+      const uri = `${FileSystem.cacheDirectory}runcoach-${mode}-chat-${stamp}.md`;
+      await FileSystem.writeAsStringAsync(uri, body);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'text/markdown', dialogTitle: 'Export chat', UTI: 'net.daringfireball.markdown' });
+      } else {
+        await Clipboard.setStringAsync(body);
+        Alert.alert('Copied', 'Sharing unavailable — the conversation was copied instead.');
+      }
+    } catch (e: any) { Alert.alert('Export failed', e?.message ?? String(e)); }
+  };
 
   useEffect(() => { loadChatHistory(mode).then(setMsgs); }, [mode]);
   useEffect(() => { const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80); return () => clearTimeout(t); }, [msgs, sending]);
@@ -81,15 +122,16 @@ export default function DataChat() {
         <TouchableOpacity onPress={() => router.back()}><Text style={s.back}>‹ Back</Text></TouchableOpacity>
         <Text style={s.title}>{title}</Text>
         <View style={{ flex: 1 }} />
+        {msgs.length > 0 && <TouchableOpacity onPress={exportChat} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={s.clear}>⤓</Text></TouchableOpacity>}
         {msgs.length > 0 && <TouchableOpacity onPress={clearChat}><Text style={s.clear}>Clear</Text></TouchableOpacity>}
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+      <View style={{ flex: 1, paddingBottom: keyboardHeight }}>
         <ScrollView ref={scrollRef} contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
           {msgs.length === 0 && (
             <View style={s.empty}>
-              <Text style={s.emptyTitle}>Ask about your {mode === 'biology' ? 'body metrics & blood pressure' : 'blood-lab history'}.</Text>
+              <Text style={s.emptyTitle}>Ask about your {mode === 'biology' ? 'body metrics & blood pressure' : mode === 'stats' ? 'running stats — efficiency, load, power, decoupling' : 'blood-lab history'}.</Text>
               <Text style={s.emptyHint}>It reads your own data (agentic — it pulls what it needs) and answers with context. Not medical advice.</Text>
               {SUGGEST[mode].map(q => (
                 <TouchableOpacity key={q} style={s.suggest} onPress={() => send(q)}><Text style={s.suggestTxt}>{q}</Text></TouchableOpacity>
@@ -99,11 +141,18 @@ export default function DataChat() {
           {msgs.map((m, i) => (
             <View key={i} style={[s.bubbleRow, m.role === 'user' && s.bubbleRowUser]}>
               <View style={{ maxWidth: m.role === 'user' ? '84%' : '96%' }}>
-                <View style={[s.bubble, m.role === 'user' ? s.userBubble : s.aiBubble]}>
-                  {m.role === 'user'
-                    ? <Text style={s.userTxt}>{m.content}</Text>
-                    : <MarkdownBody content={m.content} style={md} c={c} />}
-                </View>
+                <TouchableOpacity activeOpacity={1} onLongPress={() => copyMessage(m.content)} delayLongPress={350}>
+                  <View style={[s.bubble, m.role === 'user' ? s.userBubble : s.aiBubble]}>
+                    {m.role === 'user'
+                      ? <Text style={s.userTxt} selectable>{m.content}</Text>
+                      : <MarkdownBody content={m.content} style={md} c={c} />}
+                  </View>
+                </TouchableOpacity>
+                {m.role === 'assistant' && (
+                  <TouchableOpacity onPress={() => copyMessage(m.content)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                    <Text style={s.copyBtn}>⧉ Copy</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           ))}
@@ -115,7 +164,7 @@ export default function DataChat() {
         </ScrollView>
 
         {voice !== 'idle' && <Text style={s.listening}>{voice === 'recording' ? '● Listening… tap ⏹ to send' : 'Transcribing…'}</Text>}
-        <View style={s.inputBar}>
+        <View style={[s.inputBar, { paddingBottom: keyboardHeight > 0 ? 10 : Math.max(12, insets.bottom) }]}>
           <TextInput style={s.input} value={input} onChangeText={setInput} placeholder="Ask, or tap 🎤…" placeholderTextColor={c.textFaint}
             multiline onSubmitEditing={() => send(input)} blurOnSubmit returnKeyType="send" />
           <TouchableOpacity style={[s.micBtn, voice === 'recording' && s.micRec]} onPress={handleMic} disabled={sending && voice === 'idle'}>
@@ -125,7 +174,7 @@ export default function DataChat() {
             <Text style={s.sendTxt}>↑</Text>
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </View>
   );
 }
@@ -135,7 +184,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   header:   { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 6, borderBottomWidth: 1, borderBottomColor: c.border },
   back:     { color: c.accent, fontSize: 15, fontWeight: '700' },
   title:    { color: c.text, fontSize: 16, fontWeight: '800' },
-  clear:    { color: c.textFaint, fontSize: 13, fontWeight: '700' },
+  clear:    { color: c.textFaint, fontSize: 13, fontWeight: '700', marginLeft: 12 },
+  copyBtn:  { fontSize: 11, color: c.textFaint, fontWeight: '600', marginTop: 3, marginLeft: 6 },
   pad:      { padding: 14, paddingBottom: 20 },
   empty:    { paddingTop: 20, gap: 10 },
   emptyTitle:{ color: c.text, fontSize: 16, fontWeight: '700' },

@@ -5,13 +5,14 @@ import {
 import { loadEvents } from '../src/services/timelineEvents';
 import { useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { loadSnapshotCache } from '../src/services/healthkit';
+import { loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache, fetchTrainingLoadHistory, fetchBodyMassHistory } from '../src/services/healthkit';
+import { loadStatsRuns, saveStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
 import { getPowerZones } from '../src/services/claude';
 import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
 } from '../src/services/powerCurve';
 import {
-  efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, zoneDistributionOverTime,
+  efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, decouplingBanded, zoneDistributionOverTime,
   EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek,
 } from '../src/services/runStats';
 import type { PowerZones } from '../src/types';
@@ -165,21 +166,28 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
 // ─── Time-windowed series chart: cursor + events + date x-axis + optional band/refs/trend ─────────
 const TX_H = 20;
 interface TPt { t: number; v: number; color?: string }
-function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW }: {
+function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries }: {
   pts: TPt[]; t0: number; t1: number; color: string;
   band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
   trend?: boolean; events: Ev[]; showEvents: boolean; yfmt: (v: number) => string; innerW: number;
+  pts2?: TPt[]; color2?: string; y2fmt?: (v: number) => string; y2label?: string;
+  bandSeries?: { t: number; lo: number; hi: number }[];
 }) {
   const { c } = useTheme();
   const ch = useThemedStyles(makeCh);
-  const plotW = Math.max(1, innerW - TS_YW);
+  const rightGutter = pts2 && pts2.length >= 2 ? 34 : 0;   // reserve room for the secondary (weight) axis labels
+  const plotW = Math.max(1, innerW - TS_YW - rightGutter);
   const span = Math.max(1, t1 - t0);
   const [cur, setCur] = useState<number | null>(null);
   const mapRef = useRef<(lx: number) => number>(() => t0);
   mapRef.current = (lx) => t0 + (Math.max(0, Math.min(plotW, lx - TS_YW)) / plotW) * span;
   const pan = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+    // Claim horizontal drags in the CAPTURE phase so the parent ScrollView can't swallow them first
+    // (the cause of the "sometimes unresponsive" scrub), and don't hand the gesture back once grabbed.
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
+    onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
+    onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
     onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
   })).current;
@@ -188,13 +196,25 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
   if (innerW <= 0) return <View style={{ height: TS_H + TX_H + 20 }} />;
   if (win.length < 2) return <View style={{ height: TS_H + TX_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint, fontSize: 12 }}>Fewer than 2 points in this range.</Text></View>;
 
+  const bandWin = (bandSeries ?? []).filter(b => b.t >= t0 && b.t <= t1).sort((a, b) => a.t - b.t);
+  const bandYs = bandWin.flatMap(b => [b.lo, b.hi]);
   const vals = win.map(p => p.v);
-  const lo = Math.min(...vals, band ? band[0] : Infinity, ...(refs?.map(r => r.y) ?? []));
-  const hi = Math.max(...vals, band ? band[1] : -Infinity, ...(refs?.map(r => r.y) ?? []));
+  const lo = Math.min(...vals, band ? band[0] : Infinity, ...(refs?.map(r => r.y) ?? []), ...(bandYs.length ? bandYs : [Infinity]));
+  const hi = Math.max(...vals, band ? band[1] : -Infinity, ...(refs?.map(r => r.y) ?? []), ...(bandYs.length ? bandYs : [-Infinity]));
   const pad = (hi - lo) * 0.15 || 1, yLo = lo - pad, yHi = hi + pad;
   const x = (t: number) => ((t - t0) / span) * plotW;
   const toY = (v: number) => TS_H * (1 - (v - yLo) / (yHi - yLo));
   const yTicks = [yLo + (yHi - yLo) * 0.15, (yLo + yHi) / 2, yHi - (yHi - yLo) * 0.15];
+  // Optional secondary series (e.g. body weight) — own scale, drawn faint, labelled on the right.
+  const c2 = color2 ?? '#a855f7';
+  const win2 = (pts2 ?? []).filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
+  const has2 = win2.length >= 2;
+  const v2 = win2.map(p => p.v);
+  const lo2 = has2 ? Math.min(...v2) : 0, hi2 = has2 ? Math.max(...v2) : 1;
+  const pad2 = (hi2 - lo2) * 0.15 || 1, y2Lo = lo2 - pad2, y2Hi = hi2 + pad2;
+  const toY2 = (v: number) => TS_H * (1 - (v - y2Lo) / (y2Hi - y2Lo));
+  const f2 = y2fmt ?? ((v: number) => v.toFixed(0));
+  const near2 = has2 && cur != null ? win2.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win2[0]) : (has2 ? win2[win2.length - 1] : null);
   const yearly = span > 2.2 * 365 * 86400000;
   const evIn = showEvents ? events.filter(e => e.t >= t0 && e.t <= t1) : [];
   const nearest = cur == null ? win[win.length - 1] : win.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win[0]);
@@ -215,8 +235,11 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
     <View>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, marginBottom: 2 }}>
         <Text style={{ color: c.textSub, fontSize: 11.5, fontWeight: '700' }}>{dLabel(nearest.t, yearly)}</Text>
-        {readEv ? <Text style={{ color: EV_COLOR[readEv.category] ?? c.textSub, fontSize: 11.5, fontWeight: '700' }} numberOfLines={1}>{readEv.label}</Text>
-                : <Text style={{ color, fontSize: 13, fontWeight: '800' }}>{yfmt(nearest.v)}</Text>}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {readEv ? <Text style={{ color: EV_COLOR[readEv.category] ?? c.textSub, fontSize: 11.5, fontWeight: '700' }} numberOfLines={1}>{readEv.label}</Text>
+                  : <Text style={{ color, fontSize: 13, fontWeight: '800' }}>{yfmt(nearest.v)}</Text>}
+          {has2 && near2 && !readEv ? <Text style={{ color: c2, fontSize: 12, fontWeight: '700', marginLeft: 8 }}>{f2(near2.v)}{y2label ? ` ${y2label}` : ''}</Text> : null}
+        </View>
       </View>
       <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
         <View style={{ width: TS_YW, height: TS_H }}>
@@ -226,7 +249,9 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
           {yTicks.map((t, i) => <View key={`g${i}`} style={{ position: 'absolute', top: toY(t), left: 0, right: 0, height: 1, backgroundColor: c.gridline }} />)}
           {band && <View style={{ position: 'absolute', left: 0, right: 0, top: toY(band[1]), height: Math.max(1, toY(band[0]) - toY(band[1])), backgroundColor: '#22c55e18' }} />}
           {refs?.map((r, i) => <View key={`r${i}`} style={{ position: 'absolute', left: 0, right: 0, top: toY(r.y), height: 1, backgroundColor: r.color, opacity: r.dash ? 0.5 : 0.9 }} />)}
+          {bandWin.map((b, i) => { const xL = x(b.t); const gap = (i < bandWin.length - 1 ? x(bandWin[i + 1].t) : xL + 3) - xL; const w = Math.min(Math.max(3, gap), plotW * 0.05); const top = toY(b.hi); return <View key={`bd${i}`} pointerEvents="none" style={{ position: 'absolute', left: xL - w / 2, top, width: Math.max(2, w), height: Math.max(1, toY(b.lo) - top), backgroundColor: '#3B82F61f' }} />; })}
           {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
+          {has2 && win2.map((p, i) => { if (i === 0) return null; const x1 = x(win2[i - 1].t), y1 = toY2(win2[i - 1].v), x2 = x(p.t), y2 = toY2(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s2${i}`} pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c2, opacity: 0.5, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
           {win.map((p, i) => { if (i === 0) return null; const x1 = x(win[i - 1].t), y1 = toY(win[i - 1].v), x2 = x(p.t), y2 = toY(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s${i}`} style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
           {win.map((p, i) => <View key={`d${i}`} style={{ position: 'absolute', left: x(p.t) - 2.5, top: toY(p.v) - 2.5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.color ?? color, borderWidth: 1, borderColor: c.surface }} />)}
           {trendEl}
@@ -234,6 +259,11 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
           <View pointerEvents="none" style={{ position: 'absolute', left: x(nearest.t) - 4, top: toY(nearest.v) - 4, width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1.5, borderColor: c.surface }} />
           {[0, 1, 2, 3].map(i => { const t = t0 + (span * i) / 3; return <Text key={`x${i}`} style={[ch.xLabel, { position: 'absolute', top: TS_H + 4, width: 64, textAlign: i === 0 ? 'left' : i === 3 ? 'right' : 'center', left: i === 0 ? 0 : i === 3 ? plotW - 64 : x(t) - 32 }]} numberOfLines={1}>{dLabel(t, yearly)}</Text>; })}
         </View>
+        {rightGutter > 0 && (
+          <View style={{ width: rightGutter, height: TS_H }}>
+            {has2 && [y2Hi - (y2Hi - y2Lo) * 0.15, (y2Lo + y2Hi) / 2, y2Lo + (y2Hi - y2Lo) * 0.15].map((vv, i) => <Text key={`y2l${i}`} pointerEvents="none" style={{ position: 'absolute', top: toY2(vv) - 7, left: 3, fontSize: 9.5, color: c2, fontWeight: '700', opacity: 0.9 }}>{f2(vv)}</Text>)}
+          </View>
+        )}
       </View>
     </View>
   );
@@ -252,7 +282,11 @@ function StackedZoneChart({ weeks, t0, t1, events, showEvents, innerW }: {
   mapRef.current = (lx) => t0 + (Math.max(0, Math.min(plotW, lx - TS_YW)) / plotW) * span;
   const pan = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 3,
+    // Claim horizontal drags in the CAPTURE phase so the parent ScrollView can't swallow them first
+    // (the cause of the "sometimes unresponsive" scrub), and don't hand the gesture back once grabbed.
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
+    onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
+    onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
     onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
   })).current;
@@ -329,6 +363,7 @@ export default function StatisticsScreen() {
   const [curve, setCurve] = useState<PowerCurve | null>(null);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [stepMsg, setStepMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [innerW, setInnerW] = useState(0);
   const [pz, setPz] = useState<PowerZones | undefined>(undefined);
@@ -336,7 +371,10 @@ export default function StatisticsScreen() {
   const [zones, setZones] = useState<ZoneSummary | null>(null);
   const [acwr, setAcwr] = useState<AcwrPoint[]>([]);
   const [dc, setDc] = useState<DecouplePoint[] | null>(null);
+  const [dcProg, setDcProg] = useState<{ done: number; total: number } | null>(null);
   const [allRuns, setAllRuns] = useState<any[]>([]);
+  const [maxHR, setMaxHR] = useState(188);
+  const [wt, setWt] = useState<TPt[]>([]);   // body-weight overlay for the EC chart
   const [events, setEvents] = useState<Ev[]>([]);
   const [range, setRange] = useState<Range>('1Y');
   const [offset, setOffset] = useState(0);
@@ -347,23 +385,50 @@ export default function StatisticsScreen() {
     try {
       const snap = await loadSnapshotCache();
       getPowerZones().then(setPz).catch(() => {});
-      const runs = (snap as any)?.runs ?? [];
+      // The snapshot only holds ~3 months of runs and a startup scan overwrites it back to that window, so
+      // merge in the durable stats-runs cache (full history from a past deep-load) and persist the union —
+      // snapshot wins per-uuid (fresh work stats), older runs beyond the window are retained. History never shrinks.
+      const snapRuns = (snap as any)?.runs ?? [];
+      const runs = mergeRuns(snapRuns, await loadStatsRuns());
+      if (runs.length) saveStatsRuns(runs);   // persist the union so history survives the next startup scan
       setAllRuns(runs);
+      setMaxHR((snap as any)?.estimatedMaxHR || 188);
       if (!runs.length) { setError('No runs found. Record some runs with power, then check back.'); setLoading(false); return; }
       // Cheap snapshot-derived series first (instant).
       setEf(efficiencyTrend(runs));
-      setZones(zoneSummary(runs));
-      setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));
+      setZones(zoneSummary(runs, 56, (snap as any)?.estimatedMaxHR || 188));
+      setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));   // instant, short (~45d) — replaced below
+      // Full-history CTL/ATL for ACWR (snapshot only holds ~45d), + body-weight overlay for the EC chart.
+      fetchTrainingLoadHistory(24).then(load => setAcwr(acwrSeries(load))).catch(() => {});
+      fetchBodyMassHistory(24).then(w => setWt((w ?? []).filter(p => p.value > 0).map(p => ({ t: tOf(p.date), v: p.value })))).catch(() => {});
       // Power curve (fetches run detail with progress).
       const cur = await computePowerCurve(runs, (done, total) => setProgress({ done, total }));
       if (cur.points.length < 2) setError('Not enough running-power data yet to draw a curve.');
       setCurve(cur);
       // Decoupling last (also fetches detail, but only long aerobic runs → fewer).
-      decouplingTrend(runs).then(setDc).catch(() => setDc([]));
+      decouplingTrend(runs, (done, total) => setDcProg({ done, total }))
+        .then(d => { setDc(d); setDcProg(null); })
+        .catch(() => { setDc([]); setDcProg(null); });
     } catch (e: any) {
       setError(e?.message ?? 'Could not build the statistics.');
     } finally { setLoading(false); setProgress(null); }
   }, []);
+
+  // Deep rebuild: the normal snapshot only holds ~3 months of runs, so the charts look "cut off" on
+  // longer ranges. Pull the full multi-year run history (≤24mo) into the snapshot cache, then rebuild.
+  const rebuildDeep = useCallback(async () => {
+    setLoading(true); setError(null); setStepMsg('Reading full history…');
+    try {
+      const snap = await fetchHealthSnapshot({ months: 24, light: false, onProgress: (step, pct) => setStepMsg(`${step} ${pct}%`) });
+      await saveSnapshotCache(snap);
+      await saveStatsRuns(mergeRuns((snap as any).runs ?? [], await loadStatsRuns()));   // seed durable history
+      await clearPowerCurveCache();
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not load full history.'); setLoading(false); setStepMsg(null); return;
+    }
+    setStepMsg(null);
+    await build();
+  }, [build]);
 
   useEffect(() => { build(); }, [build]);
   useEffect(() => { loadEvents().then(list => setEvents(
@@ -380,7 +445,14 @@ export default function StatisticsScreen() {
   const spanMs = days ? days * 86400000 : Math.max(1, gMax - gMin);
   const t1 = days ? gMax - offset * spanMs : gMax;
   const t0 = days ? t1 - spanMs : gMin;
-  const zoneWeeks = useMemo(() => zoneDistributionOverTime(allRuns, 0, gMax + 86400000), [allRuns, gMax]);
+  const zoneWeeks = useMemo(() => zoneDistributionOverTime(allRuns, 0, gMax + 86400000, maxHR), [allRuns, gMax, maxHR]);
+  // Moving "normal aerobic efficiency" band + the runs that survive its cut + a stable recent-median read.
+  const { dcClean, dcBand, dcMed } = useMemo(() => {
+    const { clean, band } = decouplingBanded(dc ?? []);
+    const recent = clean.slice(-8).map(p => p.pct).sort((a, b) => a - b);
+    const med = recent.length ? recent[Math.floor(recent.length / 2)] : null;
+    return { dcClean: clean, dcBand: band.map(b => ({ t: tOf(b.date), lo: b.lo, hi: b.hi })), dcMed: med };
+  }, [dc]);
   const monthYear = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 
   const onLayout = (e: LayoutChangeEvent) => {
@@ -397,7 +469,9 @@ export default function StatisticsScreen() {
           <Text style={s.back}>‹ Back</Text>
         </TouchableOpacity>
         <Text style={s.title}>Statistics</Text>
-        <View style={{ width: 44 }} />
+        <TouchableOpacity onPress={() => router.push('/data-chat?mode=stats')} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+          <Text style={{ fontSize: 22 }}>💬</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Shared time-window controls — every chart below moves together */}
@@ -423,7 +497,7 @@ export default function StatisticsScreen() {
             <View style={s.center}>
               <ActivityIndicator size="large" color={CTL_BLUE} />
               <Text style={s.loadingText}>
-                {progress && progress.total > 0 ? `Reading runs… ${progress.done}/${progress.total}` : 'Loading…'}
+                {stepMsg ?? (progress && progress.total > 0 ? `Reading runs… ${progress.done}/${progress.total}` : 'Loading…')}
               </Text>
             </View>
           ) : error ? (
@@ -460,29 +534,29 @@ export default function StatisticsScreen() {
                 From {curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4).
                 A fed, paced 20-min test refines the long end of this curve.
               </Text>
-              <TouchableOpacity style={s.rebuild} onPress={() => { clearPowerCurveCache().then(build); }}>
-                <Text style={s.rebuildText}>↻ Rebuild from scratch</Text>
+              <TouchableOpacity style={s.rebuild} onPress={rebuildDeep}>
+                <Text style={s.rebuildText}>↻ Rebuild + load full history</Text>
               </TouchableOpacity>
             </>
           ) : null}
         </View>
 
         {/* ── Efficiency Factor ── */}
-        {ef.length >= 2 && (
+        {ef.filter(p => p.ef > 0).length >= 2 && (() => { const p = ef.filter(x => x.ef > 0); return (
           <View style={s.card}>
             <Text style={s.cardTitle}>Efficiency Factor</Text>
             <Text style={s.cardSub}>Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.</Text>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
-              pts={ef.map(p => ({ t: tOf(p.date), v: p.ef, color: p.aerobic ? '#22c55e' : '#cbd5e1' }))} />
+              pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
             <Text style={s.foot}>
-              Grey line = trend. Green = steady aerobic runs. Latest {ef[ef.length - 1].ef.toFixed(2)}
-              {ef.filter(p => p.aerobic).length >= 2 ? ((): string => {
-                const a = ef.filter(p => p.aerobic); const d = a[a.length - 1].ef - a[0].ef;
+              Grey line = trend. Green = steady aerobic runs. Latest {p[p.length - 1].ef.toFixed(2)}
+              {p.filter(x => x.aerobic).length >= 2 ? ((): string => {
+                const a = p.filter(x => x.aerobic); const d = a[a.length - 1].ef - a[0].ef;
                 return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
               })() : ''}
             </Text>
           </View>
-        )}
+        ); })()}
 
         {/* ── Running economy (EC = speed ÷ power, HR-independent) ── */}
         {ef.filter(p => p.ec > 0).length >= 2 && (() => { const p = ef.filter(x => x.ec > 0); return (
@@ -490,8 +564,9 @@ export default function StatisticsScreen() {
             <Text style={s.cardTitle}>Running Economy (EC)</Text>
             <Text style={s.cardSub}>Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy. Rising = more speed per watt.</Text>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
-              pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
-            <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).</Text>
+              pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))}
+              pts2={wt} color2="#a855f7" y2fmt={(v) => v.toFixed(1)} y2label="kg" />
+            <Text style={s.foot}>Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).{wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}</Text>
           </View>
         ); })()}
 
@@ -551,15 +626,16 @@ export default function StatisticsScreen() {
           <Text style={s.cardTitle}>Aerobic Decoupling (Pw:HR)</Text>
           <Text style={s.cardSub}>How much HR drifts up relative to power over a steady run. Under 5% = strong aerobic base.</Text>
           {dc == null ? (
-            <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…</Text></View>
-          ) : dc.length >= 2 ? (
+            <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…{dcProg && dcProg.total ? ` ${dcProg.done}/${dcProg.total}` : ''}</Text></View>
+          ) : dcClean.length >= 2 ? (
             <>
               <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
                 refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} yfmt={(v) => `${Math.round(v)}%`}
-                pts={dc.map(p => ({ t: tOf(p.date), v: p.pct }))} />
+                bandSeries={dcBand} pts={dcClean.map(p => ({ t: tOf(p.date), v: p.pct }))} />
               <Text style={s.foot}>
-                One point per steady run ≥30 min. Green line = 5% threshold. Latest {dc[dc.length - 1].pct.toFixed(1)}%
-                {dc[dc.length - 1].pct < 5 ? ' — well-coupled aerobic base.' : ' — some drift; more Z2 volume helps.'}
+                One point per steady run ≥30 min. Green line = 5% threshold. {dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of last ${Math.min(8, dcClean.length)})` : ''}, latest run {dcClean[dcClean.length - 1].pct.toFixed(1)}%.
+                {(dcMed ?? dcClean[dcClean.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.'}
+                {`  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dc.length - dcClean.length} run${dc.length - dcClean.length === 1 ? '' : 's'} cut as unusable (stop-and-go, HR dropout, or not steady).`}
               </Text>
             </>
           ) : (

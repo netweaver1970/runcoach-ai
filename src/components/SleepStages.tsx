@@ -4,10 +4,12 @@
  * share sheet. Fed a single SleepSession (any day) so it works with the day-by-day navigation.
  */
 import React, { useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import Svg, { Rect, Circle } from 'react-native-svg';
 import ViewShot from 'react-native-view-shot';
 import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system';
 import { SleepSession } from '../types';
 import { Palette } from '../theme';
 
@@ -84,10 +86,26 @@ export function SleepStagesCard({
   const share = async () => {
     try {
       const uri = await shotRef.current?.capture?.();
+      // UTI matters on iOS: without it the share sheet treats the capture as an opaque file, which is why
+      // several actions (Copy in particular) silently did nothing.
       if (uri && (await Sharing.isAvailableAsync())) {
-        await Sharing.shareAsync(uri, { mimeType: 'image/png', dialogTitle: 'Share sleep' });
+        await Sharing.shareAsync(uri, { mimeType: 'image/png', dialogTitle: 'Share sleep', UTI: 'public.png' });
       }
     } catch { /* user cancelled or capture failed */ }
+  };
+
+  // Explicit copy — the share sheet's own "Copy" acts on a file URL and often no-ops, so put the PNG on the
+  // clipboard directly as base64 instead.
+  const copy = async () => {
+    try {
+      const uri = await shotRef.current?.capture?.();
+      if (!uri) { Alert.alert('Copy failed', 'Could not capture the card.'); return; }
+      const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      await Clipboard.setImageAsync(b64);
+      Alert.alert('Copied', 'Sleep card copied — paste it anywhere.');
+    } catch (e: any) {
+      Alert.alert('Copy failed', e?.message ?? 'Could not access the clipboard.');
+    }
   };
 
   return (
@@ -132,9 +150,14 @@ export function SleepStagesCard({
         </View>
       </ViewShot>
 
-      <TouchableOpacity style={s.shareBtn} onPress={share} activeOpacity={0.8}>
-        <Text style={s.shareTxt}>📤  Share</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <TouchableOpacity style={[s.shareBtn, { flex: 1 }]} onPress={share} activeOpacity={0.8}>
+          <Text style={s.shareTxt}>📤  Share</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.shareBtn, s.copyBtn]} onPress={copy} activeOpacity={0.8}>
+          <Text style={s.shareTxt}>⧉  Copy</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -161,8 +184,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   needLabel: { fontSize: 15, fontWeight: '600', color: c.text },
   needVal: { fontSize: 15, fontWeight: '700', color: c.text },
   shareBtn: {
-    marginTop: 12, alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 28,
+    marginTop: 12, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 22,
     backgroundColor: '#8e44ad', borderRadius: 22,
   },
+  copyBtn: { backgroundColor: '#6b7280' },
   shareTxt: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

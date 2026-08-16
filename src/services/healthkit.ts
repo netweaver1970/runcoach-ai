@@ -67,6 +67,7 @@ import { getSwitchList, regimeForDate, AccountingMode } from './accounting';
 const SLEEP_BANK_BASE_GOAL = 375;
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
+import { runDecouple, DC_GROSS_MAX } from './decoupling';
 import {
   getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, getRunOverrides, isPowerZonesConfigured,
@@ -2891,12 +2892,17 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?
   // date-keyed "from now" change); a peak-based estimate (clamped) covers days the resolver can't.
   const fallbackMax = Math.max(185, Math.min(205, Math.round(peak)));
 
-  const windowsByDay = new Map<string, { s: number; e: number }[]>();
+  // Runs the USER manually flagged "HR monitor unreliable" — the auto-detector only catches flat-lined /
+  // dropped-beat patterns above its threshold, so a partially-bad strap can slip through it. Honour the
+  // manual flag too, else that run's HR-TRIMP under-counts and the whole DAY reads low (a multi-run day
+  // silently loses one run's load).
+  const manualBadHr = await getHrUnreliableRuns().catch(() => ({} as Record<string, boolean>));
+  const windowsByDay = new Map<string, { s: number; e: number; uuid?: string }[]>();
   for (const w of (workouts as any[])) {
     const wd  = new Date(toISOStr(w.startDate));
     const day = toLocalDateStr(wd);
     if (!windowsByDay.has(day)) windowsByDay.set(day, []);
-    windowsByDay.get(day)!.push({ s: wd.getTime(), e: wd.getTime() + workoutDurationSec(w) * 1000 });
+    windowsByDay.get(day)!.push({ s: wd.getTime(), e: wd.getTime() + workoutDurationSec(w) * 1000, uuid: w.uuid });
   }
 
   // Power samples grouped by local day (only runs have power) → used to repair unreliable-HR run windows.
@@ -2919,7 +2925,9 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?
     if (p2h && windows.length) {
       const dayPower = powerByDay.get(day) ?? [];
       for (const win of windows) {
-        if (!assessHrReliability(samples, win.s, win.e).unreliable) continue;
+        // Repair if EITHER the auto-detector fires OR the user flagged this run by hand.
+        const flagged = !!(win.uuid && (manualBadHr as Record<string, boolean>)[win.uuid]);
+        if (!flagged && !assessHrReliability(samples, win.s, win.e).unreliable) continue;
         const winPow = dayPower.filter(p => p.t >= win.s && p.t <= win.e);
         if (winPow.length < 5) continue;               // no/too-little power (not a run) → can't repair
         const tr = powerTrimp(winPow, win.s, win.e, p2h);
@@ -2978,7 +2986,7 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMa
   // changed, drop the whole cache and recompute — otherwise old days keep stale, differently-scaled
   // values. `__maxHr` is a sentinel (not a date key, so it's never iterated as a day).
   const tag = history.length ? 'k:' + history.map((h) => `${h.from}@${h.maxHR}`).join(',') : `s:${fallback}`;
-  const TRIMP_CACHE_VER = 4; // v4: power-repair of unreliable-HR run windows (2026-08-12)
+  const TRIMP_CACHE_VER = 5; // v5: power-repair also honours the MANUAL "HR unreliable" flag (2026-08-16)
   if ((cache as any)['__maxHr'] !== tag || cache['__ver'] !== TRIMP_CACHE_VER) cache = { '__maxHr': tag, '__ver': TRIMP_CACHE_VER } as any;
   let changed = false;
 
@@ -3074,30 +3082,25 @@ export async function analyzeAerobicBase(): Promise<any> {
     const splits = ((detail?.kmSplits ?? []) as any[]).filter((s) => s.avgHR > 0 && s.paceSecs > 0);
     const durMin = Math.round((r.duration ?? 0) / 60);
     diagnostics.push({ date: String(r.date).slice(0, 10), distKm: Math.round((r.distance ?? 0) / 100) / 10, durMin, label: r.label ?? null, splitCount: splits.length });
-    if (splits.length < 5) continue;
-    const usable = splits.slice(1);                                   // drop the warm-up km (HR still rising)
-    const mid = Math.floor(usable.length / 2);
-    const decoup = (eff: (s: any) => number) => {
-      const mean = (a: any[]) => a.reduce((x, s) => x + eff(s), 0) / a.length;
-      const e1 = mean(usable.slice(0, mid)), e2 = mean(usable.slice(mid));
-      return e1 > 0 ? Math.round(((e1 - e2) / e1) * 1000) / 10 : null;  // + = efficiency dropped (HR drifted up)
-    };
-    const hasPower = usable.every((s) => s.avgPower > 0);
-    const dPower = hasPower ? decoup((s) => s.avgPower / s.avgHR) : null;     // power/HR — terrain-robust
-    const dPace  = decoup((s) => (1000 / s.paceSecs) / s.avgHR);              // speed(m/s)/HR — cross-check
+    if (splits.length < 5 || !detail) continue;
+    // Canonical decoupling — the SAME calc as the Statistics chart (Pw:HR → speed:HR → km-splits, with the
+    // steadiness gate), so this outlook and the chart can never quote different numbers for the same run.
+    const dc = runDecouple(detail);
+    if (dc == null) continue;
+    const usable = splits.slice(1);
     const hrs = usable.map((s) => s.avgHR);
-    const hrMean = hrs.reduce((a, b) => a + b, 0) / hrs.length;
-    const hrSd = Math.sqrt(hrs.reduce((a, h) => a + (h - hrMean) ** 2, 0) / hrs.length);
-    const cv = Math.round((hrSd / hrMean) * 1000) / 10;                       // HR variability across kms → steadiness
+    const hrMean = hrs.length ? hrs.reduce((a, b) => a + b, 0) / hrs.length : 0;
+    const hrSd = hrs.length ? Math.sqrt(hrs.reduce((a, h) => a + (h - hrMean) ** 2, 0) / hrs.length) : 0;
+    const cv = hrMean ? Math.round((hrSd / hrMean) * 1000) / 10 : 0;          // HR variability across kms → steadiness
     const tempC = detail?.weatherTempC ?? r.tempC ?? null;
     rows.push({
       date: String(r.date).slice(0, 10), km: usable.length + 1, durMin, avgHR: Math.round(hrMean),
-      decouplePct: dPower ?? dPace, decouplePowerPct: dPower, decouplePacePct: dPace, hrCVpct: cv, tempC,
+      decouplePct: dc, hrCVpct: cv, tempC,
       hot: tempC != null && tempC >= HEAT_C, steady: cv < 8, longEnough: durMin >= MIN_DUR_MIN && (usable.length + 1) >= MIN_KM,
     });
   }
 
-  const clean = rows.filter((r) => r.steady && !r.hot && r.longEnough && r.decouplePct != null);
+  const clean = rows.filter((r) => r.steady && !r.hot && r.longEnough && r.decouplePct != null && Math.abs(r.decouplePct) <= DC_GROSS_MAX);
   const median = (a: number[]) => a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
   const med = median(clean.map((r) => r.decouplePct));
   const confidence = clean.length >= 3 ? 'ok' : clean.length >= 1 ? 'provisional (few clean long runs — confirm with more)' : 'none';
@@ -3106,7 +3109,7 @@ export async function analyzeAerobicBase(): Promise<any> {
     : med < 7.5 ? 'base DEVELOPING (5–7.5%) — mostly hold; ease intensity in cautiously'
     :             'base BUILDING (>7.5%) — prioritise easy time-on-feet before adding power';
   return {
-    method: `decoupling = (firstHalf−secondHalf)/firstHalf of power/HR (pace/HR cross-check); warm-up km dropped; clean = HR CV <8% AND ≥${MIN_DUR_MIN} min AND ≥${MIN_KM} km AND <${HEAT_C}°C`,
+    method: `decoupling via shared runDecouple() (same as Statistics chart: Pw:HR→speed:HR→km-splits, warm-up excluded, steadiness gate); clean = HR CV <8% AND ≥${MIN_DUR_MIN} min AND ≥${MIN_KM} km AND <${HEAT_C}°C AND |drift|≤${DC_GROSS_MAX}%`,
     totalRuns: allRuns.length, candidatesChecked: candidates.length,
     qualifyingRuns: rows.length, steadyCleanRuns: clean.length, confidence, medianDecouplePct: med, verdict,
     runs: rows, diagnostics,

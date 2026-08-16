@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { TABLE_CELL } from '../src/mdTable';
 import MarkdownBody from '../src/MarkdownBody';
 import { loadSnapshotCache } from '../src/services/healthkit';
@@ -501,6 +503,25 @@ export default function ChatScreen() {
     }
   }, []);
 
+  // ── Export the conversation as a shareable markdown document ────────────────
+  const exportChat = useCallback(async () => {
+    const real = messages.filter(m => !m.loading && (m.content ?? '').trim());
+    if (!real.length) { Alert.alert('Nothing to export', 'This chat is empty.'); return; }
+    try {
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+      const body = [`# Coach chat — ${new Date().toLocaleString()}`, '',
+        ...real.map(m => `## ${m.role === 'user' ? 'Me' : 'Coach'}\n\n${m.content}`)].join('\n\n');
+      const uri = `${FileSystem.cacheDirectory}runcoach-coach-chat-${stamp}.md`;
+      await FileSystem.writeAsStringAsync(uri, body);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'text/markdown', dialogTitle: 'Export chat', UTI: 'net.daringfireball.markdown' });
+      } else {
+        await Clipboard.setStringAsync(body);
+        Alert.alert('Copied', 'Sharing unavailable — the conversation was copied instead.');
+      }
+    } catch (e: any) { Alert.alert('Export failed', e?.message ?? String(e)); }
+  }, [messages]);
+
   // ── Render message ──────────────────────────────────────────────────────────
   const renderMessage = ({ item }: { item: Message }) => {
     if (item.loading) {
@@ -551,9 +572,14 @@ export default function ChatScreen() {
         options={{
           title: 'Coach',
           headerRight: () => (
-            <TouchableOpacity onPress={handleNewChat} style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
-              <Text style={{ color: c.accent, fontSize: 14, fontWeight: '600' }}>New chat</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TouchableOpacity onPress={exportChat} style={{ paddingHorizontal: 8, paddingVertical: 6 }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }}>⤓</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleNewChat} style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
+                <Text style={{ color: c.accent, fontSize: 14, fontWeight: '600' }}>New chat</Text>
+              </TouchableOpacity>
+            </View>
           ),
         }}
       />
