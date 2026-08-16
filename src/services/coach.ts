@@ -207,7 +207,7 @@ export async function shrinkWantsQualityToday(snap: CoachSnapshot): Promise<bool
   const tmpl = parseWeeklyTemplate(md), cm = parseWeeklyCommitments(md);
   const dow = new Date(snap.date + 'T00:00:00').getDay();
   // Never force a quality session onto a standing-commitment day (or the day after a hard one).
-  if (cm[dow] || cm[(dow + 6) % 7]?.hard) return false;
+  if (cm[dow] || (cm[(dow + 6) % 7]?.hard && cm[(dow + 6) % 7]?.certain)) return false;
   return ['intervals', 'tempo', 'long'].includes(tmpl[dow] as string);
 }
 
@@ -728,7 +728,7 @@ export function parseWeeklyTemplate(text: string): Record<number, WeekKind> {
 // after the fact. Written on the same running-schedule line, e.g. "- Thu: rest + dancing (evening)".
 // `hard` marks the impact-heavy ones: they also protect the FOLLOWING day, because that is when the legs
 // pay for them. Running sessions listed on the same line still parse normally — this is additive.
-export interface WeeklyCommitment { label: string; hard: boolean }
+export interface WeeklyCommitment { label: string; hard: boolean; certain: boolean }
 const COMMITMENTS: { re: RegExp; label: string; hard: boolean }[] = [
   { re: /\bdanc(e|ing)\b/i,                     label: 'dancing',    hard: true  },
   { re: /\bfootball|soccer|basketbal|tennis|padel|squash\b/i, label: 'team sport', hard: true },
@@ -745,7 +745,12 @@ export function parseWeeklyCommitments(text: string): Record<number, WeeklyCommi
     const dow = DOW_IX[m[1].toLowerCase()];
     if (out[dow]) continue;                       // first mention per weekday wins, like the template
     const hit = COMMITMENTS.find(c => c.re.test(line));
-    if (hit) out[dow] = { label: hit.label, hard: hit.hard };
+    // "every week"/"weekly" marks a commitment you ALWAYS keep. Without it the commitment is treated as
+    // occasional: the planner reserves the day itself (so there's space for it) but does NOT pre-emptively
+    // protect the following day, which would otherwise cost two days a week for a night you may not take.
+    // The day-after easing then comes from the ACTUAL logged session — it lands in strain/recentActivities
+    // and the daily coach already eases the next run off tired legs.
+    if (hit) out[dow] = { label: hit.label, hard: hit.hard, certain: /\bevery week\b|\bweekly\b/i.test(line) };
   }
   return out;
 }
@@ -986,7 +991,7 @@ export async function getWeekPlan(
     // stack against it; the session is DEFERRED rather than dropped, so the shuffle re-places it later.
     const commitToday = commitments[d.getDay()];
     const commitYday  = commitments[(d.getDay() + 6) % 7];
-    const commitBlock = !!commitToday || !!(commitYday?.hard);
+    const commitBlock = !!commitToday || !!(commitYday?.hard && commitYday?.certain);
     const spaced = (i - lastQ) >= 2 && !commitBlock; // ≥1 non-quality day since the last quality session
     let intensity: CoachIntensity = 'rest'; let base = 0; let placed: WeekKind = 'rest';
     let shifted = false, deferredHere = false, banked = false, shrunk = false, forcePlaced = false;
@@ -1049,10 +1054,10 @@ export async function getWeekPlan(
     const note =
       // Commitment days explain themselves first — otherwise "deferred past the cap" reads as a volume
       // problem when the real reason is the standing commitment on the calendar.
-      commitToday && intensity === 'rest'  ? `Rest — ${commitToday.label} tonight` :
-      commitToday                          ? `Easy — ${commitToday.label} tonight, keep the legs fresh` :
-      commitYday?.hard && intensity === 'rest' ? `Recovery — day after ${commitYday.label}` :
-      commitYday?.hard                     ? `Easy recovery — day after ${commitYday.label}` :
+      commitToday && intensity === 'rest'  ? `Rest — space kept for ${commitToday.label}` :
+      commitToday                          ? `Easy — ${commitToday.label} tonight if you go` :
+      commitYday?.hard && commitYday?.certain && intensity === 'rest' ? `Recovery — day after ${commitYday.label}` :
+      commitYday?.hard && commitYday?.certain ? `Easy recovery — day after ${commitYday.label}` :
       reentry && intensity === 'easy' ? 'Easy Z2 — rebuilding after the break (recovery-gated)' :
       reentry                         ? 'Recovery day — rebuilding' :
       shifted                         ? `${qName(placed)} — rescheduled here as the cap freed up` :
@@ -1146,7 +1151,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // the template says. Mirrors getWeekPlan so the daily card and the 7-day plan can't disagree.
   const commitToday = commits[dow];
   const commitYday  = commits[(dow + 6) % 7];
-  const commitBlock = !!commitToday || !!(commitYday?.hard);
+  const commitBlock = !!commitToday || !!(commitYday?.hard && commitYday?.certain);
   const todaySlot   = reentry ? null : await loadTodaysWeekPlanSlot(snap.date);
   const todayDone   = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
   // Shrink-to-fit FORCE-PLACES today's scheduled quality (short) even over the cap — driven by the
