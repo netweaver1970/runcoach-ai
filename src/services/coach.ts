@@ -845,7 +845,12 @@ export function buildTypeRamp(
     if (k) byKind.set(k, e.min);
   }
   return (dow: number, fullBase: number, isLong: boolean, kind?: WeekKind): number => {
-    const recent = (kind ? byKind.get(kind) : undefined) ?? byDow.get(dow) ?? 0;
+    // Type-keying applies to the QUALITY kinds only. 'easy' covers everything from a 20-min recovery jog to
+    // a 45-min Z2, so keying it by type collapses every easy day onto whichever of those ran most recently
+    // — one short recovery run then caps the whole week's aerobic volume (observed: 280 → 233 min/wk).
+    // Easy keeps the per-weekday baseline; easyGrow already grows easy volume against the budget.
+    const typed = kind && kind !== 'easy' && kind !== 'flex' ? byKind.get(kind) : undefined;
+    const recent = typed ?? byDow.get(dow) ?? 0;
     if (recent <= 0) return Math.min(fullBase, isLong ? 45 : 30);   // no recent history → conservative first dose
     let cap = recent * (1 + capPct / 100);
     if (isLong) cap = Math.min(cap, recent + RAMP_LONG_STEP_MAX);   // long: absolute per-week jump backstop
