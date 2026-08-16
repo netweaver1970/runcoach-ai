@@ -814,16 +814,38 @@ export function shapeFits(kind: string | undefined, blocks?: WatchWorkoutBlock[]
 // same +cap% ToF ceiling drives it, so it's one knob. The LONG additionally never jumps > LONG_STEP_MAX min/wk
 // (a %-cap alone lets a big long jump too far — a joint-protecting backstop, dormant at 10%).
 const RAMP_LONG_STEP_MAX = 10;
-function buildTypeRamp(recentTof: { date: string; min: number }[] | undefined, capPct: number) {
-  // Baseline = the MOST RECENT session on each weekday (weekday ≈ type). recentTof is chronological, so the
-  // last non-zero entry per weekday wins → a clean +cap% off where you actually were last, not a past peak.
+// Map a logged run label onto the planner's session kinds, so the ramp can key off the TYPE actually run.
+function kindOfRunType(t: string | undefined): WeekKind | null {
+  const s = (t ?? '').toLowerCase();
+  if (!s) return null;
+  if (s.includes('interval')) return 'intervals';
+  if (s.includes('tempo') || s.includes('threshold')) return 'tempo';
+  if (s.includes('long')) return 'long';
+  if (s.includes('z2') || s.includes('recovery') || s.includes('easy')) return 'easy';
+  return null;
+}
+export function buildTypeRamp(
+  recentTof: { date: string; min: number }[] | undefined,
+  recentRuns: { date: string; type: string }[] | undefined,
+  capPct: number,
+) {
+  // Baseline = the MOST RECENT session of the SAME TYPE. This used to key off the WEEKDAY on the assumption
+  // "weekday ≈ type", which silently breaks the moment the athlete reorganises the week: moving the long run
+  // to a day that previously held short Z2s ramped the long off those short runs and capped it far too low.
+  // recentRuns carries the logged label per date, so we join on that and fall back to the weekday only when
+  // the type is unknown (older entries / non-run days).
+  const byKind = new Map<WeekKind, number>();
   const byDow = new Map<number, number>();
+  const typeByDate = new Map<string, string>();
+  for (const r of (recentRuns ?? [])) typeByDate.set(r.date.slice(0, 10), r.type);
   for (const e of (recentTof ?? [])) {
-    const dw = new Date(e.date + 'T00:00:00').getDay();
-    if ((e.min ?? 0) > 0) byDow.set(dw, e.min);
+    if (!((e.min ?? 0) > 0)) continue;
+    byDow.set(new Date(e.date + 'T00:00:00').getDay(), e.min);          // chronological → last one wins
+    const k = kindOfRunType(typeByDate.get(e.date.slice(0, 10)));
+    if (k) byKind.set(k, e.min);
   }
-  return (dow: number, fullBase: number, isLong: boolean): number => {
-    const recent = byDow.get(dow) ?? 0;
+  return (dow: number, fullBase: number, isLong: boolean, kind?: WeekKind): number => {
+    const recent = (kind ? byKind.get(kind) : undefined) ?? byDow.get(dow) ?? 0;
     if (recent <= 0) return Math.min(fullBase, isLong ? 45 : 30);   // no recent history → conservative first dose
     let cap = recent * (1 + capPct / 100);
     if (isLong) cap = Math.min(cap, recent + RAMP_LONG_STEP_MAX);   // long: absolute per-week jump backstop
@@ -839,7 +861,7 @@ export async function getWeekPlan(
   if (await raceActive()) { const rw = await getRaceWeekPlan(snap); if (rw) return rw.days; }
   const today = new Date(snap.date + 'T00:00:00');
   const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
-  const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, capPct);   // per-type progressive-overload cap (no jumps)
+  const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, capPct);   // per-type progressive-overload cap (no jumps)
   const periodization = await getPeriodization();  // build/deload cycle modulates each week's cap multiplier
   const MEANINGFUL = 20;
   const shrink = await getShrinkToFit();  // ON → a cap-blocked quality SHRINKS to fit its day instead of deferring
@@ -995,7 +1017,7 @@ export async function getWeekPlan(
     if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
     // PROGRESSIVE OVERLOAD: ramp this day's TYPE from where it recently was (+cap%/week), so it climbs toward
     // its target instead of jumping there. Applies to every run type (long gets the extra +10min/wk backstop).
-    if (intensity !== 'rest') base = typeRamp(d.getDay(), base, placed === 'long');
+    if (intensity !== 'rest') base = typeRamp(d.getDay(), base, placed === 'long', placed);
 
     let capRest = false;
     // HARD cap gate (safety) — but shrink-to-fit's force-placed quality keeps its day even over budget.
@@ -1275,8 +1297,8 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // budget — matches the 7-day plan's per-type ramp so a type climbs to target instead of jumping (the slot
   // path is already ramped, so this is idempotent there; it's the no-slot fallback that needs it).
   if (!honorDirect) {   // intensity is already non-rest here (rest returned earlier)
-    const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT);
-    base = typeRamp(new Date(snap.date + 'T00:00:00').getDay(), base, sk === 'long');
+    const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT);
+    base = typeRamp(new Date(snap.date + 'T00:00:00').getDay(), base, sk === 'long', sk as any);
   }
   // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
   // only today's heat eases it — so the daily card matches the 7-day plan instead of re-capping to rest.
