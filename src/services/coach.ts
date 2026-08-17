@@ -14,7 +14,8 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDista
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
-import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone } from './trainingLoad';
+import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone, trainingDayKey } from './trainingLoad';
+import { getSwitchList, regimeForDate } from './accounting';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
 import { DayStrain, ActivitySummary, RunWorkout } from '../types';
@@ -2142,6 +2143,39 @@ export async function computeRolling7d(toDate = new Date()): Promise<Rolling7d> 
  * Single source used by both the Strain screen and the background day-view updater, so
  * the on-demand plan and the auto-prepared plan are identical.
  */
+
+/** Per-day time-on-feet from the runs themselves, honouring the accounting regime in force on each date.
+ *  Falls back to the passed-in series for any day with no run objects (older days beyond the run window). */
+async function tofFromRuns(
+  fallback: { date: string; value: number }[],
+  runs?: RunWorkout[],
+): Promise<{ date: string; value: number }[]> {
+  if (!runs?.length) return fallback;
+  const switches = await getSwitchList().catch(() => [] as any);
+  const byDay = new Map<string, number>();
+  for (const r of runs) {
+    const day = trainingDayKey(new Date(r.date).getTime());
+    const regime = regimeForDate(r.date, switches);
+    let min: number;
+    if (regime === 'full') {
+      min = Math.round((r.duration ?? 0) / 60);
+    } else if (r.segments?.length) {
+      // work + drills: the same set the detail screen counts (warm-up / cool-down / recovery excluded).
+      const sec = r.segments
+        .filter(sg => !/warm|cool|recover|rest|walk|prep/i.test(sg.label ?? ''))
+        .reduce((a, sg) => a + (sg.durationSec ?? 0), 0);
+      min = Math.round(sec / 60);
+    } else {
+      min = Math.round(((r.workDuration ?? r.duration) ?? 0) / 60);
+    }
+    if (min > 0) byDay.set(day, (byDay.get(day) ?? 0) + min);
+  }
+  const out = fallback.map(d => (byDay.has(d.date) ? { date: d.date, value: byDay.get(d.date)! } : d));
+  const seen = new Set(out.map(d => d.date));
+  for (const [date, value] of byDay) if (!seen.has(date)) out.push({ date, value });
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export async function assembleCoachSnapshot(strain: DayStrain | null, activities?: ActivitySummary[], runs?: RunWorkout[]): Promise<CoachSnapshot> {
   // Refresh the sync-readable workout-structure cache so synthesizeWorkout / parseWorkout (both sync) see
   // the athlete's current warm-up / cool-down / drills config before any plan or watch workout is built.
@@ -2179,7 +2213,15 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   const yDate = new Date(new Date(date + 'T00:00:00').getTime() - 86_400_000);
   const yesterdayKey = `${yDate.getFullYear()}-${String(yDate.getMonth() + 1).padStart(2, '0')}-${String(yDate.getDate()).padStart(2, '0')}`;
 
-  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis, latest.tsb, strain?.acwr);
+  // ToF per day: prefer the RUN's own segment-derived minutes over fetchDailyDurationHistory's parse.
+  // That parse reads phases out of the workout uuid metadata and falls back to the FULL duration whenever
+  // it can't (`segs.length === 0` / `workSec === 0`), so in 'work' accounting a run whose metadata didn't
+  // decode silently counted its warm-up and cool-down: 17 Aug logged 90min against a 54min work block, and
+  // 13 Aug counted 44min against a 28.6min ToF. Inflated volume then eats the rolling ceiling — the cap
+  // looked punitive because the input was wrong. The run objects already carry workDuration/segments
+  // computed by the detail path, so use those and keep the query as the fallback.
+  const durFixed = await tofFromRuns(dur, runs);
+  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(durFixed, new Date(), capPct, capBasis, latest.tsb, strain?.acwr);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
