@@ -25,6 +25,22 @@ const CTL_BLUE = '#3B82F6';
 // than the athlete's actual fitness. Flagged orange on those charts only — EC is HR-independent, so it is
 // deliberately never heat-tinted (that's the chart to trust on a hot spell).
 const HEAT_ORANGE = '#f97316';
+
+// Run-time temperature as a smoothed secondary trace on the HEAT-AFFECTED charts (EF, SE, decoupling), so
+// a dip or a climb can be read against the weather that partly caused it. Smoothed over a small window
+// because the cue wanted here is "was this a warm spell", not each run's exact reading — raw per-run temps
+// zig-zag enough to obscure that. EC is deliberately excluded: it is HR-independent, so heat doesn't move
+// it, and its right axis already carries body weight.
+function tempTrace(pts: { date: string; tempC?: number }[], win = 3): TPt[] {
+  const withT = pts.filter(p => typeof p.tempC === 'number').map(p => ({ t: tOf(p.date), v: p.tempC as number }));
+  if (withT.length < 2) return [];
+  return withT.map((p, i) => {
+    const a = Math.max(0, i - Math.floor(win / 2)), b = Math.min(withT.length - 1, i + Math.floor(win / 2));
+    let sum = 0, n = 0;
+    for (let j = a; j <= b; j++) { sum += withT[j].v; n++; }
+    return { t: p.t, v: Math.round((sum / n) * 10) / 10 };
+  });
+}
 const EV_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981' };
 // Ordered shortest→longest to match the other history screens (app/history.tsx '1M','3M','6M','1Y' and
 // app/biology.tsx '1M'…'10Y') so the range tabs read the same way everywhere. 'All' closes the row for the
@@ -588,9 +604,11 @@ export default function StatisticsScreen() {
                 return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
               })() : ''}
               {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat lifts HR, so those sit LOW for reasons other than fitness.` : ''}
+              {tempTrace(p).length >= 2 ? '  The orange line is run-time temperature (right axis, smoothed) — dips here that track it upward are weather, not lost fitness.' : ''}
             </CardHead>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
-              pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
+              pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))}
+              pts2={tempTrace(p)} color2={HEAT_ORANGE} y2fmt={(v) => `${Math.round(v)}°`} y2label="°C" />
           </View>
         ); })()}
 
@@ -616,9 +634,11 @@ export default function StatisticsScreen() {
               Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).
               {' '}Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).
               {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}
+              {tempTrace(p).length >= 2 ? '  Orange line = run-time temperature (right axis, smoothed).' : ''}
             </CardHead>
             <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
-              pts={p.map(x => ({ t: tOf(x.date), v: x.se, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))} />
+              pts={p.map(x => ({ t: tOf(x.date), v: x.se, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))}
+              pts2={tempTrace(p)} color2={HEAT_ORANGE} y2fmt={(v) => `${Math.round(v)}°`} y2label="°C" />
           </View>
         ); })()}
 
@@ -668,13 +688,15 @@ export default function StatisticsScreen() {
             {dcClean.length >= 2 ? ((dcMed ?? dcClean[dcClean.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.') : ''}
             {dc ? `  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dc.length - dcClean.length} run${dc.length - dcClean.length === 1 ? '' : 's'} cut as unusable (stop-and-go, HR dropout, or not steady).` : ''}
             {dcClean.some(p => p.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat drives extra cardiac drift, so those read HIGH.` : ''}
+                {tempTrace(dcClean).length >= 2 ? '  Orange line = run-time temperature (right axis, smoothed) — drift rising with it is the weather.' : ''}
           </CardHead>
           {dc == null ? (
             <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…{dcProg && dcProg.total ? ` ${dcProg.done}/${dcProg.total}` : ''}</Text></View>
           ) : dcClean.length >= 2 ? (
               <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
                 refs={[{ y: 5, color: '#22c55e' }, { y: 0, color: '#94a3b8', dash: true }]} yfmt={(v) => `${Math.round(v)}%`}
-                bandSeries={dcBand} pts={dcClean.map(p => ({ t: tOf(p.date), v: p.pct, color: p.hot ? HEAT_ORANGE : undefined }))} />
+                bandSeries={dcBand} pts={dcClean.map(p => ({ t: tOf(p.date), v: p.pct, color: p.hot ? HEAT_ORANGE : undefined }))}
+                pts2={tempTrace(dcClean)} color2={HEAT_ORANGE} y2fmt={(v) => `${Math.round(v)}°`} y2label="°C" />
           ) : (
             <Text style={s.errorText}>Need a couple of steady runs ≥30 min with power to show decoupling.</Text>
           )}
@@ -692,7 +714,7 @@ const makeCh = (c: Palette) => StyleSheet.create({
 
 const makeS = (c: Palette) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: c.bg },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 10 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 14, minHeight: 52 },
   back: { color: c.accent, fontSize: 16, fontWeight: '600', width: 60 },
   title: { fontSize: 17, fontWeight: '700', color: c.text },
   scroll: { padding: 12, paddingBottom: 40 },

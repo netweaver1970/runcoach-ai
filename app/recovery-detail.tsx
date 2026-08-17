@@ -92,7 +92,7 @@ export default function RecoveryDetailScreen() {
     return (
       <SafeAreaView style={s.container}>
         <View style={s.header}>
-          <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
+          <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={{ paddingHorizontal: 4 }}>
             <Text style={s.backText}>‹ Back</Text>
           </TouchableOpacity>
           <View style={{ alignItems: 'center' }}>
@@ -117,7 +117,7 @@ export default function RecoveryDetailScreen() {
     <SafeAreaView style={s.container}>
       {/* Header */}
       <View style={s.header}>
-        <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
+        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={{ paddingHorizontal: 4 }}>
           <Text style={s.backText}>‹ Back</Text>
         </TouchableOpacity>
         <View style={{ alignItems: 'center' }}>

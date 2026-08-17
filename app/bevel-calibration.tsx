@@ -361,7 +361,7 @@ export default function BevelCalibrationScreen() {
     <SafeAreaView style={c.container}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={c.header}>
-          <TouchableOpacity onPress={() => router.back()} style={{ paddingHorizontal: 4 }}>
+          <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={{ paddingHorizontal: 4 }}>
             <Text style={c.backText}>‹ Back</Text>
           </TouchableOpacity>
           <Text style={c.title}>Calibration</Text>

@@ -327,7 +327,7 @@ export default function LabsScreen() {
 
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:   { flex: 1, backgroundColor: c.bg },
-  header:   { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 4 },
+  header:   { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10, minHeight: 52 },
   homeBtn:  { paddingVertical: 4, paddingRight: 4 },
   homeTxt:  { color: c.accent, fontSize: 15, fontWeight: '700' },
   title:    { color: c.text, fontSize: 18, fontWeight: '800' },

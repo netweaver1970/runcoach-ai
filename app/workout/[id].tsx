@@ -887,7 +887,7 @@ export default function WorkoutDetailScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* Header */}
       <View style={st.header}>
-        <TouchableOpacity onPress={() => router.back()} style={st.backBtn}>
+        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={st.backBtn}>
           <Text style={st.backText}>‹ Back</Text>
         </TouchableOpacity>
         <View style={{ alignItems: 'center', flex: 1 }}>

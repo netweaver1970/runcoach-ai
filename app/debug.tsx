@@ -143,7 +143,7 @@ export default function DebugScreen() {
     <SafeAreaView style={s.safe}>
       {/* nav bar */}
       <View style={s.nav}>
-        <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
+        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={s.backBtn}>
           <Text style={s.backTxt}>‹ Back</Text>
         </TouchableOpacity>
         <Text style={s.navTitle}>HR Debug</Text>

@@ -301,7 +301,7 @@ export default function BiologyMode() {
 
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:    { flex: 1, backgroundColor: c.bg },
-  header:    { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, backgroundColor: c.bg, borderBottomWidth: 1, borderColor: c.border },
+  header:    { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, minHeight: 52, backgroundColor: c.bg, borderBottomWidth: 1, borderColor: c.border },
   headerTop: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 },
   homeBtn:   { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
   homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 14 },

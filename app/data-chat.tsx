@@ -119,7 +119,7 @@ export default function DataChat() {
     <View style={s.screen}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={[s.header, { paddingTop: insets.top + 4 }]}>
-        <TouchableOpacity onPress={() => router.back()}><Text style={s.back}>‹ Back</Text></TouchableOpacity>
+        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }}><Text style={s.back}>‹ Back</Text></TouchableOpacity>
         <Text style={s.title}>{title}</Text>
         <View style={{ flex: 1 }} />
         {msgs.length > 0 && <TouchableOpacity onPress={exportChat} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={s.clear}>⤓</Text></TouchableOpacity>}
@@ -181,7 +181,7 @@ export default function DataChat() {
 
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:   { flex: 1, backgroundColor: c.bg },
-  header:   { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 6, borderBottomWidth: 1, borderBottomColor: c.border },
+  header:   { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12, minHeight: 52, borderBottomWidth: 1, borderBottomColor: c.border },
   back:     { color: c.accent, fontSize: 15, fontWeight: '700' },
   title:    { color: c.text, fontSize: 16, fontWeight: '800' },
   clear:    { color: c.textFaint, fontSize: 13, fontWeight: '700', marginLeft: 12 },
