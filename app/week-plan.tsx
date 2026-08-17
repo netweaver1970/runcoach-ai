@@ -24,12 +24,17 @@ type Row = WeekPlanDay & {
 // Derive the displayed label FROM the actual synthesized + cap-trimmed structure, so it always
 // matches what's prescribed: Z4/Z5 reps → Interval, Z3 → Tempo, a long Z2 run → Long, a short Z2 →
 // Recovery, otherwise Z2.
-function labelFromWorkout(wk: any, min: number): string {
+function labelFromWorkout(wk: any, min: number, kind?: string): string {
   if (!wk?.blocks?.length) return 'Rest';
+  // The PLANNER's decision wins. Deriving the badge from duration alone inverted the week: a 56min easy
+  // Z2 was badged "Long" just for clearing 50min, while the real long run — trimmed to 41min by the cap —
+  // was badged "Z2". That read as two long runs on days the plan never scheduled one.
+  if (kind === 'long') return 'Long';
+  if (kind === 'intervals') return 'Interval';
+  if (kind === 'tempo') return 'Tempo';
   const zones: string[] = wk.blocks.map((b: any) => b.hrZone).filter(Boolean);
   if (zones.some(z => z === 'Z4' || z === 'Z5')) return 'Interval';
   if (zones.some(z => z === 'Z3')) return 'Tempo';
-  if (min >= 50) return 'Long';
   if (min <= 22) return 'Recovery';
   return 'Z2';
 }
@@ -229,7 +234,7 @@ export default function WeekPlan() {
           const wk = !isRun ? null
             : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any, rqw, coach.loadCapPct), coach.powerZones);
           const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
-          const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins);
+          const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins, d.kind);
           const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;
           // NB: do NOT price this from prescribedTrimp(wk). That integrates the PRESCRIBED zones, which
           // assumes the athlete's HR actually reaches them. Checked against Geert's real runs (07-22):

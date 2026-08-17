@@ -15,7 +15,8 @@
 import { exportAllSettings } from './backup';
 import { computeBodyBattery } from './bodyBattery';
 import { buildTrainingLoadCalibration, loadSnapshotCache } from './healthkit';
-import { assembleCoachSnapshot, computeCapHistory } from './coach';
+import { assembleCoachSnapshot, computeCapHistory, parseWeeklyTemplate, parseWeeklyCommitments } from './coach';
+import { readKnowledgeContent } from './coachFiles';
 import { getPowerZones, getEffectiveMaxHr } from './claude';
 import { getAccountingMode } from './accounting';
 import { getBiologyReport, compositionChange } from './biology';
@@ -156,7 +157,22 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
   await add('coach', async () => {
     const snap = await loadSnapshotCache();
     if (!snap) return null;
-    return assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
+    const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
+    // The weekly template the planner ACTUALLY reads, raw + parsed. Without this a wrong plan can't be
+    // diagnosed off-device: the schedule lives in a knowledge file, so every reconstruction is a guess.
+    let schedule: any = null;
+    try {
+      const raw = await readKnowledgeContent('running-schedule').catch(() => '');
+      const tmpl = parseWeeklyTemplate(raw), cm = parseWeeklyCommitments(raw);
+      const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      schedule = {
+        raw,
+        rawLength: raw.length,
+        parsed: Object.fromEntries(WD.map((w, i) => [w, tmpl[i]])),
+        commitments: Object.fromEntries(Object.entries(cm).map(([d, v]: any) => [WD[+d], v])),
+      };
+    } catch (e: any) { schedule = { error: e?.message ?? String(e) }; }
+    return { ...coach, schedule };
   });
   // PER-RUN STRUCTURE — so a run can be correctly interpreted OFF-device: the labelled phases
   // (Warmup/Work/Recovery/Cooldown/Walk/Drills) with per-segment KPIs, plus the settings that DRIVE
