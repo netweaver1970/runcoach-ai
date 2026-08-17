@@ -935,11 +935,16 @@ export default function HistoryScreen() {
   // prevTotal always from the cumulative-transformed previous data (for comparison box)
   const cumPrevData = cumulativeMode ? chartPrevData : (supportsOverlay ? toCumulative(prevAggData) : undefined);
   const prevTotal   = cumPrevData && cumPrevData.length > 0 ? cumPrevData[cumPrevData.length - 1].value : 0;
-  const absVals        = aggData.map(d => d.value);
+  // 1M pads the window with gap days (value 0, missing: true) so every calendar day has a bar. For an
+  // AVERAGED metric 0 is not a reading — it's "no data" — so counting those days wrecks the stats: a day
+  // with no RHR yet showed latest 0, period Δ −55 and dragged avg from ~58 down to 54. For a SUMMED metric
+  // (km, minutes) a gap day genuinely IS zero — you ran nothing — so those must keep counting.
+  const statPts        = cfg.aggregate === 'sum' ? aggData : aggData.filter(d => !d.missing);
+  const absVals        = statPts.map(d => d.value);
   const avg    = absVals.length > 0 ? absVals.reduce((a, b) => a + b, 0) / absVals.length : 0;
   const trend  = absVals.length >= 2 ? absVals[absVals.length - 1] - absVals[0] : 0;
   const latest = absVals.length > 0 ? absVals[absVals.length - 1] : 0;
-  const countValue = aggData.length;
+  const countValue = statPts.length;
 
   // onLayout fires on chartWrap (which has padding: 12).
   // Subtract padding*2 to get the usable inner width for the chart.
