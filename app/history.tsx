@@ -809,8 +809,22 @@ export default function HistoryScreen() {
           })));
         } else { setCardioStatus([]); setCardioByDate({}); }
       } else if (histType !== 'timeline' && !SLEEP_TYPES.has(histType)) {
-        const h = await fetchHRVHistory(months, endDate);
-        const daily = h.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        // Same source the Recovery Detail card reads (restingHrv = true RMSSD, falling back to median SDNN
+        // then stage-weighted). fetchHRVHistory returns the stage-WEIGHTED value, which is a different
+        // number — the card showed 41.4 while this chart showed 40 for the same night. Apple/weighted
+        // series is kept as the fallback for nights the components store has nothing for.
+        const comps = await fetchOurDailyComponents(months, endDate);
+        const byDate = new Map<string, number>();
+        for (const [d, v] of Object.entries(comps)) {
+          const hv = (v as any)?.restingHrv;
+          if (typeof hv === 'number' && hv > 0) byDate.set(d, hv);
+        }
+        for (const s of await fetchHRVHistory(months, endDate).catch(() => [])) {
+          const d = s.date.slice(0, 10);
+          if (!byDate.has(d) && s.value > 0) byDate.set(d, s.value);
+        }
+        const daily = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([d, v]) => ({ label: d, fullDate: d, value: v }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (histType === 'sleep-hrdip') {
         const v = await fetchOvernightHRHistory(months, endDate);
