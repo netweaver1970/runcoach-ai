@@ -5,6 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as XLSX from 'xlsx';
 import { parseClinicalGrid, ParsedLabs, LabAnalyte, Cell } from '../src/services/labs';
+import { importLabPdf, PdfLabRow } from '../src/services/labsPdf';
 import { mergeLabsImport, clearLabs, loadTemplates, saveTemplate, deleteTemplate, LabTemplate, loadDriveUrl, saveDriveUrl } from '../src/services/labsStore';
 import { mirrorLabsToHealth } from '../src/services/healthkit';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -78,6 +79,47 @@ export default function LabsImport() {
     setSelDates(new Set(parsed.dates));
     setSelKeys(new Set(parsed.analytes.map(a => a.key)));
     setPhase('review');
+  }
+
+  // ── PDF lab report (text layer) ────────────────────────────────────────────────────────────────
+  const [pdfRows, setPdfRows] = useState<PdfLabRow[] | null>(null);
+  const [pdfWarn, setPdfWarn] = useState<string[]>([]);
+
+  async function pickPdf() {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'com.adobe.pdf'], copyToCacheDirectory: true });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      setFileName(res.assets[0].name ?? 'report.pdf'); setPhase('parsing');
+      const out = await importLabPdf(res.assets[0].uri);
+      setPdfRows(out.rows); setPdfWarn(out.warnings); setPhase('review');
+    } catch (e: any) {
+      setPhase('idle');
+      Alert.alert("Couldn't read this PDF", e?.message ?? String(e));
+    }
+  }
+
+  /** Turn the reviewed PDF rows into analytes and merge. Matched rows keep the EXISTING key so the value
+   *  extends that marker's history; unmatched rows create a new marker under a 'PDF import' category. */
+  async function confirmPdf() {
+    if (!pdfRows?.length) return;
+    const byKey = new Map<string, LabAnalyte>();
+    for (const r of pdfRows) {
+      const key = r.matchedKey ?? `pdf-${r.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${(r.unit || 'x').toLowerCase()}`;
+      let a = byKey.get(key);
+      if (!a) {
+        a = { key, label: r.matchedLabel ?? r.label, category: r.matchedKey ? 'Imported' : 'PDF import',
+              unit: r.unit, kind: 'numeric' as any, refLow: r.refLow ?? null, refHigh: r.refHigh ?? null, series: [] };
+        byKey.set(key, a);
+      }
+      a.series.push({ date: r.date, value: r.value } as any);
+    }
+    const analytes = [...byKey.values()].map(a => ({ ...a, series: a.series.sort((x: any, y: any) => x.date.localeCompare(y.date)) }));
+    try {
+      const st = await mergeLabsImport(analytes);
+      setPdfRows(null);
+      Alert.alert('Imported', `${st.added} new reading${st.added === 1 ? '' : 's'} added, ${st.existing} already present.`);
+      router.back();
+    } catch (e: any) { Alert.alert('Import failed', e?.message ?? String(e)); }
   }
 
   async function pickFile() {
@@ -186,6 +228,13 @@ export default function LabsImport() {
             ? <View style={s.center}><ActivityIndicator color={c.accent} /><Text style={s.pFaint}>Reading {fileName}…</Text></View>
             : <>
                 <TouchableOpacity style={s.btnPrimary} onPress={pickFile}><Text style={s.btnPrimaryTxt}>Choose a file…</Text></TouchableOpacity>
+                <TouchableOpacity style={[s.btnPrimary, { marginTop: 8, backgroundColor: '#8e44ad' }]} onPress={pickPdf}>
+                  <Text style={s.btnPrimaryTxt}>📄  Import a lab-report PDF…</Text>
+                </TouchableOpacity>
+                <Text style={[s.hint, { marginTop: 6 }]}>
+                  A PDF from the lab (any layout or language). Values are matched to your existing markers so
+                  the history extends instead of splitting. Scanned/photographed reports aren't supported yet.
+                </Text>
                 <Text style={s.orLine}>or paste a Google Drive link</Text>
                 <TextInput style={s.input} value={driveUrl} onChangeText={setDriveUrl} placeholder="https://drive.google.com/file/d/…/view"
                   placeholderTextColor={c.textFaint} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
@@ -208,7 +257,34 @@ export default function LabsImport() {
         </ScrollView>
       )}
 
-      {phase === 'review' && rep && (
+      {phase === 'review' && pdfRows && (
+        <ScrollView contentContainerStyle={s.pad}>
+          <Text style={s.h2}>{fileName}</Text>
+          <Text style={s.hint}>
+            {pdfRows.length} value{pdfRows.length === 1 ? '' : 's'} read ·{' '}
+            {pdfRows.filter(r => !r.isNew).length} matched to existing markers ·{' '}
+            {pdfRows.filter(r => r.isNew).length} new
+          </Text>
+          {pdfWarn.map((w, i) => <Text key={i} style={[s.hint, { color: '#e67e22' }]}>⚠︎ {w}</Text>)}
+          {pdfRows.map((r, i) => (
+            <View key={i} style={s.rowLine}>
+              <Text style={s.rowName} numberOfLines={1}>
+                {r.matchedLabel ?? r.label}{r.isNew ? '  (new)' : ''}
+              </Text>
+              <Text style={s.rowVal}>{r.value}{r.unit ? ` ${r.unit}` : ''}</Text>
+              <Text style={s.rowDate}>{r.date}</Text>
+            </View>
+          ))}
+          <TouchableOpacity style={[s.btnPrimary, { marginTop: 16 }]} onPress={confirmPdf}>
+            <Text style={s.btnPrimaryTxt}>Import {pdfRows.length} value{pdfRows.length === 1 ? '' : 's'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={{ marginTop: 10, alignItems: 'center' }} onPress={() => { setPdfRows(null); setPhase('idle'); }}>
+            <Text style={s.hint}>Cancel</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      )}
+
+      {phase === 'review' && !pdfRows && rep && (
         <>
           <ScrollView contentContainerStyle={s.pad}>
             <View style={s.card}>
@@ -338,6 +414,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   center:   { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 },
   h1:       { color: c.text, fontSize: 22, fontWeight: '800', marginBottom: 10 },
   h2:       { color: c.text, fontSize: 16, fontWeight: '700', marginTop: 18, marginBottom: 6 },
+  hint:     { color: c.textSub, fontSize: 12, lineHeight: 17 },
+  rowLine:  { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
+  rowName:  { flex: 1, color: c.text, fontSize: 13, fontWeight: '600' },
+  rowVal:   { width: 96, textAlign: 'right', color: c.text, fontSize: 13, fontWeight: '700' },
+  rowDate:  { width: 84, textAlign: 'right', color: c.textFaint, fontSize: 11 },
   p:        { color: c.textSub, fontSize: 14, lineHeight: 21, marginBottom: 16 },
   pFaint:   { color: c.textFaint, fontSize: 13, lineHeight: 19 },
   orLine:   { color: c.textFaint, fontSize: 12.5, textAlign: 'center', marginVertical: 12 },

@@ -1,0 +1,7 @@
+{
+  "name": "runcoach-pdf",
+  "version": "0.1.0",
+  "description": "Extract the text layer from a PDF (iOS PDFKit).",
+  "main": "index.ts",
+  "private": true
+}
