@@ -1259,7 +1259,11 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     const k = template[dow];
     intensity = k === 'intervals' ? 'hard' : 'moderate';
     sk = (k === 'intervals' || k === 'tempo' || k === 'long') ? k : 'tempo';
-    base = (slot && slot.intensity !== 'rest') ? slot.runMinutes : (k === 'long' ? 45 : 28);
+    // Only inherit the slot's minutes when the slot was the SAME session kind. A cached slot planned as an
+    // easy day (e.g. the week plan built while shrink-to-fit was off) otherwise force-places the LONG at the
+    // easy dose — observed as a 36min "long" on a template long day. Mismatched kind → the shrink default.
+    const slotMatches = slot && slot.intensity !== 'rest' && slot.kind === k;
+    base = slotMatches ? slot.runMinutes : (k === 'long' ? 45 : 28);
     kind = k;
   } else if (slot) {
     // The rolling 7-day plan already decided today — honour it as the basis (spread, not greedy).
