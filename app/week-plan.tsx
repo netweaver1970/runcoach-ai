@@ -4,7 +4,7 @@ import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import {
-  assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay,
+  freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
   getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS,
 } from '../src/services/coach';
@@ -173,6 +173,8 @@ export default function WeekPlan() {
       //      freshness, re-projecting until the long's dip is shallow. This is the "tighten the days around the
       //      long" the user asked for. Race mode fully bypasses (the LLM owns that block's load).
       const minTSB = await getMinTSB();
+      // Same freshness modulation the planner uses, so this re-trim can't undo it.
+      const freshFactor = freshnessCapFactor(coach.tsb, coach.acwr);
       const La = 1 - Math.exp(-1 / 7), Lc = 1 - Math.exp(-1 / 42);   // ATL/CTL EWMA weights (τ 7 / 42)
       const MIN_QUALITY = 15;      // a quality trimmed shorter than this isn't worth holding → rest instead
       const LONG_FLOOR = 45;       // the long is never trimmed into a recovery jog, even below the floor
@@ -195,7 +197,7 @@ export default function WeekPlan() {
           let baseRef = 0;
           for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
           const prior6 = tofW.slice(j - 6, j).reduce((a, b) => a + b, 0);      // 6 days right before this
-          const allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct, BASE_WINDOWS > 1) - prior6)) : heatMin;
+          const allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(new Date(d.date + 'T00:00:00'), per, capPct, BASE_WINDOWS > 1) * freshFactor - prior6)) : heatMin;
           const isLongDay = d.forced && d.kind === 'long';
           const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
 

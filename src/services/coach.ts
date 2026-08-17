@@ -893,6 +893,9 @@ export async function getWeekPlan(
   const reentry = (snap.tof7d ?? 0) < 30;
   const scheduleMd = await readKnowledgeContent('running-schedule').catch(() => '');
   const template = parseWeeklyTemplate(scheduleMd);
+  // Freshness modulates the raw-sum ceiling (see freshnessCapFactor): the ACWR/TSB model has decay, the
+  // rolling minutes sum does not, so two rest days move one and not the other.
+  const fresh = freshnessCapFactor(snap.tsb, snap.acwr);
   // Standing weekly commitments (dance night, team sport…) — planned around, not just absorbed afterwards.
   const commitments = parseWeeklyCommitments(scheduleMd);
   const fxBy = new Map((forecast ?? []).map(f => [f.date, f]));
@@ -982,7 +985,7 @@ export async function getWeekPlan(
     for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
     const prior6   = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);
     const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
-    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) - prior6)) : 45;
+    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * fresh - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
 
     const kind = template[d.getDay()];
@@ -1840,6 +1843,33 @@ function weekIndex(d: Date, per: Periodization): number {
 // the pre-deload peak). With a smoothed base the first build week after a deload uses the PLAIN ramp: base
 // (=peak) × ramp = peak+cap%, resuming from where you left off. The rebuild jump is only correct when the
 // base tracks last-week (which collapsed to the deload trough), so keep it for the raw-base default.
+// ── Freshness-aware volume cap ────────────────────────────────────────────────────────────────────
+// The rolling +X%/week ceiling is a RAW 7-day minutes sum: it has no decay, so two full rest days do not
+// move it at all. The physiological load model does have decay — ACWR (acute:chronic) and TSB (form) —
+// and those two can disagree sharply with the raw sum. Observed 2026-08-17: 270 min in the trailing
+// window said "no budget", while ACWR 0.98 / TSB +2.3 after two rest days said "fully absorbed, go".
+//
+// ACWR is the injury-risk measure the sports-science literature actually validates (0.8–1.3 sweet spot),
+// so when it sits in or below that band AND form is neutral-or-positive, the raw ceiling is the cruder,
+// over-restrictive guard and may flex UP. When ACWR is above the band, or form is deeply negative, it
+// tightens instead. Deliberately BOUNDED — freshness modulates the ramp, it never unlocks an open week.
+export const FRESHNESS_MAX_BONUS = 0.20;   // most the ceiling may flex up when demonstrably absorbed
+export const FRESHNESS_MAX_CUT   = 0.25;   // most it tightens when the acute load is spiking
+export function freshnessCapFactor(tsb?: number | null, acwr?: number | null): number {
+  let f = 1;
+  // TIGHTEN first — a spiking acute:chronic ratio outranks any amount of self-reported freshness.
+  if (acwr != null && acwr > 1.5)      f -= FRESHNESS_MAX_CUT;          // clear spike → hard tighten
+  else if (acwr != null && acwr > 1.3) f -= 0.10;                       // above the sweet spot
+  if (tsb != null && tsb <= -15)       f -= 0.10;                       // deeply fatigued
+  // RELAX only when BOTH signals agree the load has been absorbed: form non-negative and ACWR in/below band.
+  else if (tsb != null && tsb >= 0 && (acwr == null || acwr <= 1.3)) {
+    // Scale with form: TSB 0 → no bonus, TSB +13 or better → the full bonus.
+    f += Math.min(FRESHNESS_MAX_BONUS, (tsb / 13) * FRESHNESS_MAX_BONUS)
+       + (acwr != null && acwr <= 1.0 ? 0.05 : 0);                      // fully absorbed → a little more
+  }
+  return Math.max(1 - FRESHNESS_MAX_CUT, Math.min(1 + FRESHNESS_MAX_BONUS, Math.round(f * 1000) / 1000));
+}
+
 export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: number, smoothBase = false): number {
   const ramp = 1 + capPct / 100;
   if (!per.on) return ramp;
@@ -1872,6 +1902,7 @@ export interface CapOpts {
   heatCredit?:   Record<string, number>; // date(YYYY-MM-DD) → heat factor experienced that day (≥1). A heat-cut
   //                                         run counts as its ~normal-conditions volume so weather doesn't erode fitness.
   heatCreditMax?: number; // per-day credit ceiling (default 1.15) — bounds crediting so it can't spiral the cap up.
+  freshness?:    number;  // ceiling modulation from ACWR/TSB (freshnessCapFactor); 1 = neutral
   baseWindows?:  number;  // # of prior 7-day blocks to take the MAX over as the base (default 1). >1 → a single bad
   //                         (hot / sick / travel) week can't drop the ceiling; the base tracks demonstrated capacity.
 }
@@ -1892,9 +1923,9 @@ export function computeTimeOnFeetPlan(
   // smoothBase = the base is a max-of-N-weeks (doesn't dip in deload) → skip the rebuild jump (see weekCapMultiplier).
   const smoothBase = (opts.baseWindows ?? 1) > 1;
   const weekMultAt = (offsetDays: number) => {
-    if (!per) return 1 + capPct / 100;
+    if (!per) return (1 + capPct / 100) * freshFac;
     const d = new Date(today); d.setDate(d.getDate() + offsetDays);
-    return weekCapMultiplier(d, per, capPct, smoothBase);
+    return weekCapMultiplier(d, per, capPct, smoothBase) * freshFac;
   };
   const meaningful   = opts.meaningful   ?? 20;
   const reentryBelow = opts.reentryBelow ?? 30;
@@ -1902,6 +1933,8 @@ export function computeTimeOnFeetPlan(
   const heatCredit   = opts.heatCredit   ?? {};
   const heatCreditMax = opts.heatCreditMax ?? 1.15;
   const baseWindows  = Math.max(1, Math.round(opts.baseWindows ?? 1));
+  // Freshness modulation of the ceiling (1 = neutral). Passed in so this stays a pure function.
+  const freshFac     = opts.freshness ?? 1;
   const map = new Map(daily.map(d => [d.date, d.value]));
   const p = (n: number) => String(n).padStart(2, '0');
   const dayStr = (offset: number) => {
@@ -2001,6 +2034,9 @@ export const BASE_WINDOWS    = 3;     // ceiling = +cap% × MAX of the last 3 co
  */
 export async function buildCapContext(
   durSeries: { date: string; value: number }[], toDate: Date, capPct: number, capBasis: LoadCapBasis,
+  // Current load model — lets the raw-sum ceiling flex with ACWR/TSB. Omitted → neutral (factor 1), so
+  // every existing caller keeps today's behaviour until it opts in.
+  tsbNow?: number | null, acwrNow?: number | null,
 ): Promise<CapContext> {
   const periodization = await getPeriodization();
   // HEAT-CREDIT map: reconstruct each past run-day's heat factor from its stored workout weather, so the
@@ -2009,11 +2045,11 @@ export async function buildCapContext(
   const heatCredit: Record<string, number> = {};
   for (const [date, w] of Object.entries(weatherHist)) heatCredit[date] = heatStrainFactor({ tempC: w.tempC, humidity: w.humidity });
   const antiErosion = { heatCredit, heatCreditMax: HEAT_CREDIT_MAX, baseWindows: BASE_WINDOWS };
-  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization, ...antiErosion });
+  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow), ...antiErosion });
   if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
 
   const distKm = await fetchDailyWorkDistanceHistory(toDate);
-  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, ...antiErosion });
+  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow), ...antiErosion });
   const p = (n: number) => String(n).padStart(2, '0');
   const dStr = `${toDate.getFullYear()}-${p(toDate.getMonth() + 1)}-${p(toDate.getDate())}`;
   const dist7d = distKm.filter(d => d.date <= dStr).slice(-7).reduce((s, d) => s + d.value, 0);
@@ -2143,7 +2179,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   const yDate = new Date(new Date(date + 'T00:00:00').getTime() - 86_400_000);
   const yesterdayKey = `${yDate.getFullYear()}-${String(yDate.getMonth() + 1).padStart(2, '0')}-${String(yDate.getDate()).padStart(2, '0')}`;
 
-  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis);
+  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis, latest.tsb, strain?.acwr);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
