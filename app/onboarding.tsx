@@ -119,7 +119,12 @@ export default function OnboardingScreen() {
     } catch { setKeyOk(false); } finally { setKeyBusy(false); }
   };
 
-  const Body = () => {
+  // NOTE: this is a plain FUNCTION, invoked as `{body()}` — deliberately NOT a component rendered as
+  // `<Body />`. Declared inside the screen, `Body` is a new component TYPE on every render, so React
+  // unmounted and remounted the whole subtree on each keystroke: the TextInput was destroyed and the
+  // keyboard dismissed after a single digit. Calling it inlines the JSX into this component's own tree,
+  // so inputs keep their identity and focus across re-renders.
+  const body = () => {
     switch (step) {
       case 0: return (
         <View style={s.center}>
@@ -265,7 +270,7 @@ export default function OnboardingScreen() {
         <TouchableOpacity onPress={finishAndGo} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Text style={s.exit}>✕</Text></TouchableOpacity>
       </View>
       <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
-        <Body />
+        {body()}
       </ScrollView>
       <View style={s.footer}>
         {step > 0 ? <TouchableOpacity onPress={back}><Text style={s.footLink}>Back</Text></TouchableOpacity> : <View style={{ width: 44 }} />}

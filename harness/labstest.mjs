@@ -38,7 +38,9 @@ ok(neut.length === 2, 'Neutrophils kept as 2 separate (%, abs)', `got ${neut.len
 
 // Weight / BP mirror to HK
 ok(find(/^Weight$/)[0]?.hkType?.includes('BodyMass'), 'Weight maps to HK BodyMass');
-ok(find(/Systolic BP/)[0]?.hkType?.includes('Systolic'), 'Systolic BP maps to HK');
+// Blood pressure must NOT be imported at all: HealthKit owns it and the Biology screen charts it at full
+// resolution, so a lab copy would be a second, coarser series that disagrees with the first.
+ok(find(/Systolic BP/).length === 0 && find(/Diastolic BP/).length === 0, 'blood pressure excluded from the labs import');
 
 // Categorical: blood type stored as text, not a numeric line
 const bt = find(/Blood type/);

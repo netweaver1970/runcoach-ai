@@ -119,10 +119,12 @@ const CONVERTIBLE: Record<string, Convertible> = {
 // Analytes Apple Health can store — mirrored on import (extends the existing Biology charts backward).
 const HK_TYPE: Record<string, string> = {
   'weight': 'HKQuantityTypeIdentifierBodyMass',
-  'systolic bp': 'HKQuantityTypeIdentifierBloodPressureSystolic',
-  'diastolic bp': 'HKQuantityTypeIdentifierBloodPressureDiastolic',
+  // (blood pressure intentionally absent — excluded at parse time, see BP_RE)
   'glucose (fasting)': 'HKQuantityTypeIdentifierBloodGlucose',
 };
+
+// Systolic/diastolic/blood-pressure in the common spellings + languages this sheet may use.
+const BP_RE = /\b(systol|diastol|bloed ?druk|tension ?art|blutdruck|pressione)|blood\s*pressure|\bbps?\b|\bRR\b/i;
 
 function slug(s: string): string { return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
 
@@ -172,6 +174,11 @@ export function parseClinicalGrid(rows: Cell[][]): ParsedLabs {
 
   const analytes: LabAnalyte[] = [];
   for (const [base, group] of groups) {
+    // Blood pressure is a FIRST-CLASS biological: HealthKit owns it and the Biology screen charts it at
+    // full resolution. Importing it as a lab analyte would create a second, coarser copy of the same
+    // measurement that then disagrees with the Biology series — so it's dropped at parse time, not merely
+    // skipped for the HK mirror.
+    if (BP_RE.test(base) || group.some(r => BP_RE.test(r.name))) continue;
     const kind = kindOf(group[0].category, group[0].name);
     const conv = CONVERTIBLE[base];
     const unitsInGroup = [...new Set(group.map(r => normUnit(r.unit)))];
