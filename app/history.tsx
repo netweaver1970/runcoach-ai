@@ -281,7 +281,7 @@ type XMode = 'daily' | 'weekly' | 'monthly';
 function Chart({
   data, color, innerW, xMode = 'weekly', showAllValues = false, prevData,
   cumulative = false, isTime = false, valueLabelStep = 1, fmtFn, zeroBase = true,
-  hideValueLabels = false, lineMode = false, bandData, pointColors, boundaryDate,
+  hideValueLabels = false, lineMode = false, trendLine = false, bandData, pointColors, boundaryDate,
 }: {
   data:            DataPoint[];
   color:           string;
@@ -295,6 +295,7 @@ function Chart({
   fmtFn?:          (v: number) => string; // override value formatter (e.g. 1-decimal for VO2max)
   zeroBase?:       boolean;     // when false: y-axis zooms in around data range (default true)
   hideValueLabels?: boolean;    // suppress all per-bar value labels
+  trendLine?:     boolean;      // overlay an OLS least-squares fit across the shown range
   lineMode?:       boolean;     // force line rendering (cardio-load: line + band + status dots)
   bandData?:       ({ lo: number; hi: number } | null)[]; // per-point optimal-load band (aligned to data)
   pointColors?:    (string | null)[]; // per-point dot colour (cardio status), aligned to data
@@ -464,8 +465,30 @@ function Chart({
         )}
 
         {(cumulative || lineMode) ? (
-          // ── LINE CHART (cumulative mode, or cardio-load with band) ──────────
+          // ── LINE CHART (cumulative mode, cardio-load with band, or any measured metric) ──────────
           <>
+            {/* OLS least-squares trend across the SHOWN range — drawn under the series. Gap days carry no
+                reading, so they're excluded: including them would drag the fit toward zero. */}
+            {trendLine && (() => {
+              const pts = data.map((d, i) => ({ i, v: d.value })).filter((p, i) => !data[i].missing && p.v > 0);
+              if (pts.length < 3) return null;
+              const n = pts.length;
+              let sx = 0, sy = 0, sxx = 0, sxy = 0;
+              for (const p of pts) { sx += p.i; sy += p.v; sxx += p.i * p.i; sxy += p.i * p.v; }
+              const den = n * sxx - sx * sx;
+              if (!den) return null;
+              const m = (n * sxy - sx * sy) / den, b0 = (sy - m * sx) / n;
+              const i0 = pts[0].i, i1 = pts[n - 1].i;
+              const x1 = cxOf(i0), y1 = toY(b0 + m * i0), x2 = cxOf(i1), y2 = toY(b0 + m * i1);
+              const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy);
+              if (!len) return null;
+              const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+              return <View pointerEvents="none" style={{
+                position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1,
+                width: len, height: 2, backgroundColor: theme.textSub, opacity: 0.55, borderRadius: 1,
+                transform: [{ rotate: `${ang}deg` }],
+              }} />;
+            })()}
             {/* Optimal-load band (cardio-load): translucent column per point, bandLo→bandHi */}
             {bandData && data.map((d, i) => {
               const b = bandData[i];
@@ -827,8 +850,23 @@ export default function HistoryScreen() {
           .map(([d, v]) => ({ label: d, fullDate: d, value: v }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (histType === 'sleep-hrdip') {
-        const v = await fetchOvernightHRHistory(months, endDate);
-        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        // The Recovery Detail card labels this "Heart Rate Dip" and shows heartRateDip (a PERCENT from the
+        // components store). This chart was plotting fetchOvernightHRHistory — overnight HR in bpm, a
+        // different metric, not merely a different pipeline. Read the store; fall back to the raw overnight
+        // series only if the store has nothing.
+        const comps = await fetchOurDailyComponents(months, endDate);
+        const byDate = new Map<string, number>();
+        for (const [d, v] of Object.entries(comps)) {
+          const dip = (v as any)?.heartRateDip;
+          if (typeof dip === 'number' && dip !== 0) byDate.set(d, dip);
+        }
+        if (byDate.size === 0) {
+          for (const s of await fetchOvernightHRHistory(months, endDate).catch(() => [])) {
+            if (s.value > 0) byDate.set(s.date.slice(0, 10), s.value);
+          }
+        }
+        const daily = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([d, v]) => ({ label: d, fullDate: d, value: v }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (SLEEP_TYPES.has(histType)) {
         const sessions = await fetchSleepHistory(months, endDate);
@@ -1140,7 +1178,10 @@ export default function HistoryScreen() {
               }
               zeroBase={isSummable || histType === 'strain'}
               hideValueLabels={histType === 'strain' || isCardio}
-              lineMode={isCardio}
+              // Measured metrics (recovery + sleep sub-metrics, RHR, HRV, scores) read as a TRACE, not as
+              // stacked quantities — bars imply an amount accumulated. Summed metrics (km, minutes) keep bars.
+              lineMode={isCardio || !isSummable}
+              trendLine={!isSummable && !cumulativeMode}
               bandData={cardioBand}
               pointColors={cardioColors}
               boundaryDate={histType === 'exercise-duration' ? (fullBoundary ?? undefined) : undefined}
