@@ -3616,12 +3616,30 @@ async function fetchDailyWorkHistory(
     limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
   });
   const switches = await getSwitchList(); // each run counts under the regime in force on its date
+  // The cached runs carry SEGMENTS computed by the detail path. Prefer those: workDrillsTotals decodes
+  // phases out of the workout uuid metadata and silently falls back to the FULL duration when that decode
+  // yields nothing, so in 'work' accounting a run whose metadata didn't decode counted its warm-up and
+  // cool-down (17 Aug: 90min counted against a 54min work block; 13 Aug: 44 vs a 28.6min ToF), while runs
+  // that did decode were correct — an inconsistent series that then inflates the rolling ceiling.
+  const cachedRuns: RunWorkout[] = await loadSnapshotCache().then(sn => (sn as any)?.runs ?? []).catch(() => []);
+  const segByUuid = new Map<string, { seconds: number; meters: number }>();
+  for (const r of cachedRuns) {
+    if (!r.uuid || !r.segments?.length) continue;
+    const keep = r.segments.filter(sg => !TOF_EXCLUDE_PHASE.test(sg.label ?? ''));
+    if (!keep.length) continue;
+    segByUuid.set(r.uuid, {
+      seconds: keep.reduce((a, sg) => a + (sg.durationSec ?? 0), 0),
+      meters:  keep.reduce((a, sg) => a + (sg.distanceM ?? 0), 0),
+    });
+  }
   const byDay: Record<string, number> = {};
   (allWorkouts as any[])
     .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
     .forEach((w: any) => {
       const day = toISOStr(w.startDate).slice(0, 10);
-      byDay[day] = (byDay[day] ?? 0) + pick(workDrillsTotals(w, regimeForDate(toISOStr(w.startDate), switches)));
+      const regime = regimeForDate(toISOStr(w.startDate), switches);
+      const seg = regime === 'full' ? undefined : segByUuid.get(w.uuid);
+      byDay[day] = (byDay[day] ?? 0) + pick(seg ?? workDrillsTotals(w, regime));
     });
   return Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, value }));
 }
