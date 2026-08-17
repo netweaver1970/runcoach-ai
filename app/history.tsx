@@ -748,8 +748,22 @@ export default function HistoryScreen() {
         // 1M: show daily readings; 3M/6M/1Y: aggregate to one data point per week (latest)
         raw = period === '1M' ? daily : groupByWeek(daily, 'last');
       } else if (histType === 'rhr') {
-        const r = await fetchRestingHRHistory(months, endDate);
-        const daily = r.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        // Read the SAME per-day components store the overview reads (restingHr, from overnight HR), not
+        // Apple's restingHeartRate samples. Apple publishes its sample late in the day, so the chart showed
+        // no value for today while the overview already had one — the same metric disagreeing with itself.
+        // Falls back to the Apple series for any day the store has no overnight value for.
+        const comps = await fetchOurDailyComponents(months, endDate);
+        const byDate = new Map<string, number>();
+        for (const [d, v] of Object.entries(comps)) {
+          const hr = (v as any)?.restingHr;
+          if (typeof hr === 'number' && hr > 0) byDate.set(d, Math.round(hr));
+        }
+        for (const s of await fetchRestingHRHistory(months, endDate).catch(() => [])) {
+          const d = s.date.slice(0, 10);
+          if (!byDate.has(d) && s.value > 0) byDate.set(d, s.value);
+        }
+        const daily = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([d, v]) => ({ label: d, fullDate: d, value: v }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (histType === 'strain' || histType === 'recovery') {
         // Strain / recovery are the SAME values the per-day components store holds (strainScore /
@@ -1157,8 +1171,8 @@ export default function HistoryScreen() {
           {[...(isSummable && period === '1Y' ? aggData : rawData)].reverse().map((d, i) => (
             <View key={i} style={s.listRow}>
               <Text style={s.listDate}>{d.fullDate.slice(0, 10)}</Text>
-              <Text style={[s.listVal, { color: cfg.color }]}>
-                {fmtStat(d.value)} {cfg.unit}
+              <Text style={[s.listVal, { color: (d as any).missing && cfg.aggregate !== 'sum' ? c.textFaint : cfg.color }]}>
+                {(d as any).missing && cfg.aggregate !== 'sum' ? 'no reading' : `${fmtStat(d.value)} ${cfg.unit}`}
               </Text>
             </View>
           ))}
