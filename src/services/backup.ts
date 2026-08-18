@@ -66,6 +66,12 @@ const FILES = [
   'runcoach-labs-driveurl.json',    // remembered Google Drive import link
   'runcoach-labs-chat.json',        // Labs chat history
   'runcoach-biology-chat.json',     // Biology chat history
+  // Recompute-able, but backed up so a clean reinstall carries your TUNING + full history as-is (not just
+  // after a deep re-scan). These recompute from HK/Bevel if absent, so restoring them is a convenience.
+  'stats-runs-cache.json',          // durable grows-only run history (beyond HK's re-scan window)
+  'forecast-accuracy.json',         // projected-vs-realised TSB log (accumulated; not rebuildable)
+  'bodybattery-calibration.json',   // Body-Battery model calibration to Bevel
+  'training-load-calibration.json', // CTL/ATL calibration dump
 ];
 // Per-date files captured by prefix — the prescription plan-logs that drive deterministic
 // run-detail phase labels (HealthKit has no record of the prescribed structure).

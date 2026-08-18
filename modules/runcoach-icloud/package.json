@@ -1,0 +1,7 @@
+{
+  "name": "runcoach-icloud",
+  "version": "0.1.0",
+  "description": "Sync the settings backup to the user's private iCloud Documents container.",
+  "main": "index.ts",
+  "private": true
+}

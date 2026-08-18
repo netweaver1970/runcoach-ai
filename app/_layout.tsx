@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import { cancelDailyRecoveryReminder } from '../src/services/notifications';
+import { initICloudAutoSave, maybeRestoreFromICloud, scheduleICloudSync } from '../src/services/icloudSync';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 
@@ -33,6 +34,19 @@ function RootStack() {
   // Retire the old fixed-7:30 daily reminder — the morning notification is now event-driven
   // (fires when the plan is actually ready). Cancels any lingering schedule from a prior install.
   useEffect(() => { cancelDailyRecoveryReminder().catch(() => {}); }, []);
+
+  // iCloud auto-sync: on a FRESH install, pull the user's own iCloud backup (guarded — no-op if the app is
+  // already set up, iCloud is off, or the native module isn't built in yet); then keep it saved whenever the
+  // app backgrounds, and seed a first backup for existing installs. Fully inert until the iCloud entitlement
+  // is provisioned + prebuilt, so this is safe to ship beforehand.
+  useEffect(() => {
+    let alive = true;
+    maybeRestoreFromICloud()
+      .then((restored) => { if (restored && alive) router.replace('/'); }) // re-render from restored state (skips onboarding)
+      .catch(() => {})
+      .finally(() => { initICloudAutoSave(); scheduleICloudSync(8000); });
+    return () => { alive = false; };
+  }, [router]);
 
   // Deep-link notification taps (both warm taps and cold launches).
   useEffect(() => {
