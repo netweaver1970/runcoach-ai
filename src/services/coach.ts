@@ -10,7 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import { callLLM, getLLMStatus, extractJsonObject, setUsageFeature } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
-import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory } from './healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory, fetchTrainingLoadHistory } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
@@ -2257,7 +2257,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   // Refresh the sync-readable workout-structure cache so synthesizeWorkout / parseWorkout (both sync) see
   // the athlete's current warm-up / cool-down / drills config before any plan or watch workout is built.
   // Awaited in parallel below (the throwaway slot) so it's settled before the caller builds a workout.
-  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps, maxHR] = await Promise.all([
+  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps, maxHR, tlSeries] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
     getLocalWeather().catch(() => null),
@@ -2268,6 +2268,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     loadEvents(),
     loadSupplements(),
     getEffectiveMaxHr().catch(() => 190),   // to normalise realised run HR → reserve for the quality LOAD ramp
+    fetchTrainingLoadHistory(1).catch(() => [] as any[]),  // FRESH CTL/ATL/TSB (see below) — not the DC cache
     refreshWorkoutStructure().catch(() => DEFAULT_WORKOUT_STRUCTURE),
     refreshAccountingMode().catch(() => DEFAULT_ACCOUNTING),
     refreshHeatSensitivity().catch(() => DEFAULT_HEAT_SENSITIVITY),
@@ -2275,6 +2276,12 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   const dates  = Object.keys(comps).sort();
   const latest = dates.length ? comps[dates[dates.length - 1]] : {};
   const dataDate = dates.length ? dates[dates.length - 1] : '';
+  // CTL/ATL/TSB come FRESH from the training-load engine, NOT the daily-components CACHE. The cache serves a
+  // stored value that can drift stale (observed CTL 44 in the plan vs a freshly-computed ~40 — the latter
+  // confirmed by an independent app (HealthFit CTL 41) — because the cache held CTL from an earlier build
+  // with since-changed inputs). This is the SAME computation the Training Load screen uses, so the coach,
+  // that screen, and HealthFit agree. Falls back to the cached components value if the fetch failed.
+  const tlLast = Array.isArray(tlSeries) && tlSeries.length ? tlSeries[tlSeries.length - 1] : null;
   const now = new Date();
   const realToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   // Watch not worn overnight → no overnight recovery for last night. Either there's NO record for today
@@ -2305,9 +2312,9 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     sleepScore:   latest.sleepScore,
     sleepMin:     latest.timeAsleep,
     sleepDebtMin: latest.sleepBank,
-    ctl:          latest.ctl,
-    atl:          latest.cardioLoad,
-    tsb:          latest.tsb,
+    ctl:          tlLast?.ctl ?? latest.ctl,
+    atl:          tlLast?.atl ?? latest.cardioLoad,
+    tsb:          tlLast?.tsb ?? latest.tsb,
     acwr:         strain?.acwr || undefined,
     strainReal:   strain?.real,
     advisableLow:  strain?.safeLow,

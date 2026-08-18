@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
-import { loadSnapshotCache } from '../src/services/healthkit';
+import { loadSnapshotCache, fetchTrainingLoadHistory } from '../src/services/healthkit';
 import {
   freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay, accountingModeSync,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
@@ -96,8 +96,11 @@ export default function WeekPlan() {
       const snap = await loadSnapshotCache();
       if (!snap) { setErr('No data yet — open the home screen first to sync.'); return; }
 
-      // Seed from TODAY's real CTL/ATL (the training-load series already includes today's runs).
-      const tl = snap.trainingLoad ?? [];
+      // Seed from TODAY's real CTL/ATL. Recompute the series FRESH (current max-HR etc.) rather than the
+      // CACHED snapshot.trainingLoad, which lags stale when the observed-max-HR anchor just moved (the scan
+      // computes trainingLoad before it updates the anchor) — that showed a plan CTL 44 vs a live +
+      // HealthFit-confirmed ~40. Falls back to the cached series if the fetch fails.
+      const tl = (await fetchTrainingLoadHistory(1).catch(() => null)) ?? snap.trainingLoad ?? [];
       const todayLoad = tl.length ? tl[tl.length - 1] : null;
       const ctl0 = todayLoad?.ctl ?? 0, atl0 = todayLoad?.atl ?? 0;
       setSeed({ ctl: ctl0, atl: atl0 });
