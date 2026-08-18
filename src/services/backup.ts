@@ -23,6 +23,7 @@ const STATIC_SECURE_KEYS = [
   'llm_provider_v1', 'llm_baseurl_custom_v1',
   // added so a wipe + restore rebuilds EXACTLY:
   'accounting_switches',          // volume-accounting regime switch list (work↔full by date)
+  'load_cap_pct_switches',        // +cap% by date (point-in-time history); 'load_cap_pct' kept as the legacy mirror
   'load_cap_pct', 'load_cap_basis', // progression cap settings
   'user_max_hr', 'max_hr_history_v1', 'body_mass_kg', // physiology (incl. date-keyed max-HR changes) that drives zones/strain/power. (observed_max_hr is a HK-derived cache → excluded, rebuilt on scan.)
   'dayview_auto_v1', 'watch_kpi_v1', // auto day-view toggle, watch complication choice

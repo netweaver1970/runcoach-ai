@@ -1790,15 +1790,73 @@ export async function setMinTSB(v: number): Promise<void> {
   try { await SecureStore.setItemAsync(MIN_TSB_KEY, String(Math.round(v))); } catch { /* ignore */ }
 }
 
-export async function getLoadCapPct(): Promise<number> {
+// The +cap% is a date-keyed SWITCH LIST (mirrors accounting.ts's regime switches), NOT a single scalar:
+// changing the cap must affect volume budgets only FROM the change date forward, so past weeks in the
+// Volume-vs-Budget history keep the % that was actually in force then (point-in-time honest). Storage:
+//   load_cap_pct_switches = [{ since:'1970-01-01', pct:10 }, { since:'2026-08-18', pct:12 }, …]
+// A week's % = the latest switch with since ≤ its Monday. Reconstructible after a wipe from the tiny list.
+const LOAD_CAP_PCT_SWITCHES_KEY = 'load_cap_pct_switches';
+const CAP_EPOCH = '1970-01-01';
+export interface CapPctSwitch { since: string; pct: number }   // since = YYYY-MM-DD, inclusive
+const clampCapPct = (n: number) => Math.max(5, Math.min(50, Math.round(n))); // 5–50% sane bounds
+const capTodayKey = (): string => { const d = new Date(); const p = (n: number) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+
+let capPctSwitchCache: CapPctSwitch[] | null = null;
+async function loadCapPctSwitches(): Promise<CapPctSwitch[]> {
+  if (capPctSwitchCache) return capPctSwitchCache;
   try {
-    const raw = await SecureStore.getItemAsync(LOAD_CAP_PCT_KEY);
-    const n = raw ? parseInt(raw, 10) : DEFAULT_LOAD_CAP_PCT;
-    return Number.isFinite(n) && n >= 5 && n <= 50 ? n : DEFAULT_LOAD_CAP_PCT; // 5–50% sane bounds
-  } catch { return DEFAULT_LOAD_CAP_PCT; }
+    const raw = await SecureStore.getItemAsync(LOAD_CAP_PCT_SWITCHES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) {
+        capPctSwitchCache = arr.map((s: any) => ({ since: String(s.since), pct: clampCapPct(Number(s.pct)) }));
+        return capPctSwitchCache;
+      }
+    }
+    // Migrate the legacy single scalar: seed it at EPOCH so history is UNCHANGED on upgrade (every week
+    // already used the current scalar) — only FUTURE changes get dated.
+    const legacy = await SecureStore.getItemAsync(LOAD_CAP_PCT_KEY);
+    const seed = legacy != null && legacy !== '' ? clampCapPct(parseInt(legacy, 10)) : DEFAULT_LOAD_CAP_PCT;
+    capPctSwitchCache = [{ since: CAP_EPOCH, pct: Number.isFinite(seed) ? seed : DEFAULT_LOAD_CAP_PCT }];
+    await saveCapPctSwitches(capPctSwitchCache);
+  } catch { capPctSwitchCache = [{ since: CAP_EPOCH, pct: DEFAULT_LOAD_CAP_PCT }]; }
+  return capPctSwitchCache!;
+}
+async function saveCapPctSwitches(list: CapPctSwitch[]): Promise<void> {
+  capPctSwitchCache = list;
+  try { await SecureStore.setItemAsync(LOAD_CAP_PCT_SWITCHES_KEY, JSON.stringify(list)); } catch { /* ignore */ }
+}
+/** Invalidate the in-memory cache (call after a restore writes a new switch list). */
+export function clearCapPctCache(): void { capPctSwitchCache = null; }
+
+/** The +cap% in force on a given date = the latest switch with since ≤ date. Pure (list passed in). */
+export function capPctForDate(date: string, list: CapPctSwitch[]): number {
+  const d = date.slice(0, 10);
+  let pct = DEFAULT_LOAD_CAP_PCT;
+  for (const s of list) { if (s.since <= d) pct = s.pct; else break; }
+  return pct;
+}
+export async function getLoadCapPctList(): Promise<CapPctSwitch[]> { return [...(await loadCapPctSwitches())]; }
+
+export async function getLoadCapPct(): Promise<number> {
+  // The CURRENT (latest) cap % — what the forward plan + today's budget train against.
+  const list = await loadCapPctSwitches();
+  return list[list.length - 1]?.pct ?? DEFAULT_LOAD_CAP_PCT;
 }
 export async function setLoadCapPct(pct: number): Promise<void> {
-  try { await SecureStore.setItemAsync(LOAD_CAP_PCT_KEY, String(Math.round(pct))); } catch { /* ignore */ }
+  // Append a DATED switch (effective today) instead of overwriting, so past weeks keep their in-force %.
+  const p = clampCapPct(pct);
+  const list = await loadCapPctSwitches();
+  if ((list[list.length - 1]?.pct ?? DEFAULT_LOAD_CAP_PCT) === p) return;   // unchanged → no-op
+  const today = capTodayKey();
+  let next = list.filter(s => s.since !== today);              // drop a same-day flip-flop
+  next.push({ since: today, pct: p });
+  next.sort((a, b) => a.since.localeCompare(b.since));
+  if (next[0].since !== CAP_EPOCH) next.unshift({ since: CAP_EPOCH, pct: DEFAULT_LOAD_CAP_PCT });
+  next = next.filter((s, i) => i === 0 || s.pct !== next[i - 1].pct); // collapse consecutive same-pct runs
+  await saveCapPctSwitches(next);
+  // Mirror the current value into the legacy scalar so any un-migrated reader still sees it.
+  try { await SecureStore.setItemAsync(LOAD_CAP_PCT_KEY, String(p)); } catch { /* ignore */ }
 }
 export async function getLoadCapBasis(): Promise<LoadCapBasis> {
   try { const v = await SecureStore.getItemAsync(LOAD_CAP_BASIS_KEY); return (v === 'distance' || v === 'trimp') ? v : 'tof'; }
@@ -2111,6 +2169,7 @@ export interface CapWeek {
   hitPct:     number;   // actualMin / ceilingMin × 100  (>100 = at/over the cap)
   phase:      string;   // "Build 2/4" | "Deload week" | ''
   heatTaxPct: number;   // avg heat tax over the week's run days: (heatFactor − 1) × 100
+  capPct:     number;   // the +cap% in force THAT week (point-in-time; may differ from the current setting)
   isCurrent:  boolean;  // the in-progress week (actual still accumulating)
 }
 
@@ -2121,7 +2180,7 @@ export interface CapWeek {
  * anti-erosion cap visible: are you reaching the ceiling, and how much is heat costing you?
  */
 export async function computeCapHistory(weeks = 12, toDate = new Date()): Promise<CapWeek[]> {
-  const [periodization, capPct] = await Promise.all([getPeriodization(), getLoadCapPct()]);
+  const [periodization, capList] = await Promise.all([getPeriodization(), getLoadCapPctList()]);
   const spanDays = weeks * 7 + 28;   // +28d so the earliest week's base lookback is covered
   const [dur, weatherHist] = await Promise.all([
     fetchDailyDurationHistory(toDate, spanDays),
@@ -2137,6 +2196,9 @@ export async function computeCapHistory(weeks = 12, toDate = new Date()): Promis
   const out: CapWeek[] = [];
   for (let w = weeks - 1; w >= 0; w--) {
     const monday = new Date(thisMonday); monday.setDate(monday.getDate() - 7 * w);
+    // POINT-IN-TIME cap %: use the +cap% that was in force ON THIS MONDAY (not the current one), so changing
+    // the cap only affects budgets from its change date forward and past weeks keep the % they trained under.
+    const capPct = capPctForDate(iso(monday), capList);
     // Ceiling ENTERING the week = the daily engine's cap7d computed as of that Monday (weekMult × the
     // max-of-N heat-credited base of the 3 weeks before it) — guaranteed identical to what the plan uses.
     const plan = computeTimeOnFeetPlan(dur, monday, { capPct, baseWindows: BASE_WINDOWS, heatCredit, heatCreditMax: HEAT_CREDIT_MAX, periodization });
@@ -2156,6 +2218,7 @@ export async function computeCapHistory(weeks = 12, toDate = new Date()): Promis
       hitPct:     ceiling > 0 ? Math.round((actual / ceiling) * 100) : 0,
       phase:      cyclePhase(monday, periodization).label,
       heatTaxPct: runDays > 0 ? Math.round((heatSum / runDays) * 100) : 0,
+      capPct,
       isCurrent:  w === 0,
     });
   }
