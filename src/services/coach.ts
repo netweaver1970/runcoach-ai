@@ -825,6 +825,7 @@ export function shapeFits(kind: string | undefined, blocks?: WatchWorkoutBlock[]
 // same +cap% ToF ceiling drives it, so it's one knob. The LONG additionally never jumps > LONG_STEP_MAX min/wk
 // (a %-cap alone lets a big long jump too far — a joint-protecting backstop, dormant at 10%).
 const RAMP_LONG_STEP_MAX = 10;
+const RAMP_LONG_STEP_BUILD = 14;   // BUILD week: let the long climb a little faster toward its target (still a backstop)
 // Map a logged run label onto the planner's session kinds, so the ramp can key off the TYPE actually run.
 function kindOfRunType(t: string | undefined): WeekKind | null {
   const s = (t ?? '').toLowerCase();
@@ -855,7 +856,7 @@ export function buildTypeRamp(
     const k = kindOfRunType(typeByDate.get(e.date.slice(0, 10)));
     if (k) byKind.set(k, e.min);
   }
-  return (dow: number, fullBase: number, isLong: boolean, kind?: WeekKind): number => {
+  return (dow: number, fullBase: number, isLong: boolean, kind?: WeekKind, buildWeek = false): number => {
     // Type-keying applies to the QUALITY kinds only. 'easy' covers everything from a 20-min recovery jog to
     // a 45-min Z2, so keying it by type collapses every easy day onto whichever of those ran most recently
     // — one short recovery run then caps the whole week's aerobic volume (observed: 280 → 233 min/wk).
@@ -864,7 +865,7 @@ export function buildTypeRamp(
     const recent = typed ?? byDow.get(dow) ?? 0;
     if (recent <= 0) return Math.min(fullBase, isLong ? 45 : 30);   // no recent history → conservative first dose
     let cap = recent * (1 + capPct / 100);
-    if (isLong) cap = Math.min(cap, recent + RAMP_LONG_STEP_MAX);   // long: absolute per-week jump backstop
+    if (isLong) cap = Math.min(cap, recent + (buildWeek ? RAMP_LONG_STEP_BUILD : RAMP_LONG_STEP_MAX));   // long: absolute per-week jump backstop (a touch higher on build weeks)
     return Math.min(fullBase, Math.round(cap));
   };
 }
@@ -895,8 +896,8 @@ export async function getWeekPlan(
   const scheduleMd = await readKnowledgeContent('running-schedule').catch(() => '');
   const template = parseWeeklyTemplate(scheduleMd);
   // Freshness modulates the raw-sum ceiling (see freshnessCapFactor): the ACWR/TSB model has decay, the
-  // rolling minutes sum does not, so two rest days move one and not the other.
-  const fresh = freshnessCapFactor(snap.tsb, snap.acwr);
+  // rolling minutes sum does not, so two rest days move one and not the other. Computed PER-DAY inside the
+  // loop below (freshDay) so a BUILD week relaxes it to accumulate load while a DELOAD week stays strict.
   // Standing weekly commitments (dance night, team sport…) — planned around, not just absorbed afterwards.
   const commitments = parseWeeklyCommitments(scheduleMd);
   const fxBy = new Map((forecast ?? []).map(f => [f.date, f]));
@@ -978,6 +979,11 @@ export async function getWeekPlan(
     const heat = fc ? heatStrainFactor({ apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
 
     const buildWk = periodization.on && cyclePhase(d, periodization).phase === 'build';
+    // Per-day freshness (build weeks relax it — see freshnessCapFactor). Build weeks also earn one extra
+    // easy run day so the recovery slot after a hard quality becomes an easy jog instead of a forced rest,
+    // adding aerobic volume toward the ceiling without adding intensity.
+    const freshDay = freshnessCapFactor(snap.tsb, snap.acwr, buildWk);
+    const effMaxRunDays = buildWk ? maxRunDays + 1 : maxRunDays;
     const j = tof.length;
     // Base = MAX over the last BASE_WINDOWS 7-day blocks, each heat-credited (a hot/sick week can't drag
     // the ceiling down; a heat-cut run counts as its normal-conditions volume). Consumption (prior6) and
@@ -986,7 +992,7 @@ export async function getWeekPlan(
     for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
     const prior6   = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);
     const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
-    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * fresh - prior6)) : 45;
+    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
 
     const kind = template[d.getDay()];
@@ -998,7 +1004,7 @@ export async function getWeekPlan(
     const commitBlock = !!commitToday || !!(commitYday?.hard && commitYday?.certain);
     const spaced = (i - lastQ) >= 2 && !commitBlock; // ≥1 non-quality day since the last quality session
     let intensity: CoachIntensity = 'rest'; let base = 0; let placed: WeekKind = 'rest';
-    let shifted = false, deferredHere = false, banked = false, shrunk = false, forcePlaced = false;
+    let shifted = false, deferredHere = false, banked = false, shrunk = false, forcePlaced = false, restJog = false;
     if (reentry) {
       // easy Z2 on the anchor (quality/easy) days, rest on the recovery/flex days → ~3 gentle runs/wk
       if (kind !== 'rest' && kind !== 'flex') { intensity = 'easy'; base = 28; placed = 'easy'; }
@@ -1022,21 +1028,30 @@ export async function getWeekPlan(
     } else if (deferred.length && green && allowance >= QMIN && spaced) {              // SHUFFLE: reschedule a deferred quality here (incl. the weekend)
       const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
     } else if (kind === 'easy') {
-      // Easy volume day — but only up to maxRunDays total (else REST so the week isn't a jog every day).
-      if (runDays < maxRunDays) { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
+      // Easy volume day — but only up to effMaxRunDays total (else REST so the week isn't a jog every day).
+      if (runDays < effMaxRunDays) { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
     }
-    else if (kind === 'rest')   { intensity = 'rest'; base = 0; }
+    else if (kind === 'rest')   {
+      // BUILD week only: a PLAIN rest day (never a commitment/dance rest) may become a SHORT easy recovery
+      // jog when a run-day slot and budget remain — the "6th day" that lets a build actually accumulate
+      // aerobic volume. Kept to a recovery length (≤35, then the type ramp trims a no-history day to ~30),
+      // so it adds base miles without becoming a volume day. Deload/leisure weeks keep the rest.
+      if (buildWk && !commitBlock && runDays < effMaxRunDays && allowance >= MEANINGFUL) {
+        intensity = 'easy'; placed = 'easy'; restJog = true;
+        base = Math.max(EASY_MIN, Math.min(35, allowance));
+      } else { intensity = 'rest'; base = 0; }
+    }
     else { // flex: MOP UP the spare budget with easy volume rather than banking it by resting. easyGrow already
       // reserves for pending quality (so easy can't starve the long/intervals), and the runner can always skip
       // or shorten — better to OFFER the aerobic volume than hoard it. Rest when the budget is spent OR the
       // week already has maxRunDays runs (concentrate volume into fewer, meaningful days).
-      if (allowance < MEANINGFUL || runDays >= maxRunDays) { intensity = 'rest'; }
+      if (allowance < MEANINGFUL || runDays >= effMaxRunDays) { intensity = 'rest'; }
       else { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
     }
     if (intensity === 'hard' && (fc?.apparentC ?? 0) >= 24) intensity = 'moderate';    // ease a hot hard morning
     // PROGRESSIVE OVERLOAD: ramp this day's TYPE from where it recently was (+cap%/week), so it climbs toward
     // its target instead of jumping there. Applies to every run type (long gets the extra +10min/wk backstop).
-    if (intensity !== 'rest') base = typeRamp(d.getDay(), base, placed === 'long', placed);
+    if (intensity !== 'rest') base = typeRamp(d.getDay(), base, placed === 'long', placed, buildWk);
 
     let capRest = false;
     // HARD cap gate (safety) — but shrink-to-fit's force-placed quality keeps its day even over budget.
@@ -1062,6 +1077,7 @@ export async function getWeekPlan(
       commitToday                          ? `Easy — ${commitToday.label} tonight if you go` :
       commitYday?.hard && commitYday?.certain && intensity === 'rest' ? `Recovery — day after ${commitYday.label}` :
       commitYday?.hard && commitYday?.certain ? `Easy recovery — day after ${commitYday.label}` :
+      restJog                         ? 'Easy recovery jog — build-week base miles' :
       reentry && intensity === 'easy' ? 'Easy Z2 — rebuilding after the break (recovery-gated)' :
       reentry                         ? 'Recovery day — rebuilding' :
       shifted                         ? `${qName(placed)} — rescheduled here as the cap freed up` :
@@ -1856,17 +1872,28 @@ function weekIndex(d: Date, per: Periodization): number {
 // tightens instead. Deliberately BOUNDED — freshness modulates the ramp, it never unlocks an open week.
 export const FRESHNESS_MAX_BONUS = 0.20;   // most the ceiling may flex up when demonstrably absorbed
 export const FRESHNESS_MAX_CUT   = 0.25;   // most it tightens when the acute load is spiking
-export function freshnessCapFactor(tsb?: number | null, acwr?: number | null): number {
+export function freshnessCapFactor(tsb?: number | null, acwr?: number | null, buildWeek = false): number {
   let f = 1;
+  // A BUILD week is SUPPOSED to accumulate a little fatigue — the deload week that follows is what
+  // dissipates it. So on a build week the freshness cap stops FIGHTING the block: the milder ACWR cut is
+  // deferred (1.45 not 1.3), the deep-fatigue cut is deferred (−22 not −15), and the growth band opens at a
+  // mildly-negative TSB (−8) instead of demanding you already be fresh. A real spike (ACWR > 1.5) still
+  // hard-tightens on ANY week — that's a safety floor, not a periodization lever. Deload/leisure weeks
+  // (buildWeek=false) keep the strict thresholds, so this only unlocks controlled overload inside a build.
+  const midCut       = buildWeek ? 1.45 : 1.3;
+  const fatigueFloor = buildWeek ? -22  : -15;
+  const relaxFloor   = buildWeek ? -8   : 0;
   // TIGHTEN first — a spiking acute:chronic ratio outranks any amount of self-reported freshness.
-  if (acwr != null && acwr > 1.5)      f -= FRESHNESS_MAX_CUT;          // clear spike → hard tighten
-  else if (acwr != null && acwr > 1.3) f -= 0.10;                       // above the sweet spot
-  if (tsb != null && tsb <= -15)       f -= 0.10;                       // deeply fatigued
-  // RELAX only when BOTH signals agree the load has been absorbed: form non-negative and ACWR in/below band.
-  else if (tsb != null && tsb >= 0 && (acwr == null || acwr <= 1.3)) {
-    // Scale with form: TSB 0 → no bonus, TSB +13 or better → the full bonus.
-    f += Math.min(FRESHNESS_MAX_BONUS, (tsb / 13) * FRESHNESS_MAX_BONUS)
-       + (acwr != null && acwr <= 1.0 ? 0.05 : 0);                      // fully absorbed → a little more
+  if (acwr != null && acwr > 1.5)         f -= FRESHNESS_MAX_CUT;       // clear spike → hard tighten (all weeks)
+  else if (acwr != null && acwr > midCut) f -= 0.10;                    // above the (week-dependent) sweet spot
+  if (tsb != null && tsb <= fatigueFloor) f -= 0.10;                    // deeply fatigued
+  // RELAX when the load is being absorbed: form at/above the (week-dependent) floor and ACWR in/below band.
+  else if (tsb != null && tsb >= relaxFloor && (acwr == null || acwr <= midCut)) {
+    // Scale with form from the floor (no bonus) to +13 (full bonus); the "fully-absorbed" kicker still needs
+    // a genuinely non-negative TSB, so a mildly-fatigued build day gets a gentle nudge, not the full stack.
+    const span = 13 - relaxFloor;
+    f += Math.min(FRESHNESS_MAX_BONUS, Math.max(0, (tsb - relaxFloor) / span) * FRESHNESS_MAX_BONUS)
+       + (tsb >= 0 && acwr != null && acwr <= 1.0 ? 0.05 : 0);          // fully absorbed → a little more
   }
   return Math.max(1 - FRESHNESS_MAX_CUT, Math.min(1 + FRESHNESS_MAX_BONUS, Math.round(f * 1000) / 1000));
 }
@@ -2040,17 +2067,18 @@ export async function buildCapContext(
   tsbNow?: number | null, acwrNow?: number | null,
 ): Promise<CapContext> {
   const periodization = await getPeriodization();
+  const buildWk = periodization.on && cyclePhase(toDate, periodization).phase === 'build';  // relax freshness inside a build block
   // HEAT-CREDIT map: reconstruct each past run-day's heat factor from its stored workout weather, so the
   // rolling-cap base counts a heat-shortened run as its ~normal-conditions volume (weather ≠ fitness drop).
   const weatherHist = await fetchDailyRunWeatherHistory(toDate).catch(() => ({} as Record<string, { tempC: number; humidity?: number }>));
   const heatCredit: Record<string, number> = {};
   for (const [date, w] of Object.entries(weatherHist)) heatCredit[date] = heatStrainFactor({ tempC: w.tempC, humidity: w.humidity });
   const antiErosion = { heatCredit, heatCreditMax: HEAT_CREDIT_MAX, baseWindows: BASE_WINDOWS };
-  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow), ...antiErosion });
+  const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow, buildWk), ...antiErosion });
   if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
 
   const distKm = await fetchDailyWorkDistanceHistory(toDate);
-  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow), ...antiErosion });
+  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow, buildWk), ...antiErosion });
   const p = (n: number) => String(n).padStart(2, '0');
   const dStr = `${toDate.getFullYear()}-${p(toDate.getMonth() + 1)}-${p(toDate.getDate())}`;
   const dist7d = distKm.filter(d => d.date <= dStr).slice(-7).reduce((s, d) => s + d.value, 0);
