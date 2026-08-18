@@ -1806,8 +1806,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // ── Step 10: Training load (CTL/ATL/TSB) ──────────────────────────────────
   // Cardio Load = HR-based Banister TRIMP per day (Bevel-style) — only elevated-HR
   // effort counts, so rest/easy days read low instead of being propped up by
-  // everyday-movement energy. Warm the EWMAs 120 days before the visible window.
-  // Display ~45 days (card shows the latest value + a 30-day sparkline); warm 120 days
+  // everyday-movement energy. Warm the EWMAs CARDIO_WARM_DAYS days before the visible window.
+  // Display ~45 days (card shows the latest value + a 30-day sparkline); warm CARDIO_WARM_DAYS days
   // before that so today's CTL/ATL is converged without querying a whole year of HR.
   const clWarm = daysAgo(45 + CARDIO_WARM_DAYS);
   const [loadByDay, floorByDay] = await Promise.all([
@@ -2844,11 +2844,14 @@ async function fetchDailyActiveEnergy(fromDate: Date, toDate: Date): Promise<Map
  * Fetches ALL workouts in [from − 42d warmup, to] so CTL is accurate, then
  * returns the daily series for the requested visible window only.
  */
-// Warm-up window for the CTL/ATL EWMAs when the load basis is HR-TRIMP. A full year of
-// HR samples is too heavy to query; 120 days ≈ 2.9× the 42-day CTL time-constant
-// (~95% converged), and the recent value (today's cardio load, what the card shows) is
-// always exact because we query newest-first.
-const CARDIO_WARM_DAYS = 120;
+// Warm-up window for the CTL/ATL EWMAs when the load basis is HR-TRIMP. The recent value (today's cardio
+// load, what the card shows) is always exact because we query newest-first.
+// The 42-day CTL EWMA is seeded at the first warm-up day, so it must warm ENOUGH days before the display
+// window to forget that seed — otherwise CTL depends on the selected range (Geert saw 1M 40 / 3M 42 / 6M 41
+// because the shorter ranges warmed less far back). 120 (~2.9τ) left ~6% seed error; 240 (~5.7τ) drives it
+// to ~0.3% so CTL is range-INVARIANT and matches HealthFit. (Per-day TRIMP is cached, so the extra warm-up
+// days are mostly cache reads — see harness/ctlrange.mjs.)
+const CARDIO_WARM_DAYS = 240;
 
 /**
  * Compute daily cardio TRIMP for one window by querying HR. Day keys are LOCAL dates.
@@ -4243,7 +4246,7 @@ async function computeDailyComponents(
   // screen vs a 3-month screen (the baseline is truncated to the fetched window). Compute sleep +
   // recovery + strain over a padded window and slice back to [from,end] below, so a given day's
   // recovery/sleep/bank is window-INVARIANT. (Steps/energy are per-day sums → already invariant;
-  // CTL/ATL already warm 120 days independent of the window.)
+  // CTL/ATL already warm CARDIO_WARM_DAYS days independent of the window.)
   const BASELINE_PAD_MONTHS = 3;
   const effMonths = months + BASELINE_PAD_MONTHS;
 
@@ -4313,7 +4316,7 @@ async function computeDailyComponents(
   }
 
   // Cardio Load (ATL) + CTL + TSB per day — HR-TRIMP basis (Bevel-style), for the
-  // history viewer + export / cross-model verification. Warm 120 days before the window.
+  // history viewer + export / cross-model verification. Warm CARDIO_WARM_DAYS days before the window.
   const clWarmFrom = new Date(from.getTime() - CARDIO_WARM_DAYS * 86_400_000);
   const [clLoad, clFloor] = await Promise.all([
     fetchDailyCardioTrimp(clWarmFrom, end, await getEffectiveMaxHr()),
