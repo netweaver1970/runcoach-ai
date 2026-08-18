@@ -30,6 +30,8 @@ const STATIC_SECURE_KEYS = [
   'coaching_mode_v1',             // self (LLM) vs coach (cloud prescription) mode
   'athlete_status_v1',            // overall status (Active/Sick/Injured/On a break) + until
   'shrink_to_fit_v1', 'periodization_v1', 'min_tsb', // coach cycle/shape settings
+  'heat_sensitivity_v1', 'max_run_days_v1', // coach tuning: heat-strain ×multiplier + max running days/wk (were MISSING → lost on restore)
+  'accent_color_v1',              // theme accent colour (was MISSING)
   'long_run_style_v1',            // long run: whole / auto-split / opt-in (per-date opt-in flags are transient → excluded)
   'warmup_meters_v1', 'cooldown_meters_v1', 'drills_minutes_v1', // workout structure (0 metres = open goal)
   'plan_mode_v1', 'race_config_v1', // leisure vs race + race config
