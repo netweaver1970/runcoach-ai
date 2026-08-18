@@ -151,6 +151,9 @@ export function zoneSummary(runs: RunWorkout[], sinceDays = 56, maxHR = 188): Zo
   const bucket = (frac: number): keyof typeof acc => frac < 0.60 ? 'z1' : frac < 0.70 ? 'z2' : frac < 0.80 ? 'z3' : frac < 0.90 ? 'z4' : 'z5';
   for (const r of runs ?? []) {
     if (new Date(r.date).getTime() < cut) continue;
+    // HR-unreliable → corrupted HR sample stream (dropout spikes read as Z4/Z5); its zone split is meaningless.
+    // Omit from this HR-based polarization card (see zoneDistributionOverTime for the full rationale).
+    if (r.hrUnreliable || r.hrUnreliableManual) continue;
     const z = r.zones, sum = z ? z.z1 + z.z2 + z.z3 + z.z4 + z.z5 : 0;
     if (z && sum > 0) {
       const mins = (r.workDuration ?? r.duration ?? 0) / 60;
@@ -209,6 +212,11 @@ export function zoneDistributionOverTime(runs: RunWorkout[], t0: number, t1: num
   for (const r of runs ?? []) {
     const ms = new Date(r.date).getTime();
     if (ms < t0 || ms > t1) continue;
+    // A run flagged HR-unreliable (a dropout — e.g. a Work segment with no HR at all) has a corrupted HR
+    // sample stream: the dropout spikes into Z4/Z5 and paints phantom "hard" time even on an easy run, while
+    // the segment AVERAGE hides it (an all-Z2 run reads 15% red). Its HR-zone split is meaningless, so omit it
+    // from the HR-based mix. Its volume still counts for load/CTL (power-repaired TRIMP) elsewhere.
+    if (r.hrUnreliable || r.hrUnreliableManual) continue;
     const z = r.zones, zSum = z ? z.z1 + z.z2 + z.z3 + z.z4 + z.z5 : 0;
     let easy = 0, mod = 0, hard = 0;
     if (z && zSum > 0) {
