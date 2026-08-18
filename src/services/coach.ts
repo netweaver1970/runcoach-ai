@@ -15,7 +15,7 @@ import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
 import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone, trainingDayKey } from './trainingLoad';
-import { getSwitchList, regimeForDate } from './accounting';
+import { getSwitchList, regimeForDate, getAccountingMode, DEFAULT_ACCOUNTING, AccountingMode } from './accounting';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
 import { DayStrain, ActivitySummary, RunWorkout } from '../types';
@@ -527,8 +527,15 @@ export function synthesizeWorkout(
 ): WatchWorkout {
   // Warm-up / cool-down (0 = open) + drills length are the athlete's configured structure (WorkoutStructure).
   const st = workoutStructureCache;
-  // Reserve ~6 min for the warm-up + cool-down (open or distance); the rest is work.
-  const workBudget = Math.max(8, (runMinutes || 35) - 6);
+  // Split `runMinutes` into its parts so the pieces sum back to it (accounting.ts). runMinutes carries the
+  // COUNTED time-on-feet basis, which is WORK + DRILLS in both regimes (drills are never excluded); FULL
+  // additionally folds the warm-up/cool-down into the counted session, WORK leaves them open + uncounted:
+  //   • 'work'  — work = runMinutes − drills (warm-up/cool-down are OPEN additions, not in the budget).
+  //   • 'full'  — work = runMinutes − drills − ~6 (the counted warm-up/cool-down).
+  // So drills + work (+ warm/cool in full) == runMinutes, and the 7-day plan's printed structure reconciles
+  // with the footer budget instead of under/over-shooting it.
+  const reserve = (st.drillsMinutes || 0) + (accountingModeSync() === 'full' ? 6 : 0);
+  const workBudget = Math.max(8, (runMinutes || 35) - reserve);
   // TYPE-aware structure — the session TYPE, not just the effort tier, decides the shape (so a Long
   // run is a long Z2 run, a Tempo is sustained Z3, only Intervals are short Z4/Z5 reps). Falls back to
   // the intensity when no kind is given (legacy callers like the daily plan's fallback).
@@ -1699,6 +1706,16 @@ export async function refreshWorkoutStructure(): Promise<WorkoutStructure> {
   workoutStructureCache = await getWorkoutStructure();
   return workoutStructureCache;
 }
+
+// Sync-readable accounting mode (like workoutStructureCache) so synthesizeWorkout can decide whether the
+// warm-up/cool-down are folded into the counted session ('full') or are open, uncounted additions ('work').
+// Refreshed by refreshAccountingMode(), called in assembleCoachSnapshot before any plan is built.
+let accountingModeCache: AccountingMode = DEFAULT_ACCOUNTING;
+export function accountingModeSync(): AccountingMode { return accountingModeCache; }
+export async function refreshAccountingMode(): Promise<AccountingMode> {
+  accountingModeCache = await getAccountingMode();
+  return accountingModeCache;
+}
 export async function setWorkoutStructure(v: Partial<WorkoutStructure>): Promise<void> {
   const clamp = (x: number) => String(Math.max(0, Math.round(x)));
   try {
@@ -2189,6 +2206,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     loadSupplements(),
     getEffectiveMaxHr().catch(() => 190),   // to normalise realised run HR → reserve for the quality LOAD ramp
     refreshWorkoutStructure().catch(() => DEFAULT_WORKOUT_STRUCTURE),
+    refreshAccountingMode().catch(() => DEFAULT_ACCOUNTING),
     refreshHeatSensitivity().catch(() => DEFAULT_HEAT_SENSITIVITY),
   ]);
   const dates  = Object.keys(comps).sort();

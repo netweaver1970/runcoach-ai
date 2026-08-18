@@ -4,7 +4,7 @@ import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import {
-  freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay,
+  freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay, accountingModeSync,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
   getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS,
 } from '../src/services/coach';
@@ -18,7 +18,7 @@ import { recordForecast, recordActuals } from '../src/services/forecastLog';
 
 type Row = WeekPlanDay & {
   strain: number; trimp: number; ctl: number; atl: number; tsb: number;
-  adjMin: number; heat: number; capped: boolean; tsbTrim: boolean; floorRest: boolean; taperRest: boolean; fc?: DayForecast; label: string; adjKm?: number;
+  adjMin: number; countedMin: number; heat: number; capped: boolean; tsbTrim: boolean; floorRest: boolean; taperRest: boolean; fc?: DayForecast; label: string; adjKm?: number;
 };
 
 // Derive the displayed label FROM the actual synthesized + cap-trimmed structure, so it always
@@ -230,14 +230,21 @@ export default function WeekPlan() {
           const intensity = isRun ? d.intensity : ('rest' as typeof d.intensity);
           const volCapped = isRun && !d.forced && volMin < heatMin; // trimmed by the volume cap
           const tsbTrim   = isRun && mins < volMin;                 // trimmed by the form floor (forced days too now)
-          tofW.push(mins); tofDateW.push(d.date);   // keep the date array aligned for the max-window base
-
+          // Build the session FIRST so the cap counts the SAME work the row prints.
           // Match the daily plan's true-work-minutes cap so the week's interval/tempo days render the same
           // ramped structure (intervals +1 rep, tempo +cap%) rather than an uncapped synthesis.
           const rqw = d.kind === 'intervals' ? coach.recentQualityWork?.intervals
                     : d.kind === 'tempo'     ? coach.recentQualityWork?.tempo : undefined;
           const wk = !isRun ? null
             : ensureBlockPower(synthesizeWorkout(intensity, mins, d.weekday, coach.powerZones, d.kind as any, rqw, coach.loadCapPct), coach.powerZones);
+          // Counted time-on-feet for the +cap% budget + footer. WORK accounting counts only what the session
+          // prescribes AS work — drills + work blocks — leaving warm-up/cool-down (open) and interval recovery
+          // jogs (recovery) OUT, matching the work-only historical base. FULL counts the whole session.
+          const workBlockMin = wk ? wk.blocks.reduce((a, b) => a + b.workMinutes * (b.repeats || 1), 0) : 0;
+          const countedMin = !isRun ? 0
+            : accountingModeSync() === 'full' ? mins
+            : (wk?.drillsMinutes || 0) + workBlockMin;
+          tofW.push(countedMin); tofDateW.push(d.date);   // keep the date array aligned for the max-window base
           const structure = wk ? (structPower(wk) || d.structure) : 'Rest';
           const label = isLongDay && isRun ? 'Long' : labelFromWorkout(wk, mins, d.kind);
           const strain = wk ? Math.max(20, Math.round(strainFromLoad(estimateWorkoutLoad(wk) * heat))) : 20;
@@ -256,7 +263,7 @@ export default function WeekPlan() {
             ? Math.round((mins / coach.paceMinPerKm) * 10) / 10 : undefined;
           return {
             ...d, intensity, structure, label, fc, heat, adjKm,
-            adjMin: mins, capped: volCapped, tsbTrim, floorRest: floorRested, taperRest: taperRested, strain, trimp,
+            adjMin: mins, countedMin, capped: volCapped, tsbTrim, floorRest: floorRested, taperRest: taperRested, strain, trimp,
             ctl: Math.round(ctl * 10) / 10, atl: Math.round(atl * 10) / 10, tsb: Math.round((ctl - atl) * 10) / 10,
           };
         });
@@ -295,7 +302,7 @@ export default function WeekPlan() {
 
   useEffect(() => { build(); }, [build]);
 
-  const totalRunMin = rows?.reduce((a, r) => a + r.adjMin, 0) ?? 0;
+  const totalRunMin = rows?.reduce((a, r) => a + r.countedMin, 0) ?? 0;
   const runDays     = rows?.filter(r => r.intensity !== 'rest').length ?? 0;
 
   return (
@@ -381,7 +388,7 @@ export default function WeekPlan() {
           })}
 
           <Text style={[s.footer, !!weekCap && (weekCap.cappedDays > 0 || weekCap.floorRestDays > 0 || weekCap.taperDays > 0) && { color: '#e67e22' }]}>
-            {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min (work) this week
+            {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min ({accountingModeSync() === 'full' ? 'incl. warm-up/cool-down' : 'work'}) this week
             {weekCap ? ((weekCap.floorRestDays + weekCap.taperDays) > 0
               ? `  ·  ${weekCap.floorRestDays + weekCap.taperDays} day${(weekCap.floorRestDays + weekCap.taperDays) === 1 ? '' : 's'} rested for your ${weekCap.minTSB} TSB floor${weekCap.taperDays > 0 ? ' + long taper' : ''} (long protected)`
               : weekCap.cappedDays > 0
