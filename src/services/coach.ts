@@ -2174,7 +2174,7 @@ export interface CapWeek {
 }
 
 /**
- * Week-by-week BUDGET vs ACTUAL readout (see app/cap-history.tsx): for each of the last `weeks` weeks,
+ * Week-by-week BUDGET vs ACTUAL readout (see the Volume vs Budget card in app/statistics.tsx): for each of the last `weeks` weeks,
  * the +cap% ceiling that applied (heat-credited, max-of-N-weeks base — the same math the daily engine
  * uses) vs what was actually run, plus that week's heat tax and periodization phase. Makes the
  * anti-erosion cap visible: are you reaching the ceiling, and how much is heat costing you?

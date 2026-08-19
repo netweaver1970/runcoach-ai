@@ -16,6 +16,7 @@ import {
   efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, decouplingBanded, zoneDistributionOverTime,
   EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek, HEAT_C,
 } from '../src/services/runStats';
+import { computeCapHistory, computeRolling7d, CapWeek, Rolling7d } from '../src/services/coach';
 import type { PowerZones } from '../src/types';
 
 const CHART_H = 160;
@@ -395,6 +396,94 @@ function StackedZoneChart({ weeks, t0, t1, events, showEvents, innerW }: {
   );
 }
 
+// Weekly VOLUME vs its +cap% CEILING, as a scrubbable bar chart (replaces the old standalone list screen).
+// Each week: a faint track up to the ceiling with a cap line on top, and a coloured bar for what was actually
+// run (green ≥90% of ceiling / amber ≥70% / red under; grey = the in-progress week). Same scrub + range
+// machinery as the other charts, so it moves with the shared time window.
+function VolumeBudgetChart({ weeks, t0, t1, innerW }: { weeks: CapWeek[]; t0: number; t1: number; innerW: number }) {
+  const { c } = useTheme();
+  const ch = useThemedStyles(makeCh);
+  const plotW = Math.max(1, innerW - TS_YW);
+  const span = Math.max(1, t1 - t0);
+  const [cur, setCur] = useState<number | null>(null);
+  const mapRef = useRef<(lx: number) => number>(() => t0);
+  mapRef.current = (lx) => t0 + (Math.max(0, Math.min(plotW, lx - TS_YW)) / plotW) * span;
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
+    onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+    onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
+  })).current;
+
+  const win = weeks.map(w => ({ ...w, t: tOf(w.weekStart) }))
+    .filter(w => w.t >= t0 - 4 * 86400000 && w.t <= t1 && (w.actualMin > 0 || w.ceilingMin > 0));
+  if (innerW <= 0) return <View style={{ height: TS_H + TX_H + 20 }} />;
+  if (win.length < 1) return <View style={{ height: TS_H + TX_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint, fontSize: 12 }}>No volume data in this range.</Text></View>;
+  const yearly = span > 2.2 * 365 * 86400000;
+  const x = (t: number) => ((t - t0) / span) * plotW;
+  const barW = Math.max(3, Math.min(26, (plotW / Math.max(1, win.length)) * 0.7));
+  const maxV = Math.max(60, ...win.flatMap(w => [w.ceilingMin, w.actualMin]));
+  const col = (hit: number, isCur: boolean) => isCur ? c.textFaint : hit >= 90 ? '#22c55e' : hit >= 70 ? '#f59e0b' : '#ef4444';
+  const n = cur == null ? win[win.length - 1] : win.reduce((b, w) => Math.abs(w.t - cur) < Math.abs(b.t - cur) ? w : b, win[0]);
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, marginBottom: 2 }}>
+        <Text style={{ color: c.textSub, fontSize: 11.5, fontWeight: '700' }} numberOfLines={1}>
+          {n.label}{n.isCurrent ? ' • now' : ''}{n.phase ? ` · ${n.phase}` : ''}
+        </Text>
+        <Text style={{ fontSize: 12, fontWeight: '800', color: c.text }}>
+          {n.actualMin}/{n.ceilingMin}m · <Text style={{ color: n.isCurrent ? c.textFaint : col(n.hitPct, false) }}>{n.isCurrent ? 'in progress' : `${n.hitPct}%`}</Text>
+          {n.heatTaxPct >= 3 ? <Text style={{ color: '#f59e0b' }}> 🌡+{n.heatTaxPct}%</Text> : null}
+        </Text>
+      </View>
+      <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
+        <View style={{ width: TS_YW, height: TS_H }}>
+          {[0, maxV / 2, maxV].map((v, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: TS_H * (1 - v / maxV) - 7, right: 4 }]}>{Math.round(v)}</Text>)}
+        </View>
+        <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
+          {win.map((w, i) => {
+            const left = x(w.t) - barW / 2;
+            const ceilH = TS_H * Math.min(1, w.ceilingMin / maxV);
+            const actH = TS_H * Math.min(1, w.actualMin / maxV);
+            return (
+              <View key={i} style={{ position: 'absolute', left, top: 0, width: barW, height: TS_H }}>
+                <View style={{ position: 'absolute', bottom: 0, width: barW, height: ceilH, backgroundColor: c.gridline, borderTopWidth: 1.5, borderTopColor: c.border }} />
+                <View style={{ position: 'absolute', bottom: 0, width: barW, height: actH, backgroundColor: col(w.hitPct, w.isCurrent), opacity: w.isCurrent ? 0.55 : 0.95 }} />
+              </View>
+            );
+          })}
+          <View pointerEvents="none" style={{ position: 'absolute', left: x(n.t), top: 0, width: 1, height: TS_H, backgroundColor: c.text, opacity: 0.35 }} />
+          {[0, 1, 2, 3].map(i => { const t = t0 + (span * i) / 3; return <Text key={`x${i}`} style={[ch.xLabel, { position: 'absolute', top: TS_H + 4, width: 64, textAlign: i === 0 ? 'left' : i === 3 ? 'right' : 'center', left: i === 0 ? 0 : i === 3 ? plotW - 64 : x(t) - 32 }]} numberOfLines={1}>{dLabel(t, yearly)}</Text>; })}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// The two "right now" gauges (this calendar week Mon→now, and the rolling trailing 7 days) — the old screen's
+// top card, moved BELOW the long-term chart per Geert. Compact horizontal actual/ceiling meters.
+function RightNowBars({ curWeek, roll }: { curWeek: CapWeek | null; roll: Rolling7d | null }) {
+  const ch = useThemedStyles(makeCh);
+  const col = (pct: number) => pct >= 90 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
+  if (!curWeek && !roll) return null;
+  const Row = ({ label, actual, ceiling, pct }: { label: string; actual: number; ceiling: number; pct: number }) => (
+    <View style={ch.rnRow}>
+      <Text style={ch.rnLbl}>{label}</Text>
+      <View style={ch.rnTrack}><View style={[ch.rnFill, { width: `${Math.min(100, pct)}%`, backgroundColor: col(pct) }]} /></View>
+      <Text style={ch.rnNum}>{actual}/{ceiling}m · {pct}%</Text>
+    </View>
+  );
+  return (
+    <View style={ch.rnCard}>
+      <Text style={ch.rnTitle}>Right now</Text>
+      {curWeek && <Row label={'This week\n(Mon→now)'} actual={curWeek.actualMin} ceiling={curWeek.ceilingMin} pct={curWeek.hitPct} />}
+      {roll && <Row label={'Rolling\n7 days'} actual={roll.actualMin} ceiling={roll.ceilingMin} pct={roll.hitPct} />}
+    </View>
+  );
+}
+
 function ZoneBar({ z }: { z: ZoneSummary }) {
   const s = useThemedStyles(makeS);
   const segs = [
@@ -514,6 +603,22 @@ export default function StatisticsScreen() {
   const t1 = days ? gMax - offset * spanMs : gMax;
   const t0 = days ? t1 - spanMs : gMin;
   const zoneWeeks = useMemo(() => zoneDistributionOverTime(allRuns, 0, gMax + 86400000, maxHR), [allRuns, gMax, maxHR]);
+  // Volume-vs-budget weekly history (moved in from the old standalone screen). Fetch enough weeks to fill the
+  // window (ending at t1 so it pages with the shared controls); the "right now" gauges are always live.
+  const [capWeeks, setCapWeeks] = useState<CapWeek[]>([]);
+  const [roll, setRoll] = useState<Rolling7d | null>(null);
+  const [nowWeek, setNowWeek] = useState<CapWeek | null>(null);
+  const capWeeksN = days > 0 ? Math.min(120, Math.ceil(days / 7) + 3) : 104;
+  useEffect(() => {
+    let alive = true;
+    computeCapHistory(capWeeksN, new Date(t1)).then(w => { if (alive) setCapWeeks(w); }).catch(() => { if (alive) setCapWeeks([]); });
+    return () => { alive = false; };
+  }, [capWeeksN, t1]);
+  // The two "right now" gauges are always LIVE (independent of the paged/zoomed window above).
+  useEffect(() => {
+    computeRolling7d().then(setRoll).catch(() => {});
+    computeCapHistory(1).then(w => setNowWeek(w.find(x => x.isCurrent) ?? w[w.length - 1] ?? null)).catch(() => {});
+  }, []);
   // Moving "normal aerobic efficiency" band + the runs that survive its cut + a stable recent-median read.
   const { dcClean, dcBand, dcMed } = useMemo(() => {
     const { clean, band } = decouplingBanded(dc ?? []);
@@ -701,6 +806,24 @@ export default function StatisticsScreen() {
             <Text style={s.errorText}>Need a couple of steady runs ≥30 min with power to show decoupling.</Text>
           )}
         </View>
+
+        {/* ── Volume vs budget (weekly ceiling vs actual + the two live gauges) ── */}
+        <View style={s.card}>
+          <CardHead title="Volume vs Budget">
+            Each week's running (bar) vs its +cap% ceiling (the line atop the faint track) — heat-credited off the
+            best of your recent weeks so a hot week can't drag it down. Reach ~90% to hold volume flat; under that,
+            next week's ceiling drifts down. 🟢 ≥90% · 🟠 ≥70% · 🔴 under · grey = the in-progress week · 🌡 = that
+            week's heat tax.
+          </CardHead>
+          {capWeeks.length ? (
+            <>
+              <VolumeBudgetChart weeks={capWeeks} t0={t0} t1={t1} innerW={innerW} />
+              <RightNowBars curWeek={nowWeek} roll={roll} />
+            </>
+          ) : (
+            <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /></View>
+          )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -709,6 +832,14 @@ export default function StatisticsScreen() {
 const makeCh = (c: Palette) => StyleSheet.create({
   yLabel: { fontSize: 10, color: c.textSub, textAlign: 'right', fontWeight: '500' },
   xLabel: { fontSize: 10, color: c.textSub, fontWeight: '600' },
+  // "Right now" gauges under the Volume-vs-Budget chart
+  rnCard:  { marginTop: 12, borderTopWidth: 1, borderTopColor: c.border, paddingTop: 10 },
+  rnTitle: { color: c.text, fontSize: 12.5, fontWeight: '800', marginBottom: 8 },
+  rnRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  rnLbl:   { color: c.textSub, fontSize: 11, fontWeight: '600', width: 74 },
+  rnTrack: { flex: 1, height: 15, borderRadius: 5, backgroundColor: c.surfaceAlt, overflow: 'hidden', justifyContent: 'center' },
+  rnFill:  { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 5 },
+  rnNum:   { color: c.text, fontSize: 11, fontWeight: '700', width: 96, textAlign: 'right' },
   anchor: { fontSize: 11, color: c.text, fontWeight: '800' },
 });
 
