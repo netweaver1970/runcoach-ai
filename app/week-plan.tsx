@@ -79,7 +79,7 @@ export default function WeekPlan() {
   const { c } = useTheme();
   const [rows, setRows]   = useState<Row[] | null>(null);
   const [hist, setHist]   = useState<Hist[]>([]);
-  const [seed, setSeed]   = useState<{ ctl: number; atl: number } | null>(null);
+  const [seed, setSeed]   = useState<{ ctl: number; atl: number; strain: number } | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
   const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number; floorRestDays: number; taperDays: number; minTSB: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
@@ -103,7 +103,9 @@ export default function WeekPlan() {
       const tl = (await fetchTrainingLoadHistory(1).catch(() => null)) ?? snap.trainingLoad ?? [];
       const todayLoad = tl.length ? tl[tl.length - 1] : null;
       const ctl0 = todayLoad?.ctl ?? 0, atl0 = todayLoad?.atl ?? 0;
-      setSeed({ ctl: ctl0, atl: atl0 });
+      // Today's strain (from today's realised load) — for the "Today" anchor row that bridges the header to
+      // the forecast, so the first forward day's drop (a rest-day decay) reads as continuous, not a mismatch.
+      setSeed({ ctl: ctl0, atl: atl0, strain: Math.max(20, Math.round(strainFromLoad(todayLoad?.load ?? 0))) });
 
       // Rolling per-intensity TRIMP/min calibration — computed continuously by the app during
       // every health sync (snap.trimpRates). Fall back to computing it here for older caches.
@@ -359,6 +361,22 @@ export default function WeekPlan() {
             <Text style={[s.h, s.num]}>ATL</Text><Text style={[s.h, s.num]}>TSB</Text>
           </View>
 
+          {/* TODAY anchor — where fitness/fatigue stand NOW (= the header). The forecast below builds from
+              here, so the first forward day's drop reads as a one-day decay, not a mismatch with the header. */}
+          <View style={[s.row, { opacity: 0.6 }]}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={s.dayLine} numberOfLines={1}>
+                <Text style={s.weekday}>Today</Text>{'  '}<Text style={[s.tag, { color: c.textFaint }]}>done · from your history</Text>
+              </Text>
+            </View>
+            <Text style={[s.numS, s.strain, { color: c.textFaint }]}>{seed.strain}</Text>
+            <Text style={[s.num, s.val]}>{seed.ctl.toFixed(0)}</Text>
+            <Text style={[s.num, s.val]}>{seed.atl.toFixed(0)}</Text>
+            <Text style={[s.num, s.val, { color: (seed.ctl - seed.atl) < -10 ? '#e74c3c' : (seed.ctl - seed.atl) > 5 ? '#3498db' : c.textSub }]}>
+              {(seed.ctl - seed.atl) > 0 ? '+' : ''}{(seed.ctl - seed.atl).toFixed(0)}
+            </Text>
+          </View>
+
           {rows.map((r) => {
             const day = Number(r.date.slice(8, 10));
             const it  = INTENSITY[r.intensity] ?? INTENSITY.rest;
@@ -389,6 +407,11 @@ export default function WeekPlan() {
               </View>
             );
           })}
+
+          <Text style={s.axisNote}>
+            Strain = each session's acute stress (a short, hard interval scores high). CTL/ATL = accumulated load —
+            a 60-min easy long run adds more load than a 12-min interval block even though it feels easier, so it lifts ATL more.
+          </Text>
 
           <Text style={[s.footer, !!weekCap && (weekCap.cappedDays > 0 || weekCap.floorRestDays > 0 || weekCap.taperDays > 0) && { color: '#e67e22' }]}>
             {runDays} run day{runDays === 1 ? '' : 's'} · {totalRunMin} run-min ({accountingModeSync() === 'full' ? 'incl. warm-up/cool-down' : 'work'}) this week
@@ -508,6 +531,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   numS:     { width: 44, textAlign: 'right' }, // strain column — a touch wider so "Strain" fits on one line
   strain:   { fontSize: 15, fontWeight: '800' },
   val:      { fontSize: 13, fontWeight: '600', color: c.textSub },
+  axisNote: { fontSize: 11, color: c.textFaint, lineHeight: 16, marginTop: 12 },
   footer:   { fontSize: 12.5, color: c.textSub, marginTop: 12, fontWeight: '600' },
   genLine:  { fontSize: 11.5, color: c.textFaint, marginTop: 14, textAlign: 'center' },
   btn:      { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
