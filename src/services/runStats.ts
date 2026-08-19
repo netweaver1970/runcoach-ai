@@ -107,7 +107,7 @@ export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, Rep
       // the HR-based ratios — so drop its EF/SE. EC is speed÷power, HR-independent, so it stays. We use the
       // manual flag only, NOT the auto-detector: the latter over-fires on older/sparser HR recordings and
       // would blank months of EF/SE history.
-      const hrBad = !!r.hrUnreliableManual;
+      const hrBad = !!r.hrUnreliableManual || !!r.hrLowRes;
       return {
         date: r.date.slice(0, 10),
         ef: hrBad ? 0 : r3(st.power / st.hr),
@@ -153,7 +153,7 @@ export function zoneSummary(runs: RunWorkout[], sinceDays = 56, maxHR = 188): Zo
     if (new Date(r.date).getTime() < cut) continue;
     // HR-unreliable → corrupted HR sample stream (dropout spikes read as Z4/Z5); its zone split is meaningless.
     // Omit from this HR-based polarization card (see zoneDistributionOverTime for the full rationale).
-    if (r.hrUnreliable || r.hrUnreliableManual) continue;
+    if (r.hrUnreliable || r.hrUnreliableManual || r.hrLowRes) continue;
     const z = r.zones, sum = z ? z.z1 + z.z2 + z.z3 + z.z4 + z.z5 : 0;
     if (z && sum > 0) {
       const mins = (r.workDuration ?? r.duration ?? 0) / 60;
@@ -216,7 +216,7 @@ export function zoneDistributionOverTime(runs: RunWorkout[], t0: number, t1: num
     // sample stream: the dropout spikes into Z4/Z5 and paints phantom "hard" time even on an easy run, while
     // the segment AVERAGE hides it (an all-Z2 run reads 15% red). Its HR-zone split is meaningless, so omit it
     // from the HR-based mix. Its volume still counts for load/CTL (power-repaired TRIMP) elsewhere.
-    if (r.hrUnreliable || r.hrUnreliableManual) continue;
+    if (r.hrUnreliable || r.hrUnreliableManual || r.hrLowRes) continue;
     const z = r.zones, zSum = z ? z.z1 + z.z2 + z.z3 + z.z4 + z.z5 : 0;
     let easy = 0, mod = 0, hard = 0;
     if (z && zSum > 0) {
@@ -272,7 +272,8 @@ export async function decouplingTrend(
 ): Promise<DecouplePoint[]> {
   const cache = await readDc();
   const candidates = (runs ?? []).filter(r =>
-    DC_AEROBIC.has(r.label ?? '') && (r.duration ?? 0) >= 1800 && (r.workPower ?? 0) > 0);
+    DC_AEROBIC.has(r.label ?? '') && (r.duration ?? 0) >= 1800 && (r.workPower ?? 0) > 0
+    && !r.hrLowRes && !r.hrUnreliableManual);   // Pw:HR is HR-based → skip low-res / hand-flagged HR runs
   const toFetch = candidates.filter(r => !(r.uuid in cache));
   let done = 0;
   onProgress?.(0, toFetch.length);

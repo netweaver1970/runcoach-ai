@@ -367,6 +367,14 @@ function AreaChart({
     : cleanData;
   const pts    = downsample(chronological, 600);
   const values = pts.map(p => p.v);
+  // Globally-SPARSE run (an old optical-HR / estimated-power recording): samples are far apart, so the
+  // baseline bars below turn into disconnected islands. Detect it from the typical gap and instead draw a
+  // connected line through the points, which reads as a real (low-res) trace rather than a broken chart.
+  const gapsMs: number[] = [];
+  for (let i = 1; i < pts.length; i++) gapsMs.push(pts[i].t - pts[i - 1].t);
+  gapsMs.sort((a, b) => a - b);
+  const medGapMs = gapsMs.length ? gapsMs[Math.floor(gapsMs.length / 2)] : 1000;
+  const sparse   = medGapMs > 15_000;   // typical gap > 15 s → low-resolution
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   const pad    = (rawMax - rawMin) * 0.10 || 2;
@@ -523,34 +531,55 @@ function AreaChart({
             );
           })}
 
-          {/* Area fill */}
-          {pts.map((pt, i) => {
-            const nextPt = pts[i + 1];
-            const x = toX(pt.t);
-            let rawNextX = nextPt ? toX(nextPt.t) : chartW;
-            // Cap at nearest pause boundary (prevents bar stretching over pause).
-            for (const pi of pauseIntervals) {
-              const pauseStartX = toX(pi.s);
-              if (pauseStartX > x && pauseStartX < rawNextX) rawNextX = pauseStartX;
-            }
-            // Pace/power: cap bar width so a stationary gap (e.g. you stop moving but
-            // leave the watch running) renders as an empty gap, not a flat block.
-            if (isPace || isPower) {
-              const maxBarW = (18_000 / wallTotalMs) * chartW; // ~18 s of data
-              if (rawNextX - x > maxBarW) rawNextX = x + maxBarW;
-            }
-            const nextX = rawNextX;
-            const w     = Math.max(1, nextX - x);
-            const barH  = Math.max(2, CHART_H - toY(pt.v));
-            return (
-              <View key={i} style={{
-                position: 'absolute',
-                left: x, top: LABEL_H + toY(pt.v),
-                width: w, height: barH,
-                backgroundColor: color + 'B0',
-              }} />
-            );
-          })}
+          {/* Data — a connected line for a sparse/low-res run, baseline bars for a dense recording */}
+          {sparse ? (
+            pts.map((pt, i) => {
+              const x = toX(pt.t), y = LABEL_H + toY(pt.v);
+              let line = null;
+              if (i > 0) {
+                const x1 = toX(pts[i - 1].t), y1 = LABEL_H + toY(pts[i - 1].v);
+                const overPause = pauseIntervals.some(pi => pts[i - 1].t < pi.e && pt.t > pi.s);
+                if (!overPause) {
+                  const dx = x - x1, dy = y - y1, len = Math.hypot(dx, dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
+                  line = <View style={{ position: 'absolute', left: (x1 + x) / 2 - len / 2, top: (y1 + y) / 2 - 1, width: len, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
+                }
+              }
+              return (
+                <React.Fragment key={i}>
+                  {line}
+                  <View style={{ position: 'absolute', left: x - 2, top: y - 2, width: 4, height: 4, borderRadius: 2, backgroundColor: color }} />
+                </React.Fragment>
+              );
+            })
+          ) : (
+            pts.map((pt, i) => {
+              const nextPt = pts[i + 1];
+              const x = toX(pt.t);
+              let rawNextX = nextPt ? toX(nextPt.t) : chartW;
+              // Cap at nearest pause boundary (prevents bar stretching over pause).
+              for (const pi of pauseIntervals) {
+                const pauseStartX = toX(pi.s);
+                if (pauseStartX > x && pauseStartX < rawNextX) rawNextX = pauseStartX;
+              }
+              // Pace/power: cap bar width so a stationary gap (e.g. you stop moving but
+              // leave the watch running) renders as an empty gap, not a flat block.
+              if (isPace || isPower) {
+                const maxBarW = (18_000 / wallTotalMs) * chartW; // ~18 s of data
+                if (rawNextX - x > maxBarW) rawNextX = x + maxBarW;
+              }
+              const nextX = rawNextX;
+              const w     = Math.max(1, nextX - x);
+              const barH  = Math.max(2, CHART_H - toY(pt.v));
+              return (
+                <View key={i} style={{
+                  position: 'absolute',
+                  left: x, top: LABEL_H + toY(pt.v),
+                  width: w, height: barH,
+                  backgroundColor: color + 'B0',
+                }} />
+              );
+            })
+          )}
 
           {/* Scrubber cursor */}
           {curPt && (
@@ -872,6 +901,9 @@ export default function WorkoutDetailScreen() {
   const avgHR    = detail?.hr.length    ? Math.round(detail.hr.reduce((s, p) => s + p.v, 0)    / detail.hr.length)    : null;
   const avgPower = detail?.power.length ? Math.round(detail.power.reduce((s, p) => s + p.v, 0) / detail.power.length) : null;
   const avgPace  = detail?.pace.length  ? Math.round(detail.pace.reduce((s, p) => s + p.v, 0)  / detail.pace.length)  : null;
+  // Low-resolution HR (old optical / summary run): too few samples for the HR trace to be trustworthy. Same
+  // threshold the scan uses to flag the run (< ~1 sample / 15 s over ≥5 min) — HR-based stats already exclude it.
+  const hrLowRes = !!detail && detail.hr.length > 0 && detail.totalMs > 300_000 && (detail.hr.length / (detail.totalMs / 60_000)) < 4;
   const calories = Math.round(parseFloat(params.calories ?? '0'));
 
   const dateObj   = new Date(params.date ?? params.startDate ?? '');
@@ -916,15 +948,15 @@ export default function WorkoutDetailScreen() {
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[st.hrFlagBtn, hrUnreliable && st.hrFlagBtnActive]}
+            style={[st.hrFlagBtn, (hrUnreliable || hrLowRes) && st.hrFlagBtnActive]}
             onPress={() => {
               const next = !hrUnreliable;
               setHrUnreliable(next);
               saveHrUnreliable(params.id, next);
             }}
           >
-            <Text style={[st.hrFlagText, hrUnreliable && { color: '#c0392b' }]}>
-              {hrUnreliable ? '⚠️ HR unreliable' : '✓ HR ok'}
+            <Text style={[st.hrFlagText, (hrUnreliable || hrLowRes) && { color: '#c0392b' }]}>
+              {hrUnreliable ? '⚠️ HR unreliable' : hrLowRes ? '📉 HR low-res' : '✓ HR ok'}
             </Text>
           </TouchableOpacity>
         </View>

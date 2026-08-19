@@ -125,6 +125,7 @@ export interface RunWorkout {
   kmSplits?:     KmSplit[];
   hrUnreliable?: boolean;       // auto-detected OR user-flagged bad HR
   hrUnreliableManual?: boolean; // user flagged it by hand — a definite "this HR is wrong" (excludes EF/SE)
+  hrLowRes?: boolean;           // too few HR samples (old optical/summary run) → HR-based stats untrustworthy
   tempC?:        number;       // temperature at run time (°C) — HK weather metadata, live capture, or manual
   note?:         string;       // user note for this run
 }

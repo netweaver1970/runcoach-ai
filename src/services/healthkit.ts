@@ -1513,6 +1513,13 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       const series = prd.hrValues.map((hr, i) => ({ t: prd.hrTimestampsMs[i], hr }));
       autoBadHr = assessHrReliability(series, ws, we).unreliable;
     }
+    // LOW-RESOLUTION HR: an old optical / summary-synced run carries very few HR samples. Unlike the noisy
+    // flat-line auto-detector (which we deliberately DON'T drop on, to avoid blanking months), sample density
+    // is UNAMBIGUOUS — so this flag DOES exclude the run from HR-based stats (EF/SE/decoupling/zone mix) and
+    // marks the run low-res. < ~1 sample / 15 s over a run of ≥5 min.
+    if (prd && (run.duration ?? 0) >= 300 && (prd.hrValues.length / ((run.duration ?? 1) / 60)) < 4) {
+      run.hrLowRes = true;
+    }
     const manualBad = !!(hrUnreliableMap as Record<string, boolean>)[run.uuid];
     if (autoBadHr || manualBad) run.hrUnreliable = true;
     // Track the MANUAL flag separately: the auto-detector over-fires on older/sparser HR recordings, so
