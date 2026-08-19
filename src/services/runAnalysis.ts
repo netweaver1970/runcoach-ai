@@ -301,6 +301,20 @@ export async function maybeAnalyzeLatestRun(opts: {
   }
 }
 
+/**
+ * Should we ASK the athlete for a comment on this run before the (first) auto-analysis? True only when the
+ * run is fresh (<18h), has no note yet, and hasn't already been analysed — so a saved comment lands in the
+ * FIRST LLM call (claude.ts already injects run.note) instead of forcing a re-analysis round-trip.
+ */
+export async function runNeedsComment(run: RunWorkout | undefined | null): Promise<boolean> {
+  if (!run) return false;
+  if (run.note && run.note.trim()) return false;
+  const ageH = (Date.now() - new Date(run.date).getTime()) / 3.6e6;
+  if (ageH > 18) return false;
+  const existing = await loadLatestRunAnalysis();
+  return existing?.runUUID !== run.uuid;
+}
+
 async function notifyRunAnalyzed(a: RunAnalysis): Promise<void> {
   try {
     await Notifications.scheduleNotificationAsync({

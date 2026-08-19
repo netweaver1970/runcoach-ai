@@ -596,8 +596,12 @@ export default function StatisticsScreen() {
   // Shared time window (all charts move together), anchored to the newest data point across the series.
   const [gMin, gMax] = useMemo(() => {
     const ts = [...ef.map(p => tOf(p.date)), ...acwr.map(p => tOf(p.date)), ...(dc ?? []).map(p => tOf(p.date))];
-    return ts.length ? [Math.min(...ts), Math.max(...ts)] : [Date.now() - 365 * 86400000, Date.now()];
-  }, [ef, acwr, dc]);
+    if (!ts.length) return [Date.now() - 365 * 86400000, Date.now()];
+    // Extend the RIGHT edge to the latest body-weight sample too: a weigh-in on a day with no run (today on a
+    // rest day) sits past the last-run date, so without this it's clipped off the EC chart's weight overlay.
+    const wMax = wt.length ? Math.max(...wt.map(p => p.t)) : 0;
+    return [Math.min(...ts), Math.max(Math.max(...ts), wMax)];
+  }, [ef, acwr, dc, wt]);
   const days = RANGE_DAYS[range];
   const spanMs = days ? days * 86400000 : Math.max(1, gMax - gMin);
   const t1 = days ? gMax - offset * spanMs : gMax;

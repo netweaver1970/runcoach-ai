@@ -13,6 +13,7 @@ import {
   AppStateStatus,
   PanResponder,
   Modal,
+  TextInput,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -50,7 +51,8 @@ import { recordActuals } from '../src/services/forecastLog';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
 import { requestNotificationPermissions } from '../src/services/notifications';
 import { trySyncSnapshot, fetchCoachPlanForDate } from '../src/services/cloudSync';
-import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
+import { maybeAnalyzeLatestRun, loadLatestRunAnalysis, RunAnalysis, runNeedsComment } from '../src/services/runAnalysis';
+import { saveRunNote } from '../src/services/runMeta';
 import { maybeAutoRecalibrate, seedPowerZonesFromRuns } from '../src/services/zones';
 import { pushWorkoutToWatch, clearWatchWorkout } from '../src/services/watchWorkout';
 import { fetchOurDailyComponents } from '../src/services/healthkit';
@@ -206,6 +208,27 @@ export default function HomeScreen() {
   const [recommendation, setRecommendation] = useState<TrainingRecommendation | null>(null);
   const [loadingRec, setLoadingRec]     = useState(false);
   const [runAnalysis, setRunAnalysis]   = useState<RunAnalysis | null>(null);
+  // Post-run comment prompt: ask for a note BEFORE the first auto-analysis so it's in the 1st LLM call.
+  const [commentRun, setCommentRun]     = useState<{ run: any; snap: any } | null>(null);
+  const [commentText, setCommentText]   = useState('');
+  const promptedRunRef = useRef<string | null>(null);   // don't re-prompt the same run across scans
+  const awaitingCommentRef = useRef<string | null>(null); // a run whose comment modal is open → don't auto-analyse it
+  // Save the comment (if any) onto the run's note, then fire the FIRST analysis with it already included.
+  const submitRunComment = useCallback(async (save: boolean) => {
+    const ctx = commentRun;
+    const text = commentText.trim();
+    awaitingCommentRef.current = null;
+    setCommentRun(null);
+    if (!ctx) return;
+    let snap = ctx.snap;
+    if (save && text) {
+      await saveRunNote(ctx.run.uuid, text).catch(() => {});
+      snap = { ...snap, runs: [{ ...ctx.run, note: text }, ...(snap.runs?.slice(1) ?? [])] };
+    }
+    maybeAnalyzeLatestRun({ snap, notify: true, force: !!(save && text) })
+      .then(a => { if (a) setRunAnalysis(a); })
+      .catch(() => {});
+  }, [commentRun, commentText]);
   // ── Historic time-travel ──────────────────────────────────────────────────
   const [viewDate, setViewDate] = useState<Date>(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; });
   const [dayComps, setDayComps] = useState<Record<string, Record<string, number>>>({});
@@ -356,9 +379,23 @@ export default function HomeScreen() {
 
       // Auto-analyse the latest run (prescription-aware) when one just finished, then
       // surface the reduced result on the home card. Idempotent + bounded to fresh runs.
-      if (key) maybeAnalyzeLatestRun({ snap, notify: true })
-        .then(a => { if (a) setRunAnalysis(a); })
-        .catch(() => {});
+      // Ask for a comment on a JUST-finished run BEFORE the first analysis, so the note is in the 1st LLM
+      // call (no re-analysis round-trip). Only for a fresh, un-noted, not-yet-analysed run; else analyse now.
+      if (key) {
+        const run0 = snap.runs?.[0];
+        const analyse = () => maybeAnalyzeLatestRun({ snap, notify: true }).then(a => { if (a) setRunAnalysis(a); }).catch(() => {});
+        if (!run0) analyse();
+        else if (awaitingCommentRef.current === run0.uuid) { /* modal open for this run — wait for the comment */ }
+        else if (promptedRunRef.current === run0.uuid) analyse();   // already prompted earlier → analyse (idempotent)
+        else {
+          runNeedsComment(run0)
+            .then(need => {
+              if (need) { promptedRunRef.current = run0.uuid; awaitingCommentRef.current = run0.uuid; setCommentText(''); setCommentRun({ run: run0, snap }); }
+              else analyse();
+            })
+            .catch(() => analyse());
+        }
+      }
 
       // Auto-prepare the AI day view once last night is fully determined (idempotent
       // per night; reuses this snapshot; silent — they're already in the app).
@@ -984,6 +1021,35 @@ export default function HomeScreen() {
             })}
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* Post-run comment prompt — captured BEFORE the first analysis so it's in the 1st LLM call */}
+      <Modal visible={!!commentRun} transparent animationType="fade" onRequestClose={() => submitRunComment(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}>
+          <View style={{ backgroundColor: c.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 34, borderTopWidth: 1, borderColor: c.border }}>
+            <Text style={{ color: c.text, fontSize: 17, fontWeight: '800', marginBottom: 4 }}>How did that run go?</Text>
+            <Text style={{ color: c.textFaint, fontSize: 12.5, marginBottom: 12 }}>
+              Anything the coach should know — how it felt, stops/traffic, terrain, niggles, HR-strap issues. Saved to the run and folded into the analysis straight away.
+            </Text>
+            <TextInput
+              value={commentText}
+              onChangeText={setCommentText}
+              placeholder="e.g. legs heavy first 10 min, a few traffic-light stops, felt strong after"
+              placeholderTextColor={c.textFaint}
+              multiline
+              autoFocus
+              style={{ minHeight: 84, maxHeight: 160, backgroundColor: c.surfaceAlt, borderRadius: 12, borderWidth: 1, borderColor: c.border, color: c.text, fontSize: 15, padding: 12, textAlignVertical: 'top' }}
+            />
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity onPress={() => submitRunComment(false)} style={{ flex: 1, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: c.border, alignItems: 'center' }}>
+                <Text style={{ color: c.textSub, fontSize: 15, fontWeight: '700' }}>Skip</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => submitRunComment(true)} style={{ flex: 1.4, paddingVertical: 13, borderRadius: 12, backgroundColor: c.accent, alignItems: 'center' }}>
+                <Text style={{ color: c.onAccent, fontSize: 15, fontWeight: '800' }}>Save & analyse</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* Day picker */}
