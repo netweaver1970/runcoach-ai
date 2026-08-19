@@ -94,7 +94,7 @@ function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz
     <View style={{ flexDirection: 'row' }}>
       <View style={{ width: Y_AXIS_W, height: CHART_H + 22 }}>
         {yTicks.map((t, i) => (
-          <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(t) - 8, right: 4 }]}>{t}</Text>
+          <Text key={i} style={[ch.yLabel, { position: 'absolute', top: Math.max(0, toY(t) - 8), right: 4 }]}>{t}</Text>
         ))}
       </View>
       <View style={{ width: plotW, height: CHART_H + 22, position: 'relative' }}>
@@ -170,7 +170,7 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
   return (
     <View style={{ flexDirection: 'row' }}>
       <View style={{ width: TS_YW, height: TS_H }}>
-        {ticks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(t) - 7, right: 4 }]}>{fmt(t)}</Text>)}
+        {ticks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: Math.max(0, toY(t) - 7), right: 4 }]}>{fmt(t)}</Text>)}
       </View>
       <View style={{ width: plotW, height: TS_H, position: 'relative' }}>
         {band && (
@@ -305,9 +305,9 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
           {has2 && near2 && !readEv ? <Text style={{ color: c2, fontSize: 12, fontWeight: '700', marginLeft: 8 }}>{f2(near2.v)}{y2label ? ` ${y2label}` : ''}</Text> : null}
         </View>
       </View>
-      <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
+      <View style={{ flexDirection: 'row' }} pointerEvents="box-only" {...pan.panHandlers}>
         <View style={{ width: TS_YW, height: TS_H }}>
-          {yTicks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: toY(t) - 7, right: 4 }]}>{yfmt(t)}</Text>)}
+          {yTicks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: Math.max(0, toY(t) - 7), right: 4 }]}>{yfmt(t)}</Text>)}
         </View>
         <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
           {yTicks.map((t, i) => <View key={`g${i}`} style={{ position: 'absolute', top: toY(t), left: 0, right: 0, height: 1, backgroundColor: c.gridline }} />)}
@@ -371,9 +371,9 @@ function StackedZoneChart({ weeks, t0, t1, events, showEvents, innerW }: {
         <Text style={{ color: c.textSub, fontSize: 11.5, fontWeight: '700' }}>wk {dLabel(nearest.t, yearly)}</Text>
         <Text style={{ fontSize: 12, fontWeight: '800' }}><Text style={{ color: '#22c55e' }}>{np.easy}% </Text><Text style={{ color: '#f59e0b' }}>{np.mod}% </Text><Text style={{ color: '#ef4444' }}>{np.hard}%</Text><Text style={{ color: c.textFaint, fontWeight: '600' }}> · {nearest.total}m</Text></Text>
       </View>
-      <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
+      <View style={{ flexDirection: 'row' }} pointerEvents="box-only" {...pan.panHandlers}>
         <View style={{ width: TS_YW, height: TS_H }}>
-          {[0, 50, 100].map((p, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: TS_H * (1 - p / 100) - 7, right: 4 }]}>{p}%</Text>)}
+          {[0, 50, 100].map((p, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: Math.max(0, TS_H * (1 - p / 100) - 7), right: 4 }]}>{p}%</Text>)}
         </View>
         <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
           {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
@@ -438,9 +438,9 @@ function VolumeBudgetChart({ weeks, t0, t1, innerW }: { weeks: CapWeek[]; t0: nu
           {n.heatTaxPct >= 3 ? <Text style={{ color: '#f59e0b' }}> 🌡+{n.heatTaxPct}%</Text> : null}
         </Text>
       </View>
-      <View style={{ flexDirection: 'row' }} {...pan.panHandlers}>
+      <View style={{ flexDirection: 'row' }} pointerEvents="box-only" {...pan.panHandlers}>
         <View style={{ width: TS_YW, height: TS_H }}>
-          {[0, maxV / 2, maxV].map((v, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: TS_H * (1 - v / maxV) - 7, right: 4 }]}>{Math.round(v)}</Text>)}
+          {[0, maxV / 2, maxV].map((v, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: Math.max(0, TS_H * (1 - v / maxV) - 7), right: 4 }]}>{Math.round(v)}</Text>)}
         </View>
         <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
           {win.map((w, i) => {
