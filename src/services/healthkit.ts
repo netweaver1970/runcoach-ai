@@ -2463,9 +2463,21 @@ export async function fetchWorkoutDetail(
     ), [] as any[]),
   ]);
 
-  // Upper bound: use the actual query window end (to), not net duration.
-  // Samples in the elapsed-time portion past net duration (e.g. km after a long pause) must be kept.
-  const clipMax = to.getTime() - startMs;
+  // Upper bound for keeping samples: the workout's ACTUAL elapsed end (startDate→endDate,
+  // which already includes any pause time), plus a small buffer. The fetch window over-reaches
+  // by +20 min on purpose (to be safe), but KEEPING all of it dragged 10–20 min of POST-RUN
+  // recovery HR into the average and the chart tail — e.g. avg 91 vs the workout's true ~130,
+  // with a long drooping tail — because older runs have sparse HR so the recovery samples
+  // dominate. Clip to the real run end so the trace + avg reflect the workout only.
+  const workoutForEnd = (workoutRaw as any[]).find(
+    (w: any) => Math.abs(new Date(toISOStr(w.startDate)).getTime() - startMs) < 10_000
+  );
+  const workoutEndMs = workoutForEnd?.endDate
+    ? new Date(toISOStr(workoutForEnd.endDate)).getTime() - startMs
+    : durationSec * 1000;
+  // Never clip TIGHTER than net duration (guards a bogus/short endDate), never LOOSER than the
+  // fetched window. +30 s buffer catches a boundary sample written just after the last lap.
+  const clipMax = Math.min(to.getTime() - startMs, Math.max(durationSec * 1000, workoutEndMs) + 30_000);
   const clip = (t: number) => t >= -60_000 && t <= clipMax;
 
   // Collect raw HR points, then downsample to 1/s
