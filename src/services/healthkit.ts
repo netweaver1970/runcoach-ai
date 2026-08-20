@@ -2489,7 +2489,37 @@ export async function fetchWorkoutDetail(
   const hrRaw2 = hrSrcSamples
     .map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime() - startMs, v: Math.round(s.quantity as number) }))
     .filter(p => clip(p.t));
-  const hr = downsampleTo1PerSecond(hrRaw2);
+  const hrDiscrete = downsampleTo1PerSecond(hrRaw2);
+
+  // ── Dense-HR fallback via the beat-to-beat SERIES (older runs) ──────────────
+  // Older Apple-Watch runs store the dense workout HR as a HKQuantitySeries that
+  // queryQuantitySamples can't expand — we get only sparse stray discrete samples
+  // (~10 across the run) while Apple draws the full curve. But the watch ALSO records
+  // a beat-to-beat HEARTBEAT series, which the library CAN read. Derive HR from it
+  // (bpm = 60 / R-R interval) to recover the full-resolution trace with no native code.
+  let hbBeatN = 0;
+  const hbHrPts: { t: number; v: number }[] = [];
+  try {
+    const hbSeries = await safeQuery(() => (HealthKit as any).queryHeartbeatSeriesSamples({
+      filter: { startDate: from, endDate: to }, limit: 500,
+    }), [] as any[]);
+    for (const s of (hbSeries as any[])) {
+      const seriesStartMs = new Date(toISOStr(s.startDate)).getTime();
+      const beats = (s.heartbeats ?? []) as { timeSinceSeriesStart: number; precededByGap: boolean }[];
+      hbBeatN += beats.length;
+      for (let i = 1; i < beats.length; i++) {
+        if (beats[i].precededByGap) continue;
+        const rr = beats[i].timeSinceSeriesStart - beats[i - 1].timeSinceSeriesStart; // seconds
+        if (rr > 0.3 && rr < 2.0) {                       // 30–200 bpm plausibility
+          const t = seriesStartMs + beats[i].timeSinceSeriesStart * 1000 - startMs;
+          if (clip(t)) hbHrPts.push({ t, v: Math.round(60 / rr) });
+        }
+      }
+    }
+  } catch { /* no series → keep discrete HR */ }
+  const hbHr = hbHrPts.length ? downsampleTo1PerSecond(hbHrPts) : [];
+  // Use the beat-derived trace only when it's genuinely denser than the discrete samples.
+  const hr = hbHr.length > hrDiscrete.length ? hbHr : hrDiscrete;
 
   // Same for power
   const powerRaw2 = powerSrcSamples
@@ -2853,7 +2883,9 @@ export async function fetchWorkoutDetail(
     const meanDurS  = arr.length ? durSum / arr.length / 1000 : 0;
     const inRunAvg  = inRun ? Math.round(inRunSum / inRun) : 0;
     const runMin    = Math.round(clipMax / 60_000);
-    hrDiag = `HK timeWin ${arr.length} → inRun ${inRun} (avg ${inRunAvg}, over ${runMin}min) + recovery ${arr.length - inRun} · sampleDur ${meanDurS.toFixed(1)}s · pwr ${(powerRaw as any[]).length}`;
+    const usedHb    = hr === hbHr && hbHr.length > 0;
+    const hbAvg     = hbHr.length ? Math.round(hbHr.reduce((a, p) => a + p.v, 0) / hbHr.length) : 0;
+    hrDiag = `HK timeWin ${arr.length} → inRun ${inRun} (avg ${inRunAvg}, ${runMin}min) + recov ${arr.length - inRun} · beats ${hbBeatN}→hbHR ${hbHr.length}(avg ${hbAvg}) · using ${usedHb ? 'BEATS' : 'discrete'} → ${hr.length}pts · pwr ${(powerRaw as any[]).length}`;
   }
 
   return { hr, power: powerClean, pace: paceClean, totalMs: durationSec * 1000, activities, kmSplits, pauseIntervals: pauseIntervs, weatherTempC: extractWeatherTempC(workout), debugUuids, debugEvents, hrDiag };
