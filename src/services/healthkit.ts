@@ -5,7 +5,7 @@ import { requireNativeModule } from 'expo-modules-core';
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
 // series-stored workout HR/power that the JS library's sample query returns only sparsely.
 // Guarded: null if the native module isn't in this binary (e.g. before a rebuild).
-let seriesNative: { queryQuantitySeries(typeId: string, startMs: number, endMs: number): Promise<{ t: number; v: number }[]> } | null = null;
+let seriesNative: { queryQuantitySeries(typeId: string, startMs: number, endMs: number): Promise<{ t: number; tEnd: number; v: number }[]> } | null = null;
 try { seriesNative = requireNativeModule('RunCoachWorkout') as any; } catch { seriesNative = null; }
 
 // In @kingstinct/react-native-healthkit v9, the enums are TypeScript-only types
@@ -2550,24 +2550,50 @@ export async function fetchWorkoutDetail(
   const watchSegs = allStepSegs.filter(p => p.productType.startsWith('Watch'));
   const stepSegs = watchSegs.length > 0 ? watchSegs : allStepSegs;
 
-  // Pace: derived from distance segments (each segment = GPS track point)
-  // Apply a 10-second rolling average to smooth GPS noise.
+  // Pace: derived from distance segments (each = GPS track point). Older runs store distance
+  // as a HKQuantitySeries too, so the plain samples are coarse (~25 points) — expand the series
+  // for a smooth curve when it's denser, then bucket into fixed windows (also removes GPS jitter).
+  let distSegsForPace: { t0: number; t1: number; m: number }[] = (distRaw as any[]).map((s: any) => ({
+    t0: new Date(toISOStr(s.startDate)).getTime() - startMs,
+    t1: new Date(toISOStr(s.endDate)).getTime()   - startMs,
+    m:  s.quantity as number,
+  }));
+  if (seriesNative) {
+    try {
+      const draw = await seriesNative.queryQuantitySeries('HKQuantityTypeIdentifierDistanceWalkingRunning', from.getTime(), to.getTime());
+      if ((draw?.length ?? 0) > distSegsForPace.length) {
+        distSegsForPace = draw.map(s => ({ t0: s.t - startMs, t1: s.tEnd - startMs, m: s.v }));
+      }
+    } catch { /* keep GPS segments */ }
+  }
+  // Bucket distance into fixed windows → smooth pace = window seconds ÷ window km (O(n), no jitter).
+  const denseDist = distSegsForPace.length > 60;
+  const PBUCKET = denseDist ? 4_000 : 0;    // 4-s buckets for a dense series; keep per-segment otherwise
   const rawPace: { t: number; v: number }[] = [];
-  (distRaw as any[]).forEach((s: any) => {
-    const t0 = new Date(toISOStr(s.startDate)).getTime() - startMs;
-    const t1 = new Date(toISOStr(s.endDate)).getTime()   - startMs;
-    const m  = s.quantity as number;
-    const durSec = (t1 - t0) / 1000;
-    const mid = t0 + (t1 - t0) / 2;
-    if (!clip(mid)) return;   // drop post-run (recovery / walk-home) segments — pace was NOT clipped
-    if (m > 0.5 && durSec > 0) {
-      const spk = durSec / (m / 1000);
+  if (denseDist) {
+    const mByBucket = new Map<number, number>();
+    for (const seg of distSegsForPace) {
+      const mid = (seg.t0 + seg.t1) / 2;
+      if (!clip(mid) || seg.m <= 0) continue;
+      const b = Math.floor(mid / PBUCKET);
+      mByBucket.set(b, (mByBucket.get(b) ?? 0) + seg.m);
+    }
+    for (const [b, m] of [...mByBucket.entries()].sort((a, c) => a[0] - c[0])) {
+      const spk = (PBUCKET / 1000) / (m / 1000);   // s per km over the bucket
+      if (m > 0.5 && spk > 120 && spk < 1200) rawPace.push({ t: b * PBUCKET + PBUCKET / 2, v: Math.round(spk) });
+    }
+  } else {
+    for (const seg of distSegsForPace) {
+      const durSec = (seg.t1 - seg.t0) / 1000;
+      const mid    = (seg.t0 + seg.t1) / 2;
+      if (!clip(mid) || !(seg.m > 0.5 && durSec > 0)) continue;
+      const spk = durSec / (seg.m / 1000);
       if (spk > 120 && spk < 1200) rawPace.push({ t: mid, v: Math.round(spk) });
     }
-  });
-  // Smooth pace with a 10-second window
+  }
+  // Light rolling smoothing (skip for the dense/bucketed path — already smooth, and O(n²) would bite).
   const PACE_SMOOTH_MS = 10_000;
-  const pace: { t: number; v: number }[] = rawPace.map((p, i, arr) => {
+  const pace: { t: number; v: number }[] = denseDist ? rawPace : rawPace.map((p, i, arr) => {
     const window = arr.filter(q => Math.abs(q.t - p.t) <= PACE_SMOOTH_MS / 2);
     const avg = window.reduce((s, q) => s + q.v, 0) / window.length;
     return { t: p.t, v: Math.round(avg) };

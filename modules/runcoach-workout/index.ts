@@ -5,8 +5,8 @@ export interface RunCoachWorkoutNative {
   authorize(): Promise<string>;
   pushDailyWorkout(specJson: string): Promise<boolean>;
   clearDailyWorkout(name: string): Promise<boolean>;
-  /** Expand a HKQuantitySeries (HR/power) into individual measurements. typeId = HKQuantityTypeIdentifier raw string. */
-  queryQuantitySeries(typeId: string, startMs: number, endMs: number): Promise<{ t: number; v: number }[]>;
+  /** Expand a HKQuantitySeries (HR/power/distance) into individual measurements. typeId = HKQuantityTypeIdentifier raw string. */
+  queryQuantitySeries(typeId: string, startMs: number, endMs: number): Promise<{ t: number; tEnd: number; v: number }[]>;
 }
 
 // Resolves to null if the native module isn't built into this binary.

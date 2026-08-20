@@ -57,15 +57,23 @@ public class RunCoachWorkoutModule: Module {
       let end   = Date(timeIntervalSince1970: endMs   / 1000.0)
       let pred  = HKQuery.predicateForSamples(withStart: start, end: end, options: [])
       // String initialisers so this compiles on the module's lower deployment target
-      // (HKUnit.watt() is iOS 16+). "count/min" = bpm, "W" = watts.
-      let unit = (typeId == HKQuantityTypeIdentifier.heartRate.rawValue)
-        ? HKUnit(from: "count/min")
-        : HKUnit(from: "W")
+      // (HKUnit.watt() is iOS 16+). "count/min" = bpm, "m" = metres, "W" = watts.
+      let unitStr: String
+      switch typeId {
+      case HKQuantityTypeIdentifier.heartRate.rawValue:              unitStr = "count/min"
+      case HKQuantityTypeIdentifier.distanceWalkingRunning.rawValue: unitStr = "m"
+      default:                                                       unitStr = "W"
+      }
+      let unit = HKUnit(from: unitStr)
       var out: [[String: Double]] = []
       var settled = false
       let query = HKQuantitySeriesSampleQuery(quantityType: qType, predicate: pred) { (_, quantity, dateInterval, _, done, error) in
         if let q = quantity, let di = dateInterval {
-          out.append(["t": di.start.timeIntervalSince1970 * 1000.0, "v": q.doubleValue(for: unit)])
+          out.append([
+            "t":    di.start.timeIntervalSince1970 * 1000.0,
+            "tEnd": di.end.timeIntervalSince1970   * 1000.0,   // needed to derive pace from a distance series
+            "v":    q.doubleValue(for: unit),
+          ])
         }
         if (done || error != nil) && !settled {
           settled = true
