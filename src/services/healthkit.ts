@@ -3074,6 +3074,32 @@ async function computeCardioTrimpWindow(fromDate: Date, toDate: Date, maxForDay?
   }
   const p2h = pz && isPowerZonesConfigured(pz) ? powerToHrrFrac(pz) : null;
 
+  // ── Series-HR backfill for sparse run windows ──────────────────────────────
+  // Old Apple-Watch runs store dense workout HR as a HKQuantitySeries the bulk query returns
+  // only sparsely (~10 stray points) → their daily TRIMP (→ CTL) under-counts. Expand the series
+  // per SPARSE run window (< 4 samples/min; recent dense runs skip it) and merge the dense HR into
+  // that day's samples so the load is counted correctly. Gated + cached-per-day → one-time cost.
+  if (seriesNative) {
+    for (const wins of windowsByDay.values()) {
+      for (const win of wins) {
+        const dayKey = trainingDayKey(new Date(win.s));
+        const dayHr  = byDay.get(dayKey);
+        if (!dayHr) continue;
+        const durMin = Math.max(1, (win.e - win.s) / 60_000);
+        const inWin  = dayHr.reduce((n, p) => n + (p.t >= win.s && p.t <= win.e ? 1 : 0), 0);
+        if (inWin / durMin >= 4) continue;                 // already dense → skip
+        let dense: { t: number; v: number }[] = [];
+        try {
+          dense = await seriesNative.queryQuantitySeries('HKQuantityTypeIdentifierHeartRate', win.s - 30_000, win.e + 30_000);
+        } catch { continue; }
+        if (dense.length <= inWin) continue;               // series no denser → keep discrete
+        const kept = dayHr.filter(p => p.t < win.s || p.t > win.e);
+        for (const p of dense) kept.push({ t: p.t, hr: Math.round(p.v) });
+        byDay.set(dayKey, kept);
+      }
+    }
+  }
+
   for (const [day, samples] of byDay) {
     samples.sort((a, b) => a.t - b.t); // TRIMP integration needs time order
     const dm = maxForDay?.(day);
@@ -3146,7 +3172,7 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMa
   // changed, drop the whole cache and recompute — otherwise old days keep stale, differently-scaled
   // values. `__maxHr` is a sentinel (not a date key, so it's never iterated as a day).
   const tag = history.length ? 'k:' + history.map((h) => `${h.from}@${h.maxHR}`).join(',') : `s:${fallback}`;
-  const TRIMP_CACHE_VER = 6; // v6: sparse-HR old runs now expand the HKQuantitySeries → dense HR → recompute (2026-08-20)
+  const TRIMP_CACHE_VER = 7; // v7: daily-TRIMP path also expands the HR series for sparse run windows → old-period CTL (2026-08-20)
   if ((cache as any)['__maxHr'] !== tag || cache['__ver'] !== TRIMP_CACHE_VER) cache = { '__maxHr': tag, '__ver': TRIMP_CACHE_VER } as any;
   let changed = false;
 
