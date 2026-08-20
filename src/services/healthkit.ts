@@ -2480,14 +2480,38 @@ export async function fetchWorkoutDetail(
   const clipMax = Math.min(to.getTime() - startMs, Math.max(durationSec * 1000, workoutEndMs) + 30_000);
   const clip = (t: number) => t >= -60_000 && t <= clipMax;
 
+  // A time-window HR query can return sparse CONTAINER samples when the watch stored the
+  // workout's HR as a HKQuantitySeries (older runs). Querying by the WORKOUT predicate is how
+  // Apple's own app pulls the associated series — it can return the dense set the time query
+  // misses. Try it and keep whichever source is denser. (Same for power below.)
+  let hrSrcSamples = hrRaw as any[];
+  let powerSrcSamples = powerRaw as any[];
+  let hrByWorkoutN = -1, powerByWorkoutN = -1;
+  if (workoutForEnd) {
+    const [hrW, powerW] = await Promise.all([
+      safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+        HKQuantityTypeIdentifier.heartRate,
+        { filter: { workout: workoutForEnd }, unit: 'count/min', ascending: true, limit: 100_000 }
+      ), [] as any[]),
+      safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+        HKQuantityTypeIdentifier.runningPower,
+        { filter: { workout: workoutForEnd }, unit: 'W', ascending: true, limit: 100_000 }
+      ), [] as any[]),
+    ]);
+    hrByWorkoutN = (hrW as any[]).length;
+    powerByWorkoutN = (powerW as any[]).length;
+    if (hrByWorkoutN > hrSrcSamples.length) hrSrcSamples = hrW as any[];
+    if (powerByWorkoutN > powerSrcSamples.length) powerSrcSamples = powerW as any[];
+  }
+
   // Collect raw HR points, then downsample to 1/s
-  const hrRaw2 = (hrRaw as any[])
+  const hrRaw2 = hrSrcSamples
     .map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime() - startMs, v: Math.round(s.quantity as number) }))
     .filter(p => clip(p.t));
   const hr = downsampleTo1PerSecond(hrRaw2);
 
   // Same for power
-  const powerRaw2 = (powerRaw as any[])
+  const powerRaw2 = powerSrcSamples
     .map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime() - startMs, v: Math.round(s.quantity as number) }))
     .filter(p => clip(p.t));
   const power = downsampleTo1PerSecond(powerRaw2);
@@ -2836,23 +2860,18 @@ export async function fetchWorkoutDetail(
   // counts so we can see whether >1 source is being merged.
   let hrDiag: string | undefined;
   {
-    const srcCount: Record<string, number> = {};
-    let sMin = Infinity, sMax = -Infinity;
-    for (const s of (hrRaw as any[])) {
-      const nm = (s.sourceRevision?.source?.name
-              ?? s.sourceRevision?.source?.bundleIdentifier
-              ?? (s as any).device?.name ?? '?') as string;
-      srcCount[nm] = (srcCount[nm] ?? 0) + 1;
-      const tt = new Date(toISOStr(s.startDate)).getTime() - startMs;
-      if (tt < sMin) sMin = tt;
-      if (tt > sMax) sMax = tt;
+    // Mean sample DURATION (endDate-startDate): ~1 s = discrete points; minutes = HKQuantitySeries
+    // CONTAINER samples (each wraps a segment's average) → the fine detail lives in the series.
+    let spanSum = 0, spanN = 0;
+    for (const s of hrSrcSamples) {
+      const d = new Date(toISOStr(s.endDate)).getTime() - new Date(toISOStr(s.startDate)).getTime();
+      if (d >= 0) { spanSum += d; spanN++; }
     }
-    const rawArr = hrRaw as any[];
-    const rawAvg = rawArr.length ? Math.round(rawArr.reduce((a, s) => a + (s.quantity as number), 0) / rawArr.length) : 0;
+    const meanDurS = spanN ? (spanSum / spanN / 1000) : 0;
     const dsAvg  = hr.length ? Math.round(hr.reduce((a, p) => a + p.v, 0) / hr.length) : 0;
-    const span   = isFinite(sMin) ? `${Math.round(sMin / 1000)}→${Math.round(sMax / 1000)}s` : '—';
-    const srcStr = Object.entries(srcCount).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(' + ');
-    hrDiag = `raw ${rawArr.length} (avg ${rawAvg}) → 1Hz ${hr.length} (avg ${dsAvg}) · span ${span} · src [${srcStr}]`;
+    const chosen = hrSrcSamples === (hrRaw as any[]) ? 'time' : 'workout';
+    // timeWin = plain time-range query; byWorkout = HKWorkout-predicate query (−1 = not run).
+    hrDiag = `timeWin ${(hrRaw as any[]).length} · byWorkout ${hrByWorkoutN} → used ${chosen} · 1Hz ${hr.length} (avg ${dsAvg}) · sampleDur ${meanDurS.toFixed(1)}s · pwr t${(powerRaw as any[]).length}/w${powerByWorkoutN}`;
   }
 
   return { hr, power: powerClean, pace: paceClean, totalMs: durationSec * 1000, activities, kmSplits, pauseIntervals: pauseIntervs, weatherTempC: extractWeatherTempC(workout), debugUuids, debugEvents, hrDiag };
