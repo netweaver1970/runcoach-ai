@@ -2388,12 +2388,16 @@ function computeKmSplitsDetail(
       gpsMtrs += m * frac;
     }
     // Pace = net time / km.
-    // For partial final km, scale by GPS metres so pace = net time / (gpsMtrs/1000).
-    // For full kms, just use netSec (= time per km) — GPS-ratio pace inflates values
-    // during kms that contain pauses because GPS only captures moving time.
-    const isPartial = gpsMtrs > 10 && gpsMtrs < 950;
-    const paceSecs = isPartial
-      ? Math.round(netSec / (gpsMtrs / 1000))
+    // For the partial FINAL km, prefer the AUTHORITATIVE distance = total − full km's already
+    // counted (lap km's are exactly 1 km each). The old code divided by GPS-filtered metres,
+    // which over-counted (catch-up/cooldown segments) → an impossibly fast final km (e.g. 4:07
+    // with easy HR/power). Fall back to gpsMtrs only when the total isn't known.
+    const remainderM = (kmN === nKm && maxDistM > 100) ? maxDistM - (nKm - 1) * 1000 : 0;
+    const partialKmM = (remainderM > 10 && remainderM < 1000) ? remainderM
+                     : (gpsMtrs > 10 && gpsMtrs < 950)       ? gpsMtrs
+                     : 0;
+    const paceSecs = partialKmM > 0
+      ? Math.round(netSec / (partialKmM / 1000))
       : Math.round(netSec);
 
     // HR: all samples in window (Watch always records HR, even during pauses)
@@ -2566,21 +2570,26 @@ export async function fetchWorkoutDetail(
       }
     } catch { /* keep GPS segments */ }
   }
-  // Bucket distance into fixed windows → smooth pace = window seconds ÷ window km (O(n), no jitter).
+  // Bucket distance into fixed windows → pace = the bucket's ACTUAL summed duration ÷ its summed km.
+  // (Using a FIXED window duration as the numerator was wrong: buckets rarely hold exactly one window
+  // of running time, so pace combed between impossibly fast and slow. Summing both dur & dist keeps
+  // the ratio correct regardless of how many measurements land in the bucket.)
   const denseDist = distSegsForPace.length > 60;
-  const PBUCKET = denseDist ? 4_000 : 0;    // 4-s buckets for a dense series; keep per-segment otherwise
+  const PBUCKET = denseDist ? 5_000 : 0;    // 5-s buckets for a dense series; keep per-segment otherwise
   const rawPace: { t: number; v: number }[] = [];
   if (denseDist) {
-    const mByBucket = new Map<number, number>();
+    const byBucket = new Map<number, { dist: number; durMs: number }>();
     for (const seg of distSegsForPace) {
       const mid = (seg.t0 + seg.t1) / 2;
-      if (!clip(mid) || seg.m <= 0) continue;
+      if (!clip(mid) || seg.m <= 0 || seg.t1 <= seg.t0) continue;
       const b = Math.floor(mid / PBUCKET);
-      mByBucket.set(b, (mByBucket.get(b) ?? 0) + seg.m);
+      const e = byBucket.get(b) ?? { dist: 0, durMs: 0 };
+      e.dist += seg.m; e.durMs += (seg.t1 - seg.t0);
+      byBucket.set(b, e);
     }
-    for (const [b, m] of [...mByBucket.entries()].sort((a, c) => a[0] - c[0])) {
-      const spk = (PBUCKET / 1000) / (m / 1000);   // s per km over the bucket
-      if (m > 0.5 && spk > 120 && spk < 1200) rawPace.push({ t: b * PBUCKET + PBUCKET / 2, v: Math.round(spk) });
+    for (const [b, e] of [...byBucket.entries()].sort((a, c) => a[0] - c[0])) {
+      const spk = (e.durMs / 1000) / (e.dist / 1000);   // actual s per km over the bucket
+      if (e.dist > 0.5 && e.durMs > 0 && spk > 120 && spk < 1200) rawPace.push({ t: b * PBUCKET + PBUCKET / 2, v: Math.round(spk) });
     }
   } else {
     for (const seg of distSegsForPace) {
