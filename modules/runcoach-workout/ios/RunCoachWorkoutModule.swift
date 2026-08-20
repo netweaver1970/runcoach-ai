@@ -2,6 +2,10 @@ import ExpoModulesCore
 import WorkoutKit
 import HealthKit
 
+// App-lifetime store so an in-flight HKQuantitySeriesSampleQuery isn't cancelled when the
+// AsyncFunction closure returns (a local store would dealloc and drop the query → never resolves).
+private let sharedHealthStore = HKHealthStore()
+
 public class RunCoachWorkoutModule: Module {
   public func definition() -> ModuleDefinition {
     Name("RunCoachWorkout")
@@ -37,6 +41,38 @@ public class RunCoachWorkoutModule: Module {
       guard #available(iOS 17.0, *) else { return false }
       try await WorkoutPusher.removeNamed(name)
       return true
+    }
+
+    // Expand a HKQuantitySeries into its individual measurements. Older Apple-Watch runs store
+    // dense workout HR / running power as a series; the JS HealthKit library's plain sample query
+    // returns only the sparse container samples (~10 stray points for a 42-min run). This uses
+    // HKQuantitySeriesSampleQuery — the same API Apple's own Fitness app uses — to enumerate every
+    // measurement in [startMs, endMs]. Returns [{ t: epochMillis, v: value }] (v = bpm or watts).
+    AsyncFunction("queryQuantitySeries") { (typeId: String, startMs: Double, endMs: Double, promise: Promise) in
+      guard let qType = HKObjectType.quantityType(forIdentifier: HKQuantityTypeIdentifier(rawValue: typeId)) else {
+        promise.resolve([[String: Double]]())
+        return
+      }
+      let start = Date(timeIntervalSince1970: startMs / 1000.0)
+      let end   = Date(timeIntervalSince1970: endMs   / 1000.0)
+      let pred  = HKQuery.predicateForSamples(withStart: start, end: end, options: [])
+      // String initialisers so this compiles on the module's lower deployment target
+      // (HKUnit.watt() is iOS 16+). "count/min" = bpm, "W" = watts.
+      let unit = (typeId == HKQuantityTypeIdentifier.heartRate.rawValue)
+        ? HKUnit(from: "count/min")
+        : HKUnit(from: "W")
+      var out: [[String: Double]] = []
+      var settled = false
+      let query = HKQuantitySeriesSampleQuery(quantityType: qType, predicate: pred) { (_, quantity, dateInterval, _, done, error) in
+        if let q = quantity, let di = dateInterval {
+          out.append(["t": di.start.timeIntervalSince1970 * 1000.0, "v": q.doubleValue(for: unit)])
+        }
+        if (done || error != nil) && !settled {
+          settled = true
+          promise.resolve(out)   // resolve with whatever we have; JS falls back if empty
+        }
+      }
+      sharedHealthStore.execute(query)
     }
   }
 }

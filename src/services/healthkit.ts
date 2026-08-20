@@ -1,5 +1,12 @@
 import HealthKit, { subscribeToChanges } from '@kingstinct/react-native-healthkit';
 import * as FileSystem from 'expo-file-system';
+import { requireNativeModule } from 'expo-modules-core';
+
+// Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
+// series-stored workout HR/power that the JS library's sample query returns only sparsely.
+// Guarded: null if the native module isn't in this binary (e.g. before a rebuild).
+let seriesNative: { queryQuantitySeries(typeId: string, startMs: number, endMs: number): Promise<{ t: number; v: number }[]> } | null = null;
+try { seriesNative = requireNativeModule('RunCoachWorkout') as any; } catch { seriesNative = null; }
 
 // In @kingstinct/react-native-healthkit v9, the enums are TypeScript-only types
 // (their JS files export {}). The native NitroModules bridge expects the full
@@ -2490,42 +2497,34 @@ export async function fetchWorkoutDetail(
     .map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime() - startMs, v: Math.round(s.quantity as number) }))
     .filter(p => clip(p.t));
   const hrDiscrete = downsampleTo1PerSecond(hrRaw2);
-
-  // ── Dense-HR fallback via the beat-to-beat SERIES (older runs) ──────────────
-  // Older Apple-Watch runs store the dense workout HR as a HKQuantitySeries that
-  // queryQuantitySamples can't expand — we get only sparse stray discrete samples
-  // (~10 across the run) while Apple draws the full curve. But the watch ALSO records
-  // a beat-to-beat HEARTBEAT series, which the library CAN read. Derive HR from it
-  // (bpm = 60 / R-R interval) to recover the full-resolution trace with no native code.
-  let hbBeatN = 0;
-  const hbHrPts: { t: number; v: number }[] = [];
-  try {
-    const hbSeries = await safeQuery(() => (HealthKit as any).queryHeartbeatSeriesSamples({
-      filter: { startDate: from, endDate: to }, limit: 500,
-    }), [] as any[]);
-    for (const s of (hbSeries as any[])) {
-      const seriesStartMs = new Date(toISOStr(s.startDate)).getTime();
-      const beats = (s.heartbeats ?? []) as { timeSinceSeriesStart: number; precededByGap: boolean }[];
-      hbBeatN += beats.length;
-      for (let i = 1; i < beats.length; i++) {
-        if (beats[i].precededByGap) continue;
-        const rr = beats[i].timeSinceSeriesStart - beats[i - 1].timeSinceSeriesStart; // seconds
-        if (rr > 0.3 && rr < 2.0) {                       // 30–200 bpm plausibility
-          const t = seriesStartMs + beats[i].timeSinceSeriesStart * 1000 - startMs;
-          if (clip(t)) hbHrPts.push({ t, v: Math.round(60 / rr) });
-        }
-      }
-    }
-  } catch { /* no series → keep discrete HR */ }
-  const hbHr = hbHrPts.length ? downsampleTo1PerSecond(hbHrPts) : [];
-  // Use the beat-derived trace only when it's genuinely denser than the discrete samples.
-  const hr = hbHr.length > hrDiscrete.length ? hbHr : hrDiscrete;
-
-  // Same for power
   const powerRaw2 = powerSrcSamples
     .map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime() - startMs, v: Math.round(s.quantity as number) }))
     .filter(p => clip(p.t));
-  const power = downsampleTo1PerSecond(powerRaw2);
+  const powerDiscrete = downsampleTo1PerSecond(powerRaw2);
+
+  // ── Dense fallback via HKQuantitySeriesSampleQuery (native) ─────────────────
+  // Older Apple-Watch runs store dense workout HR / power as a HKQuantitySeries the JS
+  // library's sample query can't expand — we get only sparse stray samples (~10 across a
+  // 42-min run) while Apple draws the full curve. Our native module expands the series
+  // (the same HKQuantitySeriesSampleQuery Apple uses). Query the full window, clip, 1-Hz.
+  const expandSeries = async (typeId: string): Promise<{ t: number; v: number }[]> => {
+    if (!seriesNative) return [];
+    try {
+      const raw = await seriesNative.queryQuantitySeries(typeId, from.getTime(), to.getTime());
+      const pts = (raw ?? [])
+        .map(p => ({ t: p.t - startMs, v: Math.round(p.v) }))
+        .filter(p => clip(p.t));
+      return downsampleTo1PerSecond(pts);
+    } catch { return []; }
+  };
+  const [hrSeries, powerSeries] = await Promise.all([
+    expandSeries('HKQuantityTypeIdentifierHeartRate'),
+    expandSeries('HKQuantityTypeIdentifierRunningPower'),
+  ]);
+
+  // Use whichever source is densest (series wins for old runs; discrete stays for recent H10 runs).
+  const hr    = hrSeries.length    > hrDiscrete.length    ? hrSeries    : hrDiscrete;
+  const power = powerSeries.length > powerDiscrete.length ? powerSeries : powerDiscrete;
 
   // Running cadence (steps/min) — iOS 16+ sensor data; usually empty
   const cadenceRaw2 = (cadenceRaw as any[])
@@ -2874,18 +2873,17 @@ export async function fetchWorkoutDetail(
     // Split the time-window HR into in-run (kept) vs recovery-tail (clipped). Sparse in-run +
     // dense recovery = the workout's real HR is stored as a series our sample query can't expand.
     const arr = hrRaw as any[];
-    let inRun = 0, durSum = 0, inRunSum = 0;
+    let inRun = 0, inRunSum = 0;
     for (const s of arr) {
       const t = new Date(toISOStr(s.startDate)).getTime() - startMs;
-      durSum += Math.max(0, new Date(toISOStr(s.endDate)).getTime() - new Date(toISOStr(s.startDate)).getTime());
       if (t >= -60_000 && t <= clipMax) { inRun++; inRunSum += (s.quantity as number); }
     }
-    const meanDurS  = arr.length ? durSum / arr.length / 1000 : 0;
     const inRunAvg  = inRun ? Math.round(inRunSum / inRun) : 0;
     const runMin    = Math.round(clipMax / 60_000);
-    const usedHb    = hr === hbHr && hbHr.length > 0;
-    const hbAvg     = hbHr.length ? Math.round(hbHr.reduce((a, p) => a + p.v, 0) / hbHr.length) : 0;
-    hrDiag = `HK timeWin ${arr.length} → inRun ${inRun} (avg ${inRunAvg}, ${runMin}min) + recov ${arr.length - inRun} · beats ${hbBeatN}→hbHR ${hbHr.length}(avg ${hbAvg}) · using ${usedHb ? 'BEATS' : 'discrete'} → ${hr.length}pts · pwr ${(powerRaw as any[]).length}`;
+    const usedSeries = hr === hrSeries && hrSeries.length > 0;
+    const hrFinalAvg = hr.length ? Math.round(hr.reduce((a, p) => a + p.v, 0) / hr.length) : 0;
+    const nativeOn  = seriesNative ? 'y' : 'n';
+    hrDiag = `discrete inRun ${inRun}(avg ${inRunAvg}) + recov ${arr.length - inRun} · series[native:${nativeOn}] hr ${hrSeries.length}/pwr ${powerSeries.length} · using ${usedSeries ? 'SERIES' : 'discrete'} → ${hr.length}pts (avg ${hrFinalAvg}, ${runMin}min)`;
   }
 
   return { hr, power: powerClean, pace: paceClean, totalMs: durationSec * 1000, activities, kmSplits, pauseIntervals: pauseIntervs, weatherTempC: extractWeatherTempC(workout), debugUuids, debugEvents, hrDiag };
