@@ -249,6 +249,26 @@ export async function saveHrUnreliable(uuid: string, unreliable: boolean): Promi
   await SecureStore.setItemAsync(HR_UNRELIABLE_KEY, JSON.stringify(cur));
 }
 
+// AUTO low-resolution-HR determinations (uuid → true), computed from sample DENSITY the first time a run's
+// samples are fetched and then PERSISTED, so a cached run (whose samples aren't re-fetched) keeps its flag
+// across scans. Only TRUE entries are stored (deleted on false) to keep the map small.
+const HR_LOWRES_KEY = 'hr_lowres_runs';
+export async function getHrLowResRuns(): Promise<Record<string, boolean>> {
+  const raw = await SecureStore.getItemAsync(HR_LOWRES_KEY);
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+/** Merge fresh {uuid: isLowRes} determinations into the store; writes only if something changed. */
+export async function saveHrLowResBatch(updates: Record<string, boolean>): Promise<void> {
+  const cur = await getHrLowResRuns();
+  let changed = false;
+  for (const [uuid, low] of Object.entries(updates)) {
+    if (low && !cur[uuid]) { cur[uuid] = true; changed = true; }
+    else if (!low && cur[uuid]) { delete cur[uuid]; changed = true; }
+  }
+  if (changed) await SecureStore.setItemAsync(HR_LOWRES_KEY, JSON.stringify(cur));
+}
+
 // ─── Compact formatting helpers ───────────────────────────────────────────────
 // All helpers keep output as short as possible to preserve tokens.
 

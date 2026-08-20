@@ -71,7 +71,7 @@ import { runDecouple, DC_GROSS_MAX } from './decoupling';
 import {
   getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
   getPowerZones, getRunOverrides, isPowerZonesConfigured,
-  getLongRunMinutes, getHrUnreliableRuns, getUserMaxHr, getEffectiveMaxHr, setObservedMaxHr,
+  getLongRunMinutes, getHrUnreliableRuns, getHrLowResRuns, saveHrLowResBatch, getUserMaxHr, getEffectiveMaxHr, setObservedMaxHr,
   getMaxHrHistory, buildMaxHrResolver,
 } from './claude';
 import { loadEvents, getAthleteStatus } from './timelineEvents';
@@ -1405,6 +1405,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     longRunMinutes,
     events,
     hrUnreliableMap,
+    hrLowResMap,
     loadWorkoutsRaw,
     runMetaMap,
     dailyKcalMap,
@@ -1455,6 +1456,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     getLongRunMinutes(),
     loadEvents(),
     getHrUnreliableRuns(),
+    getHrLowResRuns(),
     // All workouts (ANY type) for the training-load model — wider window (≥150d) so CTL warms up
     safeQuery(
       () => (HealthKit.queryWorkoutSamples as any)({
@@ -1488,6 +1490,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
   // Refine work stats from structured segments + mark HR unreliable + km splits
   // classifyAndCacheRuns returns cached runs without segments — merge them back from rawRuns.
+  const hrLowResUpdates: Record<string, boolean> = {};   // fresh low-res determinations to PERSIST after the loop
   for (const run of classifiedRuns) {
     if (!run.segments || run.segments.length === 0) {
       const rawRun = rawRuns.find(r => r.uuid === run.uuid);
@@ -1514,17 +1517,16 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       autoBadHr = assessHrReliability(series, ws, we).unreliable;
     }
     // LOW-RESOLUTION HR: an old optical / summary-synced run carries very few HR samples. Density is
-    // UNAMBIGUOUS, so this flag DOES exclude the run from HR-based stats (EF/SE/decoupling/zone mix).
-    // CRUCIAL: judge density ONLY when we ACTUALLY fetched samples this scan — a CACHED run has an EMPTY
-    // perRunData (pre-populated above), whose length 0 would read as "0 samples/min" and wrongly flag EVERY
-    // cached run (that dropped EF/SE for every recent run back to the snapshot-window edge). Assign a boolean
-    // either way so a fixed scan also CLEARS a stale flag a buggy scan left; a cached run gets its density
-    // re-judged on the next fresh fetch / a "Rebuild + load full history".
+    // UNAMBIGUOUS, so this flag DOES exclude the run from HR-based stats (EF/SE/decoupling/zone mix). It is
+    // computed the first time a run's samples are fetched and then PERSISTED (hrLowResMap), so a CACHED run —
+    // whose perRunData is pre-populated EMPTY (length 0) and must NOT be re-judged as "0 samples/min" — keeps
+    // its determination across scans rather than being wrongly (un)flagged.
+    let low = !!(hrLowResMap as Record<string, boolean>)[run.uuid];
     if (prd && prd.hrValues.length > 0 && (run.duration ?? 0) >= 300) {
-      run.hrLowRes = (prd.hrValues.length / ((run.duration ?? 1) / 60)) < 4;
-    } else {
-      run.hrLowRes = false;
+      low = (prd.hrValues.length / ((run.duration ?? 1) / 60)) < 4;   // < ~1 sample / 15 s over ≥5 min
+      hrLowResUpdates[run.uuid] = low;                                 // persist this fresh determination
     }
+    run.hrLowRes = low;
     const manualBad = !!(hrUnreliableMap as Record<string, boolean>)[run.uuid];
     if (autoBadHr || manualBad) run.hrUnreliable = true;
     // Track the MANUAL flag separately: the auto-detector over-fires on older/sparser HR recordings, so
@@ -1533,6 +1535,8 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // HR-independent) stays valid and is kept.
     if (manualBad) run.hrUnreliableManual = true;
   }
+  // Persist the fresh low-res determinations so cached runs keep their flag on later scans (fire-and-forget).
+  if (Object.keys(hrLowResUpdates).length) saveHrLowResBatch(hrLowResUpdates).catch(() => {});
 
   if (uncached.length > 0) {
     const firstUncached = uncached[0];

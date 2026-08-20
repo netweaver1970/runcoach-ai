@@ -18,7 +18,7 @@ const STATIC_SECURE_KEYS = [
   'theme_mode_v1', 'font_scale_v1',
   'anthropic_api_key',            // legacy key, still read on migration
   'sync_months', 'long_run_minutes', 'ai_weeks',
-  'power_zones', 'run_overrides', 'hr_unreliable_runs',
+  'power_zones', 'run_overrides', 'hr_unreliable_runs', 'hr_lowres_runs',
   'sleep_weights_custom_v1', 'recovery_weights_v1', 'personal_sleep_goal_min_v1',
   'llm_provider_v1', 'llm_baseurl_custom_v1',
   // added so a wipe + restore rebuilds EXACTLY:
