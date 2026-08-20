@@ -1523,7 +1523,9 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // its determination across scans rather than being wrongly (un)flagged.
     let low = !!(hrLowResMap as Record<string, boolean>)[run.uuid];
     if (prd && prd.hrValues.length > 0 && (run.duration ?? 0) >= 300) {
-      low = (prd.hrValues.length / ((run.duration ?? 1) / 60)) < 4;   // < ~1 sample / 15 s over ≥5 min
+      // < 1 sample/min (gaps > 60 s) = a genuinely BROKEN trace (e.g. the April-8 optical run, ~0.1/min).
+      // A chest-strap run stored every 15–30 s is 2–4/min and stays valid — the old < 4 caught those wrongly.
+      low = (prd.hrValues.length / ((run.duration ?? 1) / 60)) < 1;
       hrLowResUpdates[run.uuid] = low;                                 // persist this fresh determination
     }
     run.hrLowRes = low;
@@ -2045,6 +2047,7 @@ export interface WorkoutDetailData {
   weatherTempC?:  number;             // HK weather temperature at run time (°C), if recorded
   debugUuids?:    string[];           // DEBUG: raw uuid tails to verify Swift patch
   debugEvents?:   string;            // DEBUG: event types and lap/pause counts
+  hrDiag?:        string;            // DEBUG: raw HR sample count · avg · span · per-source breakdown
 }
 
 // HKWorkoutActivityType values relevant to labelling structured workouts.
@@ -2812,7 +2815,35 @@ export async function fetchWorkoutDetail(
   const paceClean  = stationary.length > 0 ? pace.filter(p => !inStill(p.t))  : pace;
   const powerClean = stationary.length > 0 ? power.filter(p => !inStill(p.t)) : power;
 
-  return { hr, power: powerClean, pace: paceClean, totalMs: durationSec * 1000, activities, kmSplits, pauseIntervals: pauseIntervs, weatherTempC: extractWeatherTempC(workout), debugUuids, debugEvents };
+  // ── HR source diagnostic (why does our trace look flat/low vs the Apple app?) ──
+  // A raw time-window HR query returns EVERY source that wrote a sample in the
+  // window; downsampleTo1PerSecond then AVERAGES overlapping sources within each
+  // 1-second bucket. So a duplicate low/optical series (or a phone "resting" series)
+  // drags the trace toward its value and flattens it — exactly the ~100/avg-89 shape.
+  // This one-liner shows raw-vs-downsampled avg, the sample span, and the per-source
+  // counts so we can see whether >1 source is being merged.
+  let hrDiag: string | undefined;
+  {
+    const srcCount: Record<string, number> = {};
+    let sMin = Infinity, sMax = -Infinity;
+    for (const s of (hrRaw as any[])) {
+      const nm = (s.sourceRevision?.source?.name
+              ?? s.sourceRevision?.source?.bundleIdentifier
+              ?? (s as any).device?.name ?? '?') as string;
+      srcCount[nm] = (srcCount[nm] ?? 0) + 1;
+      const tt = new Date(toISOStr(s.startDate)).getTime() - startMs;
+      if (tt < sMin) sMin = tt;
+      if (tt > sMax) sMax = tt;
+    }
+    const rawArr = hrRaw as any[];
+    const rawAvg = rawArr.length ? Math.round(rawArr.reduce((a, s) => a + (s.quantity as number), 0) / rawArr.length) : 0;
+    const dsAvg  = hr.length ? Math.round(hr.reduce((a, p) => a + p.v, 0) / hr.length) : 0;
+    const span   = isFinite(sMin) ? `${Math.round(sMin / 1000)}→${Math.round(sMax / 1000)}s` : '—';
+    const srcStr = Object.entries(srcCount).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(' + ');
+    hrDiag = `raw ${rawArr.length} (avg ${rawAvg}) → 1Hz ${hr.length} (avg ${dsAvg}) · span ${span} · src [${srcStr}]`;
+  }
+
+  return { hr, power: powerClean, pace: paceClean, totalMs: durationSec * 1000, activities, kmSplits, pauseIntervals: pauseIntervs, weatherTempC: extractWeatherTempC(workout), debugUuids, debugEvents, hrDiag };
 }
 
 // ─── Daily active energy (the basis for strain + training load) ───────────────

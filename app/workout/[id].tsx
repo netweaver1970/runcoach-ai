@@ -374,7 +374,7 @@ function AreaChart({
   for (let i = 1; i < pts.length; i++) gapsMs.push(pts[i].t - pts[i - 1].t);
   gapsMs.sort((a, b) => a - b);
   const medGapMs = gapsMs.length ? gapsMs[Math.floor(gapsMs.length / 2)] : 1000;
-  const sparse   = medGapMs > 15_000;   // typical gap > 15 s → low-resolution
+  const sparse   = medGapMs > 30_000;   // typical gap > 30 s → genuinely low-resolution (draw a line, not bars)
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   const pad    = (rawMax - rawMin) * 0.10 || 2;
@@ -902,8 +902,9 @@ export default function WorkoutDetailScreen() {
   const avgPower = detail?.power.length ? Math.round(detail.power.reduce((s, p) => s + p.v, 0) / detail.power.length) : null;
   const avgPace  = detail?.pace.length  ? Math.round(detail.pace.reduce((s, p) => s + p.v, 0)  / detail.pace.length)  : null;
   // Low-resolution HR (old optical / summary run): too few samples for the HR trace to be trustworthy. Same
-  // threshold the scan uses to flag the run (< ~1 sample / 15 s over ≥5 min) — HR-based stats already exclude it.
-  const hrLowRes = !!detail && detail.hr.length > 0 && detail.totalMs > 300_000 && (detail.hr.length / (detail.totalMs / 60_000)) < 4;
+  // threshold the scan uses to flag the run (< 1 sample/min, i.e. gaps > 60 s — a genuinely broken trace;
+  // a chest-strap run stored every 15–30 s stays valid) — HR-based stats already exclude flagged runs.
+  const hrLowRes = !!detail && detail.hr.length > 0 && detail.totalMs > 300_000 && (detail.hr.length / (detail.totalMs / 60_000)) < 1;
   const calories = Math.round(parseFloat(params.calories ?? '0'));
 
   const dateObj   = new Date(params.date ?? params.startDate ?? '');
@@ -1051,6 +1052,13 @@ export default function WorkoutDetailScreen() {
           {detail && (
             <Text style={st.sampleNote}>
               {detail.hr.length.toLocaleString()} HR · {detail.power.length.toLocaleString()} power · {detail.pace.length.toLocaleString()} pace samples
+            </Text>
+          )}
+
+          {/* HR source diagnostic — reveals multi-source merging / wrong-window flattening */}
+          {detail?.hrDiag && (
+            <Text style={[st.sampleNote, { fontFamily: 'Menlo', fontSize: 10, opacity: 0.7 }]} selectable>
+              🔬 {detail.hrDiag}
             </Text>
           )}
 
