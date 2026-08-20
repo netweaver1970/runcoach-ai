@@ -2480,29 +2480,10 @@ export async function fetchWorkoutDetail(
   const clipMax = Math.min(to.getTime() - startMs, Math.max(durationSec * 1000, workoutEndMs) + 30_000);
   const clip = (t: number) => t >= -60_000 && t <= clipMax;
 
-  // A time-window HR query can return sparse CONTAINER samples when the watch stored the
-  // workout's HR as a HKQuantitySeries (older runs). Querying by the WORKOUT predicate is how
-  // Apple's own app pulls the associated series — it can return the dense set the time query
-  // misses. Try it and keep whichever source is denser. (Same for power below.)
-  let hrSrcSamples = hrRaw as any[];
-  let powerSrcSamples = powerRaw as any[];
-  let hrByWorkoutN = -1, powerByWorkoutN = -1;
-  if (workoutForEnd) {
-    const [hrW, powerW] = await Promise.all([
-      safeQuery(() => (HealthKit.queryQuantitySamples as any)(
-        HKQuantityTypeIdentifier.heartRate,
-        { filter: { workout: workoutForEnd }, unit: 'count/min', ascending: true, limit: 100_000 }
-      ), [] as any[]),
-      safeQuery(() => (HealthKit.queryQuantitySamples as any)(
-        HKQuantityTypeIdentifier.runningPower,
-        { filter: { workout: workoutForEnd }, unit: 'W', ascending: true, limit: 100_000 }
-      ), [] as any[]),
-    ]);
-    hrByWorkoutN = (hrW as any[]).length;
-    powerByWorkoutN = (powerW as any[]).length;
-    if (hrByWorkoutN > hrSrcSamples.length) hrSrcSamples = hrW as any[];
-    if (powerByWorkoutN > powerSrcSamples.length) powerSrcSamples = powerW as any[];
-  }
+  // NOTE: the workout-predicate query (filter:{workout}) does NOT scope with a bridged workout
+  // object — it dumps the whole history (hits the limit) → reverted. Use the time-window query.
+  const hrSrcSamples = hrRaw as any[];
+  const powerSrcSamples = powerRaw as any[];
 
   // Collect raw HR points, then downsample to 1/s
   const hrRaw2 = hrSrcSamples
@@ -2860,18 +2841,19 @@ export async function fetchWorkoutDetail(
   // counts so we can see whether >1 source is being merged.
   let hrDiag: string | undefined;
   {
-    // Mean sample DURATION (endDate-startDate): ~1 s = discrete points; minutes = HKQuantitySeries
-    // CONTAINER samples (each wraps a segment's average) → the fine detail lives in the series.
-    let spanSum = 0, spanN = 0;
-    for (const s of hrSrcSamples) {
-      const d = new Date(toISOStr(s.endDate)).getTime() - new Date(toISOStr(s.startDate)).getTime();
-      if (d >= 0) { spanSum += d; spanN++; }
+    // Split the time-window HR into in-run (kept) vs recovery-tail (clipped). Sparse in-run +
+    // dense recovery = the workout's real HR is stored as a series our sample query can't expand.
+    const arr = hrRaw as any[];
+    let inRun = 0, durSum = 0, inRunSum = 0;
+    for (const s of arr) {
+      const t = new Date(toISOStr(s.startDate)).getTime() - startMs;
+      durSum += Math.max(0, new Date(toISOStr(s.endDate)).getTime() - new Date(toISOStr(s.startDate)).getTime());
+      if (t >= -60_000 && t <= clipMax) { inRun++; inRunSum += (s.quantity as number); }
     }
-    const meanDurS = spanN ? (spanSum / spanN / 1000) : 0;
-    const dsAvg  = hr.length ? Math.round(hr.reduce((a, p) => a + p.v, 0) / hr.length) : 0;
-    const chosen = hrSrcSamples === (hrRaw as any[]) ? 'time' : 'workout';
-    // timeWin = plain time-range query; byWorkout = HKWorkout-predicate query (−1 = not run).
-    hrDiag = `timeWin ${(hrRaw as any[]).length} · byWorkout ${hrByWorkoutN} → used ${chosen} · 1Hz ${hr.length} (avg ${dsAvg}) · sampleDur ${meanDurS.toFixed(1)}s · pwr t${(powerRaw as any[]).length}/w${powerByWorkoutN}`;
+    const meanDurS  = arr.length ? durSum / arr.length / 1000 : 0;
+    const inRunAvg  = inRun ? Math.round(inRunSum / inRun) : 0;
+    const runMin    = Math.round(clipMax / 60_000);
+    hrDiag = `HK timeWin ${arr.length} → inRun ${inRun} (avg ${inRunAvg}, over ${runMin}min) + recovery ${arr.length - inRun} · sampleDur ${meanDurS.toFixed(1)}s · pwr ${(powerRaw as any[]).length}`;
   }
 
   return { hr, power: powerClean, pace: paceClean, totalMs: durationSec * 1000, activities, kmSplits, pauseIntervals: pauseIntervs, weatherTempC: extractWeatherTempC(workout), debugUuids, debugEvents, hrDiag };
