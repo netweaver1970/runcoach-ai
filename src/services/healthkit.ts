@@ -2558,9 +2558,11 @@ export async function fetchWorkoutDetail(
     const t1 = new Date(toISOStr(s.endDate)).getTime()   - startMs;
     const m  = s.quantity as number;
     const durSec = (t1 - t0) / 1000;
+    const mid = t0 + (t1 - t0) / 2;
+    if (!clip(mid)) return;   // drop post-run (recovery / walk-home) segments — pace was NOT clipped
     if (m > 0.5 && durSec > 0) {
       const spk = durSec / (m / 1000);
-      if (spk > 120 && spk < 1200) rawPace.push({ t: t0 + (t1 - t0) / 2, v: Math.round(spk) });
+      if (spk > 120 && spk < 1200) rawPace.push({ t: mid, v: Math.round(spk) });
     }
   });
   // Smooth pace with a 10-second window
@@ -2837,8 +2839,10 @@ export async function fetchWorkoutDetail(
 
   // ── Compute km splits ─────────────────────────────────────────────────────
   const workoutDistM = (workout as any)?.totalDistance?.quantity ?? 0;
+  // Pass the DENSE (series-expanded) hr/power so per-km + segment averages aren't blank on
+  // older runs — the sparse discrete hrRaw2 left most km's with no HR sample ("—").
   const kmSplits = computeKmSplitsDetail(
-    distRaw as any[], hrRaw2, powerRaw2, cadenceRaw2, stepSegs,
+    distRaw as any[], hr, power, cadenceRaw2, stepSegs,
     startMs, durationSec, pauseIntervs, workoutDistM, activities, lapTimesMs,
   );
 
