@@ -1516,7 +1516,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
   // Classify runs AFTER we have longRunMinutes
   const { runs: classifiedRuns, maxHR } = await classifyAndCacheRuns(
-    rawRuns, perRunData, allNewHRValues, existingCache, longRunMinutes
+    rawRuns, perRunData, allNewHRValues, existingCache, longRunMinutes, await getEffectiveMaxHr()
   );
 
   // Refine work stats from structured segments + mark HR unreliable + km splits

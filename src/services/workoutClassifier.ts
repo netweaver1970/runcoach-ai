@@ -534,11 +534,17 @@ export async function classifyAndCacheRuns(
   /** Pre-fetched cache from the caller (avoids a second disk read) */
   preFetchedCache?: WorkoutCache | null,
   longRunMinutes: number = 75,
+  /** The athlete's effective max HR (user-set, else robust observed). Governs zone boundaries. */
+  effectiveMaxHr: number = 0,
 ): Promise<{ runs: RunWorkout[]; maxHR: number }> {
   const existing = preFetchedCache !== undefined ? preFetchedCache : await loadWorkoutCache();
   const cachedMaxHR = existing?.estimatedMaxHR;
   const allHRValues = newHRValues;
-  const maxHR = estimateMaxHR(allHRValues, cachedMaxHR);
+  // Zones MUST use the athlete's EFFECTIVE max HR (user-set 188, else robust observed) so they're
+  // stable + correct. estimateMaxHR (p98+5 of the fetched HR) is only a last-resort fallback: when
+  // the workout cache was cleared, cachedMaxHR vanished and it collapsed to ~160 (you rarely hit max
+  // on easy runs) → Z4 started at 128 bpm → easy runs mis-zoned into red ("46% red" intensity mix).
+  const maxHR = effectiveMaxHr > 0 ? effectiveMaxHr : estimateMaxHR(allHRValues, cachedMaxHR);
 
   const analyses: Record<string, WorkoutAnalysis> = existing?.analyses ?? {};
   let dirty = false;
@@ -546,9 +552,13 @@ export async function classifyAndCacheRuns(
   const classifiedRuns: RunWorkout[] = runs.map((run) => {
     const cached = analyses[run.uuid];
     const maxHRShift = cached ? Math.abs(maxHR - (existing?.estimatedMaxHR ?? maxHR)) : Infinity;
+    const data = perRunData.get(run.uuid) ?? { hrValues: [], hrTimestampsMs: [], distSegs: [], powerSegs: [] };
+    const hasHrData = data.hrValues.length > 0;
 
-    // Re-classify if: missing, maxHR drifted, or old cache lacks workPace/workPower
-    if (cached && maxHRShift < 3 && cached.workHR !== undefined && cached.workPace !== undefined) {
+    // Reuse the cache when maxHR is stable — OR when there's no fresh HR to re-classify from (a normal
+    // scan pre-populates EMPTY perRunData for cached runs, so re-classifying on a maxHR shift would
+    // blank the zones). Only a rebuild (which re-fetches HR) actually re-zones on a maxHR change.
+    if (cached && cached.workHR !== undefined && cached.workPace !== undefined && (maxHRShift < 3 || !hasHrData)) {
       return {
         ...run,
         label:      cached.label,
@@ -562,7 +572,6 @@ export async function classifyAndCacheRuns(
       };
     }
 
-    const data = perRunData.get(run.uuid) ?? { hrValues: [], hrTimestampsMs: [], distSegs: [], powerSegs: [] };
     const result = classifyRun({
       hrSamples:      data.hrValues,
       hrTimestampsMs: data.hrTimestampsMs,
