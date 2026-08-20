@@ -8,6 +8,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache, fetchTrainingLoadHistory, fetchBodyMassHistory } from '../src/services/healthkit';
 import { loadStatsRuns, saveStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
 import { repairWorkStats, clearWorkStatsRepairCache, RepairedWork } from '../src/services/workStatsRepair';
+import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { getPowerZones } from '../src/services/claude';
 import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
@@ -575,6 +576,9 @@ export default function StatisticsScreen() {
   const rebuildDeep = useCallback(async () => {
     setLoading(true); setError(null); setStepMsg('Reading full history…');
     try {
+      // Clear the per-run analysis cache so EVERY run is re-fetched — otherwise cached old runs
+      // keep their sparse-HR values and never pick up the HKQuantitySeries expansion.
+      await clearWorkoutCache();
       const snap = await fetchHealthSnapshot({ months: 24, light: false, onProgress: (step, pct) => setStepMsg(`${step} ${pct}%`) });
       await saveSnapshotCache(snap);
       await saveStatsRuns(mergeRuns((snap as any).runs ?? [], await loadStatsRuns()));   // seed durable history

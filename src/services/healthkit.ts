@@ -948,7 +948,31 @@ async function fetchWorkoutSamples(w: {
     ),
   ]);
 
-  return { hr, dist, power };
+  // Older Apple-Watch runs store dense workout HR/power as a HKQuantitySeries the plain sample
+  // query returns only SPARSELY (~10 stray points, avg biased LOW) → their avg HR / TRIMP / EF /
+  // zones / hrLowRes were all wrong. When the discrete stream is sparse (< 4 samples/min — recent
+  // H10 runs are 12-60/min and skip this, keeping the deep rebuild fast), expand the series via the
+  // native module and use it if denser. Same [start-30s, end+30s] window as the discrete query.
+  let hrOut = hr as any[];
+  let powerOut = power as any[];
+  if (seriesNative) {
+    const durMin = Math.max(1, (new Date(w.endDate).getTime() - new Date(w.startDate).getTime()) / 60_000);
+    const startMs = from.getTime(), endMs = to.getTime();
+    if (hrOut.length / durMin < 4) {
+      try {
+        const s = await seriesNative.queryQuantitySeries('HKQuantityTypeIdentifierHeartRate', startMs, endMs);
+        if (s.length > hrOut.length) hrOut = s.map(p => ({ startDate: new Date(p.t), quantity: p.v }));
+      } catch { /* keep discrete */ }
+    }
+    if (powerOut.length / durMin < 4) {
+      try {
+        const s = await seriesNative.queryQuantitySeries('HKQuantityTypeIdentifierRunningPower', startMs, endMs);
+        if (s.length > powerOut.length) powerOut = s.map(p => ({ startDate: new Date(p.t), quantity: p.v }));
+      } catch { /* keep discrete */ }
+    }
+  }
+
+  return { hr: hrOut, dist, power: powerOut };
 }
 
 function toPerRunData(hr: any[], dist: any[], power: any[]): PerRunData {
@@ -3122,7 +3146,7 @@ export async function fetchDailyCardioTrimp(fromDate: Date, toDate: Date, userMa
   // changed, drop the whole cache and recompute — otherwise old days keep stale, differently-scaled
   // values. `__maxHr` is a sentinel (not a date key, so it's never iterated as a day).
   const tag = history.length ? 'k:' + history.map((h) => `${h.from}@${h.maxHR}`).join(',') : `s:${fallback}`;
-  const TRIMP_CACHE_VER = 5; // v5: power-repair also honours the MANUAL "HR unreliable" flag (2026-08-16)
+  const TRIMP_CACHE_VER = 6; // v6: sparse-HR old runs now expand the HKQuantitySeries → dense HR → recompute (2026-08-20)
   if ((cache as any)['__maxHr'] !== tag || cache['__ver'] !== TRIMP_CACHE_VER) cache = { '__maxHr': tag, '__ver': TRIMP_CACHE_VER } as any;
   let changed = false;
 
