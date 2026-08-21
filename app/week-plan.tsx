@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
+import { useRouter } from 'expo-router';
 import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchTrainingLoadHistory } from '../src/services/healthkit';
@@ -77,6 +78,7 @@ function structPower(w: any): string {
 export default function WeekPlan() {
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
+  const router = useRouter();
   const [rows, setRows]   = useState<Row[] | null>(null);
   const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number; strain: number } | null>(null);
@@ -446,6 +448,10 @@ export default function WeekPlan() {
           </TouchableOpacity>
         </>
       )}
+
+      <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/travel-projection' as any)}>
+        <Text style={s.travelBtnText}>✈️  Travel projection — trips & time off</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -536,4 +542,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   genLine:  { fontSize: 11.5, color: c.textFaint, marginTop: 14, textAlign: 'center' },
   btn:      { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
   btnText:  { color: '#fff', fontWeight: '700', fontSize: 14 },
+  travelBtn:     { backgroundColor: c.surface, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
+  travelBtnText: { color: c.accent, fontWeight: '700', fontSize: 14 },
 });
