@@ -2282,6 +2282,13 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   // with since-changed inputs). This is the SAME computation the Training Load screen uses, so the coach,
   // that screen, and HealthFit agree. Falls back to the cached components value if the fetch failed.
   const tlLast = Array.isArray(tlSeries) && tlSeries.length ? tlSeries[tlSeries.length - 1] : null;
+  // ACWR MUST be consistent with the CTL/ATL we report — both from tlLast (the authoritative
+  // training-load history the Training Load screen + HealthFit agree with). The old strain.acwr came
+  // from a SEPARATE snapshot, so the coach/LLM quoted an ATL & CTL that didn't divide to the ACWR it
+  // also quoted (e.g. ATL 47.9 / CTL 41.3 = 1.16, but acwr read 1.22). Derive it here; fall back to strain.
+  const acwrConsistent = (tlLast && (tlLast.ctl ?? 0) > 0)
+    ? Math.round((tlLast.atl / tlLast.ctl) * 100) / 100
+    : (strain?.acwr || undefined);
   const now = new Date();
   const realToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   // Watch not worn overnight → no overnight recovery for last night. Either there's NO record for today
@@ -2300,7 +2307,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
 
   // ToF per day already honours the accounting regime — fetchDailyWorkHistory prefers the cached run
   // SEGMENTS over the uuid-metadata decode, whose full-duration fallback used to count warm-up/cool-down.
-  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis, latest.tsb, strain?.acwr);
+  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis, latest.tsb, acwrConsistent);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
@@ -2315,7 +2322,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     ctl:          tlLast?.ctl ?? latest.ctl,
     atl:          tlLast?.atl ?? latest.cardioLoad,
     tsb:          tlLast?.tsb ?? latest.tsb,
-    acwr:         strain?.acwr || undefined,
+    acwr:         acwrConsistent,
     strainReal:   strain?.real,
     advisableLow:  strain?.safeLow,
     advisableHigh: strain?.safeHigh,
