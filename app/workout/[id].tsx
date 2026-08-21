@@ -1062,6 +1062,13 @@ export default function WorkoutDetailScreen() {
             </Text>
           )}
 
+          {/* Raw activity metadata — reveals why the scan mislabels a segment (activityType + step keys) */}
+          {detail?.debugUuids && detail.debugUuids.length > 0 && (
+            <Text style={[st.sampleNote, { fontFamily: 'Menlo', fontSize: 9, opacity: 0.6, textAlign: 'left' }]} selectable>
+              🧩 {detail.debugUuids.join('\n')}
+            </Text>
+          )}
+
           {/* Segment KPI table — shown when HK structured workout activities exist */}
           {detail && detail.activities.length > 0 && (
             <SegmentTable activities={detail.activities} />
