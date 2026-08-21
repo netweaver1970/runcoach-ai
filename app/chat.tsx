@@ -610,7 +610,8 @@ export default function ChatScreen() {
     <SafeAreaView style={styles.container}>
       <Stack.Screen
         options={{
-          title: 'Coach',
+          title: focusRunUUID ? 'Run Analysis' : 'Coach',
+          headerBackTitle: 'Back',
           headerRight: () => (
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <TouchableOpacity onPress={exportChat} style={{ paddingHorizontal: 8, paddingVertical: 6 }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
