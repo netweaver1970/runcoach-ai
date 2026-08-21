@@ -400,7 +400,11 @@ function AreaChart({
   };
 
   const toX = (ms: number) => Math.max(0, Math.min(chartW, (ms / wallTotalMs) * chartW));
-  const toY = (v: number)  => CHART_H * (1 - Math.max(0, Math.min(1, (v - scale.niceMin) / yRange)));
+  // For PACE, REVERSE the axis (Garmin-style): a FASTER pace (lower min/km) draws a TALLER bar and the
+  // slowest / standstill end sits at ~0 height. Reflect the value around the range-adjusted scale so the
+  // bars, the y-axis ticks AND the cursor all invert together. HR / power charts are unchanged.
+  const plotV = (v: number) => (isPace ? scale.niceMin + scale.niceMax - v : v);
+  const toY = (v: number)  => CHART_H * (1 - Math.max(0, Math.min(1, (plotV(v) - scale.niceMin) / yRange)));
 
   const xLabels = [0, 0.25, 0.5, 0.75, 1];
 

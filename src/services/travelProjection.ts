@@ -22,6 +22,33 @@ export const TRAVEL_SCENARIOS: TravelScenario[] = ['continue', 'maintain', 'rest
 const TRIP_FACTOR: Record<TravelScenario, number> = { continue: 1.0, maintain: 0.5, rest: 0.18 };
 const TRIP_REST_FLOOR = 14;   // ~a sightseeing day's NEAT load, so "rest" never collapses to zero
 
+// ── Heat / climate penalty ──────────────────────────────────────────────────
+// In real heat you simply can't train as much — HR runs high, pace craters, sessions get cut. So a
+// destination's climate DAMPENS the achievable load on top of the training-intent scenario. Tuned on
+// the harsher side because Geert is heat-sensitive: a tropical leg (Singapore/Bali) caps effort hard.
+export type Climate = 'cool' | 'mild' | 'warm' | 'hot' | 'tropical';
+export const CLIMATES: Climate[] = ['cool', 'mild', 'warm', 'hot', 'tropical'];
+export const CLIMATE_LOAD_FACTOR: Record<Climate, number> = { cool: 1.0, mild: 1.0, warm: 0.85, hot: 0.68, tropical: 0.5 };
+export const CLIMATE_LABEL: Record<Climate, string> = {
+  cool: 'Cool', mild: 'Mild', warm: 'Warm', hot: 'Hot', tropical: 'Tropical',
+};
+
+/** One leg of a trip: a place, its length in days (contiguous), and its climate. */
+export interface TravelLeg { id: string; place: string; days: number; climate: Climate }
+
+/** Best-guess climate from a place name — a small hint table the user can override. */
+export function climateForPlace(place: string): Climate {
+  const p = place.toLowerCase();
+  const has = (...ks: string[]) => ks.some(k => p.includes(k));
+  if (has('singapore', 'bali', 'denpasar', 'cambodia', 'phnom', 'siem reap', 'bangkok', 'thailand',
+          'jakarta', 'manila', 'saigon', 'ho chi minh', 'hanoi', 'kuala lumpur', 'malaysia',
+          'dubai', 'india', 'mumbai', 'delhi', 'darwin')) return 'tropical';
+  if (has('korea', 'seoul', 'busan', 'tokyo', 'japan', 'shanghai', 'hong kong', 'taipei',
+          'sydney', 'lisbon', 'madrid', 'rome', 'athens')) return 'warm';
+  if (has('reykjavik', 'oslo', 'stockholm', 'helsinki', 'anchorage')) return 'cool';
+  return 'mild';
+}
+
 export interface TravelProjection {
   scenarios:       Record<TravelScenario, DailyLoad[]>;   // projected series [today … horizonEnd] per scenario
   normalDailyLoad: number;    // the sustained daily load used before/after the trip
@@ -98,4 +125,68 @@ export function ctlOn(series: DailyLoad[], dayISO: string): number | null {
   let val: number | null = null;
   for (const d of series) { if (d.date <= dayISO) val = d.ctl; else break; }
   return val;
+}
+
+export interface ResolvedLeg { place: string; from: string; to: string; climate: Climate; days: number }
+export interface ItineraryProjection extends TravelProjection { legs: ResolvedLeg[] }
+
+/**
+ * Project across a MULTI-LEG itinerary with per-leg CLIMATE. Legs are contiguous from `startDate`.
+ * During a leg the achievable load = normal × scenario × climate factor (heat penalty); days outside
+ * every leg (before/after, or home gaps) carry the normal load. This is the travel-mode projection.
+ */
+export function projectTravelItinerary(
+  hist: DailyLoad[],
+  startDate: Date,
+  legs: TravelLeg[],
+  postTripDays = 21,
+): ItineraryProjection | null {
+  if (!hist.length || !legs.length) return null;
+
+  const loadByDay = new Map<string, number>(hist.map(d => [d.date, d.load]));
+  const today = hist[hist.length - 1];
+  const recent = hist.slice(-22, -1).map(d => d.load).filter(v => v >= 0);
+  const normalDailyLoad = recent.length ? Math.round(recent.reduce((a, b) => a + b, 0) / recent.length) : today.load;
+
+  // Resolve contiguous leg date ranges from the start date.
+  const resolved: ResolvedLeg[] = [];
+  let cur = atMidnight(dstr(startDate));
+  for (const lg of legs) {
+    const d = Math.max(1, Math.round(lg.days));
+    const from = new Date(cur);
+    const to = new Date(cur.getTime() + (d - 1) * 86_400_000);
+    resolved.push({ place: lg.place || 'Leg', from: dstr(from), to: dstr(to), climate: lg.climate, days: d });
+    cur = new Date(to.getTime() + 86_400_000);
+  }
+  const tripStart  = resolved[0].from;
+  const tripEnd    = resolved[resolved.length - 1].to;
+  const horizonEnd = dstr(new Date(atMidnight(tripEnd).getTime() + postTripDays * 86_400_000));
+
+  const climateOf = (isoDay: string): Climate | null => {
+    for (const r of resolved) if (isoDay >= r.from && isoDay <= r.to) return r.climate;
+    return null;
+  };
+
+  const todayDate = atMidnight(today.date);
+  const horizonMs = atMidnight(horizonEnd).getTime();
+  const scenarios = {} as Record<TravelScenario, DailyLoad[]>;
+  for (const sc of TRAVEL_SCENARIOS) {
+    const m = new Map(loadByDay);
+    const d = new Date(todayDate.getTime() + 86_400_000);
+    while (d.getTime() <= horizonMs) {
+      const clim = climateOf(dstr(d));
+      let load = normalDailyLoad;
+      if (clim) {
+        const heat = CLIMATE_LOAD_FACTOR[clim];
+        load = sc === 'rest'
+          ? Math.max(TRIP_REST_FLOOR, Math.round(normalDailyLoad * TRIP_FACTOR.rest * heat))
+          : Math.round(normalDailyLoad * TRIP_FACTOR[sc] * heat);
+      }
+      m.set(dstr(d), load);
+      d.setDate(d.getDate() + 1);
+    }
+    scenarios[sc] = computeTrainingLoadSeries(m, todayDate, atMidnight(horizonEnd));
+  }
+
+  return { scenarios, normalDailyLoad, today, tripStart, tripEnd, horizonEnd, legs: resolved };
 }

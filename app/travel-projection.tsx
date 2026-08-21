@@ -1,11 +1,15 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, TextInput, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions } from 'react-native';
 import Svg, { Polyline, Rect, Line, Text as SvgText, Circle } from 'react-native-svg';
 import { Stack } from 'expo-router';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
 import { DailyLoad } from '../src/types';
-import { projectTravel, TravelProjection, TravelScenario, ctlOn } from '../src/services/travelProjection';
+import {
+  projectTravelItinerary, ItineraryProjection, TravelProjection, TravelScenario, ctlOn,
+  TravelLeg, Climate, CLIMATES, CLIMATE_LABEL, CLIMATE_LOAD_FACTOR, climateForPlace,
+} from '../src/services/travelProjection';
+import { Itinerary, loadItinerary, saveItinerary } from '../src/services/travelStore';
 
 const DAY = 86_400_000;
 const dstr = (d: Date) => { const p = (n: number) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
@@ -25,61 +29,91 @@ export default function TravelProjectionScreen() {
   const [hist, setHist]       = useState<DailyLoad[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr]         = useState<string | null>(null);
-  const [startInDays, setStartInDays] = useState(23);  // ≈ mid-Sept from late Aug; user-adjustable
-  const [tripDays, setTripDays]       = useState(14);
+  const [it, setIt]           = useState<Itinerary | null>(null);
+  const saveTimer = useRef<any>(null);
 
   useEffect(() => {
     (async () => {
-      try { setHist(await fetchTrainingLoadHistory(4)); }
-      catch (e: any) { setErr(e?.message ?? 'Could not load training history.'); }
+      try {
+        const [h, i] = await Promise.all([fetchTrainingLoadHistory(4), loadItinerary()]);
+        setHist(h); setIt(i);
+      } catch (e: any) { setErr(e?.message ?? 'Could not load training history.'); }
       finally { setLoading(false); }
     })();
   }, []);
 
-  const proj: TravelProjection | null = useMemo(() => {
-    if (!hist?.length) return null;
-    const today = new Date(hist[hist.length - 1].date + 'T00:00:00');
-    const tripStart = new Date(today.getTime() + startInDays * DAY);
-    return projectTravel(hist, tripStart, tripDays, 21);
-  }, [hist, startInDays, tripDays]);
+  // Update itinerary + debounce-persist.
+  const update = useCallback((next: Itinerary) => {
+    setIt(next);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveItinerary(next), 400);
+  }, []);
 
-  const step = useCallback((setter: React.Dispatch<React.SetStateAction<number>>, delta: number, min: number, max: number) =>
-    setter(v => Math.max(min, Math.min(max, v + delta))), []);
+  const setStart = (delta: number) => it && update({ ...it, startInDays: Math.max(1, Math.min(180, it.startInDays + delta)) });
+  const patchLeg = (id: string, p: Partial<TravelLeg>) => it && update({ ...it, legs: it.legs.map(l => l.id === id ? { ...l, ...p } : l) });
+  const cycleClimate = (id: string, cur: Climate) => patchLeg(id, { climate: CLIMATES[(CLIMATES.indexOf(cur) + 1) % CLIMATES.length] });
+  const addLeg = () => it && update({ ...it, legs: [...it.legs, { id: `l${Date.now()}`, place: '', days: 5, climate: 'warm' }] });
+  const removeLeg = (id: string) => it && it.legs.length > 1 && update({ ...it, legs: it.legs.filter(l => l.id !== id) });
+
+  const proj: ItineraryProjection | null = useMemo(() => {
+    if (!hist?.length || !it) return null;
+    const today = new Date(hist[hist.length - 1].date + 'T00:00:00');
+    const tripStart = new Date(today.getTime() + it.startInDays * DAY);
+    return projectTravelItinerary(hist, tripStart, it.legs, 21);
+  }, [hist, it]);
 
   if (loading) return <View style={s.center}><ActivityIndicator color={c.accent} /><Text style={s.dim}>Reading your training history…</Text></View>;
   if (err)     return <View style={s.center}><Text style={s.err}>{err}</Text></View>;
-  if (!proj)   return <View style={s.center}><Text style={s.dim}>Not enough training history yet to project.</Text></View>;
+  if (!proj || !it) return <View style={s.center}><Text style={s.dim}>Not enough training history yet to project.</Text></View>;
 
   return (
-    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
       <Stack.Screen options={{ title: 'Travel Projection', headerBackTitle: 'Back' }} />
 
       <Text style={s.lede}>
-        Where your fitness (CTL) lands across a trip, under three training scenarios. Detraining is slow —
-        CTL is a 42-day average — so the lines show both the dip and how fast it rebuilds after.
+        Where your fitness (CTL) lands across a trip, under three training scenarios. Each leg's climate
+        adds a heat penalty — in the tropics you simply can't train as hard, so the ceiling drops.
       </Text>
 
-      {/* ── Trip controls ─────────────────────────────────────────── */}
+      {/* ── Itinerary editor ──────────────────────────────────────── */}
       <View style={s.card}>
         <View style={s.ctrlRow}>
-          <Text style={s.ctrlLabel}>Trip starts</Text>
+          <Text style={s.ctrlLabel}>Leaves in</Text>
           <View style={s.stepper}>
-            <TouchableOpacity style={s.stepBtn} onPress={() => step(setStartInDays, -7, 1, 120)}><Text style={s.stepTxt}>−1w</Text></TouchableOpacity>
-            <TouchableOpacity style={s.stepBtn} onPress={() => step(setStartInDays, -1, 1, 120)}><Text style={s.stepTxt}>−1d</Text></TouchableOpacity>
+            <TouchableOpacity style={s.stepBtn} onPress={() => setStart(-7)}><Text style={s.stepTxt}>−1w</Text></TouchableOpacity>
+            <TouchableOpacity style={s.stepBtn} onPress={() => setStart(-1)}><Text style={s.stepTxt}>−1d</Text></TouchableOpacity>
             <Text style={s.ctrlVal}>{fmtShort(proj.tripStart)}</Text>
-            <TouchableOpacity style={s.stepBtn} onPress={() => step(setStartInDays, +1, 1, 120)}><Text style={s.stepTxt}>+1d</Text></TouchableOpacity>
-            <TouchableOpacity style={s.stepBtn} onPress={() => step(setStartInDays, +7, 1, 120)}><Text style={s.stepTxt}>+1w</Text></TouchableOpacity>
+            <TouchableOpacity style={s.stepBtn} onPress={() => setStart(+1)}><Text style={s.stepTxt}>+1d</Text></TouchableOpacity>
+            <TouchableOpacity style={s.stepBtn} onPress={() => setStart(+7)}><Text style={s.stepTxt}>+1w</Text></TouchableOpacity>
           </View>
         </View>
-        <View style={s.ctrlRow}>
-          <Text style={s.ctrlLabel}>Trip length</Text>
-          <View style={s.stepper}>
-            <TouchableOpacity style={s.stepBtn} onPress={() => step(setTripDays, -1, 2, 60)}><Text style={s.stepTxt}>−1d</Text></TouchableOpacity>
-            <Text style={s.ctrlVal}>{tripDays} days</Text>
-            <TouchableOpacity style={s.stepBtn} onPress={() => step(setTripDays, +1, 2, 60)}><Text style={s.stepTxt}>+1d</Text></TouchableOpacity>
-          </View>
-        </View>
-        <Text style={s.ctrlNote}>Away {fmtShort(proj.tripStart)} → {fmtShort(proj.tripEnd)} · today CTL {proj.today.ctl.toFixed(0)} · sustaining ~{proj.normalDailyLoad} load/day</Text>
+
+        {it.legs.map((lg) => (
+            <View key={lg.id} style={s.legRow}>
+              <TextInput
+                style={s.placeInput}
+                value={lg.place}
+                placeholder="Place"
+                placeholderTextColor={c.textFaint}
+                onChangeText={t => patchLeg(lg.id, { place: t })}
+                onBlur={() => { if (lg.place.trim()) patchLeg(lg.id, { climate: climateForPlace(lg.place) }); }}
+                returnKeyType="done"
+              />
+              <TouchableOpacity style={[s.climateBadge, { borderColor: CLIMATE_TINT[lg.climate] }]} onPress={() => cycleClimate(lg.id, lg.climate)}>
+                <Text style={[s.climateTxt, { color: CLIMATE_TINT[lg.climate] }]}>{CLIMATE_LABEL[lg.climate]}</Text>
+              </TouchableOpacity>
+              <View style={s.daysBox}>
+                <TouchableOpacity onPress={() => patchLeg(lg.id, { days: Math.max(1, lg.days - 1) })}><Text style={s.stepTxt}>−</Text></TouchableOpacity>
+                <Text style={s.daysVal}>{lg.days}d</Text>
+                <TouchableOpacity onPress={() => patchLeg(lg.id, { days: Math.min(120, lg.days + 1) })}><Text style={s.stepTxt}>+</Text></TouchableOpacity>
+              </View>
+              <TouchableOpacity onPress={() => removeLeg(lg.id)} hitSlop={8}><Text style={s.remove}>✕</Text></TouchableOpacity>
+            </View>
+        ))}
+        <TouchableOpacity style={s.addLeg} onPress={addLeg}><Text style={s.addLegTxt}>+ Add leg</Text></TouchableOpacity>
+        <Text style={s.ctrlNote}>
+          Away {fmtShort(proj.tripStart)} → {fmtShort(proj.tripEnd)} · today CTL {proj.today.ctl.toFixed(0)} · sustaining ~{proj.normalDailyLoad} load/day · tap a climate to change it
+        </Text>
       </View>
 
       {/* ── CTL chart ─────────────────────────────────────────────── */}
@@ -96,12 +130,36 @@ export default function TravelProjectionScreen() {
         </View>
       </View>
 
+      {/* ── Heat penalty per leg ──────────────────────────────────── */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Heat penalty by leg</Text>
+        {proj.legs.map((r, i) => {
+          const factor = CLIMATE_LOAD_FACTOR[r.climate];
+          const capPct = Math.round(factor * 100);
+          return (
+            <View key={i} style={s.heatRow}>
+              <Text style={s.heatPlace} numberOfLines={1}>{r.place}</Text>
+              <Text style={s.heatDates}>{fmtShort(r.from)}–{fmtShort(r.to)}</Text>
+              <View style={[s.climateBadge, { borderColor: CLIMATE_TINT[r.climate] }]}>
+                <Text style={[s.climateTxt, { color: CLIMATE_TINT[r.climate] }]}>{CLIMATE_LABEL[r.climate]}</Text>
+              </View>
+              <Text style={[s.heatCap, factor < 0.75 && { color: '#c0392b' }]}>effort ≤ {capPct}%</Text>
+            </View>
+          );
+        })}
+        <Text style={s.tblNote}>
+          "effort ≤ X%" caps even the "train through" plan — in {CLIMATE_LABEL.tropical.toLowerCase()} heat you can't
+          hold normal load, so tropical legs quietly bleed CTL no matter your intent. Early-morning easy runs + hard
+          hydration are the play; treat those days as maintenance, not training.
+        </Text>
+      </View>
+
       {/* ── Summary table ─────────────────────────────────────────── */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Where you land</Text>
         <View style={s.tblHead}>
           <Text style={[s.th, { flex: 1.4 }]}>Scenario</Text>
-          <Text style={s.th}>Trip end</Text>
+          <Text style={s.th}>Back</Text>
           <Text style={s.th}>+3 wk</Text>
           <Text style={s.th}>vs now</Text>
         </View>
@@ -125,13 +183,17 @@ export default function TravelProjectionScreen() {
           );
         })}
         <Text style={s.tblNote}>
-          "+3 wk" = three weeks after you're back, once fitness rebuilds. Even mostly resting, the loss is
-          small and comes back fast — protect the base with 2–3 easy runs/week and you barely dip.
+          "Back" = the day you return; "+3 wk" = after fitness rebuilds. Detraining is slow — even mostly
+          resting, the loss is small and comes back fast once you resume.
         </Text>
       </View>
     </ScrollView>
   );
 }
+
+const CLIMATE_TINT: Record<Climate, string> = {
+  cool: '#2f6fed', mild: '#2e9e5b', warm: '#e0a12a', hot: '#e07b2a', tropical: '#c0392b',
+};
 
 // ── SVG multi-line CTL chart ───────────────────────────────────────────────
 function CtlChart({ proj, width, palette }: { proj: TravelProjection; width: number; palette: any }) {
@@ -197,7 +259,22 @@ const styles = (c: Palette) => StyleSheet.create({
   stepBtn:   { backgroundColor: c.bg, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
   stepTxt:   { color: c.accent, fontSize: 13, fontWeight: '700' },
   ctrlVal:   { color: c.text, fontSize: 13, fontWeight: '700', minWidth: 58, textAlign: 'center' },
-  ctrlNote:  { color: c.textSub, fontSize: 11.5, marginTop: 2 },
+  ctrlNote:  { color: c.textSub, fontSize: 11.5, marginTop: 6, lineHeight: 16 },
+  // itinerary editor
+  legRow:      { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border },
+  placeInput:  { flex: 1, color: c.text, fontSize: 14, fontWeight: '600', paddingVertical: 4, paddingHorizontal: 8, backgroundColor: c.bg, borderRadius: 8 },
+  climateBadge:{ borderWidth: 1, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3 },
+  climateTxt:  { fontSize: 11, fontWeight: '700' },
+  daysBox:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.bg, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3 },
+  daysVal:     { color: c.text, fontSize: 12, fontWeight: '700', minWidth: 26, textAlign: 'center' },
+  remove:      { color: c.textFaint, fontSize: 15, fontWeight: '700', paddingHorizontal: 2 },
+  addLeg:      { alignSelf: 'flex-start', marginTop: 8, paddingVertical: 4 },
+  addLegTxt:   { color: c.accent, fontSize: 13, fontWeight: '700' },
+  // heat penalty rows
+  heatRow:     { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
+  heatPlace:   { color: c.text, fontSize: 13.5, fontWeight: '600', flex: 1 },
+  heatDates:   { color: c.textSub, fontSize: 11 },
+  heatCap:     { color: c.textSub, fontSize: 12, fontWeight: '700', minWidth: 78, textAlign: 'right' },
   legend:    { flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 8 },
   legItem:   { flexDirection: 'row', alignItems: 'center', gap: 5 },
   legDot:    { width: 9, height: 9, borderRadius: 5 },
