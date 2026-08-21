@@ -126,6 +126,10 @@ export default function ChatScreen() {
   const historyRef        = useRef<PersistedMessage[]>([]);
   const lastSeenRunRef    = useRef<string | undefined>(undefined);
   const localContextRef   = useRef<string>(getLocalContext());
+  // Run analysis (Analyze button) runs in an EPHEMERAL, self-contained context: no coach-chat history is
+  // loaded, and the analysis + any follow-ups are NOT folded back into the shared coach chat (so they
+  // neither drag nor bloat the ongoing conversation). All the run data rides in systemContext.
+  const ephemeralRef      = useRef<boolean>(false);
 
   // ── Dynamic keyboard height ─────────────────────────────────────────────────
   useEffect(() => {
@@ -149,6 +153,7 @@ export default function ChatScreen() {
     localContextRef.current = getLocalContext();
 
     const init = async () => {
+      ephemeralRef.current = false;   // reset per load — only the run-analysis branch below opts in
       // If no data passed but focusRunUUID present, load from cache
       let snap = snapshot;
       if (!snap && focusRunUUID) {
@@ -184,6 +189,34 @@ export default function ChatScreen() {
       const yohOffsets = await loadSupplements().then(d => hrOffsetByDay(d)).catch(() => ({} as Record<string, number>));
       // The PURE rolling ToF budget, so the analysis doesn't mistake a readiness-reduced day for "no budget".
       const budgetCtx = buildBudgetContext(await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null));
+
+      // ── Run analysis (Analyze button): CLEAN, EPHEMERAL context ────────────
+      // Start with NO coach-chat history (nothing to restore, nothing to display) — the run data + the
+      // day's prescription are self-contained in systemContext. Nothing here is persisted back to the
+      // shared coach chat, so a run analysis never drags or bloats the ongoing conversation.
+      if (focusRunUUID) {
+        const focusRun = snap.runs.find(r => r.uuid === focusRunUUID);
+        if (focusRun) {
+          const sameType = snap.runs
+            .filter(r => r.uuid !== focusRun.uuid && r.label === focusRun.label)
+            .slice(0, 10);
+          const parsedDetail = runDetailJson ? (() => { try { return JSON.parse(runDetailJson); } catch { return undefined; } })() : undefined;
+          const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
+          const systemContext = [
+            buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail, yohOffsets),
+            buildPrescriptionContext(plan), budgetCtx,
+          ].filter(Boolean).join('\n\n');
+          const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
+          ephemeralRef.current   = true;                 // don't persist into the shared coach chat
+          historyRef.current     = [];                   // clean context for any follow-ups
+          setMemoryNote(saved?.memoryNote ?? '');        // keep durable coaching facts, drop the chat turns
+          setMessages([]);
+          setShowChips(false);
+          setIsLoaded(true);
+          setTimeout(() => autoSend(shortMsg, snap, systemContext), 400);
+          return;
+        }
+      }
 
       if (saved && saved.messages.length > 0) {
         // Restore previous conversation
@@ -348,12 +381,16 @@ export default function ChatScreen() {
         { id: 'auto-reply', role: 'assistant', content: reply, usage: usageLine },
       ]);
 
-      updateMemoryNote(toApiMessages(full), memoryNote, activeSnap, localContextRef.current)
-        .then(updatedMemory => {
-          setMemoryNote(updatedMemory);
-          saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
-        })
-        .catch(() => saveChatPersistence(full, memoryNote, lastSeenRunRef.current));
+      // Ephemeral run analysis: keep it in-memory (so follow-ups have context) but NEVER write it to the
+      // shared coach chat or let it mutate the durable memory note.
+      if (!ephemeralRef.current) {
+        updateMemoryNote(toApiMessages(full), memoryNote, activeSnap, localContextRef.current)
+          .then(updatedMemory => {
+            setMemoryNote(updatedMemory);
+            saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
+          })
+          .catch(() => saveChatPersistence(full, memoryNote, lastSeenRunRef.current));
+      }
     } catch (err: any) {
       setMessages(prev => [
         ...prev.filter(m => m.id !== loadingId),
@@ -430,15 +467,18 @@ export default function ChatScreen() {
         { ...{ id: now + 'a', role: 'assistant', content: reply }, usage: usageLine },
       ]);
 
-      // Update memory + persist in background
-      updateMemoryNote(toApiMessages(full), memoryNote, snapshot, localContextRef.current)
-        .then(updatedMemory => {
-          setMemoryNote(updatedMemory);
-          saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
-        })
-        .catch(() => {
-          saveChatPersistence(full, memoryNote, lastSeenRunRef.current);
-        });
+      // Update memory + persist in background — but NOT for an ephemeral run-analysis session (follow-up
+      // questions there stay self-contained and never write to the shared coach chat / memory note).
+      if (!ephemeralRef.current) {
+        updateMemoryNote(toApiMessages(full), memoryNote, snapshot, localContextRef.current)
+          .then(updatedMemory => {
+            setMemoryNote(updatedMemory);
+            saveChatPersistence(full, updatedMemory, lastSeenRunRef.current);
+          })
+          .catch(() => {
+            saveChatPersistence(full, memoryNote, lastSeenRunRef.current);
+          });
+      }
 
     } catch (err: any) {
       setMessages(prev => [
