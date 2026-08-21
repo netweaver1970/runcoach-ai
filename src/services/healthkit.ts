@@ -1276,7 +1276,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
             }
           }
         }
-        if (distanceM === 0) return null; // skip activities with no data
+        // Skip only SPURIOUS no-data activities — but KEEP a real prescribed phase that legitimately
+        // covers 0 m (e.g. standing drills). Dropping it desynchronised relabelByPhases (which order-
+        // matches the full [Warmup, Drills, Work, Cooldown] sequence), shifting Drills→the real work and
+        // Work→the cooldown, so work-stats latched onto the 99 W cooldown. A real phase has a step keypath.
+        if (distanceM === 0 && !stepPath) return null; // no data AND not a prescribed phase → drop
         // stepActType from workoutConfiguration helps identify Walk/Warmup/Cooldown phases
         let label = title || stepName
           || (['Warmup','Work','Recovery','Cooldown'][stepType] ?? '')
