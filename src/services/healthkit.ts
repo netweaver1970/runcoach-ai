@@ -1296,15 +1296,29 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       })
       .filter((s): s is WorkoutSegment => s !== null);
 
-    // Resolve any deferred __step: labels using distance heuristic.
-    // For structured workouts: Warmup(short) + Work×N + Cooldown(short).
+    // Resolve any deferred __step: labels. Workout metadata frequently carries ONLY the
+    // WOIntervalStepKeyPath BLOCK INDEX (no StepType/StepName), so label by POSITION: the first
+    // prescribed block is the warm-up, the last is the cool-down, the rest are work. The old
+    // distance heuristic tagged a LONG warm-up as Work (e.g. a 640 m warm-up ≈ the median, so not
+    // "< 65% of median" → mislabelled), which then poisoned the work-stat averages (wHR/wW/EF/SE).
     const hasDeferred = segments.some(s => s.label.startsWith('__step:') || s.label === '');
     if (hasDeferred && segments.length >= 2) {
-      const dists = segments.map(s => s.distanceM);
-      const validDists = dists.filter(d => d > 0);
-      if (validDists.length === segments.length) {
+      const stepIdxOf = (s: WorkoutSegment) => s.label.startsWith('__step:') ? parseInt(s.label.slice(7), 10) : NaN;
+      const idxs = segments.map(stepIdxOf).filter(n => !Number.isNaN(n));
+      if (idxs.length >= 2) {
+        const minI = Math.min(...idxs), maxI = Math.max(...idxs);
+        segments.forEach(s => {
+          if (!s.label.startsWith('__step:') && s.label !== '') return;
+          const n = stepIdxOf(s);
+          if (n === minI)      s.label = 'Warmup';
+          else if (n === maxI) s.label = 'Cooldown';
+          else                 s.label = 'Work';
+        });
+      } else {
+        // No usable positions → fall back to the distance heuristic (short first/last = warmup/cooldown).
+        const validDists = segments.map(s => s.distanceM).filter(d => d > 0);
         const sorted = [...validDists].sort((a, b) => a - b);
-        const median = sorted[Math.floor(sorted.length / 2)];
+        const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
         const threshold = median * 0.65;
         segments.forEach((s, i) => {
           if (!s.label.startsWith('__step:') && s.label !== '') return;
@@ -1312,8 +1326,6 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
           else if (i === segments.length - 1 && s.distanceM < threshold)  s.label = 'Cooldown';
           else                                                             s.label = 'Work';
         });
-      } else {
-        segments.forEach(s => { if (s.label.startsWith('__step:') || s.label === '') s.label = 'Work'; });
       }
     }
     // Legacy: all-unlabeled case
