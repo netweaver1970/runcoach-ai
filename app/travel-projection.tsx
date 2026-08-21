@@ -1,13 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions } from 'react-native';
+import { View, Text, TextInput, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, Alert } from 'react-native';
 import Svg, { Polyline, Rect, Line, Text as SvgText, Circle } from 'react-native-svg';
 import { Stack } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
+import { callLLMWithImage } from '../src/services/llm';
 import { DailyLoad } from '../src/types';
 import {
   projectTravelItinerary, ItineraryProjection, TravelProjection, TravelScenario, ctlOn,
   TravelLeg, Climate, CLIMATES, CLIMATE_LABEL, CLIMATE_LOAD_FACTOR, climateForPlace,
+  buildFlightExtractionPrompt, parseFlightExtraction,
 } from '../src/services/travelProjection';
 import { Itinerary, loadItinerary, saveItinerary } from '../src/services/travelStore';
 
@@ -30,6 +33,7 @@ export default function TravelProjectionScreen() {
   const [loading, setLoading] = useState(true);
   const [err, setErr]         = useState<string | null>(null);
   const [it, setIt]           = useState<Itinerary | null>(null);
+  const [importing, setImporting] = useState(false);
   const saveTimer = useRef<any>(null);
 
   useEffect(() => {
@@ -54,6 +58,28 @@ export default function TravelProjectionScreen() {
   const cycleClimate = (id: string, cur: Climate) => patchLeg(id, { climate: CLIMATES[(CLIMATES.indexOf(cur) + 1) % CLIMATES.length] });
   const addLeg = () => it && update({ ...it, legs: [...it.legs, { id: `l${Date.now()}`, place: '', days: 5, climate: 'warm' }] });
   const removeLeg = (id: string) => it && it.legs.length > 1 && update({ ...it, legs: it.legs.filter(l => l.id !== id) });
+
+  // Import an itinerary from a flight / booking screenshot via the LLM vision model.
+  const importFromScreenshot = async () => {
+    if (!it) return;
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) { Alert.alert('Photo access needed', 'Allow photo access in iOS Settings to import a flight screenshot.'); return; }
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], base64: true, quality: 1 });
+    if (res.canceled || !res.assets?.length) return;
+    const asset = res.assets[0];
+    if (!asset.base64) { Alert.alert('Could not read image', 'Try another screenshot.'); return; }
+    setImporting(true);
+    try {
+      const todayISO = new Date().toISOString().slice(0, 10);
+      const reply = await callLLMWithImage({ prompt: buildFlightExtractionPrompt(todayISO), imageBase64: asset.base64, mediaType: 'image/png', maxTokens: 1024 });
+      const parsed = parseFlightExtraction(reply, todayISO);
+      if (!parsed || !parsed.legs.length) { Alert.alert('No trip found', "Couldn't read flight dates from that screenshot. Add the legs manually, or try a clearer itinerary shot."); return; }
+      update({ startInDays: parsed.startInDays, legs: parsed.legs });
+      Alert.alert('Imported ✈️', `${parsed.legs.length} leg${parsed.legs.length > 1 ? 's' : ''} added. Tap a climate to fine-tune the heat penalty.`);
+    } catch (e: any) {
+      Alert.alert('Import failed', e?.message ?? 'The vision model could not read the screenshot. Check your LLM key in Settings.');
+    } finally { setImporting(false); }
+  };
 
   const proj: ItineraryProjection | null = useMemo(() => {
     if (!hist?.length || !it) return null;
@@ -110,7 +136,14 @@ export default function TravelProjectionScreen() {
               <TouchableOpacity onPress={() => removeLeg(lg.id)} hitSlop={8}><Text style={s.remove}>✕</Text></TouchableOpacity>
             </View>
         ))}
-        <TouchableOpacity style={s.addLeg} onPress={addLeg}><Text style={s.addLegTxt}>+ Add leg</Text></TouchableOpacity>
+        <View style={s.actionRow}>
+          <TouchableOpacity style={s.addLeg} onPress={addLeg}><Text style={s.addLegTxt}>+ Add leg</Text></TouchableOpacity>
+          <TouchableOpacity style={[s.importBtn, importing && { opacity: 0.5 }]} onPress={importFromScreenshot} disabled={importing}>
+            {importing
+              ? <ActivityIndicator size="small" color={c.accent} />
+              : <Text style={s.importTxt}>📷 Import from screenshot</Text>}
+          </TouchableOpacity>
+        </View>
         <Text style={s.ctrlNote}>
           Away {fmtShort(proj.tripStart)} → {fmtShort(proj.tripEnd)} · today CTL {proj.today.ctl.toFixed(0)} · sustaining ~{proj.normalDailyLoad} load/day · tap a climate to change it
         </Text>
@@ -268,8 +301,11 @@ const styles = (c: Palette) => StyleSheet.create({
   daysBox:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.bg, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3 },
   daysVal:     { color: c.text, fontSize: 12, fontWeight: '700', minWidth: 26, textAlign: 'center' },
   remove:      { color: c.textFaint, fontSize: 15, fontWeight: '700', paddingHorizontal: 2 },
-  addLeg:      { alignSelf: 'flex-start', marginTop: 8, paddingVertical: 4 },
+  actionRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  addLeg:      { paddingVertical: 4 },
   addLegTxt:   { color: c.accent, fontSize: 13, fontWeight: '700' },
+  importBtn:   { backgroundColor: c.bg, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, minHeight: 32, justifyContent: 'center' },
+  importTxt:   { color: c.accent, fontSize: 12.5, fontWeight: '700' },
   // heat penalty rows
   heatRow:     { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
   heatPlace:   { color: c.text, fontSize: 13.5, fontWeight: '600', flex: 1 },

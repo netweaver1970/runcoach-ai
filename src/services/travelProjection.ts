@@ -127,6 +127,41 @@ export function ctlOn(series: DailyLoad[], dayISO: string): number | null {
   return val;
 }
 
+// ── Import legs from a flight-itinerary screenshot (LLM vision) ──────────────
+export function buildFlightExtractionPrompt(todayISO: string): string {
+  return `You are reading a flight itinerary / travel-booking screenshot. Extract the trip as the ordered sequence of PLACES the traveller STAYS IN (cities / destinations), each with its local arrival and departure date. Ignore pure layover / connection airports (a short stop with no overnight).
+Return ONLY compact JSON, no prose, no code fences:
+{"legs":[{"place":"Singapore","arrive":"2026-09-13","depart":"2026-09-19"}]}
+Rules: dates STRICTLY YYYY-MM-DD; order chronologically; if a year is missing assume the next occurrence on/after ${todayISO}; if you cannot read a real itinerary return {"legs":[]}.`;
+}
+
+/** Parse the vision reply into an itinerary (start offset + contiguous legs). null if unreadable. */
+export function parseFlightExtraction(reply: string, todayISO: string): { startInDays: number; legs: TravelLeg[] } | null {
+  const m = reply.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  let obj: any;
+  try { obj = JSON.parse(m[0]); } catch { return null; }
+  const isDate = (v: any) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const parsed = (Array.isArray(obj?.legs) ? obj.legs : [])
+    .map((l: any) => ({ place: String(l?.place ?? '').trim(), arrive: String(l?.arrive ?? ''), depart: String(l?.depart ?? '') }))
+    .filter((l: any) => l.place && isDate(l.arrive) && isDate(l.depart))
+    .sort((a: any, b: any) => a.arrive.localeCompare(b.arrive));
+  if (!parsed.length) return null;
+
+  const ms = (d: string) => new Date(d + 'T00:00:00').getTime();
+  const between = (a: string, b: string) => Math.max(1, Math.round((ms(b) - ms(a)) / 86_400_000));
+  // Each leg's length = time until the NEXT leg arrives, so the contiguous projection reproduces every
+  // arrival date even when there are small gaps; the last leg uses its own depart date.
+  const legs: TravelLeg[] = parsed.map((l: any, i: number) => ({
+    id: `imp${i}_${Date.now()}`,
+    place: l.place,
+    days: i < parsed.length - 1 ? between(l.arrive, parsed[i + 1].arrive) : between(l.arrive, l.depart),
+    climate: climateForPlace(l.place),
+  }));
+  const startInDays = Math.max(1, Math.round((ms(parsed[0].arrive) - ms(todayISO)) / 86_400_000));
+  return { startInDays, legs };
+}
+
 export interface ResolvedLeg { place: string; from: string; to: string; climate: Climate; days: number }
 export interface ItineraryProjection extends TravelProjection { legs: ResolvedLeg[] }
 
