@@ -14,7 +14,7 @@ import {
   useWindowDimensions,
   Alert,
 } from 'react-native';
-import { useLocalSearchParams, Stack } from 'expo-router';
+import { useLocalSearchParams, Stack, useNavigation } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -106,6 +106,7 @@ export default function ChatScreen() {
   const { c } = useTheme();
   const mdAssistant = useThemedStyles(makeMdAssistant);
   const { data, focusRunUUID, runDetailJson } = useLocalSearchParams<{ data?: string; focusRunUUID?: string; runDetailJson?: string }>();
+  const navigation = useNavigation();
   const [snapshot, setSnapshot]       = useState<HealthSnapshot | null>(data ? JSON.parse(data) : null);
 
   const [messages,       setMessages]       = useState<Message[]>([]);
@@ -146,6 +147,14 @@ export default function ChatScreen() {
     const sub2 = Keyboard.addListener(hideEvent, onHide);
     return () => { sub1.remove(); sub2.remove(); };
   }, [screenHeight]);
+
+  // Dismiss the keyboard BEFORE navigating away (Back). Otherwise a focused TextInput's keyboard
+  // lingers over the previous screen and blocks all touches — the app looks frozen and has to be
+  // force-closed. beforeRemove fires while this screen is still mounted, so the dismiss lands.
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', () => { Keyboard.dismiss(); });
+    return unsub;
+  }, [navigation]);
 
   // ── Load persisted history on mount ────────────────────────────────────────
   useEffect(() => {

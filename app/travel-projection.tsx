@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, Alert } from 'react-native';
+import { View, Text, TextInput, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions, Alert, Keyboard } from 'react-native';
 import Svg, { Polyline, Rect, Line, Text as SvgText, Circle } from 'react-native-svg';
-import { Stack } from 'expo-router';
+import { Stack, useNavigation } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
@@ -35,6 +35,7 @@ export default function TravelProjectionScreen() {
   const [it, setIt]           = useState<Itinerary | null>(null);
   const [importing, setImporting] = useState(false);
   const saveTimer = useRef<any>(null);
+  const navigation = useNavigation();
 
   useEffect(() => {
     (async () => {
@@ -45,6 +46,10 @@ export default function TravelProjectionScreen() {
       finally { setLoading(false); }
     })();
   }, []);
+
+  // Dismiss the keyboard before navigating away, so a focused place field's keyboard can't linger
+  // over the previous screen and freeze the app (same class of bug as the chat screen).
+  useEffect(() => navigation.addListener('beforeRemove', () => { Keyboard.dismiss(); }), [navigation]);
 
   // Update itinerary + debounce-persist.
   const update = useCallback((next: Itinerary) => {
