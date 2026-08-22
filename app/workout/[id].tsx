@@ -21,7 +21,8 @@ import {
   WorkoutDetailData,
   WorkoutActivity,
 } from '../../src/services/healthkit';
-import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns } from '../../src/services/claude';
+import { saveRunOverride, saveHrUnreliable, getHrUnreliableRuns, getPowerZones } from '../../src/services/claude';
+import { computePowerMetrics, ftpFromZones, PowerMetrics } from '../../src/services/powerMetrics';
 // Reclassifying a run ripples through every type-derived cache — clear them all on a type change.
 import { clearWorkoutCache } from '../../src/services/workoutClassifier';
 import { clearSnapshotCache, clearTrimpCache } from '../../src/services/healthkit';
@@ -659,6 +660,14 @@ export default function WorkoutDetailScreen() {
   const [note,       setNote]       = useState('');
   const [tempC,      setTempC]      = useState<number | null>(null);
   const [tempSource, setTempSource] = useState<TempSource | null>(null);
+  const [ftp,        setFtp]        = useState(0);
+
+  useEffect(() => { getPowerZones().then(pz => setFtp(ftpFromZones(pz))).catch(() => {}); }, []);
+  // TrainingPeaks-style power stress (NP/IF/VI/TSS) from the dense running-power stream.
+  const powerMetrics: PowerMetrics | null = useMemo(
+    () => (detail?.power?.length ? computePowerMetrics(detail.power, ftp, Math.round((detail.totalMs || 0) / 1000)) : null),
+    [detail, ftp],
+  );
 
   const duration = parseInt(params.duration ?? '0', 10);
   const distance = parseFloat(params.distance ?? '0');
@@ -1066,6 +1075,24 @@ export default function WorkoutDetailScreen() {
             </Text>
           )}
 
+          {/* TrainingPeaks-style power stress metrics */}
+          {powerMetrics && powerMetrics.np > 0 && (
+            <View style={st.pmCard}>
+              <Text style={st.pmTitle}>⚡ Power stress</Text>
+              <View style={st.pmRow}>
+                <View style={st.pmCell}><Text style={st.pmVal}>{powerMetrics.np}<Text style={st.pmUnit}>W</Text></Text><Text style={st.pmLbl}>NP</Text></View>
+                <View style={st.pmCell}><Text style={st.pmVal}>{powerMetrics.if != null ? powerMetrics.if.toFixed(2) : '—'}</Text><Text style={st.pmLbl}>IF</Text></View>
+                <View style={st.pmCell}><Text style={st.pmVal}>{powerMetrics.vi.toFixed(2)}</Text><Text style={st.pmLbl}>VI</Text></View>
+                <View style={st.pmCell}><Text style={st.pmVal}>{powerMetrics.tss != null ? powerMetrics.tss : '—'}</Text><Text style={st.pmLbl}>TSS</Text></View>
+              </View>
+              <Text style={st.pmNote}>
+                {powerMetrics.ftp > 0
+                  ? `NP normalises for surges; IF = NP÷FTP (${powerMetrics.ftp}W); VI ${powerMetrics.vi.toFixed(2)} = ${powerMetrics.vi < 1.05 ? 'steady' : 'variable'}; TSS = session load.`
+                  : `Set your power zones (Settings → Zones) to unlock IF & TSS — NP & VI shown from the power stream.`}
+              </Text>
+            </View>
+          )}
+
           {/* Segment KPI table — shown when HK structured workout activities exist */}
           {detail && detail.activities.length > 0 && (
             <SegmentTable activities={detail.activities} />
@@ -1326,6 +1353,15 @@ const makeSt = (c: Palette) => StyleSheet.create({
   sampleNote: {
     fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 12,
   },
+
+  pmCard:  { backgroundColor: c.surface, borderRadius: 14, padding: 14, marginBottom: 12 },
+  pmTitle: { color: c.text, fontSize: 14, fontWeight: '700', marginBottom: 10 },
+  pmRow:   { flexDirection: 'row', justifyContent: 'space-between' },
+  pmCell:  { flex: 1, alignItems: 'center' },
+  pmVal:   { color: c.text, fontSize: 20, fontWeight: '800' },
+  pmUnit:  { color: c.textSub, fontSize: 12, fontWeight: '600' },
+  pmLbl:   { color: c.textSub, fontSize: 11, fontWeight: '600', marginTop: 2 },
+  pmNote:  { color: c.textFaint, fontSize: 10.5, lineHeight: 15, marginTop: 10, textAlign: 'center' },
 
   hrFlagBtn:       { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt },
   hrFlagBtnActive: { borderColor: '#c0392b', backgroundColor: c.mode === 'dark' ? '#3a1d1d' : '#fdedec' },
