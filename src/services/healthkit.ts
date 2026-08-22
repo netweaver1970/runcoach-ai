@@ -74,6 +74,7 @@ import { getSwitchList, regimeForDate, AccountingMode } from './accounting';
 const SLEEP_BANK_BASE_GOAL = 375;
 import { loadRunMeta } from './runMeta';
 import { classifyAndCacheRuns, loadWorkoutCache, computeWorkoutTypeStats, PerRunData } from './workoutClassifier';
+import { ftpFromZones } from './powerMetrics';
 import { runDecouple, DC_GROSS_MAX } from './decoupling';
 import {
   getBodyMassKg, saveBodyMassKg, DEFAULT_BODY_MASS_KG,
@@ -1532,7 +1533,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
   // Classify runs AFTER we have longRunMinutes
   const { runs: classifiedRuns, maxHR } = await classifyAndCacheRuns(
-    rawRuns, perRunData, allNewHRValues, existingCache, longRunMinutes, await getEffectiveMaxHr()
+    rawRuns, perRunData, allNewHRValues, existingCache, longRunMinutes, await getEffectiveMaxHr(), ftpFromZones(powerZones)
   );
 
   // Refine work stats from structured segments + mark HR unreliable + km splits

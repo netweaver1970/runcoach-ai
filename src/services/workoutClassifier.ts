@@ -9,6 +9,7 @@ import {
   RunWorkout,
   IntervalRep,
 } from '../types';
+import { computePowerMetrics } from './powerMetrics';
 
 const CACHE_FILE = `${FileSystem.documentDirectory}runcoach-workout-cache.json`;
 
@@ -536,6 +537,8 @@ export async function classifyAndCacheRuns(
   longRunMinutes: number = 75,
   /** The athlete's effective max HR (user-set, else robust observed). Governs zone boundaries. */
   effectiveMaxHr: number = 0,
+  /** Threshold power (FTP) for TrainingPeaks-style NP/IF/TSS; 0 → NP-only, TSS omitted. */
+  ftp: number = 0,
 ): Promise<{ runs: RunWorkout[]; maxHR: number }> {
   const existing = preFetchedCache !== undefined ? preFetchedCache : await loadWorkoutCache();
   const cachedMaxHR = existing?.estimatedMaxHR;
@@ -569,8 +572,15 @@ export async function classifyAndCacheRuns(
         workPace:   cached.workPace,
         workPower:  cached.workPower ?? 0,
         intervals:  cached.intervals ?? [],
+        tss:        cached.tss,
+        np:         cached.np,
       };
     }
+
+    // TrainingPeaks power stress from the (dense) power stream — only computable with fresh samples.
+    const pm = data.powerSegs.length >= 10
+      ? computePowerMetrics(data.powerSegs.map(p => ({ t: p.t, v: p.w })), ftp, run.duration)
+      : null;
 
     const result = classifyRun({
       hrSamples:      data.hrValues,
@@ -602,6 +612,8 @@ export async function classifyAndCacheRuns(
       pace:          run.pace,
       calories:      run.calories,
       classifiedAt:  new Date().toISOString(),
+      tss:           pm?.tss ?? undefined,
+      np:            pm?.np ?? undefined,
     };
     dirty = true;
 
@@ -615,6 +627,8 @@ export async function classifyAndCacheRuns(
       workPace:   result.workPace,
       workPower:  result.workPower,
       intervals:  result.intervals,
+      tss:        pm?.tss ?? undefined,
+      np:         pm?.np ?? undefined,
     };
   });
 

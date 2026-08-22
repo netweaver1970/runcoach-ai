@@ -1713,6 +1713,7 @@ function RunCard({ run, siblings }: { run: RunWorkout; siblings: RunWorkout[] })
             {displayHR != null ? `♥ ${displayHR}` : ''}
             {displayHR != null && (run.workPower ?? 0) > 0 ? '  ' : ''}
             {(run.workPower ?? 0) > 0 ? `⚡ ${run.isEstimatedPower ? '~' : ''}${run.workPower}W` : ''}
+            {(run.tss ?? 0) > 0 ? `   TSS ${run.tss}` : ''}
           </Text>
         )}
       </View>

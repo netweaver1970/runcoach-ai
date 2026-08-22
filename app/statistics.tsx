@@ -507,6 +507,48 @@ function ZoneBar({ z }: { z: ZoneSummary }) {
   );
 }
 
+// ─── Weekly TSS bars (TrainingPeaks training-load view) ──────────────────────────
+function WeeklyTssBars({ runs, t0, t1 }: { runs: any[]; t0: number; t1: number }) {
+  const { c } = useTheme();
+  const weeks = useMemo(() => {
+    const monday = (ms: number) => { const d = new Date(ms); const off = (d.getDay() + 6) % 7; d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - off); return d.getTime(); };
+    const m = new Map<number, number>();
+    for (const r of runs) {
+      const t = new Date(r.date).getTime();
+      if (t < t0 || t > t1) continue;
+      const tss = r.tss ?? 0;
+      if (tss > 0) { const wk = monday(t); m.set(wk, (m.get(wk) ?? 0) + tss); }
+    }
+    return [...m.entries()].sort((a, b) => a[0] - b[0]).slice(-16).map(([wk, tss]) => ({ wk, tss: Math.round(tss) }));
+  }, [runs, t0, t1]);
+
+  if (!weeks.length) return <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 16 }}>No power-based TSS yet — set your power zones, then Rebuild history.</Text>;
+
+  const max = Math.max(...weeks.map(w => w.tss), 1);
+  const avg = Math.round(weeks.reduce((a, w) => a + w.tss, 0) / weeks.length);
+  const n = weeks.length;
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 116, gap: 3, marginTop: 6 }}>
+        {weeks.map((w, i) => (
+          <View key={w.wk} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end' }}>
+            {(w.tss >= max * 0.55 || i === n - 1) ? <Text style={{ fontSize: 8, color: c.textSub, marginBottom: 2 }}>{w.tss}</Text> : null}
+            <View style={{ width: '72%', height: Math.max(2, (w.tss / max) * 96), backgroundColor: i === n - 1 ? c.accent : c.accent + '99', borderRadius: 2 }} />
+          </View>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', gap: 3, marginTop: 3 }}>
+        {weeks.map((w, i) => (
+          <Text key={w.wk} style={{ flex: 1, fontSize: 7.5, color: c.textFaint, textAlign: 'center' }} numberOfLines={1}>
+            {(i === 0 || i === n - 1 || i === Math.floor(n / 2)) ? new Date(w.wk).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''}
+          </Text>
+        ))}
+      </View>
+      <Text style={{ fontSize: 11, color: c.textSub, marginTop: 8 }}>{n}-week avg {avg} TSS/wk · latest {weeks[n - 1].tss}</Text>
+    </View>
+  );
+}
+
 // ─── Screen ─────────────────────────────────────────────────────────────────────
 export default function StatisticsScreen() {
   const router = useRouter();
@@ -669,6 +711,14 @@ export default function StatisticsScreen() {
       )}
 
       <ScrollView contentContainerStyle={s.scroll}>
+        <View style={s.card}>
+          <CardHead title="Weekly TSS">
+            Training load per week — TrainingPeaks Training Stress Score (power-based), summed across each
+            week's runs. Rising = building; a drop = a recovery/taper week or time off.
+          </CardHead>
+          {loading ? <View style={s.center}><ActivityIndicator /></View> : <WeeklyTssBars runs={allRuns} t0={t0} t1={t1} />}
+        </View>
+
         <View style={s.card} onLayout={onLayout}>
           <CardHead title="Power–Duration Curve">
             Best average running power you've held for each duration, across your runs.

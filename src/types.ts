@@ -81,6 +81,8 @@ export interface WorkoutAnalysis {
   pace: number;            // seconds per km (whole workout)
   calories: number;
   classifiedAt: string;
+  tss?: number;            // TrainingPeaks-style Training Stress Score (power-based; needs FTP + power stream)
+  np?: number;             // Normalized Power (watts)
 }
 
 export interface WorkoutCache {
@@ -119,6 +121,8 @@ export interface RunWorkout {
   workPace?: number;          // avg pace during work segments only (secs/km)
   workPower?: number;         // avg power during work segments (watts)
   workDuration?: number;      // total duration of work segments only (seconds)
+  tss?: number;               // TrainingPeaks-style Training Stress Score (power-based)
+  np?: number;                // Normalized Power (watts)
   isEstimatedPower?: boolean; // true when power is derived from pace, not measured by sensor
   intervals?: IntervalRep[];  // per-rep data (Intervals sessions only)
   segments?: WorkoutSegment[]; // HK structured workout phases (empty for standard runs)
