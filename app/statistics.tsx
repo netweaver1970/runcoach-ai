@@ -13,6 +13,7 @@ import { getPowerZones } from '../src/services/claude';
 import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
 } from '../src/services/powerCurve';
+import { predictRaces, medianEcFromRuns, fmtRaceTime, fmtRacePace } from '../src/services/racePredictor';
 import {
   efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, decouplingBanded, zoneDistributionOverTime,
   EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek, HEAT_C,
@@ -549,6 +550,36 @@ function WeeklyTssBars({ runs, t0, t1 }: { runs: any[]; t0: number; t1: number }
   );
 }
 
+// ─── Race predictor (CP + economy + Riegel) ──────────────────────────────────────
+function RacePredictorCard({ curve, runs }: { curve: PowerCurve | null; runs: any[] }) {
+  const { c } = useTheme();
+  const pred = useMemo(() => (curve ? predictRaces(curve.cp, medianEcFromRuns(runs)) : null), [curve, runs]);
+
+  if (!curve?.cp) return <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 14 }}>Do a few hard 3–12 min efforts with power so Critical Power can be estimated first.</Text>;
+  if (!pred)      return <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 14 }}>Not enough measured-power runs yet to predict paces.</Text>;
+
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', paddingBottom: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border }}>
+        <Text style={{ flex: 1.2, color: c.textSub, fontSize: 11, fontWeight: '700' }}>Distance</Text>
+        <Text style={{ flex: 1, color: c.textSub, fontSize: 11, fontWeight: '700', textAlign: 'right' }}>Time</Text>
+        <Text style={{ flex: 1, color: c.textSub, fontSize: 11, fontWeight: '700', textAlign: 'right' }}>Pace</Text>
+      </View>
+      {pred.races.map(r => (
+        <View key={r.name} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border }}>
+          <Text style={{ flex: 1.2, color: c.text, fontSize: 14, fontWeight: '600' }}>{r.name}</Text>
+          <Text style={{ flex: 1, color: c.text, fontSize: 16, fontWeight: '700', textAlign: 'right' }}>{fmtRaceTime(r.timeSec)}</Text>
+          <Text style={{ flex: 1, color: c.textSub, fontSize: 13, textAlign: 'right' }}>{fmtRacePace(r.paceSec)}/km</Text>
+        </View>
+      ))}
+      <Text style={{ color: c.textFaint, fontSize: 11, lineHeight: 16, marginTop: 10 }}>
+        Anchored on CP {curve.cp} W (≈ threshold pace {fmtRacePace(pred.thresholdPaceSec)}/km). Target paces are
+        even splits — run the first km ~2–3 s/km easier and negative-split from there.
+      </Text>
+    </View>
+  );
+}
+
 // ─── Screen ─────────────────────────────────────────────────────────────────────
 export default function StatisticsScreen() {
   const router = useRouter();
@@ -755,6 +786,17 @@ export default function StatisticsScreen() {
             </>
           ) : null}
         </View>
+
+        {/* ── Race predictor ── */}
+        {!loading && (
+          <View style={s.card}>
+            <CardHead title="Race Predictor">
+              Current fresh-legs race times from your Critical Power + running economy, scaled across
+              distances with Riegel. A guide to your fitness — not a goal; TSB, heat, terrain & fueling move it.
+            </CardHead>
+            <RacePredictorCard curve={curve} runs={allRuns} />
+          </View>
+        )}
 
         {/* ── Efficiency Factor ── */}
         {ef.filter(p => p.ef > 0).length >= 2 && (() => { const p = ef.filter(x => x.ef > 0); return (
