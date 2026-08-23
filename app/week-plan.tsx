@@ -16,10 +16,18 @@ import {
 import { getMorningForecast, DayForecast } from '../src/services/weather';
 import { getRaceWeekPlan, RaceWeek, fmtTime } from '../src/services/racePlan';
 import { recordForecast, recordActuals } from '../src/services/forecastLog';
+import { CLIMATE_LOAD_FACTOR, CLIMATE_LABEL, Climate } from '../src/services/travelProjection';
+import { travelDaysByDate } from '../src/services/travelStore';
 
 type Row = WeekPlanDay & {
   strain: number; trimp: number; ctl: number; atl: number; tsb: number;
   adjMin: number; countedMin: number; heat: number; capped: boolean; tsbTrim: boolean; floorRest: boolean; taperRest: boolean; fc?: DayForecast; label: string; adjKm?: number;
+  travel?: { place: string; climate: Climate };
+};
+
+// Climate tint for the travel marker on a forecast day (matches the Travel Projection screen).
+const CLIMATE_TINT: Record<Climate, string> = {
+  cool: '#2f6fed', mild: '#2e9e5b', warm: '#e0a12a', hot: '#e07b2a', tropical: '#c0392b',
 };
 
 // Derive the displayed label FROM the actual synthesized + cap-trimmed structure, so it always
@@ -123,6 +131,10 @@ export default function WeekPlan() {
       const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
       const forecast = await getMorningForecast(7);
       const fxBy = new Map(forecast.map(f => [f.date, f]));
+      // Saved-trip schedule → per-day destination + climate, so travel days in the forecast carry the
+      // destination's heat penalty (you can't hold home training load in the tropics) instead of the
+      // now-irrelevant home-weather forecast. Empty when no trips overlap the week.
+      const travelBy = await travelDaysByDate();
 
       // Stable prescription: reuse today's cached week plan unless a new run finished since it
       // was made or the user forces a regenerate. Only the LLM-chosen sessions are frozen — the
@@ -196,7 +208,12 @@ export default function WeekPlan() {
         let ctl = ctl0, atl = atl0, cappedDays = 0;
         const rows = days.map((d, i) => {
           const fc = fxBy.get(d.date);
-          const heat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
+          const weatherHeat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
+          // On a travel day, you're AT the destination — apply its climate heat penalty (derived from the
+          // travel model's CLIMATE_LOAD_FACTOR: tropical 0.5 → heat ×2, i.e. minutes halved & strain per
+          // minute doubled). max() so a genuinely hotter home day still isn't undercounted.
+          const trav = travelBy.get(d.date);
+          const heat = trav ? Math.max(weatherHeat, 1 / CLIMATE_LOAD_FACTOR[trav.climate]) : weatherHeat;
           const heatMin = d.intensity === 'rest' ? 0 : Math.max(8, Math.round(d.runMinutes / heat));
           const j = tofW.length;
           // Base = MAX over the last BASE_WINDOWS heat-credited 7-day blocks (matches getWeekPlan / the daily
@@ -269,7 +286,7 @@ export default function WeekPlan() {
           const adjKm = (coach.loadUnit === 'km' && coach.paceMinPerKm && mins > 0)
             ? Math.round((mins / coach.paceMinPerKm) * 10) / 10 : undefined;
           return {
-            ...d, intensity, structure, label, fc, heat, adjKm,
+            ...d, intensity, structure, label, fc, heat, adjKm, travel: trav,
             adjMin: mins, countedMin, capped: volCapped, tsbTrim, floorRest: floorRested, taperRest: taperRested, strain, trimp,
             ctl: Math.round(ctl * 10) / 10, atl: Math.round(atl * 10) / 10, tsb: Math.round((ctl - atl) * 10) / 10,
           };
@@ -384,20 +401,23 @@ export default function WeekPlan() {
             const it  = INTENSITY[r.intensity] ?? INTENSITY.rest;
             const col = LABEL_COLOR[r.label] ?? it.color;
             const reduced = r.intensity !== 'rest' && r.adjMin < r.runMinutes;
+            const travTint = r.travel ? CLIMATE_TINT[r.travel.climate] : undefined;
             return (
               <View key={r.date} style={s.row}>
                 <View style={{ flex: 1, paddingRight: 8 }}>
                   <Text style={s.dayLine} numberOfLines={1}>
                     <Text style={s.weekday}>{r.weekday} {day}</Text>
                     {'  '}<Text style={[s.tag, { color: col }]}>{r.label}</Text>
-                    {!!r.fc && <Text style={s.dayWx}>{'   '}{r.fc.apparentC}°·{r.fc.humidity}%</Text>}
+                    {r.travel
+                      ? <Text style={[s.dayWx, { color: travTint }]}>{'   '}✈️ {r.travel.place} · {CLIMATE_LABEL[r.travel.climate]}</Text>
+                      : (!!r.fc && <Text style={s.dayWx}>{'   '}{r.fc.apparentC}°·{r.fc.humidity}%</Text>)}
                   </Text>
                   <Text style={s.struct} numberOfLines={3}>
                     {r.intensity === 'rest'
                       ? (r.taperRest ? 'Rest — tapering into tomorrow’s long' : r.floorRest ? 'Rest — held to your form floor' : 'Rest')
                       : r.structure}
                     {r.adjKm != null && r.intensity !== 'rest' ? `  ·  ${r.adjKm} km` : ''}
-                    {reduced ? `  → ${r.adjMin}min ${r.tsbTrim ? '(form)' : r.capped ? '(cap)' : '(heat)'}` : ''}
+                    {reduced ? `  → ${r.adjMin}min ${r.tsbTrim ? '(form)' : r.capped ? '(cap)' : r.travel ? '(travel heat)' : '(heat)'}` : ''}
                   </Text>
                 </View>
                 <Text style={[s.numS, s.strain, { color: col }]}>{r.strain}</Text>

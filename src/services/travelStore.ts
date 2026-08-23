@@ -4,7 +4,7 @@
  * also surfaced to the LLM coach (see activeTripSummary / summariseTripForLLM) so it plans around travel.
  */
 import * as FileSystem from 'expo-file-system';
-import { TravelLeg, climateForPlace, summariseTripForLLM } from './travelProjection';
+import { TravelLeg, Climate, climateForPlace, summariseTripForLLM, resolveStays } from './travelProjection';
 
 export const TRAVEL_ITINERARY_FILE = `${FileSystem.documentDirectory}runcoach-travel-itinerary.json`;
 
@@ -83,6 +83,26 @@ export async function saveTravelData(data: TravelData): Promise<void> {
  * Concise LLM-facing summary of every not-yet-finished saved trip (nearest first), for injection into the
  * coach context. null if none upcoming. Used so chat / run analysis / the coach all know about travel.
  */
+/**
+ * Map of YYYY-MM-DD → {place, climate} for every day the athlete is AT a destination across all saved
+ * trips (all legs' resolved stays, expanded to individual days). Used by the 7-day forecast to apply the
+ * destination's heat penalty on travel days. Empty map on any error.
+ */
+export async function travelDaysByDate(): Promise<Map<string, { place: string; climate: Climate }>> {
+  const out = new Map<string, { place: string; climate: Climate }>();
+  try {
+    const data = await loadTravelData();
+    for (const t of data.trips) {
+      for (const st of resolveStays(t.legs, t.returnDate)) {
+        let d = new Date(st.from + 'T00:00:00');
+        const end = new Date(st.to + 'T00:00:00');
+        while (d <= end) { out.set(dstr(d), { place: st.place, climate: st.climate }); d.setDate(d.getDate() + 1); }
+      }
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
 export async function activeTripSummary(todayISO: string): Promise<string | null> {
   try {
     const data = await loadTravelData();
