@@ -609,6 +609,7 @@ function ReorderList({ items, onCommit }: { items: StatCard[]; onCommit: (next: 
   order.forEach((it, i) => { if (!tops.has(it.id)) tops.set(it.id, new Animated.Value(i * REORDER_ROW_H)); });
 
   const [dragId, setDragId] = useState<StatCardId | null>(null);
+  const dragStartY = useRef(0);   // dragged row's slot-Y at grab; its live Y = this + gesture dy (index-independent)
 
   const settle = (arr: StatCard[], exceptId?: StatCardId) => {
     arr.forEach((it, i) => {
@@ -631,19 +632,26 @@ function ReorderList({ items, onCommit }: { items: StatCard[]; onCommit: (next: 
     const id = it.id;
     responders.set(id, PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dy) > 2,
-      onPanResponderGrant: () => setDragId(id),
+      onStartShouldSetPanResponderCapture: () => true,   // win the touch on the grip before any ancestor
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,     // don't yield the drag once it has started
+      onPanResponderGrant: () => {
+        dragStartY.current = orderRef.current.findIndex(x => x.id === id) * REORDER_ROW_H;
+        setDragId(id);
+      },
       onPanResponderMove: (_e, g) => {
-        const arr = orderRef.current;
-        const from = arr.findIndex(x => x.id === id);
-        if (from < 0) return;
-        const y = from * REORDER_ROW_H + g.dy;
+        // Live Y is anchored to the grab slot + gesture delta — NOT the row's live index, which changes
+        // as we reorder. Recomputing from the live index would snap the row a whole slot on each swap.
+        const y = dragStartY.current + g.dy;
         tops.get(id)!.setValue(y);
+        const arr = orderRef.current;
+        const cur = arr.findIndex(x => x.id === id);
         let to = Math.round(y / REORDER_ROW_H);
         to = Math.max(0, Math.min(arr.length - 1, to));
-        if (to !== from) {
+        if (cur >= 0 && to !== cur) {
           const next = arr.slice();
-          const [moved] = next.splice(from, 1);
+          const [moved] = next.splice(cur, 1);
           next.splice(to, 0, moved);
           orderRef.current = next;
           setOrder(next);
@@ -669,7 +677,7 @@ function ReorderList({ items, onCommit }: { items: StatCard[]; onCommit: (next: 
         return (
           <Animated.View
             key={it.id}
-            style={[rs.row, { height: REORDER_ROW_H, top: tops.get(it.id)!, zIndex: dragging ? 10 : 1, elevation: dragging ? 6 : 0 }, dragging && rs.rowDragging]}
+            style={[rs.row, { height: REORDER_ROW_H, transform: [{ translateY: tops.get(it.id)! }], zIndex: dragging ? 10 : 1, elevation: dragging ? 6 : 0 }, dragging && rs.rowDragging]}
           >
             <View {...responders.get(it.id)!.panHandlers} style={rs.grip}>
               <Text style={rs.gripDots}>≡</Text>
@@ -1038,9 +1046,9 @@ export default function StatisticsScreen() {
               <TouchableOpacity onPress={() => setCustomising(false)}><Text style={s.sheetDone}>Done</Text></TouchableOpacity>
             </View>
             <Text style={s.sheetHint}>Drag ≡ to reorder · switch to show or hide</Text>
-            <ScrollView>
-              <ReorderList items={layout} onCommit={commitLayout} />
-            </ScrollView>
+            {/* No ScrollView here on purpose: a ScrollView captures the vertical pan from the drag
+                grip (onMoveShouldSetResponderCapture) and the reorder never starts. 11 rows fit. */}
+            <ReorderList items={layout} onCommit={commitLayout} />
           </View>
         </View>
       </Modal>
@@ -1092,7 +1100,7 @@ const makeS = (c: Palette) => StyleSheet.create({
   rebuildText: { fontSize: 12, color: c.accent, fontWeight: '600' },
   // ── Customise sheet ──
   sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: c.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 34, maxHeight: '80%' },
+  sheet: { backgroundColor: c.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 34, maxHeight: '92%' },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
   sheetTitle: { fontSize: 17, fontWeight: '800', color: c.text },
   sheetDone: { fontSize: 16, fontWeight: '700', color: c.accent },
