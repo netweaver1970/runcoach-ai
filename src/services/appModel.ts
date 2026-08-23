@@ -14,9 +14,11 @@ import {
   getLoadCapPct, getLoadCapBasis, getMinTSB, getMaxRunDays, getWorkoutStructure,
   getHeatSensitivity, getPeriodization, getCoachingMode,
 } from './coach';
+import { activeTripSummary } from './travelStore';
 
 export async function buildAppModelPrompt(): Promise<string> {
-  const [regime, capPct, capBasis, minTSB, maxRunDays, longMin, struct, heatSens, per, coachMode, planMode] =
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const [regime, capPct, capBasis, minTSB, maxRunDays, longMin, struct, heatSens, per, coachMode, planMode, tripSummary] =
     await Promise.all([
       getAccountingMode().catch(() => 'work' as const),
       getLoadCapPct().catch(() => 10),
@@ -29,6 +31,7 @@ export async function buildAppModelPrompt(): Promise<string> {
       getPeriodization().catch(() => ({ on: true, buildWeeks: 3, deloadWeeks: 1, deloadDropPct: 25, anchor: '' })),
       getCoachingMode().catch(() => 'self' as const),
       getPlanMode().catch(() => 'leisure' as const),
+      activeTripSummary(todayISO).catch(() => null),
     ]);
 
   const basisTxt = capBasis === 'distance' ? 'work+drills DISTANCE (km)'
@@ -42,5 +45,6 @@ export async function buildAppModelPrompt(): Promise<string> {
     `• LOAD: daily Banister TRIMP (HR-reserve). CTL=42-day EWMA (fitness), ATL=7-day EWMA (fatigue), TSB=CTL−ATL same-day (form). Strain = log-scaled daily TRIMP. ACWR=ATL/CTL (sweet spot 0.8–1.3).`,
     `• RECOVERY 1–100 (0 = NO DATA, real scores floor at 1). Readiness composites recovery+sleep+form+ACWR. Sessions are trimmed to hold projected TSB ≥ ${minTSB}; readiness < 35 forces a rest day.`,
     `• ATHLETE SETTINGS: ${planMode} mode · ${coachMode === 'coach' ? 'external-coach' : 'self-coached'} · ≤${maxRunDays} run days/wk · long run ${longMin} min · structure warm-up ${m(struct.warmupMeters)} / drills ${struct.drillsMinutes}min / cool-down ${m(struct.cooldownMeters)} · heat sensitivity ${heatSens} · periodization ${per.on ? `on (build ${per.buildWeeks}/deload ${per.deloadWeeks}wk, −${per.deloadDropPct}%)` : 'off'}.`,
-  ].join('\n');
+    tripSummary ? `• TRAVEL (athlete's saved trips — plan around these): ${tripSummary}` : '',
+  ].filter(Boolean).join('\n');
 }

@@ -33,8 +33,26 @@ export const CLIMATE_LABEL: Record<Climate, string> = {
   cool: 'Cool', mild: 'Mild', warm: 'Warm', hot: 'Hot', tropical: 'Tropical',
 };
 
-/** One leg of a trip: a place, its length in days (contiguous), and its climate. */
-export interface TravelLeg { id: string; place: string; days: number; climate: Climate }
+// ── Transport mode ───────────────────────────────────────────────────────────
+// How you TRAVEL to this leg's destination. Flights carry a flight number (and can be looked up to
+// auto-fill the destination); car/train/boat legs are entered manually (destination + arrival date).
+export type TransportMode = 'flight' | 'car' | 'train' | 'boat';
+export const TRANSPORT_MODES: TransportMode[] = ['flight', 'car', 'train', 'boat'];
+export const MODE_META: Record<TransportMode, { label: string; icon: string }> = {
+  flight: { label: 'Flight', icon: '✈️' },
+  car:    { label: 'Car',    icon: '🚗' },
+  train:  { label: 'Train',  icon: '🚆' },
+  boat:   { label: 'Boat',   icon: '⛴' },
+};
+
+/**
+ * One leg of a trip = a movement to a DESTINATION, arriving on an explicit date, by a transport mode.
+ * The stay at `place` runs from `arrive` until the NEXT leg's arrival (or the itinerary's returnDate for
+ * the last leg). Flights keep `flightNo` (informational + drives the lookup); car/train/boat legs are
+ * entered by hand. Days before the first arrival and after the return carry the athlete's normal load.
+ */
+export interface TravelLeg { id: string; mode: TransportMode; flightNo?: string; arrive: string; place: string; climate: Climate }
+const isDateStr = (v: any): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
 /** Best-guess climate from a place name — a small hint table the user can override. */
 export function climateForPlace(place: string): Climate {
@@ -135,45 +153,102 @@ Return ONLY compact JSON, no prose, no code fences:
 Rules: dates STRICTLY YYYY-MM-DD; order chronologically; if a year is missing assume the next occurrence on/after ${todayISO}; if you cannot read a real itinerary return {"legs":[]}.`;
 }
 
-/** Parse the vision reply into an itinerary (start offset + contiguous legs). null if unreadable. */
-export function parseFlightExtraction(reply: string, todayISO: string): { startInDays: number; legs: TravelLeg[] } | null {
+/** Parse the vision reply into dated legs + a return date. null if unreadable. */
+export function parseFlightExtraction(reply: string, todayISO: string): { legs: TravelLeg[]; returnDate: string } | null {
   const m = reply.match(/\{[\s\S]*\}/);
   if (!m) return null;
   let obj: any;
   try { obj = JSON.parse(m[0]); } catch { return null; }
-  const isDate = (v: any) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const stamp = todayISO.replace(/\D/g, '');
   const parsed = (Array.isArray(obj?.legs) ? obj.legs : [])
     .map((l: any) => ({ place: String(l?.place ?? '').trim(), arrive: String(l?.arrive ?? ''), depart: String(l?.depart ?? '') }))
-    .filter((l: any) => l.place && isDate(l.arrive) && isDate(l.depart))
+    .filter((l: any) => l.place && isDateStr(l.arrive) && isDateStr(l.depart))
     .sort((a: any, b: any) => a.arrive.localeCompare(b.arrive));
   if (!parsed.length) return null;
 
-  const ms = (d: string) => new Date(d + 'T00:00:00').getTime();
-  const between = (a: string, b: string) => Math.max(1, Math.round((ms(b) - ms(a)) / 86_400_000));
-  // Each leg's length = time until the NEXT leg arrives, so the contiguous projection reproduces every
-  // arrival date even when there are small gaps; the last leg uses its own depart date.
   const legs: TravelLeg[] = parsed.map((l: any, i: number) => ({
-    id: `imp${i}_${Date.now()}`,
+    id: `imp${i}_${stamp}`,
+    mode: 'flight',
+    arrive: l.arrive,
     place: l.place,
-    days: i < parsed.length - 1 ? between(l.arrive, parsed[i + 1].arrive) : between(l.arrive, l.depart),
     climate: climateForPlace(l.place),
   }));
-  const startInDays = Math.max(1, Math.round((ms(parsed[0].arrive) - ms(todayISO)) / 86_400_000));
-  return { startInDays, legs };
+  // Return home = the day the traveller leaves the LAST place (its departure date).
+  const returnDate = parsed[parsed.length - 1].depart;
+  return { legs, returnDate };
+}
+
+// ── Look up a single flight by number + date (LLM, no live schedule DB) ───────
+export function buildFlightLookupPrompt(flightNo: string, dateISO: string): string {
+  return `You are an airline flight-routing assistant. For flight "${flightNo}" departing on ${dateISO}, give the ARRIVAL city (the destination city this flight segment lands in — a city name, not an airport code) and the local ARRIVAL date (use the next day if it's an overnight flight).
+Reply ONLY compact JSON, no prose, no code fences: {"place":"Singapore","arrive":"${dateISO}"}. If you do not know this specific flight, reply {"place":"","arrive":""} — do NOT guess.`;
+}
+/** Parse a flight-lookup reply → destination + arrival date + climate. null if the flight was unknown. */
+export function parseFlightLookup(reply: string, fallbackDate: string): { place: string; arrive: string; climate: Climate } | null {
+  const m = reply.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  let o: any;
+  try { o = JSON.parse(m[0]); } catch { return null; }
+  const place = String(o?.place ?? '').trim();
+  if (!place) return null;
+  const arrive = isDateStr(o?.arrive) ? o.arrive : fallbackDate;
+  return { place, arrive, climate: climateForPlace(place) };
+}
+
+// ── Concise trip summary for the LLM coach (so it knows about upcoming travel) ─
+const fmtDay = (iso: string) => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+/**
+ * One-line-per-leg human summary of a named trip, relative to `todayISO`, for injection into LLM context.
+ * Returns null if the trip is empty/undated or fully in the past. E.g.:
+ *   Trip "Asia Sep" (in 23 days): Singapore 13–18 Sep (tropical, hard heat penalty); Seoul 19–26 Sep (warm); home 27 Sep.
+ */
+export function summariseTripForLLM(name: string, legs: TravelLeg[], returnDate: string, todayISO: string): string | null {
+  const stays = resolveStays(legs, returnDate);
+  if (!stays.length) return null;
+  const end = stays[stays.length - 1].to;
+  if (end < todayISO) return null;   // trip already over
+  const inDays = Math.round((atMidnight(stays[0].from).getTime() - atMidnight(todayISO).getTime()) / 86_400_000);
+  const when = inDays > 0 ? `starts in ${inDays} day${inDays === 1 ? '' : 's'}` : inDays === 0 ? 'starts today' : 'in progress';
+  const heat = (cl: Climate) => cl === 'tropical' ? ', tropical — hard heat penalty' : cl === 'hot' ? ', hot — heat penalty' : cl === 'warm' ? ', warm' : '';
+  const parts = stays.map(r => `${r.place} ${fmtDay(r.from)}–${fmtDay(r.to)} (${CLIMATE_LABEL[r.climate].toLowerCase()}${heat(r.climate)})`);
+  return `Upcoming trip "${name}" (${when}): ${parts.join('; ')}; returns home ${fmtDay(returnDate)}. During tropical/hot legs the athlete cannot hold normal training load — treat those as maintenance, expect a small CTL dip that rebuilds after the trip.`;
 }
 
 export interface ResolvedLeg { place: string; from: string; to: string; climate: Climate; days: number }
 export interface ItineraryProjection extends TravelProjection { legs: ResolvedLeg[] }
 
 /**
- * Project across a MULTI-LEG itinerary with per-leg CLIMATE. Legs are contiguous from `startDate`.
- * During a leg the achievable load = normal × scenario × climate factor (heat penalty); days outside
- * every leg (before/after, or home gaps) carry the normal load. This is the travel-mode projection.
+ * Resolve an itinerary's legs into dated stays: each stay runs from its `arrive` date to the day before
+ * the next leg's arrival (or the day before `returnDate` for the last). Chronological, dated legs only.
+ * Pure date math (no load model) so both the projection and the LLM/text summary can reuse it.
+ */
+export function resolveStays(legs: TravelLeg[], returnDate: string): ResolvedLeg[] {
+  const dated = legs.filter(l => isDateStr(l.arrive)).sort((a, b) => a.arrive.localeCompare(b.arrive));
+  if (!dated.length) return [];
+  const lastArriveMs = atMidnight(dated[dated.length - 1].arrive).getTime();
+  const retMs = isDateStr(returnDate) && atMidnight(returnDate).getTime() > lastArriveMs
+    ? atMidnight(returnDate).getTime()
+    : lastArriveMs + 5 * 86_400_000;   // fallback so an incomplete itinerary still resolves
+  return dated.map((lg, i) => {
+    const fromMs = atMidnight(lg.arrive).getTime();
+    const boundMs = i < dated.length - 1 ? atMidnight(dated[i + 1].arrive).getTime() : retMs;
+    const toMs = Math.max(fromMs, boundMs - 86_400_000);
+    const days = Math.max(1, Math.round((toMs - fromMs) / 86_400_000) + 1);
+    return { place: lg.place || 'Leg', from: dstr(new Date(fromMs)), to: dstr(new Date(toMs)), climate: lg.climate, days };
+  });
+}
+
+/**
+ * Project across a MULTI-LEG itinerary with per-leg CLIMATE, using each leg's EXPLICIT arrival date.
+ * The stay at leg i's place runs from its `arrive` date until the day before the next leg's arrival —
+ * and the LAST leg's stay ends the day before `returnDate` (the day the athlete heads home). During a
+ * stay the achievable load = normal × scenario × climate factor (heat penalty); days before the first
+ * arrival and from the return date onward carry the normal load. This is the travel-mode projection.
  */
 export function projectTravelItinerary(
   hist: DailyLoad[],
-  startDate: Date,
   legs: TravelLeg[],
+  returnDate: string,
   postTripDays = 21,
 ): ItineraryProjection | null {
   if (!hist.length || !legs.length) return null;
@@ -183,16 +258,8 @@ export function projectTravelItinerary(
   const recent = hist.slice(-22, -1).map(d => d.load).filter(v => v >= 0);
   const normalDailyLoad = recent.length ? Math.round(recent.reduce((a, b) => a + b, 0) / recent.length) : today.load;
 
-  // Resolve contiguous leg date ranges from the start date.
-  const resolved: ResolvedLeg[] = [];
-  let cur = atMidnight(dstr(startDate));
-  for (const lg of legs) {
-    const d = Math.max(1, Math.round(lg.days));
-    const from = new Date(cur);
-    const to = new Date(cur.getTime() + (d - 1) * 86_400_000);
-    resolved.push({ place: lg.place || 'Leg', from: dstr(from), to: dstr(to), climate: lg.climate, days: d });
-    cur = new Date(to.getTime() + 86_400_000);
-  }
+  const resolved = resolveStays(legs, returnDate);
+  if (!resolved.length) return null;
   const tripStart  = resolved[0].from;
   const tripEnd    = resolved[resolved.length - 1].to;
   const horizonEnd = dstr(new Date(atMidnight(tripEnd).getTime() + postTripDays * 86_400_000));
