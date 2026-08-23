@@ -18,6 +18,8 @@ import { getRaceWeekPlan, RaceWeek, fmtTime } from '../src/services/racePlan';
 import { recordForecast, recordActuals } from '../src/services/forecastLog';
 import { CLIMATE_LOAD_FACTOR, CLIMATE_LABEL, Climate } from '../src/services/travelProjection';
 import { travelDaysByDate } from '../src/services/travelStore';
+import { computeAdherence } from '../src/services/adherenceRead';
+import { Adherence } from '../src/services/adherence';
 
 type Row = WeekPlanDay & {
   strain: number; trimp: number; ctl: number; atl: number; tsb: number;
@@ -131,6 +133,7 @@ export default function WeekPlan() {
   const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number; strain: number } | null>(null);
   const [acwrNow, setAcwrNow] = useState<number | null>(null);
+  const [adherence, setAdherence] = useState<Adherence | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
   const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number; floorRestDays: number; taperDays: number; minTSB: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
@@ -171,6 +174,7 @@ export default function WeekPlan() {
 
       const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
       setAcwrNow(coach.acwr ?? null);   // for the weekly-load ramp/ACWR framing card
+      { const dd = new Date(); const pp = (n: number) => String(n).padStart(2, '0'); computeAdherence(`${dd.getFullYear()}-${pp(dd.getMonth() + 1)}-${pp(dd.getDate())}`).then(setAdherence).catch(() => {}); }
       const forecast = await getMorningForecast(7);
       const fxBy = new Map(forecast.map(f => [f.date, f]));
       // Saved-trip schedule → per-day destination + climate, so travel days in the forecast carry the
@@ -423,6 +427,26 @@ export default function WeekPlan() {
             acwr={acwrNow}
             s={s}
           />
+
+          {adherence && adherence.prescribed > 0 && (() => {
+            const col = adherence.pct >= 85 ? '#27ae60' : adherence.pct >= 60 ? '#e67e22' : '#e74c3c';
+            return (
+              <View style={s.wlCard}>
+                <Text style={s.wlTitle}>Plan adherence · last {adherence.windowDays} days</Text>
+                <View style={s.wlTop}>
+                  <Text style={[s.wlBig, { color: col }]}>{adherence.pct}%</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.wlWord, { color: col }]}>{adherence.executed}/{adherence.prescribed} sessions done<Text style={s.wlUnit}>  ·  streak {adherence.streak}</Text></Text>
+                    <Text style={s.wlSub}>
+                      {adherence.misses.length
+                        ? `Missed: ${adherence.misses.slice(0, 3).map(m => `${m.what} ${m.date.slice(5)}`).join(', ')}`
+                        : 'Every prescribed session executed — spot on.'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
 
           <View style={s.headRow}>
             <Text style={[s.h, { flex: 1 }]}> </Text>

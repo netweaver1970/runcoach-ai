@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet, useWindowDimensions } from 'react-native';
 import Svg, { Polyline, Rect, Line, Text as SvgText, Circle } from 'react-native-svg';
 import { Stack, useRouter } from 'expo-router';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
+import { seasonPlanToIcs } from '../src/services/planIcs';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
 import { getRaceConfig, RaceConfig, fmtTime } from '../src/services/racePlan';
 import { getLoadCapPct, getPeriodization, Periodization } from '../src/services/coach';
@@ -40,6 +43,20 @@ export default function SeasonPlanScreen() {
     () => (hist && race && cfg ? buildSeasonPlan(hist, race, { capPct: cfg.capPct, periodization: cfg.per }) : null),
     [hist, race, cfg],
   );
+
+  // Export the block as a portable .ics calendar (imports into Apple/Google/Outlook — the interop that
+  // makes sense; TP has no open plan-import format, see planIcs.ts).
+  const exportIcs = async () => {
+    if (!plan) return;
+    const d = new Date(); const z = (n: number) => String(n).padStart(2, '0');
+    const stamp = `${d.getUTCFullYear()}${z(d.getUTCMonth() + 1)}${z(d.getUTCDate())}T${z(d.getUTCHours())}${z(d.getUTCMinutes())}${z(d.getUTCSeconds())}Z`;
+    const title = `${raceLabel(plan.race.km)} ${fmtShort(plan.race.date)}`;
+    const uri = `${FileSystem.cacheDirectory}runcoach-season-plan.ics`;
+    try {
+      await FileSystem.writeAsStringAsync(uri, seasonPlanToIcs(plan, title, stamp));
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { mimeType: 'text/calendar', dialogTitle: 'Add season plan to calendar', UTI: 'com.apple.ical.ics' });
+    } catch { /* ignore */ }
+  };
 
   if (loading) return <View style={s.center}><ActivityIndicator color={c.accent} /><Text style={s.dim}>Reading your training history…</Text></View>;
   if (err)     return <View style={s.center}><Text style={s.err}>{err}</Text></View>;
@@ -124,6 +141,15 @@ export default function SeasonPlanScreen() {
               sheds fatigue so form (TSB) rises into race day. The 7-Day Plan executes the current week.
             </Text>
           </View>
+
+          <TouchableOpacity style={s.exportBtn} onPress={exportIcs}>
+            <Text style={s.exportTxt}>📅  Add to calendar (.ics)</Text>
+          </TouchableOpacity>
+          <Text style={s.exportHint}>
+            Exports the block as a standard calendar file — imports into Apple / Google / Outlook (and any
+            calendar-aware tool). TrainingPeaks has no open plan-import format, so a universal calendar is the
+            portable way to take your plan with you.
+          </Text>
         </>
       )}
     </ScrollView>
@@ -226,4 +252,7 @@ const styles = (c: Palette) => StyleSheet.create({
   td:        { flex: 1, color: c.text, fontSize: 14, textAlign: 'right' },
   dot:       { width: 8, height: 8, borderRadius: 4 },
   phaseTxt:  { fontSize: 12.5, fontWeight: '700' },
+  exportBtn:  { backgroundColor: c.surface, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, paddingVertical: 13, alignItems: 'center', marginTop: 16 },
+  exportTxt:  { color: c.accent, fontWeight: '700', fontSize: 14 },
+  exportHint: { color: c.textFaint, fontSize: 11, lineHeight: 16, marginTop: 8, paddingHorizontal: 4 },
 });

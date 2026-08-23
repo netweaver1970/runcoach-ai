@@ -15,10 +15,12 @@ import {
   getHeatSensitivity, getPeriodization, getCoachingMode,
 } from './coach';
 import { activeTripSummary } from './travelStore';
+import { computeAdherence } from './adherenceRead';
+import { adherenceForLLM } from './adherence';
 
 export async function buildAppModelPrompt(): Promise<string> {
   const todayISO = new Date().toISOString().slice(0, 10);
-  const [regime, capPct, capBasis, minTSB, maxRunDays, longMin, struct, heatSens, per, coachMode, planMode, tripSummary] =
+  const [regime, capPct, capBasis, minTSB, maxRunDays, longMin, struct, heatSens, per, coachMode, planMode, tripSummary, adherence] =
     await Promise.all([
       getAccountingMode().catch(() => 'work' as const),
       getLoadCapPct().catch(() => 10),
@@ -32,6 +34,7 @@ export async function buildAppModelPrompt(): Promise<string> {
       getCoachingMode().catch(() => 'self' as const),
       getPlanMode().catch(() => 'leisure' as const),
       activeTripSummary(todayISO).catch(() => null),
+      computeAdherence(todayISO).then(adherenceForLLM).catch(() => null),
     ]);
 
   const basisTxt = capBasis === 'distance' ? 'work+drills DISTANCE (km)'
@@ -46,5 +49,6 @@ export async function buildAppModelPrompt(): Promise<string> {
     `• RECOVERY 1–100 (0 = NO DATA, real scores floor at 1). Readiness composites recovery+sleep+form+ACWR. Sessions are trimmed to hold projected TSB ≥ ${minTSB}; readiness < 35 forces a rest day.`,
     `• ATHLETE SETTINGS: ${planMode} mode · ${coachMode === 'coach' ? 'external-coach' : 'self-coached'} · ≤${maxRunDays} run days/wk · long run ${longMin} min · structure warm-up ${m(struct.warmupMeters)} / drills ${struct.drillsMinutes}min / cool-down ${m(struct.cooldownMeters)} · heat sensitivity ${heatSens} · periodization ${per.on ? `on (build ${per.buildWeeks}/deload ${per.deloadWeeks}wk, −${per.deloadDropPct}%)` : 'off'}.`,
     tripSummary ? `• TRAVEL (athlete's saved trips — plan around these): ${tripSummary}` : '',
+    adherence ? `• ${adherence}` : '',
   ].filter(Boolean).join('\n');
 }
