@@ -61,6 +61,7 @@ const FILES = [
   'runcoach-run-meta.json',         // per-run notes + manual temps (user-entered)
   'runcoach-timeline.json',         // timeline events (injuries / races / notes)
   'runcoach-travel-itinerary.json', // travel-mode trip itinerary (legs + climates)
+  'runcoach-workout-library.json',  // reusable structured-workout library
   'runcoach-supplements.json',      // supplement list + daily intake log
   'runcoach-labs.json',             // imported blood-test / clinical-lab history
   'runcoach-lab-templates.json',    // saved lab marker templates (named selections)

@@ -6,6 +6,9 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getAthleteSummary, prescribePlan, unprescribe, AthleteSummary, AthleteDayRow, PlanRow } from '../src/services/coachLink';
 import { weekdayName, formatWorkoutStructure, CoachIntensity } from '../src/services/coach';
+import { LibraryWorkout, WorkoutKind, loadLibrary, toWorkoutBlob, describeWorkout, workoutMinutes, KIND_COLOR } from '../src/services/workoutLibrary';
+
+const kindToIntensity = (k: WorkoutKind): CoachIntensity => k === 'intervals' ? 'hard' : (k === 'easy' || k === 'recovery') ? 'easy' : 'moderate';
 
 const n0 = (v?: number | null) => (v == null ? '—' : Math.round(v).toString());
 const km = (m?: number) => (m ? (m / 1000).toFixed(1) : '0.0');
@@ -55,6 +58,20 @@ export default function CoachAthleteScreen() {
   const [restMin, setRestMin] = useState('2');
   const [note, setNote] = useState('');
   const [sending, setSending] = useState(false);
+  const [library, setLibrary] = useState<LibraryWorkout[]>([]);
+  const [libWorkout, setLibWorkout] = useState<LibraryWorkout | null>(null);   // a picked library workout (multi-block)
+  useEffect(() => { loadLibrary().then(setLibrary).catch(() => {}); }, []);
+
+  // Load a saved library workout into the prescription (full multi-block; the coach can still tweak or
+  // switch to a manual single-block session by tapping an intensity below).
+  const pickLibrary = (w: LibraryWorkout) => {
+    setLibWorkout(w);
+    setIntensity(kindToIntensity(w.kind));
+    setMinutes(String(workoutMinutes(w)));
+    const b = w.blocks[0];
+    if (b) { setReps(String(b.repeats)); setWorkMin(String(b.workMinutes)); setRestMin(String(b.restMinutes)); }
+    setNote(w.name);
+  };
 
   const load = useCallback(() => {
     if (!id) { setErr('Missing athlete.'); setLoading(false); return; }
@@ -80,6 +97,7 @@ export default function CoachAthleteScreen() {
   }, [date, data]);
 
   const onIntensity = (it: CoachIntensity) => {
+    setLibWorkout(null);   // manual override drops the picked library workout
     setIntensity(it);
     if (it !== 'rest') { const d = defaultsFor(it, parseInt(minutes, 10) || 40); setReps(String(d.reps)); setWorkMin(String(d.workMin)); setRestMin(String(d.restMin)); }
   };
@@ -89,15 +107,18 @@ export default function CoachAthleteScreen() {
   const buildPlan = () => {
     const mins = Math.max(0, parseInt(minutes, 10) || 0);
     const zone = ZONE_FOR[intensity] ?? 'Z2';
-    const workout = intensity === 'rest' ? null : {
-      name: weekdayName(date),
-      warmupMeters: 600, drillsMinutes: 4,
-      blocks: [{ repeats: Math.max(1, parseInt(reps, 10) || 1), workMinutes: Math.max(1, parseInt(workMin, 10) || 1), restMinutes: Math.max(0, parseInt(restMin, 10) || 0), hrZone: zone, label: intensity }],
-      cooldownMeters: 600,
-    };
+    // A picked library workout wins (full multi-block); otherwise the manual single-block editor.
+    const workout = intensity === 'rest' ? null
+      : libWorkout ? toWorkoutBlob(libWorkout, weekdayName(date))
+      : {
+        name: weekdayName(date),
+        warmupMeters: 600, drillsMinutes: 4,
+        blocks: [{ repeats: Math.max(1, parseInt(reps, 10) || 1), workMinutes: Math.max(1, parseInt(workMin, 10) || 1), restMinutes: Math.max(0, parseInt(restMin, 10) || 0), hrZone: zone, label: intensity }],
+        cooldownMeters: 600,
+      };
     return {
-      headline: `Coach: ${cap(intensity)}${intensity === 'rest' ? ' day' : ' session'}`,
-      session: note.trim() || (workout ? formatWorkoutStructure(workout as any) : 'Rest day'),
+      headline: `Coach: ${libWorkout ? libWorkout.name : cap(intensity)}${intensity === 'rest' ? ' day' : ' session'}`,
+      session: note.trim() || (libWorkout ? describeWorkout(libWorkout) : workout ? formatWorkoutStructure(workout as any) : 'Rest day'),
       strength: '',
       intensity, runMinutes: intensity === 'rest' ? 0 : mins,
       strainLow: 30, strainHigh: 60,
@@ -143,7 +164,7 @@ export default function CoachAthleteScreen() {
         </Text>
       </View>
 
-      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
         {loading ? (
           <ActivityIndicator size="large" color={c.accent} style={{ marginTop: 28 }} />
         ) : err ? (
@@ -168,6 +189,21 @@ export default function CoachAthleteScreen() {
 
               {existingForDate && (
                 <Text style={s.existing}>Current: {existingForDate.plan?.intensity === 'rest' ? 'Rest' : formatWorkoutStructure(existingForDate.plan?.workout)}</Text>
+              )}
+
+              {library.length > 0 && (
+                <>
+                  <Text style={s.fieldLabel}>From workout library</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 2 }} keyboardShouldPersistTaps="handled">
+                    {library.map(w => (
+                      <TouchableOpacity key={w.id} style={[s.libChip, libWorkout?.id === w.id && { borderColor: KIND_COLOR[w.kind], backgroundColor: KIND_COLOR[w.kind] + '1e' }]} onPress={() => pickLibrary(w)}>
+                        <View style={[s.libDot, { backgroundColor: KIND_COLOR[w.kind] }]} />
+                        <Text style={[s.libChipTxt, libWorkout?.id === w.id && { color: KIND_COLOR[w.kind], fontWeight: '800' }]} numberOfLines={1}>{w.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                  {libWorkout && <Text style={s.libPicked}>📋 {describeWorkout(libWorkout)}</Text>}
+                </>
               )}
 
               <View style={s.segment}>
@@ -321,6 +357,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   dateArrow: { fontSize: 28, color: c.accent, fontWeight: '700' },
   dateLabel: { fontSize: 16, fontWeight: '700', color: c.text },
   existing: { fontSize: 12.5, color: c.textSub, marginBottom: 12, textAlign: 'center' },
+  libChip:    { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt, maxWidth: 190 },
+  libDot:     { width: 8, height: 8, borderRadius: 4 },
+  libChipTxt: { color: c.textSub, fontSize: 12.5, fontWeight: '600' },
+  libPicked:  { color: c.textSub, fontSize: 11.5, lineHeight: 16, marginTop: 8, marginBottom: 2 },
 
   segment: { flexDirection: 'row', backgroundColor: c.surfaceAlt, borderRadius: 10, padding: 3, marginBottom: 12 },
   segBtn: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
