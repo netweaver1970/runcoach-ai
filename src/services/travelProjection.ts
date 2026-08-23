@@ -178,10 +178,13 @@ export function parseFlightExtraction(reply: string, todayISO: string): { legs: 
   return { legs, returnDate };
 }
 
-// ── Look up a single flight by number + date (LLM, no live schedule DB) ───────
+// ── Look up a single flight by number + date (LLM route knowledge, no live schedule DB) ──
+// Note: we only need the DESTINATION city + roughly the date for the projection, not exact times — and
+// the model reliably knows scheduled routes by flight number. So lean on that knowledge rather than making
+// it bail when unsure of the minute; only return empty when the flight number itself is unrecognisable.
 export function buildFlightLookupPrompt(flightNo: string, dateISO: string): string {
-  return `You are an airline flight-routing assistant. For flight "${flightNo}" departing on ${dateISO}, give the ARRIVAL city (the destination city this flight segment lands in — a city name, not an airport code) and the local ARRIVAL date (use the next day if it's an overnight flight).
-Reply ONLY compact JSON, no prose, no code fences: {"place":"Singapore","arrive":"${dateISO}"}. If you do not know this specific flight, reply {"place":"","arrive":""} — do NOT guess.`;
+  return `You know scheduled airline routes by flight number. Flight "${flightNo}" is a real airline flight — give the CITY it ARRIVES in (its scheduled destination, a city name not an airport code) and the local ARRIVAL date for a departure on ${dateISO}. Most flights arrive the SAME day; use the next day ONLY for known overnight / long-haul red-eye routes.
+Reply ONLY compact JSON, no prose, no code fences: {"place":"Singapore","arrive":"${dateISO}"}. Reply {"place":"","arrive":""} ONLY if "${flightNo}" is not a recognisable airline flight number.`;
 }
 /** Parse a flight-lookup reply → destination + arrival date + climate. null if the flight was unknown. */
 export function parseFlightLookup(reply: string, fallbackDate: string): { place: string; arrive: string; climate: Climate } | null {
