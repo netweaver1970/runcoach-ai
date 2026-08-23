@@ -34,14 +34,19 @@ const shiftISO = (iso: string, days: number) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
-/** Pure: parse a prescription-history log into an adherence summary. null if no qualifying entries. */
-export function parseAdherence(rawLog: string, todayISO: string, windowDays = 28): Adherence | null {
+/**
+ * Pure: parse a prescription-history log into an adherence summary. A prescribed run day counts as EXECUTED
+ * when the athlete actually RAN that day (`ranDates`) OR the log already carries the ✅ mark — because the
+ * log's ✅ flag is set opportunistically and is often missing even when the run happened, so actual runs are
+ * the source of truth. null if no qualifying entries.
+ */
+export function parseAdherence(rawLog: string, todayISO: string, ranDates: Set<string>, windowDays = 28): Adherence | null {
   if (!rawLog) return null;
   const cut = shiftISO(todayISO, -windowDays);
   const entries = rawLog.split('\n')
     .map(l => l.match(/^-\s*(\d{4}-\d{2}-\d{2})\s*·\s*(.+?)\s*·\s*(✅|⬜)/))
     .filter((m): m is RegExpMatchArray => !!m)
-    .map(m => ({ date: m[1], what: classifyPrescription(m[2]), done: m[3] === '✅' }))
+    .map(m => ({ date: m[1], what: classifyPrescription(m[2]), done: m[3] === '✅' || ranDates.has(m[1]) }))
     .filter(e => e.date >= cut && e.date < todayISO && e.what !== 'Rest');   // past run days only
   if (!entries.length) return null;
 

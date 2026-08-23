@@ -14,10 +14,12 @@ const log = [
   '- 2026-08-23 · Tempo · ⬜ planned',                   // TODAY — excluded (still pending)
 ].join('\n');
 
-const a = parseAdherence(log, '2026-08-23', 28);
-console.log('=== adherence ===');
+// The athlete actually RAN on 08-22 and 08-18 (log left them ⬜) — should now count as executed.
+const ran = new Set(['2026-08-22', '2026-08-18', '2026-08-21', '2026-08-19', '2026-08-15']);
+const a = parseAdherence(log, '2026-08-23', ran, 28);
+console.log('=== adherence (with actual runs) ===');
 console.log(JSON.stringify(a, null, 2));
-console.log('expect prescribed=5 executed=3 pct=60 streak=1 misses=[Intervals 08-22, Intervals 08-18]');
+console.log('expect prescribed=5 executed=5 pct=100 (all 5 run days actually ran)');
 
 const plan = {
   weeks: [

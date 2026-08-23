@@ -543,9 +543,11 @@ export default function WeekPlan() {
         </>
       )}
 
-      <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/season-plan' as any)}>
-        <Text style={s.travelBtnText}>🏁  Season plan — the block to your race</Text>
-      </TouchableOpacity>
+      {raceWeek && (
+        <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/season-plan' as any)}>
+          <Text style={s.travelBtnText}>🏁  Season plan — the block to your race</Text>
+        </TouchableOpacity>
+      )}
 
       <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/workout-library' as any)}>
         <Text style={s.travelBtnText}>🏋  Workout library — reusable sessions</Text>
