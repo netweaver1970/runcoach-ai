@@ -27,6 +27,7 @@ import {
 } from '../src/services/llm';
 import { getAgenticMode, setAgenticMode } from '../src/services/agent';
 import { loadTranscriptionConfig, saveTranscriptionConfig, STT_PRESETS, matchPreset } from '../src/services/transcription';
+import { getFlightApiKey, setFlightApiKey } from '../src/services/flightLookup';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun, writeZonesFileFrom } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
@@ -73,6 +74,8 @@ export default function SettingsScreen() {
   const [sttPresetId, setSttPresetId] = useState(STT_PRESETS[0].id);
   const [sttKey,      setSttKey]      = useState('');
   const [sttSaved,    setSttSaved]    = useState(false);
+  const [flightKey,   setFlightKey]   = useState('');
+  const [flightSaved, setFlightSaved] = useState(false);
   const [model,         setModel]         = useState('');
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
@@ -453,6 +456,13 @@ export default function SettingsScreen() {
     setSttSaved(true); setTimeout(() => setSttSaved(false), 2000);
   }, [sttEnabled, sttPresetId, sttKey]);
 
+  // ── Flight lookup (AeroDataBox / RapidAPI) — real flight-number → destination for Travel mode ──
+  useEffect(() => { getFlightApiKey().then(setFlightKey).catch(() => {}); }, []);
+  const handleFlightSave = useCallback(async () => {
+    await setFlightApiKey(flightKey.trim());
+    setFlightSaved(true); setTimeout(() => setFlightSaved(false), 2000);
+  }, [flightKey]);
+
   // Reliable paste for the secure key fields: iOS is flaky about showing the long-press "Paste" callout on
   // secureTextEntry inputs (worse with Universal Clipboard's on-demand fetch from a Mac). Reading the
   // clipboard directly grabs the same content — including a key copied on the Mac — in one tap.
@@ -789,6 +799,34 @@ export default function SettingsScreen() {
           <View style={styles.row}>
             <TouchableOpacity style={[styles.btn, sttSaved && styles.btnSuccess]} onPress={handleSttSave}>
               <Text style={styles.btnText}>{sttSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+        </Section>
+
+        {/* Flight lookup — powers the ✈️ "Look up" button in Travel mode (flight number → destination). */}
+        <Section title="Flight Lookup" cat="coaching">
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.fieldLabel}>AeroDataBox (RapidAPI) key</Text>
+            <TouchableOpacity onPress={() => pasteInto(setFlightKey, () => setFlightSaved(false))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ color: c.accent, fontWeight: '600', fontSize: 13 }}>📋 Paste</Text>
+            </TouchableOpacity>
+          </View>
+          <TextInput
+            style={[styles.input, styles.apiKeyInput]}
+            value={flightKey}
+            onChangeText={t => { setFlightKey(t); setFlightSaved(false); }}
+            placeholder="RapidAPI key"
+            placeholderTextColor="#bbb"
+            autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" spellCheck={false} secureTextEntry
+          />
+          <Text style={styles.hint}>
+            In Travel mode, "🔎 Look up" turns a flight number + date into the destination and arrival date.
+            Get a FREE key: rapidapi.com → search "AeroDataBox" → subscribe (Basic, free) → copy the key here.
+            Without a key it falls back to the AI's best guess. Only the flight number + date leave the phone.
+          </Text>
+          <View style={styles.row}>
+            <TouchableOpacity style={[styles.btn, flightSaved && styles.btnSuccess]} onPress={handleFlightSave}>
+              <Text style={styles.btnText}>{flightSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
         </Section>

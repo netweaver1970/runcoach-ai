@@ -15,6 +15,7 @@ import {
   TransportMode, TRANSPORT_MODES, MODE_META,
 } from '../src/services/travelProjection';
 import { TravelData, SavedTrip, loadTravelData, saveTravelData, newTrip } from '../src/services/travelStore';
+import { lookupFlightReal } from '../src/services/flightLookup';
 
 const dstr = (d: Date) => { const p = (n: number) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 const fmtShort = (iso: string) => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
@@ -77,17 +78,37 @@ export default function TravelProjectionScreen() {
     update({ trips, activeId: trips[0].id });
   };
 
-  // Resolve a flight number + date → destination/arrival via the LLM (no live schedule DB, best-effort).
+  // LLM best-guess fallback (used only when the real flight API has no key / no data). Returns true if filled.
+  const llmGuessFlight = async (lg: TravelLeg): Promise<boolean> => {
+    try {
+      const reply = await callLLM({ messages: [{ role: 'user', content: buildFlightLookupPrompt(lg.flightNo!, lg.arrive) }], maxTokens: 200, temperature: 0 });
+      const r = parseFlightLookup(reply, lg.arrive);
+      if (r) { patchLeg(lg.id, { place: r.place, arrive: r.arrive, climate: r.climate }); return true; }
+    } catch { /* fall through */ }
+    return false;
+  };
+
+  // Resolve a flight number + date via the REAL flight API (AeroDataBox); fall back to the LLM guess when
+  // there's no API key configured or the flight isn't in the database.
   const lookupFlight = async (lg: TravelLeg) => {
     if (!lg.flightNo) return;
     setLookingUp(lg.id);
     try {
-      const reply = await callLLM({ messages: [{ role: 'user', content: buildFlightLookupPrompt(lg.flightNo, lg.arrive) }], maxTokens: 200, temperature: 0 });
-      const r = parseFlightLookup(reply, lg.arrive);
-      if (!r) { Alert.alert('Flight not found', `Couldn't resolve ${lg.flightNo}. Enter the destination and arrival date by hand.`); return; }
-      patchLeg(lg.id, { place: r.place, arrive: r.arrive, climate: r.climate });
-    } catch (e: any) {
-      Alert.alert('Lookup failed', e?.message ?? 'Could not reach the AI. Check your LLM key in Settings.');
+      const real = await lookupFlightReal(lg.flightNo, lg.arrive);
+      if (real.ok) { patchLeg(lg.id, real.result); return; }
+      if (real.reason === 'error') { Alert.alert('Flight lookup failed', real.message ?? 'Try again, or type the destination by hand.'); return; }
+      // no-key or not-found → try the AI, then guide the user.
+      const guessed = await llmGuessFlight(lg);
+      if (guessed) {
+        if (real.reason === 'no-key') Alert.alert('Filled from AI estimate', 'For exact routing, add a free AeroDataBox (RapidAPI) key in Settings → Flight Lookup. I used the AI\'s best guess for now — check the destination.');
+        return;
+      }
+      Alert.alert(
+        real.reason === 'no-key' ? 'Add a flight-lookup key' : 'Flight not found',
+        real.reason === 'no-key'
+          ? 'Add a free AeroDataBox (RapidAPI) key in Settings → Flight Lookup for automatic routing — or just type the destination and arrival date.'
+          : `Couldn't find ${lg.flightNo} on ${fmtShort(lg.arrive)}. Type the destination and arrival date by hand.`,
+      );
     } finally { setLookingUp(null); }
   };
 
