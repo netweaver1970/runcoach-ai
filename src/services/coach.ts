@@ -977,6 +977,7 @@ export async function getWeekPlan(
   let runDays = 0;                 // run days placed so far → caps the easy/flex mop-up at maxRunDays
   let lastQ = -99;                 // index of the last quality session placed (≥2 apart = spacing)
   const deferred: WeekKind[] = []; // quality kinds bumped by the cap, awaiting a later slot
+  let weekCeiling = 0;             // the week's +cap% ToF ceiling (captured at day 0 for the progressive fill)
   const out: WeekPlanDay[] = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(today); d.setDate(d.getDate() + 1 + i);
@@ -1001,6 +1002,18 @@ export async function getWeekPlan(
     const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
     let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
+    // Capture the week's +cap% ToF ceiling from day 0 — RAW recent-max weekly ToF × the (periodization- and
+    // freshness-adjusted) cap multiplier. Same number the Volume-vs-Budget budget shows; the progressive-fill
+    // post-pass grows easy volume UP TO here so a compliant week reaches its ceiling instead of parking under it.
+    if (i === 0) {
+      // A SAFE progressive step: at most +cap% over the athlete's RECENT actual (max of the last 2 weeks) —
+      // NOT the max-of-3 anti-erosion base, which can sit on a peak from weeks ago and would make the fill
+      // jump volume 30%+ in one week. Take the higher of the last two weeks so a reduced/travel week doesn't
+      // drop the target.
+      const w1 = tof.slice(j - 7, j).reduce((a, b) => a + (b || 0), 0);
+      const w2 = tof.slice(j - 14, j - 7).reduce((a, b) => a + (b || 0), 0);
+      weekCeiling = Math.round(Math.max(w1, w2) * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay);
+    }
 
     const kind = template[d.getDay()];
     // A recurring commitment TODAY is itself a load, and a hard one (dance, team sport) also compromises
@@ -1100,6 +1113,44 @@ export async function getWeekPlan(
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
     out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm });
+  }
+
+  // ── PROGRESSIVE FILL — build automatically instead of parking at maintenance ──────────────────────────
+  // The rolling per-day allowance is conservative: it reserves budget for still-unplaced quality and depletes
+  // as the week fills, so the week routinely lands BELOW its own +cap% ceiling (repro'd from Geert's real
+  // data: 202 min prescribed vs a 239 min ceiling — under maintenance, so a fully-compliant week didn't
+  // build). When the athlete is HEALTHY (ACWR in band; not re-entry) grow the EASY/LONG days into that SAFE
+  // headroom so the week reaches its ceiling — the base then ratchets up ~cap%/week and CTL actually climbs.
+  // Quality is never inflated (that's the daily readiness gate's job); the ceiling is already heat- and
+  // freshness-adjusted, so filling to it stays within the anti-erosion cap.
+  const acwrOk = snap.acwr == null || snap.acwr <= 1.3;
+  if (!reentry && acwrOk && weekCeiling > 0) {
+    const totalToF = out.reduce((a, o) => a + (o.intensity === 'rest' ? 0 : o.runMinutes), 0);
+    let headroom = Math.round(weekCeiling - totalToF);
+    if (headroom >= 8) {
+      const grown = new Set<WeekPlanDay>();
+      const restamp = (o: WeekPlanDay) => {
+        o.structure = `${o.runMinutes}min ${o.kind === 'long' ? 'long-ish aerobic' : 'easy @ Z2'}`;
+        o.note = `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown to fill the week to its +${capPct}% ceiling (build)`;
+      };
+      // Spread the aerobic volume EVENLY across the easy/flex days (round-robin), each capped at EASY_MAX_BUILD.
+      const easyDays = out.filter(o => o.intensity !== 'rest' && (o.kind === 'easy' || o.kind === 'flex'));
+      let guard = 0;
+      while (headroom >= 5 && guard++ < 60) {
+        const room = easyDays.filter(o => o.runMinutes < EASY_MAX_BUILD);
+        if (!room.length) break;
+        const per = Math.max(1, Math.floor(headroom / room.length));
+        for (const o of room) { if (headroom < 1) break; const add = Math.min(per, EASY_MAX_BUILD - o.runMinutes, headroom); if (add > 0) { o.runMinutes += add; headroom -= add; grown.add(o); } }
+      }
+      // Any remainder lets the long take a modest extra.
+      for (const o of out) {
+        if (headroom < 5) break;
+        if (o.kind !== 'long' || o.intensity === 'rest') continue;
+        const add = Math.min(headroom, Math.max(0, Math.min(longTargetMin + 15, 95) - o.runMinutes));
+        if (add > 0) { o.runMinutes += add; headroom -= add; grown.add(o); }
+      }
+      grown.forEach(restamp);
+    }
   }
   return out;
 }
