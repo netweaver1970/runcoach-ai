@@ -9,7 +9,7 @@ import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator,
-  useWindowDimensions, ActionSheetIOS, Platform, Alert, PanResponder, TextInput,
+  useWindowDimensions, ActionSheetIOS, Platform, Alert, PanResponder, TextInput, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
@@ -736,6 +736,9 @@ export default function WorkoutDetailScreen() {
 
   const goTo = useCallback((idx: number) => {
     if (idx < 0 || idx >= siblings.length) return;
+    // Paging changes params.id, which remounts the ScrollView (key={params.id}). If the notes field is
+    // focused, remounting it out from under a live keyboard wedges the screen — dismiss first.
+    Keyboard.dismiss();
     const s = siblings[idx];
     router.setParams({
       id: s.i, startDate: s.s, duration: String(s.du), label: s.l,
@@ -749,11 +752,12 @@ export default function WorkoutDetailScreen() {
   // Latest nav fns for the once-created swipe responder
   const goPrevRef = useRef(goPrev); goPrevRef.current = goPrev;
   const goNextRef = useRef(goNext); goNextRef.current = goNext;
+  const noteFocusedRef = useRef(false);   // don't let a horizontal drag page (and remount) while editing the note
   const swipe = useRef(
     PanResponder.create({
       // Claim only clear horizontal swipes; charts (deeper) keep their scrub, and
-      // vertical scrolling passes through to the ScrollView.
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 28 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8,
+      // vertical scrolling passes through to the ScrollView. Never while the note field is focused.
+      onMoveShouldSetPanResponder: (_e, g) => !noteFocusedRef.current && Math.abs(g.dx) > 28 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8,
       onPanResponderRelease: (_e, g) => {
         if (g.dx <= -55)     goNextRef.current(); // swipe left  → next (older)
         else if (g.dx >= 55) goPrevRef.current(); // swipe right → prev (newer)
@@ -880,6 +884,7 @@ export default function WorkoutDetailScreen() {
   // ── Analyze handler ──────────────────────────────────────────────────────
 
   const handleAnalyze = useCallback(() => {
+    Keyboard.dismiss();   // don't push /chat with the notes keyboard still up
     const compact = {
       cal: Math.round(parseFloat(params.calories ?? '0')),
       hrUnreliable: hrUnreliable || undefined,
@@ -933,7 +938,7 @@ export default function WorkoutDetailScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* Header */}
       <View style={st.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={st.backBtn}>
+        <TouchableOpacity onPress={() => { Keyboard.dismiss(); router.back(); }} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={st.backBtn}>
           <Text style={st.backText}>‹ Back</Text>
         </TouchableOpacity>
         <View style={{ alignItems: 'center', flex: 1 }}>
@@ -989,7 +994,11 @@ export default function WorkoutDetailScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView key={params.id} contentContainerStyle={st.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
+        // NOTE: no `automaticallyAdjustKeyboardInsets` + no `interactive` dismiss here on purpose — that
+        // combo with the multiline notes field wedges the ScrollView's content inset on iOS (keyboard
+        // hides but the screen freezes, force-quit only). The note sits near the top, so the keyboard
+        // never covers it; `on-drag` dismiss is the safe replacement.
+        <ScrollView key={params.id} contentContainerStyle={st.scroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
 
           {/* Summary row */}
           <View style={st.summaryRow}>
@@ -1020,7 +1029,8 @@ export default function WorkoutDetailScreen() {
               style={st.noteInput}
               value={note}
               onChangeText={setNote}
-              onBlur={handleNoteBlur}
+              onFocus={() => { noteFocusedRef.current = true; }}
+              onBlur={() => { noteFocusedRef.current = false; handleNoteBlur(); }}
               placeholder="Add a note for this run (how it felt, terrain, injuries…)"
               placeholderTextColor="#aaa"
               multiline
