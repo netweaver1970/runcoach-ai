@@ -30,6 +30,46 @@ const CLIMATE_TINT: Record<Climate, string> = {
   cool: '#2f6fed', mild: '#2e9e5b', warm: '#e0a12a', hot: '#e07b2a', tropical: '#c0392b',
 };
 
+// ── Weekly load target + ramp-rate framing (TrainingPeaks-style) ──────────────────────────────────────
+// Translates the plan into TP's language: a weekly LOAD TARGET (the sum of the 7-day plan's prescribed
+// daily load, in the same training-load units as CTL/ATL) vs MAINTENANCE (7×CTL, the load that holds CTL
+// flat), plus the RAMP RATE = projected ΔCTL over the week, and the ACWR sweet-spot. All read straight off
+// the deterministic projection this screen already computes — no new model, so it can't disagree with the
+// chart below it.
+function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; s: any }) {
+  const ramp = projCtl - ctl0;            // CTL points / week (the PMC ramp rate)
+  const maint = ctl0 * 7;                 // weekly load that holds CTL flat
+  const overPct = maint > 0 ? Math.round(((plannedLoad - maint) / maint) * 100) : 0;
+  const rb = ramp < -0.5 ? { w: 'Easing', col: '#3498db' }
+    : ramp < 2   ? { w: 'Maintaining', col: '#2e9e5b' }
+    : ramp <= 7  ? { w: 'Building', col: '#27ae60' }
+    : ramp <= 10 ? { w: 'Aggressive build', col: '#e67e22' }
+    :              { w: 'Ramp too fast', col: '#e74c3c' };
+  const inBand = acwr != null && acwr >= 0.8 && acwr <= 1.3;
+  const acwrCol = acwr == null ? '#8a8f98' : inBand ? '#27ae60' : acwr > 1.5 ? '#e74c3c' : '#e67e22';
+  const acwrWord = acwr == null ? '' : inBand ? 'sweet spot' : acwr > 1.5 ? 'spike risk' : acwr > 1.3 ? 'high' : 'detraining';
+  const verdict =
+    ramp > 10 ? 'Ease off — this ramp risks overreaching.'
+    : (acwr != null && acwr > 1.5) ? 'Load is spiking vs your recent base — add easy volume, not intensity.'
+    : ramp < -0.5 ? 'Fitness easing — right for a deload or taper week.'
+    : ramp < 2 ? 'A maintenance week — planned load ≈ what holds your fitness.'
+    : 'Building safely — planned load sits above maintenance without spiking.';
+  return (
+    <View style={s.wlCard}>
+      <Text style={s.wlTitle}>This week's load</Text>
+      <View style={s.wlTop}>
+        <Text style={[s.wlBig, { color: rb.col }]}>{ramp >= 0 ? '+' : ''}{ramp.toFixed(1)}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={[s.wlWord, { color: rb.col }]}>{rb.w}<Text style={s.wlUnit}>  ·  CTL / week</Text></Text>
+          <Text style={s.wlSub}>Target ~{Math.round(plannedLoad)} load · maintenance {Math.round(maint)} ({overPct >= 0 ? '+' : ''}{overPct}%)</Text>
+        </View>
+        {acwr != null && <Text style={[s.wlChip, { color: acwrCol, borderColor: acwrCol }]}>ACWR {acwr.toFixed(2)}{'\n'}{acwrWord}</Text>}
+      </View>
+      <Text style={s.wlVerdict}>{verdict}</Text>
+    </View>
+  );
+}
+
 // Derive the displayed label FROM the actual synthesized + cap-trimmed structure, so it always
 // matches what's prescribed: Z4/Z5 reps → Interval, Z3 → Tempo, a long Z2 run → Long, a short Z2 →
 // Recovery, otherwise Z2.
@@ -90,6 +130,7 @@ export default function WeekPlan() {
   const [rows, setRows]   = useState<Row[] | null>(null);
   const [hist, setHist]   = useState<Hist[]>([]);
   const [seed, setSeed]   = useState<{ ctl: number; atl: number; strain: number } | null>(null);
+  const [acwrNow, setAcwrNow] = useState<number | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
   const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number; floorRestDays: number; taperDays: number; minTSB: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
@@ -129,6 +170,7 @@ export default function WeekPlan() {
       setRates(cal);
 
       const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
+      setAcwrNow(coach.acwr ?? null);   // for the weekly-load ramp/ACWR framing card
       const forecast = await getMorningForecast(7);
       const fxBy = new Map(forecast.map(f => [f.date, f]));
       // Saved-trip schedule → per-day destination + climate, so travel days in the forecast carry the
@@ -374,6 +416,14 @@ export default function WeekPlan() {
             <Legend color="#e67e2266" label="strain" square />
           </View>
 
+          <WeeklyLoadCard
+            ctl0={seed.ctl}
+            plannedLoad={rows.reduce((a, r) => a + r.trimp, 0)}
+            projCtl={rows[rows.length - 1]?.ctl ?? seed.ctl}
+            acwr={acwrNow}
+            s={s}
+          />
+
           <View style={s.headRow}>
             <Text style={[s.h, { flex: 1 }]}> </Text>
             <Text style={[s.h, s.numS]}>Strain</Text><Text style={[s.h, s.num]}>CTL</Text>
@@ -564,4 +614,14 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   btnText:  { color: '#fff', fontWeight: '700', fontSize: 14 },
   travelBtn:     { backgroundColor: c.surface, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
   travelBtnText: { color: c.accent, fontWeight: '700', fontSize: 14 },
+  // Weekly-load (TP framing) card
+  wlCard:   { backgroundColor: c.surface, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, padding: 12, marginBottom: 12 },
+  wlTitle:  { fontSize: 11, fontWeight: '800', color: c.textFaint, letterSpacing: 0.3, textTransform: 'uppercase', marginBottom: 8 },
+  wlTop:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  wlBig:    { fontSize: 30, fontWeight: '800', minWidth: 62 },
+  wlWord:   { fontSize: 14, fontWeight: '800' },
+  wlUnit:   { fontSize: 11.5, fontWeight: '700', color: c.textSub },
+  wlSub:    { fontSize: 12, color: c.textSub, marginTop: 3, lineHeight: 16 },
+  wlChip:   { fontSize: 10.5, fontWeight: '800', textAlign: 'center', borderWidth: 1, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 4, overflow: 'hidden' },
+  wlVerdict:{ fontSize: 12.5, color: c.text, marginTop: 10, lineHeight: 17 },
 });
