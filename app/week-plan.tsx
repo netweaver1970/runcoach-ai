@@ -38,10 +38,11 @@ const CLIMATE_TINT: Record<Climate, string> = {
 // flat), plus the RAMP RATE = projected ΔCTL over the week, and the ACWR sweet-spot. All read straight off
 // the deterministic projection this screen already computes — no new model, so it can't disagree with the
 // chart below it.
-function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; s: any }) {
+function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, floorBinding, capBinding, isDeload, minTSB, capPct, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; floorBinding: boolean; capBinding: boolean; isDeload: boolean; minTSB: number; capPct: number; s: any }) {
   const ramp = projCtl - ctl0;            // CTL points / week (the PMC ramp rate)
   const maint = ctl0 * 7;                 // weekly load that holds CTL flat
   const overPct = maint > 0 ? Math.round(((plannedLoad - maint) / maint) * 100) : 0;
+  const belowMaint = plannedLoad < maint;
   const rb = ramp < -0.5 ? { w: 'Easing', col: '#3498db' }
     : ramp < 2   ? { w: 'Maintaining', col: '#2e9e5b' }
     : ramp <= 7  ? { w: 'Building', col: '#27ae60' }
@@ -50,10 +51,18 @@ function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, s }: { ctl0: number;
   const inBand = acwr != null && acwr >= 0.8 && acwr <= 1.3;
   const acwrCol = acwr == null ? '#8a8f98' : inBand ? '#27ae60' : acwr > 1.5 ? '#e74c3c' : '#e67e22';
   const acwrWord = acwr == null ? '' : inBand ? 'sweet spot' : acwr > 1.5 ? 'spike risk' : acwr > 1.3 ? 'high' : 'detraining';
+  const easing = ramp < 2;   // flat or drifting down
   const verdict =
     ramp > 10 ? 'Ease off — this ramp risks overreaching.'
     : (acwr != null && acwr > 1.5) ? 'Load is spiking vs your recent base — add easy volume, not intensity.'
-    : ramp < -0.5 ? 'Fitness easing — right for a deload or taper week.'
+    : (easing && isDeload) ? 'Deload week — easing on purpose to absorb load and freshen.'
+    : (easing && belowMaint && capBinding)
+        ? `Held below maintenance by the +${capPct}%/wk volume cap — your recent load already used this week's budget, so it can't add more. It frees up as those days roll off; raise the cap % (Settings) to build faster.`
+    : (easing && belowMaint && floorBinding)
+        ? `Held below maintenance by your form floor (TSB ≥ ${minTSB}) — you came in fatigued, so the plan can't add load. Freshen the easy days (TSB toward 0) to build, or lower the floor in Settings.`
+    : (easing && belowMaint)
+        ? `Your usual week (~${Math.round(plannedLoad)}) now sits below the ~${Math.round(maint)} that holds CTL ${Math.round(ctl0)} — your fitness has outgrown this volume. Add a bit more running to build.`
+    : ramp < -0.5 ? 'Fitness easing — a lighter week.'
     : ramp < 2 ? 'A maintenance week — planned load ≈ what holds your fitness.'
     : 'Building safely — planned load sits above maintenance without spiking.';
   return (
@@ -425,6 +434,11 @@ export default function WeekPlan() {
             plannedLoad={rows.reduce((a, r) => a + r.trimp, 0)}
             projCtl={rows[rows.length - 1]?.ctl ?? seed.ctl}
             acwr={acwrNow}
+            capBinding={rows.some(r => r.capped)}
+            floorBinding={rows.some(r => r.tsbTrim || r.floorRest)}
+            isDeload={/deload/i.test(periodLabel)}
+            minTSB={weekCap?.minTSB ?? -10}
+            capPct={weekCap?.capPct ?? 10}
             s={s}
           />
 
