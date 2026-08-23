@@ -829,13 +829,7 @@ export default function HomeScreen() {
           <Text style={styles.coachBtnText}>📆 7-Day Plan</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.coachBtn, styles.coachBtnSecondary]}
-          onPress={() => router.push('/performance' as any)}
-        >
-          <Text style={styles.coachBtnText}>📈 Performance trend</Text>
-        </TouchableOpacity>
-
+        {/* 📈 Performance trend moved into the Statistics screen (compact "Performance" card). */}
         <TouchableOpacity
           style={[styles.coachBtn, styles.coachBtnSecondary]}
           onPress={() => router.push('/statistics' as any)}

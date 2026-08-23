@@ -17,6 +17,8 @@ import {
   computePowerCurve, clearPowerCurveCache, fmtDur, PDC_ANCHORS, PowerCurve,
 } from '../src/services/powerCurve';
 import { predictRaces, medianEcFromRuns, fmtRaceTime, fmtRacePace } from '../src/services/racePredictor';
+import { computePerformanceIndex, weightedGpi, WEIGHT_PRESETS, Emphasis, GpiResult } from '../src/services/performanceIndex';
+import * as SecureStore from 'expo-secure-store';
 import {
   efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, decouplingBanded, zoneDistributionOverTime,
   EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek, HEAT_C,
@@ -27,6 +29,8 @@ import type { PowerZones } from '../src/types';
 const CHART_H = 160;
 const Y_AXIS_W = 38;
 const CTL_BLUE = '#3B82F6';
+const GPI_COLOR = '#6366f1';   // Performance composite line (matches app/performance.tsx)
+const gpiLevelWord = (v: number) => v >= 62 ? 'climbing' : v >= 54 ? 'improving' : v >= 46 ? 'holding steady' : v >= 38 ? 'slipping' : 'declining';
 // Runs above HEAT_C: HR is elevated by the weather, so the HR-BASED reads (EF, SE, decoupling) look worse
 // than the athlete's actual fitness. Flagged orange on those charts only — EC is HR-independent, so it is
 // deliberately never heat-tinted (that's the chart to trust on a hot spell).
@@ -805,6 +809,32 @@ export default function StatisticsScreen() {
   const [customising, setCustomising] = useState(false);
   useEffect(() => { loadStatsLayout().then(setLayout); }, []);
   const commitLayout = useCallback((next: StatCard[]) => { setLayout(next); saveStatsLayout(next); }, []);
+  // Performance (GPI) — moved here from the home screen as a compact card. Compute the full 12-month series
+  // once (fixed baseline) from the loaded runs; the emphasis weighting mirrors the full /performance screen.
+  const [gpi, setGpi] = useState<GpiResult | null>(null);
+  const [gpiEmphasis, setGpiEmphasis] = useState<Emphasis>('performance');
+  useEffect(() => { SecureStore.getItemAsync('gpi_emphasis_v1').then(v => { if (v && v in WEIGHT_PRESETS) setGpiEmphasis(v as Emphasis); }).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!allRuns.length) return;
+    let alive = true;
+    computePerformanceIndex(12, undefined, allRuns).then(r => { if (alive) setGpi(r); }).catch(() => {});
+    return () => { alive = false; };
+  }, [allRuns]);
+  const gpiView = useMemo(() => {
+    if (!gpi?.series?.length) return null;
+    const w = WEIGHT_PRESETS[gpiEmphasis];
+    const all = gpi.series.map(p => ({ date: p.date, gpi: weightedGpi(p, w) }));
+    const latest = [...all].reverse().find(p => p.gpi != null) ?? null;
+    const win = all.filter(p => p.gpi != null && tOf(p.date) >= t0 && tOf(p.date) <= t1);
+    const first = win[0] ?? null;
+    const delta = latest?.gpi != null && first?.gpi != null ? latest.gpi - first.gpi : null;
+    // GPI is a DAILY series (up to 365 pts for 1Y). TChart draws a View per segment+dot, so downsample to
+    // ≤60 (it's already a 7-day smoothed line — weekly-ish sampling loses nothing and keeps the card light).
+    const raw = win.map(p => ({ t: tOf(p.date), v: p.gpi! }));
+    const step = Math.max(1, Math.ceil(raw.length / 60));
+    const pts = raw.filter((_, i) => i % step === 0 || i === raw.length - 1);
+    return { latest, delta, pts };
+  }, [gpi, gpiEmphasis, t0, t1]);
   const capWeeksN = days > 0 ? Math.min(120, Math.ceil(days / 7) + 3) : 104;
   useEffect(() => {
     let alive = true;
@@ -840,6 +870,37 @@ export default function StatisticsScreen() {
 
   // Each card keyed by id → rendered in the user's chosen order/enabled set (Customise sheet).
   const cardNodes: Record<StatCardId, React.ReactNode> = {
+    performance: (
+      <View style={s.card}>
+        <CardHead title="Performance">
+          Your overall trajectory — recovery, sleep &amp; training folded into one line, each vs your own
+          baseline (50 = your starting point; above = improved). Tap for the full breakdown.
+        </CardHead>
+        {gpiView?.latest?.gpi == null ? (
+          <View style={s.center}><ActivityIndicator /></View>
+        ) : (
+          <>
+            <TouchableOpacity style={s.perfHead} activeOpacity={0.7} onPress={() => router.push('/performance' as any)}>
+              <Text style={[s.perfNum, { color: GPI_COLOR }]}>{Math.round(gpiView.latest.gpi!)}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={s.perfWord}>Performance · {gpiLevelWord(gpiView.latest.gpi!)}</Text>
+                {gpiView.delta != null && (
+                  <Text style={[s.perfDelta, { color: gpiView.delta >= 0 ? '#22c55e' : '#ef4444' }]}>
+                    {gpiView.delta >= 0 ? '▲' : '▼'} {Math.abs(gpiView.delta).toFixed(1)} over range
+                  </Text>
+                )}
+              </View>
+              <Text style={s.perfChevron}>›</Text>
+            </TouchableOpacity>
+            {gpiView.pts.length >= 2 && (
+              <TChart innerW={innerW} t0={t0} t1={t1} color={GPI_COLOR} events={events} showEvents={showEvents}
+                refs={[{ y: 50, color: '#94a3b8', dash: true }]} yfmt={(v) => String(Math.round(v))}
+                pts={gpiView.pts} />
+            )}
+          </>
+        )}
+      </View>
+    ),
     weeklyTss: (
       <View style={s.card}>
         <CardHead title="Weekly TSS">
@@ -1102,6 +1163,12 @@ const makeS = (c: Palette) => StyleSheet.create({
   // Derived Critical Power — the per-duration bests are drawn on the chart itself now.
   cpLine:    { marginTop: 10, fontSize: 12, color: c.textSub, fontWeight: '600' },
   cpLineVal: { fontSize: 14, fontWeight: '800', color: CTL_BLUE },
+  // Compact Performance (GPI) headline
+  perfHead:    { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
+  perfNum:     { fontSize: 34, fontWeight: '800', lineHeight: 38, minWidth: 52 },
+  perfWord:    { fontSize: 13.5, fontWeight: '700', color: c.text },
+  perfDelta:   { fontSize: 12, fontWeight: '700', marginTop: 2 },
+  perfChevron: { fontSize: 24, color: c.textFaint, fontWeight: '400', paddingLeft: 4 },
   rebuild: { marginTop: 12, alignSelf: 'flex-start' },
   rebuildText: { fontSize: 12, color: c.accent, fontWeight: '600' },
   // ── Customise sheet ──
