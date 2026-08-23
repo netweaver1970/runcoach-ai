@@ -808,9 +808,15 @@ export default function StatisticsScreen() {
   const capWeeksN = days > 0 ? Math.min(120, Math.ceil(days / 7) + 3) : 104;
   useEffect(() => {
     let alive = true;
-    computeCapHistory(capWeeksN, new Date(t1)).then(w => { if (alive) setCapWeeks(w); }).catch(() => { if (alive) setCapWeeks([]); });
+    // t1 = the newest CHART-SERIES point (last run WITH power / steady decoupling run / weigh-in), which can
+    // lag real "now" when the most recent day only added minutes the series doesn't see (a run without power,
+    // a walk). Anchoring the in-progress week to t1 then truncates it there and it under-reports vs the live
+    // "This week (Mon→now)" gauge (which counts all activity to now). So on the LIVE view (offset 0) anchor to
+    // now; only paged-back windows (offset > 0) anchor to their past end t1.
+    const capAnchor = offset === 0 ? new Date() : new Date(t1);
+    computeCapHistory(capWeeksN, capAnchor).then(w => { if (alive) setCapWeeks(w); }).catch(() => { if (alive) setCapWeeks([]); });
     return () => { alive = false; };
-  }, [capWeeksN, t1]);
+  }, [capWeeksN, t1, offset]);
   // The two "right now" gauges are always LIVE (independent of the paged/zoomed window above).
   useEffect(() => {
     computeRolling7d().then(setRoll).catch(() => {});
