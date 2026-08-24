@@ -1123,10 +1123,11 @@ export async function getWeekPlan(
   // headroom so the week reaches its ceiling — the base then ratchets up ~cap%/week and CTL actually climbs.
   // Quality is never inflated (that's the daily readiness gate's job); the ceiling is already heat- and
   // freshness-adjusted, so filling to it stays within the anti-erosion cap.
-  // Only ADD volume when acute load is genuinely low (ACWR well inside the sweet spot) — building right up
-  // to the 1.3 edge means one normal hard run tips ACWR over it and the plan whipsaws build↔ease. Leaving a
-  // buffer keeps the ramp steady and is gentler on a returning tendon.
-  const acwrOk = snap.acwr == null || snap.acwr <= 1.15;
+  // Fill while ACWR is in the sweet spot (≤ 1.3); above that the athlete is already overreaching, so let the
+  // week ease. (The ceiling itself is freshDay-scaled — it shrinks as ACWR climbs toward 1.45 — so the fill
+  // tapers off smoothly before this hard cut; and the seed now folds in today's run so the card no longer
+  // whipsaws build↔ease, which is why this doesn't need to be tighter.)
+  const acwrOk = snap.acwr == null || snap.acwr <= 1.3;
   if (!reentry && acwrOk && weekCeiling > 0) {
     const totalToF = out.reduce((a, o) => a + (o.intensity === 'rest' ? 0 : o.runMinutes), 0);
     let headroom = Math.round(weekCeiling - totalToF);
