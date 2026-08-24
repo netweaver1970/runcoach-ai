@@ -285,6 +285,21 @@ export default function WeekPlan() {
         const tofDateW = [...tofDate0];
         const creditedAt = (idx: number) => (tofW[idx] ?? 0) * clampCredit(heatBy[tofDateW[idx]]);
         let ctl = ctl0eff, atl = atl0eff, cappedDays = 0;
+        // Reserve the long run's ToF budget up front. The long is the LAST day of the week, so the rolling
+        // volume cap (baseRef − prior6) would otherwise hand it only the scraps left after every earlier day —
+        // and when an easy day grows, prior6 swells and STARVES the long (it collapsed 52→23min once the fill
+        // lengthened Fri/Sun). The long is the protected session: reserve its minutes so the cap trims the
+        // REST of the week around it instead of robbing the long.
+        const longIdxW = days.findIndex(d => d.kind === 'long' && d.intensity !== 'rest');
+        const heatMinFor = (d: (typeof days)[number]) => {
+          if (d.intensity === 'rest') return 0;
+          const dfc = fxBy.get(d.date);
+          const wh = dfc ? heatStrainFactor({ tempC: dfc.tempC, apparentC: dfc.apparentC, humidity: dfc.humidity }) : 1;
+          const tv = travelBy.get(d.date);
+          const h = tv ? Math.max(wh, 1 / CLIMATE_LOAD_FACTOR[tv.climate]) : wh;
+          return Math.max(8, Math.round(d.runMinutes / h));
+        };
+        const longReserveMin = longIdxW >= 0 ? heatMinFor(days[longIdxW]) : 0;
         const rows = days.map((d, i) => {
           const fc = fxBy.get(d.date);
           const weatherHeat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
@@ -303,9 +318,10 @@ export default function WeekPlan() {
           const dDate = new Date(d.date + 'T00:00:00');
           const buildDay = per.on && cyclePhase(dDate, per).phase === 'build';
           const freshDay = freshnessCapFactor(coach.tsb, coach.acwr, buildDay);
-          const allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay - prior6)) : heatMin;
-          const isLongDay = d.forced && d.kind === 'long';
-          const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode) ? heatMin : Math.min(heatMin, allowance));
+          // Reserve the long's minutes out of every day that comes BEFORE it, so the running budget leaves room.
+          const allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay - prior6 - (longIdxW > i ? longReserveMin : 0))) : heatMin;
+          const isLongDay = d.kind === 'long' && d.intensity !== 'rest';   // the long is protected from the VOLUME cap (not only when shrink-forced)
+          const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode || isLongDay) ? heatMin : Math.min(heatMin, allowance));
 
           let mins = volMin;
           let floorRested = false;
@@ -325,7 +341,7 @@ export default function WeekPlan() {
             // If even the floored dose STILL breaches minTSB, the long is protected (holds LONG_FLOOR, accepts the
             // dip) while every other day yields and RESTS — so the floor genuinely holds on all but the long's day.
             if (estimateDayTrimp(d.intensity, mins, cal) > tMax) {
-              if (isLongDay) mins = LONG_FLOOR;
+              if (isLongDay) mins = Math.min(volMin, LONG_FLOOR);   // hold the long down to its floor, but never bump a shorter long UP
               else { mins = 0; floorRested = true; }
             }
           }
