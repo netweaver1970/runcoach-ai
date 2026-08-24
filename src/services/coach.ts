@@ -1006,7 +1006,13 @@ export async function getWeekPlan(
     const fc = fxBy.get(key);
     const heat = fc ? heatStrainFactor({ apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
 
-    const buildWk = periodization.on && cyclePhase(d, periodization).phase === 'build';
+    const phase = periodization.on ? cyclePhase(d, periodization).phase : 'off';   // 'off' ⇒ neither build nor deload (leisure)
+    const buildWk = phase === 'build';
+    const deloadDay = phase === 'deload';
+    // A deload week trims QUALITY length too (long/tempo/intervals), not just the volume cap — else the Monday
+    // long on a deload week shows full-length and the block never actually deloads. Easy days already shrink
+    // via the cap (weekCapMultiplier 0.75 in `allowance`), so only quality is scaled here.
+    const deloadScale = deloadDay ? Math.max(0.5, 1 - periodization.deloadDropPct / 100) : 1;
     // Per-day freshness (build weeks relax it — see freshnessCapFactor). Build weeks also earn one extra
     // easy run day so the recovery slot after a hard quality becomes an easy jog instead of a forced rest,
     // adding aerobic volume toward the ceiling without adding intensity.
@@ -1097,6 +1103,7 @@ export async function getWeekPlan(
     // PROGRESSIVE OVERLOAD: ramp this day's TYPE from where it recently was (+cap%/week), so it climbs toward
     // its target instead of jumping there. Applies to every run type (long gets the extra +10min/wk backstop).
     if (intensity !== 'rest') base = typeRamp(d.getDay(), base, placed === 'long', placed, buildWk);
+    if (deloadDay && isQuality(placed)) base = Math.round(base * deloadScale);   // deload week: shorten the long/tempo/intervals too
 
     let capRest = false;
     // HARD cap gate (safety) — but shrink-to-fit's force-placed quality keeps its day even over budget.
@@ -1177,10 +1184,12 @@ export async function getWeekPlan(
         const preTSB = ctlP - atlP;
         const isEasy = o.kind === 'easy' || o.kind === 'flex';
         const isLong = o.kind === 'long';
-        const oBuild = periodization.on && cyclePhase(new Date(o.date + 'T00:00:00'), periodization).phase === 'build';
+        const oPhase = periodization.on ? cyclePhase(new Date(o.date + 'T00:00:00'), periodization).phase : 'build';
+        const oBuild = oPhase === 'build';
+        const oDeload = oPhase === 'deload';   // never GROW a deload day — the point of a deload is to reduce load
         const growFloorTSB = oBuild ? Math.max(-25, minTSB - 2) : minTSB + 2;   // build weeks push ~4pt deeper
         const growGateTSB  = growFloorTSB + 2;
-        if (headroom >= 5 && o.intensity !== 'rest' && (isEasy || isLong) && preTSB >= growGateTSB) {
+        if (headroom >= 5 && !oDeload && o.intensity !== 'rest' && (isEasy || isLong) && preTSB >= growGateTSB) {
           // the most extra load this day can take while its OWN projected post-day TSB stays above the fill floor
           const tMax   = (ctlP * (1 - Lc) - atlP * (1 - La) - growFloorTSB) / (La - Lc);
           const cur    = estimateDayTrimp(o.intensity, o.runMinutes);
