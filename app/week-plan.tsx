@@ -44,27 +44,26 @@ function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, floorBinding, capBin
   const overPct = maint > 0 ? Math.round(((plannedLoad - maint) / maint) * 100) : 0;
   const belowMaint = plannedLoad < maint;
   const rb = ramp < -0.5 ? { w: 'Easing', col: '#3498db' }
-    : ramp < 2   ? { w: 'Maintaining', col: '#2e9e5b' }
+    : ramp < 0.5 ? { w: 'Maintaining', col: '#2e9e5b' }
     : ramp <= 7  ? { w: 'Building', col: '#27ae60' }
     : ramp <= 10 ? { w: 'Aggressive build', col: '#e67e22' }
     :              { w: 'Ramp too fast', col: '#e74c3c' };
   const inBand = acwr != null && acwr >= 0.8 && acwr <= 1.3;
   const acwrCol = acwr == null ? '#8a8f98' : inBand ? '#27ae60' : acwr > 1.5 ? '#e74c3c' : '#e67e22';
   const acwrWord = acwr == null ? '' : inBand ? 'sweet spot' : acwr > 1.5 ? 'spike risk' : acwr > 1.3 ? 'high' : 'detraining';
-  const easing = ramp < 2;   // flat or drifting down
   const verdict =
     ramp > 10 ? 'Ease off — this ramp risks overreaching.'
     : (acwr != null && acwr > 1.5) ? 'Load is spiking vs your recent base — add easy volume, not intensity.'
-    : (easing && isDeload) ? 'Deload week — easing on purpose to absorb load and freshen.'
-    : (easing && belowMaint && capBinding)
+    : (isDeload && ramp < 0.5) ? 'Deload week — easing on purpose to absorb load and freshen.'
+    : (belowMaint && capBinding)
         ? `Held below maintenance by the +${capPct}%/wk volume cap — your recent load already used this week's budget, so it can't add more. It frees up as those days roll off; raise the cap % (Settings) to build faster.`
-    : (easing && belowMaint && floorBinding)
+    : (belowMaint && floorBinding)
         ? `Held below maintenance by your form floor (TSB ≥ ${minTSB}) — you came in fatigued, so the plan can't add load. Freshen the easy days (TSB toward 0) to build, or lower the floor in Settings.`
-    : (easing && belowMaint)
-        ? `Your usual week (~${Math.round(plannedLoad)}) now sits below the ~${Math.round(maint)} that holds CTL ${Math.round(ctl0)} — your fitness has outgrown this volume. Add a bit more running to build.`
+    : (belowMaint)
+        ? `Your usual week (~${Math.round(plannedLoad)}) sits below the ~${Math.round(maint)} that holds CTL ${Math.round(ctl0)} — a lighter week.`
     : ramp < -0.5 ? 'Fitness easing — a lighter week.'
-    : ramp < 2 ? 'A maintenance week — planned load ≈ what holds your fitness.'
-    : 'Building safely — planned load sits above maintenance without spiking.';
+    : ramp < 0.5 ? 'A maintenance week — planned load ≈ what holds your fitness.'
+    : `Building — planned load is ${overPct >= 0 ? '+' : ''}${overPct}% over maintenance, so CTL climbs about +${ramp.toFixed(1)}/week.`;
   return (
     <View style={s.wlCard}>
       <Text style={s.wlTitle}>This week's load</Text>
