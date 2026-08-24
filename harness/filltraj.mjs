@@ -22,8 +22,10 @@ const recentMax = Math.max(
 );
 
 globalThis.__HARNESS_SEED = {
+  // LEISURE week (periodization off): the trajectory fill HOLDS the fatigued front and grows the recovered
+  // back. (On a BUILD week the deeper floor deliberately pushes the front too — covered by buildfloor.mjs.)
   secureStore: { plan_mode_v1: 'leisure', load_cap_pct: '10', min_tsb: '-16', max_run_days: '5',
-    periodization_v1: JSON.stringify({ on: true, buildWeeks: 4, deloadWeeks: 1, deloadDropPct: 25, anchor: '2026-06-01' }) },
+    periodization_v1: JSON.stringify({ on: false, buildWeeks: 4, deloadWeeks: 1, deloadDropPct: 25, anchor: '2026-06-01' }) },
   files: { 'mem://coach-knowledge/running-schedule.md':
     '# Weekly Schedule\n- Mon: Long run\n- Tue: recovery/easy\n- Wed: Tempo\n- Thu: rest\n- Fri: recovery/easy\n- Sat: Intervals\n- Sun: recovery/easy\n' },
 };
@@ -39,20 +41,18 @@ const base = {
 const run = async (label, over) => {
   const week = await coach.getWeekPlan({ ...base, ...over });
   const total = week.reduce((a, d) => a + (d.intensity === 'rest' ? 0 : d.runMinutes), 0);
-  const easy = week.filter((d) => d.kind === 'easy' || d.kind === 'flex');
-  const front = easy.slice(0, Math.ceil(easy.length / 2)).reduce((a, d) => a + d.runMinutes, 0);
-  const back = easy.slice(Math.ceil(easy.length / 2)).reduce((a, d) => a + d.runMinutes, 0);
-  console.log(`\n${label}: total ${total}m (ceiling ${Math.round(recentMax * 1.1)}m) · easy front ${front}m / back ${back}m`);
+  const firstTwo = week.slice(0, 2).reduce((a, d) => a + (d.intensity === 'rest' ? 0 : d.runMinutes), 0);  // the fatigued FRONT
+  console.log(`\n${label}: total ${total}m (ceiling ${Math.round(recentMax * 1.1)}m) · first-2-days ${firstTwo}m`);
   for (const d of week) console.log(`  ${d.weekday} ${String(d.intensity).padEnd(8)} ${String(d.runMinutes).padStart(3)}m ${d.kind}`);
-  return { total, front, back };
+  return { total, firstTwo };
 };
 const fresh    = await run('FRESH   ', { acwr: 1.05, tsb: -3,  ctl: 44, atl: 47 });
 const fatigued = await run('FATIGUED', { acwr: 1.35, tsb: -15, ctl: 43, atl: 58 });
 
-const lessWhenTired = fatigued.total < fresh.total - 5;         // fatigue holds the week back vs fresh
-const backLoaded    = fatigued.back >= fatigued.front;          // what growth there is sits in the recovered back half
-console.log(`\nfatigued ${fatigued.total} < fresh ${fresh.total}? ${lessWhenTired}  ·  back ≥ front? ${backLoaded}`);
-const ok = lessWhenTired && backLoaded;
+const lessWhenTired = fatigued.total < fresh.total - 5;            // fatigue holds the week back vs fresh
+const frontHeld     = fatigued.firstTwo < fresh.firstTwo;         // the fatigued FRONT is held easy/rest vs fresh (it grows later)
+console.log(`\nfatigued ${fatigued.total} < fresh ${fresh.total}? ${lessWhenTired}  ·  front held (${fatigued.firstTwo} < ${fresh.firstTwo})? ${frontHeld}`);
+const ok = lessWhenTired && frontHeld;
 console.log(ok ? `✅ PASS — fill follows the TSB trajectory (fatigued builds less, and later in the week)`
                : `❌ FAIL — fill ignored the trajectory`);
 process.exit(ok ? 0 : 1);

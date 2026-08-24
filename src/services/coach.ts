@@ -991,6 +991,12 @@ export async function getWeekPlan(
   let lastQ = -99;                 // index of the last quality session placed (≥2 apart = spacing)
   const deferred: WeekKind[] = []; // quality kinds bumped by the cap, awaiting a later slot
   let weekCeiling = 0;             // the week's +cap% ToF ceiling (captured at day 0 for the progressive fill)
+  // Quality sessions still to come this week (by forward index) — the maxRunDays gate on easy/jog days must
+  // RESERVE a run-day slot for each, or filling easy days (esp. after a freed dance day) fills to the cap and
+  // then the long/tempo pushes the week PAST it, leaving zero rest days. fwdKinds mirrors the loop's `kind`.
+  const fwdKinds: WeekKind[] = [];
+  for (let ii = 0; ii < 7; ii++) { const dd = new Date(today); dd.setDate(dd.getDate() + 1 + ii); fwdKinds.push(template[dd.getDay()] ?? 'rest'); }
+  const pendingQualAfter = (idx: number) => { let n = 0; for (let k = idx + 1; k < 7; k++) if (isQuality(fwdKinds[k])) n++; return n; };
   const out: WeekPlanDay[] = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(today); d.setDate(d.getDate() + 1 + i);
@@ -1065,15 +1071,16 @@ export async function getWeekPlan(
     } else if (deferred.length && green && allowance >= QMIN && spaced) {              // SHUFFLE: reschedule a deferred quality here (incl. the weekend)
       const dk = deferred.shift()!; [intensity, base] = resolveQuality(dk); placed = dk; lastQ = i; shifted = true; qPlaced++;
     } else if (kind === 'easy') {
-      // Easy volume day — but only up to effMaxRunDays total (else REST so the week isn't a jog every day).
-      if (runDays < effMaxRunDays) { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
+      // Easy volume day — but only up to effMaxRunDays total, RESERVING a slot for each quality still to come
+      // (else the week's easy days + the later long overrun the cap and leave no rest day).
+      if (runDays + pendingQualAfter(i) < effMaxRunDays) { intensity = 'easy'; base = easyGrow(allowance, buildWk ? EASY_MAX_BUILD : EASY_MAX); placed = 'easy'; }
     }
     else if (kind === 'rest')   {
       // BUILD week only: a PLAIN rest day (never a commitment/dance rest) may become a SHORT easy recovery
       // jog when a run-day slot and budget remain — the "6th day" that lets a build actually accumulate
       // aerobic volume. Kept to a recovery length (≤35, then the type ramp trims a no-history day to ~30),
       // so it adds base miles without becoming a volume day. Deload/leisure weeks keep the rest.
-      if (buildWk && !commitBlock && runDays < effMaxRunDays && allowance >= MEANINGFUL) {
+      if (buildWk && !commitBlock && runDays + pendingQualAfter(i) < effMaxRunDays && allowance >= MEANINGFUL) {
         intensity = 'easy'; placed = 'easy'; restJog = true;
         base = Math.max(EASY_MIN, Math.min(35, allowance));
       } else { intensity = 'rest'; base = 0; }
