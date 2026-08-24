@@ -8,6 +8,7 @@ import {
   freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay, accountingModeSync,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
   getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS, deterministicCoachPlan,
+  getDanceOffDates, toggleDanceOff,
 } from '../src/services/coach';
 import {
   estimateWorkoutLoad, strainFromLoad, estimateDayTrimp,
@@ -155,6 +156,8 @@ export default function WeekPlan() {
   const [periodLabel, setPeriodLabel] = useState('');
   const [raceWeek, setRaceWeek] = useState<RaceWeek | null>(null);
   const [shrink, setShrink] = useState(false);
+  const [thuDate, setThuDate] = useState<string | null>(null);   // the Thursday in the forward week (for the no-dance toggle)
+  const [danceOff, setDanceOff] = useState(false);               // is that Thursday marked "not dancing this week"?
   useEffect(() => { getShrinkToFit().then(setShrink); }, []);
   const [err, setErr]     = useState<string | null>(null);
   const [busy, setBusy]   = useState(false);
@@ -239,6 +242,10 @@ export default function WeekPlan() {
         await saveWeekPlanCache({ date: todayKey, generatedAt, lastRunDate, days });
         setGenAt(generatedAt);
       }
+      // Surface the forward week's Thursday + whether it's marked "not dancing" (drives the toggle below).
+      const thu = days.find(d => new Date(d.date + 'T00:00:00').getDay() === 4);
+      setThuDate(thu?.date ?? null);
+      setDanceOff(thu ? (await getDanceOffDates()).has(thu.date) : false);
 
       // Backward-looking ROLLING cap: each future run's trailing-7-day time-on-feet must not
       // exceed the 7-day window a week earlier by more than the cap %. Seed with the last 14 days
@@ -620,6 +627,22 @@ export default function WeekPlan() {
             {shrink ? 'Tight weeks: tempo/intervals shorten to hold their day; the long run is protected.'
                     : 'Tight weeks: a quality that won’t fit is deferred to a later day.'}
           </Text>
+
+          {thuDate && (
+            <>
+              <TouchableOpacity
+                style={[s.btn, { backgroundColor: danceOff ? '#27ae60' : undefined }, busy && { opacity: 0.5 }]}
+                onPress={async () => { const on = await toggleDanceOff(thuDate); setDanceOff(on); build(true); }}
+                disabled={busy}
+              >
+                <Text style={s.btnText}>{danceOff ? '✓ Not dancing this Thu' : '🕺 Dancing Thursday'}</Text>
+              </TouchableOpacity>
+              <Text style={s.genLine}>
+                {danceOff ? 'Thursday is free to train this week — on a build week it becomes an easy run, adding the day the block needs to reach its peak.'
+                          : 'Thursday is kept rest for dancing. Tap if you’re NOT dancing this week to free it as a run.'}
+              </Text>
+            </>
+          )}
 
           <TouchableOpacity style={[s.btn, busy && { opacity: 0.5 }]} onPress={() => build(true)} disabled={busy}>
             <Text style={s.btnText}>{busy ? 'Re-planning…' : '↻ Regenerate'}</Text>

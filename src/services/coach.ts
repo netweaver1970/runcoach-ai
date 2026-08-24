@@ -946,6 +946,7 @@ export async function getWeekPlan(
   //                           quality (incl. the long — verified in the harness: without it the long got squeezed out).
   const longTargetMin = await getLongRunMinutes().catch(() => 75);  // athlete's configured long-run length (not hardcoded 65)
   const minTSB = await getMinTSB().catch(() => -16);                 // the athlete's fatigue floor (for the trajectory-aware fill)
+  const danceOff = await getDanceOffDates().catch(() => new Set<string>());   // dates marked "not dancing this week" → Thu frees up
   // MAINTENANCE FLOOR for BUILD weeks. A 4-on/1-off block only works if the build weeks actually build: a
   // "+cap% over recent" week can land BELOW the load that holds CTL (maintenance = CTL×7 in TRIMP), so a
   // fully-compliant build week detrains like a deload — and stacked with the real deload you get two easy
@@ -1031,8 +1032,12 @@ export async function getWeekPlan(
     // A recurring commitment TODAY is itself a load, and a hard one (dance, team sport) also compromises
     // TOMORROW — that's when the legs pay for it. Both cases block quality so the week's hard days don't
     // stack against it; the session is DEFERRED rather than dropped, so the shuffle re-places it later.
-    const commitToday = commitments[d.getDay()];
-    const commitYday  = commitments[(d.getDay() + 6) % 7];
+    // "Not dancing this week": on a date the athlete marked no-dance, ignore that day's commitment (so Thu can
+    // train — rest→jog on a build week) and don't treat the NEXT day as day-after-dance.
+    const yd = new Date(d); yd.setDate(yd.getDate() - 1);
+    const ydKey = `${yd.getFullYear()}-${p(yd.getMonth() + 1)}-${p(yd.getDate())}`;
+    const commitToday = danceOff.has(key)   ? undefined : commitments[d.getDay()];
+    const commitYday  = danceOff.has(ydKey) ? undefined : commitments[(d.getDay() + 6) % 7];
     const commitBlock = !!commitToday || !!(commitYday?.hard && commitYday?.certain);
     const spaced = (i - lastQ) >= 2 && !commitBlock; // ≥1 non-quality day since the last quality session
     let intensity: CoachIntensity = 'rest'; let base = 0; let placed: WeekKind = 'rest';
@@ -1261,9 +1266,14 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const commits     = parseWeeklyCommitments(schedMd);
   const dow         = new Date(snap.date + 'T00:00:00').getDay();
   // Standing commitment today (dance night) or a hard one yesterday → today is NOT a quality day, whatever
-  // the template says. Mirrors getWeekPlan so the daily card and the 7-day plan can't disagree.
-  const commitToday = commits[dow];
-  const commitYday  = commits[(dow + 6) % 7];
+  // the template says. Mirrors getWeekPlan so the daily card and the 7-day plan can't disagree — including the
+  // "not dancing this week" override, which clears the commitment on the marked dates.
+  const danceOffD   = await getDanceOffDates().catch(() => new Set<string>());
+  const ydDate      = new Date(snap.date + 'T00:00:00'); ydDate.setDate(ydDate.getDate() - 1);
+  const pad2        = (n: number) => String(n).padStart(2, '0');
+  const ydKeyD      = `${ydDate.getFullYear()}-${pad2(ydDate.getMonth() + 1)}-${pad2(ydDate.getDate())}`;
+  const commitToday = danceOffD.has(snap.date) ? undefined : commits[dow];
+  const commitYday  = danceOffD.has(ydKeyD)    ? undefined : commits[(dow + 6) % 7];
   const commitBlock = !!commitToday || !!(commitYday?.hard && commitYday?.certain);
   const todaySlot   = reentry ? null : await loadTodaysWeekPlanSlot(snap.date);
   const todayDone   = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
@@ -1871,6 +1881,34 @@ export async function getMinTSB(): Promise<number> {
     const n = raw != null && raw !== '' ? parseInt(raw, 10) : DEFAULT_MIN_TSB;
     return Number.isFinite(n) && n >= -40 && n <= 0 ? n : DEFAULT_MIN_TSB; // −40…0 sane bounds
   } catch { return DEFAULT_MIN_TSB; }
+}
+
+// ── "Not dancing this week" override ──────────────────────────────────────────
+// Dancing is an OCCASIONAL Thursday commitment: the planner reserves Thu as rest and works around it. On a
+// week the athlete ISN'T dancing they can train Thursday, which (on a build week) is the extra run-day that
+// lets the week reach its maintenance peak. This stores the specific dates (the Thursdays) marked "no dance";
+// getWeekPlan then ignores the commitment on those dates so Thu frees up (rest→jog) and Fri isn't day-after.
+const DANCE_OFF_KEY = 'dance_off_dates_v1';
+export async function getDanceOffDates(): Promise<Set<string>> {
+  try {
+    const raw = await SecureStore.getItemAsync(DANCE_OFF_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []);
+  } catch { return new Set(); }
+}
+export async function toggleDanceOff(iso: string): Promise<boolean> {
+  try {
+    const set = await getDanceOffDates();
+    const on = !set.has(iso);
+    if (on) set.add(iso); else set.delete(iso);
+    // prune dates more than 21 days in the past so the list can't grow unbounded
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 21);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const cutIso = `${cutoff.getFullYear()}-${pad(cutoff.getMonth() + 1)}-${pad(cutoff.getDate())}`;
+    const kept = [...set].filter(d => d >= cutIso);
+    await SecureStore.setItemAsync(DANCE_OFF_KEY, JSON.stringify(kept));
+    return on;
+  } catch { return false; }
 }
 export async function setMinTSB(v: number): Promise<void> {
   try { await SecureStore.setItemAsync(MIN_TSB_KEY, String(Math.round(v))); } catch { /* ignore */ }
