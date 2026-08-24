@@ -1133,22 +1133,31 @@ export async function getWeekPlan(
         o.structure = `${o.runMinutes}min ${o.kind === 'long' ? 'long-ish aerobic' : 'easy @ Z2'}`;
         o.note = `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown to fill the week to its +${capPct}% ceiling (build)`;
       };
-      // Spread the aerobic volume EVENLY across the easy/flex days (round-robin), each capped at EASY_MAX_BUILD.
-      const easyDays = out.filter(o => o.intensity !== 'rest' && (o.kind === 'easy' || o.kind === 'flex'));
-      let guard = 0;
-      while (headroom >= 5 && guard++ < 60) {
-        const room = easyDays.filter(o => o.runMinutes < EASY_MAX_BUILD);
-        if (!room.length) break;
-        const per = Math.max(1, Math.floor(headroom / room.length));
-        for (const o of room) { if (headroom < 1) break; const add = Math.min(per, EASY_MAX_BUILD - o.runMinutes, headroom); if (add > 0) { o.runMinutes += add; headroom -= add; grown.add(o); } }
-      }
-      // Any remainder lets the long take a modest extra.
+      // TENDON-SAFE: a sudden jump in a SINGLE run's length is what irritates an Achilles/knee — the +cap%
+      // weekly cap alone doesn't stop one easy day ballooning 30→60. So cap each easy day the fill touches at
+      // a moderate length AND at a modest step over its own base, and put surplus into the LONG run (the one
+      // session that's MEANT to be long) FIRST — many gentle runs beat a few long ones for a returning tendon.
+      const FILL_EASY_MAX = 50;                 // an easy day never grows past this via the fill…
+      const FILL_STEP     = 15;                 // …nor more than this above its pre-fill length in one week
+      // 1) the long run takes surplus first (it's the designated long session), but only back up to the
+      //    athlete's CONFIGURED long length — never beyond it via the fill (no single-session spike).
       for (const o of out) {
         if (headroom < 5) break;
         if (o.kind !== 'long' || o.intensity === 'rest') continue;
-        const add = Math.min(headroom, Math.max(0, Math.min(longTargetMin + 15, 95) - o.runMinutes));
+        const add = Math.min(headroom, Math.max(0, longTargetMin - o.runMinutes));
         if (add > 0) { o.runMinutes += add; headroom -= add; grown.add(o); }
       }
+      // 2) then spread the rest EVENLY across easy/flex days, each capped for tendon safety
+      const easyDays = out.filter(o => o.intensity !== 'rest' && (o.kind === 'easy' || o.kind === 'flex'))
+        .map(o => ({ o, cap: Math.min(FILL_EASY_MAX, o.runMinutes + FILL_STEP) }));
+      let guard = 0;
+      while (headroom >= 5 && guard++ < 60) {
+        const room = easyDays.filter(e => e.o.runMinutes < e.cap);
+        if (!room.length) break;
+        const per = Math.max(1, Math.floor(headroom / room.length));
+        for (const e of room) { if (headroom < 1) break; const add = Math.min(per, e.cap - e.o.runMinutes, headroom); if (add > 0) { e.o.runMinutes += add; headroom -= add; grown.add(e.o); } }
+      }
+      // Any remainder is LEFT UNFILLED — better to under-fill the ceiling than spike a single run.
       grown.forEach(restamp);
     }
   }
