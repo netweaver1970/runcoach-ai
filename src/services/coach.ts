@@ -14,7 +14,7 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDista
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
-import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone, trainingDayKey } from './trainingLoad';
+import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone, trainingDayKey, estimateDayTrimp } from './trainingLoad';
 import { getSwitchList, regimeForDate, getAccountingMode, DEFAULT_ACCOUNTING, AccountingMode } from './accounting';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
 import { loadSupplements, buildSupplementContext } from './supplements';
@@ -945,6 +945,7 @@ export async function getWeekPlan(
   //                           back per still-unplaced quality session so easy growth NEVER starves the week's
   //                           quality (incl. the long — verified in the harness: without it the long got squeezed out).
   const longTargetMin = await getLongRunMinutes().catch(() => 75);  // athlete's configured long-run length (not hardcoded 65)
+  const minTSB = await getMinTSB().catch(() => -16);                 // the athlete's fatigue floor (for the trajectory-aware fill)
   // Grow an easy day to spend the SPARE budget (after reserving for quality still to place) up to EASY_MAX,
   // when green; hold at EASY_BASE when run-down or when there's no genuine surplus (never below EASY_BASE, so
   // it's always a real easy run — and never worse than the pre-growth fixed 35).
@@ -1115,54 +1116,60 @@ export async function getWeekPlan(
     out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm });
   }
 
-  // ── PROGRESSIVE FILL — build automatically instead of parking at maintenance ──────────────────────────
+  // ── PROGRESSIVE FILL — trajectory-aware build instead of parking at maintenance ───────────────────────
   // The rolling per-day allowance is conservative: it reserves budget for still-unplaced quality and depletes
   // as the week fills, so the week routinely lands BELOW its own +cap% ceiling (repro'd from Geert's real
   // data: 202 min prescribed vs a 239 min ceiling — under maintenance, so a fully-compliant week didn't
-  // build). When the athlete is HEALTHY (ACWR in band; not re-entry) grow the EASY/LONG days into that SAFE
-  // headroom so the week reaches its ceiling — the base then ratchets up ~cap%/week and CTL actually climbs.
-  // Quality is never inflated (that's the daily readiness gate's job); the ceiling is already heat- and
-  // freshness-adjusted, so filling to it stays within the anti-erosion cap.
-  // Fill while ACWR is in the sweet spot (≤ 1.3); above that the athlete is already overreaching, so let the
-  // week ease. (The ceiling itself is freshDay-scaled — it shrinks as ACWR climbs toward 1.45 — so the fill
-  // tapers off smoothly before this hard cut; and the seed now folds in today's run so the card no longer
-  // whipsaws build↔ease, which is why this doesn't need to be tighter.)
-  const acwrOk = snap.acwr == null || snap.acwr <= 1.3;
-  if (!reentry && acwrOk && weekCeiling > 0) {
+  // build). Grow the EASY/LONG days into that SAFE headroom so the week reaches its ceiling and CTL climbs.
+  //
+  // The growth FOLLOWS THE TSB TRAJECTORY the plan already projects, instead of an all-or-nothing decision off
+  // TODAY's ACWR: seed CTL/ATL from today and walk the week forward day by day. A day is grown only once its
+  // PROJECTED form has recovered (TSB back above `minTSB + RECOVERED_MARGIN`) AND only up to the load that
+  // keeps THAT day's projected TSB above the athlete's floor. So after a hard long run the fatigued front of
+  // the week stays easy (letting form rebuild) while the back half — once the projection shows TSB has climbed
+  // back — grows toward the ceiling. Deeply fatigued ⇒ nothing grows (self-regulating); fresh ⇒ fills from
+  // day 1 (old behaviour). Quality is never inflated (daily readiness gate's job); tendon-safe caps keep any
+  // single easy day from ballooning; the ceiling is heat/freshness-scaled so filling to it stays within cap.
+  // The outer ACWR ≤ 1.45 is only a spike backstop — the per-day TSB floor is the real, finer-grained gate.
+  if (!reentry && weekCeiling > 0 && (snap.ctl ?? 0) > 0 && (snap.acwr == null || snap.acwr <= 1.45)) {
+    const La = 1 - Math.exp(-1 / 7), Lc = 1 - Math.exp(-1 / 42);
     const totalToF = out.reduce((a, o) => a + (o.intensity === 'rest' ? 0 : o.runMinutes), 0);
     let headroom = Math.round(weekCeiling - totalToF);
     if (headroom >= 8) {
       const grown = new Set<WeekPlanDay>();
-      const restamp = (o: WeekPlanDay) => {
-        o.structure = `${o.runMinutes}min ${o.kind === 'long' ? 'long-ish aerobic' : 'easy @ Z2'}`;
-        o.note = `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown to fill the week to its +${capPct}% ceiling (build)`;
-      };
-      // TENDON-SAFE: a sudden jump in a SINGLE run's length is what irritates an Achilles/knee — the +cap%
-      // weekly cap alone doesn't stop one easy day ballooning 30→60. So cap each easy day the fill touches at
-      // a moderate length AND at a modest step over its own base, and put surplus into the LONG run (the one
-      // session that's MEANT to be long) FIRST — many gentle runs beat a few long ones for a returning tendon.
-      const FILL_EASY_MAX = 50;                 // an easy day never grows past this via the fill…
+      const FILL_EASY_MAX = 50;                 // TENDON-SAFE: an easy day never grows past this via the fill…
       const FILL_STEP     = 15;                 // …nor more than this above its pre-fill length in one week
-      // 1) the long run takes surplus first (it's the designated long session), but only back up to the
-      //    athlete's CONFIGURED long length — never beyond it via the fill (no single-session spike).
+      // Two TSB thresholds shape the trajectory. GATE: only START adding load to a day once its projected form
+      // has recovered a little off the floor — this is what holds the fatigued FRONT of the week easy (TSB deep
+      // near the floor ⇒ no growth) without penalising a normally-fatigued athlete (TSB −7 mid-build still
+      // builds). FLOOR: grow only until the day's OWN projected post-day TSB would reach here — a small buffer
+      // over the hard floor so the fill never fights the screen's floor-trim, but low enough that a healthy week
+      // still fills toward its ceiling (no regression to the flat-CTL under-build).
+      const growGateTSB  = minTSB + 4;
+      const growFloorTSB = minTSB + 2;
+      let ctlP = snap.ctl ?? 0, atlP = snap.atl ?? 0;   // seed from today (screen re-trims with today's run folded in)
       for (const o of out) {
-        if (headroom < 5) break;
-        if (o.kind !== 'long' || o.intensity === 'rest') continue;
-        const add = Math.min(headroom, Math.max(0, longTargetMin - o.runMinutes));
-        if (add > 0) { o.runMinutes += add; headroom -= add; grown.add(o); }
+        const preTSB = ctlP - atlP;
+        const isEasy = o.kind === 'easy' || o.kind === 'flex';
+        const isLong = o.kind === 'long';
+        if (headroom >= 5 && o.intensity !== 'rest' && (isEasy || isLong) && preTSB >= growGateTSB) {
+          // the most extra load this day can take while its OWN projected post-day TSB stays above the fill floor
+          const tMax   = (ctlP * (1 - Lc) - atlP * (1 - La) - growFloorTSB) / (La - Lc);
+          const cur    = estimateDayTrimp(o.intensity, o.runMinutes);
+          const perMin = estimateDayTrimp(o.intensity, 100) / 100;   // per-minute load at this intensity
+          const addByFloor = perMin > 0 ? Math.max(0, Math.floor((tMax - cur) / perMin)) : 0;
+          const cap    = isLong ? longTargetMin : Math.min(FILL_EASY_MAX, o.runMinutes + FILL_STEP);
+          const target = Math.min(cap, o.runMinutes + Math.min(addByFloor, headroom));
+          if (target > o.runMinutes) { const add = target - o.runMinutes; o.runMinutes = target; headroom -= add; grown.add(o); }
+        }
+        const dt = estimateDayTrimp(o.intensity, o.runMinutes);      // roll the projection forward with the (grown) load
+        atlP += La * (dt - atlP);
+        ctlP += Lc * (dt - ctlP);
       }
-      // 2) then spread the rest EVENLY across easy/flex days, each capped for tendon safety
-      const easyDays = out.filter(o => o.intensity !== 'rest' && (o.kind === 'easy' || o.kind === 'flex'))
-        .map(o => ({ o, cap: Math.min(FILL_EASY_MAX, o.runMinutes + FILL_STEP) }));
-      let guard = 0;
-      while (headroom >= 5 && guard++ < 60) {
-        const room = easyDays.filter(e => e.o.runMinutes < e.cap);
-        if (!room.length) break;
-        const per = Math.max(1, Math.floor(headroom / room.length));
-        for (const e of room) { if (headroom < 1) break; const add = Math.min(per, e.cap - e.o.runMinutes, headroom); if (add > 0) { e.o.runMinutes += add; headroom -= add; grown.add(e.o); } }
-      }
-      // Any remainder is LEFT UNFILLED — better to under-fill the ceiling than spike a single run.
-      grown.forEach(restamp);
+      grown.forEach(o => {
+        o.structure = `${o.runMinutes}min ${o.kind === 'long' ? 'long-ish aerobic' : 'easy @ Z2'}`;
+        o.note = `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown as your form recovers this week, toward the +${capPct}% ceiling (build)`;
+      });
     }
   }
   return out;
