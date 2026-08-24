@@ -14,6 +14,7 @@ import {
   PanResponder,
   Modal,
   TextInput,
+  Keyboard,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -215,6 +216,7 @@ export default function HomeScreen() {
   const awaitingCommentRef = useRef<string | null>(null); // a run whose comment modal is open → don't auto-analyse it
   // Save the comment (if any) onto the run's note, then fire the FIRST analysis with it already included.
   const submitRunComment = useCallback(async (save: boolean) => {
+    Keyboard.dismiss();   // dismiss BEFORE the modal unmounts so its keyboard can't linger + freeze the app
     const ctx = commentRun;
     const text = commentText.trim();
     awaitingCommentRef.current = null;
@@ -1025,13 +1027,15 @@ export default function HomeScreen() {
             <Text style={{ color: c.textFaint, fontSize: 12.5, marginBottom: 12 }}>
               Anything the coach should know — how it felt, stops/traffic, terrain, niggles, HR-strap issues. Saved to the run and folded into the analysis straight away.
             </Text>
+            {/* NO autoFocus: this modal auto-appears on launch after a run, and auto-focusing a multiline
+                field inside a Modal on app-resume gridlocks the keyboard (esp. with 3rd-party keyboards) —
+                the app opened straight into a frozen keyboard. Tap the field to type instead. */}
             <TextInput
               value={commentText}
               onChangeText={setCommentText}
               placeholder="e.g. legs heavy first 10 min, a few traffic-light stops, felt strong after"
               placeholderTextColor={c.textFaint}
               multiline
-              autoFocus
               style={{ minHeight: 84, maxHeight: 160, backgroundColor: c.surfaceAlt, borderRadius: 12, borderWidth: 1, borderColor: c.border, color: c.text, fontSize: 15, padding: 12, textAlignVertical: 'top' }}
             />
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>

@@ -7,7 +7,7 @@ import { loadSnapshotCache, fetchTrainingLoadHistory } from '../src/services/hea
 import {
   freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay, accountingModeSync,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
-  getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS,
+  getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS, deterministicCoachPlan,
 } from '../src/services/coach';
 import {
   estimateWorkoutLoad, strainFromLoad, estimateDayTrimp,
@@ -139,7 +139,7 @@ export default function WeekPlan() {
   const router = useRouter();
   const [rows, setRows]   = useState<Row[] | null>(null);
   const [hist, setHist]   = useState<Hist[]>([]);
-  const [seed, setSeed]   = useState<{ ctl: number; atl: number; strain: number } | null>(null);
+  const [seed, setSeed]   = useState<{ ctl: number; atl: number; strain: number; projected?: boolean } | null>(null);
   const [acwrNow, setAcwrNow] = useState<number | null>(null);
   const [adherence, setAdherence] = useState<Adherence | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
@@ -165,9 +165,10 @@ export default function WeekPlan() {
       const tl = (await fetchTrainingLoadHistory(1).catch(() => null)) ?? snap.trainingLoad ?? [];
       const todayLoad = tl.length ? tl[tl.length - 1] : null;
       const ctl0 = todayLoad?.ctl ?? 0, atl0 = todayLoad?.atl ?? 0;
-      // Today's strain (from today's realised load) — for the "Today" anchor row that bridges the header to
-      // the forecast, so the first forward day's drop (a rest-day decay) reads as continuous, not a mismatch.
-      setSeed({ ctl: ctl0, atl: atl0, strain: Math.max(20, Math.round(strainFromLoad(todayLoad?.load ?? 0))) });
+      // NOTE: the effective seed (ctl0eff/atl0eff) is computed just below, AFTER the coach snapshot, so it
+      // can fold in TODAY's prescribed run if it isn't done yet — otherwise the whole forward plan seeds off
+      // a rest-day today and flips the moment you actually run. setSeed happens there.
+      let ctl0eff = ctl0, atl0eff = atl0, seedLoad = todayLoad?.load ?? 0;
 
       // Rolling per-intensity TRIMP/min calibration — computed continuously by the app during
       // every health sync (snap.trimpRates). Fall back to computing it here for older caches.
@@ -182,6 +183,30 @@ export default function WeekPlan() {
 
       const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
       setAcwrNow(coach.acwr ?? null);   // for the weekly-load ramp/ACWR framing card
+
+      // ── Seed TODAY with its prescribed run if it isn't done yet ──────────────────────────────────────
+      // The seed above reads today's REALISED load — which, before you've run, is just a rest day (strain
+      // ~20). Seeding the whole forecast off that makes the coming week look buildable, then it flips to
+      // "ease" the instant the run lands. Instead: if no run is logged today AND today prescribes one, roll
+      // the seed forward by that session's EXPECTED load, so the plan already assumes the run will happen.
+      const p2s = (n: number) => String(n).padStart(2, '0');
+      const nowD = new Date();
+      const todayISOKey = `${nowD.getFullYear()}-${p2s(nowD.getMonth() + 1)}-${p2s(nowD.getDate())}`;
+      const ranToday = (snap.runs ?? []).some(r => (r.date ?? '').slice(0, 10) === todayISOKey);
+      if (!ranToday) {
+        const todayPlan = await deterministicCoachPlan(coach).catch(() => null);
+        const expected = todayPlan && todayPlan.intensity !== 'rest'
+          ? estimateDayTrimp(todayPlan.intensity, todayPlan.runMinutes ?? 0, cal) : 0;
+        if (expected > seedLoad) {
+          const La = 1 - Math.exp(-1 / 7), Lc = 1 - Math.exp(-1 / 42);
+          ctl0eff = ctl0 + Lc * (expected - seedLoad);
+          atl0eff = atl0 + La * (expected - seedLoad);
+          seedLoad = expected;
+        }
+      }
+      // Today anchor row + forward-projection seed (bridges the header to the forecast).
+      const seededTodayRun = !ranToday && seedLoad > (todayLoad?.load ?? 0);
+      setSeed({ ctl: ctl0eff, atl: atl0eff, strain: Math.max(20, Math.round(strainFromLoad(seedLoad))), projected: seededTodayRun });
       { const dd = new Date(); const pp = (n: number) => String(n).padStart(2, '0'); computeAdherence(`${dd.getFullYear()}-${pp(dd.getMonth() + 1)}-${pp(dd.getDate())}`).then(setAdherence).catch(() => {}); }
       const forecast = await getMorningForecast(7);
       const fxBy = new Map(forecast.map(f => [f.date, f]));
@@ -259,7 +284,7 @@ export default function WeekPlan() {
         const tofW = [...tof0];
         const tofDateW = [...tofDate0];
         const creditedAt = (idx: number) => (tofW[idx] ?? 0) * clampCredit(heatBy[tofDateW[idx]]);
-        let ctl = ctl0, atl = atl0, cappedDays = 0;
+        let ctl = ctl0eff, atl = atl0eff, cappedDays = 0;
         const rows = days.map((d, i) => {
           const fc = fxBy.get(d.date);
           const weatherHeat = fc ? heatStrainFactor({ tempC: fc.tempC, apparentC: fc.apparentC, humidity: fc.humidity }) : 1;
@@ -472,7 +497,7 @@ export default function WeekPlan() {
           <View style={[s.row, { opacity: 0.6 }]}>
             <View style={{ flex: 1, paddingRight: 8 }}>
               <Text style={s.dayLine} numberOfLines={1}>
-                <Text style={s.weekday}>Today</Text>{'  '}<Text style={[s.tag, { color: c.textFaint }]}>done · from your history</Text>
+                <Text style={s.weekday}>Today</Text>{'  '}<Text style={[s.tag, { color: c.textFaint }]}>{seed.projected ? 'planned · today’s session' : 'done · from your history'}</Text>
               </Text>
             </View>
             <Text style={[s.numS, s.strain, { color: c.textFaint }]}>{seed.strain}</Text>

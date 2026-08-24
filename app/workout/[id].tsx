@@ -12,7 +12,7 @@ import {
   useWindowDimensions, ActionSheetIOS, Platform, Alert, PanResponder, TextInput, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
+import { useLocalSearchParams, useRouter, Stack, useNavigation } from 'expo-router';
 import {
   fetchWorkoutDetail,
   formatDistance,
@@ -637,9 +637,13 @@ type Sib = { i: string; s: string; du: number; di: number; c: number; l: string 
 
 export default function WorkoutDetailScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const st = useThemedStyles(makeSt);
   const { c: pal } = useTheme();
   const llm = useLLMReady();
+  // Dismiss the keyboard on ANY navigation-away (the iOS swipe-back gesture bypasses the Back button's
+  // handler) — a focused notes field whose keyboard lingers over the previous screen freezes the app.
+  useEffect(() => navigation.addListener('beforeRemove', () => { Keyboard.dismiss(); }), [navigation]);
   const params = useLocalSearchParams<{
     id:        string;
     startDate: string;

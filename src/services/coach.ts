@@ -1123,7 +1123,10 @@ export async function getWeekPlan(
   // headroom so the week reaches its ceiling — the base then ratchets up ~cap%/week and CTL actually climbs.
   // Quality is never inflated (that's the daily readiness gate's job); the ceiling is already heat- and
   // freshness-adjusted, so filling to it stays within the anti-erosion cap.
-  const acwrOk = snap.acwr == null || snap.acwr <= 1.3;
+  // Only ADD volume when acute load is genuinely low (ACWR well inside the sweet spot) — building right up
+  // to the 1.3 edge means one normal hard run tips ACWR over it and the plan whipsaws build↔ease. Leaving a
+  // buffer keeps the ramp steady and is gentler on a returning tendon.
+  const acwrOk = snap.acwr == null || snap.acwr <= 1.15;
   if (!reentry && acwrOk && weekCeiling > 0) {
     const totalToF = out.reduce((a, o) => a + (o.intensity === 'rest' ? 0 : o.runMinutes), 0);
     let headroom = Math.round(weekCeiling - totalToF);
