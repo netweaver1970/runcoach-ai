@@ -38,9 +38,13 @@ const snap = {
 const week = await coach.getWeekPlan(snap);
 const total = week.reduce((a, d) => a + (d.intensity === 'rest' ? 0 : d.runMinutes), 0);
 const ceiling = Math.round(recentMax * 1.10);
-console.log(`recentMax ${recentMax}m · +10% ceiling ${ceiling}m · prescribed ${total}m`);
+// A BUILD week is now floored at MAINTENANCE (CTL×7 in ToF-min) so it can't be prescribed below what holds
+// fitness — bounded to +25%/wk over the recent base. So the fill target is max(+10% ceiling, maintenance).
+const maintMin = Math.round((40 * 7) / 1.38);                 // ctl 40, easy ~1.38 TRIMP/min
+const target = Math.min(Math.max(ceiling, maintMin), Math.round(recentMax * 1.25));
+console.log(`recentMax ${recentMax}m · +10% ceiling ${ceiling}m · maintenance ${maintMin}m · target ${target}m · prescribed ${total}m`);
 for (const d of week) console.log(`  ${d.weekday} ${String(d.intensity).padEnd(8)} ${String(d.runMinutes).padStart(3)}m ${d.kind}`);
-const ok = total >= ceiling - 12 && total <= ceiling + 12;
-console.log(ok ? `\n✅ PASS — week filled to its +10% ceiling (${total} ≈ ${ceiling})`
-                : `\n❌ FAIL — week under-fills (${total} vs ${ceiling}); progressive fill not working`);
+const ok = total >= target - 12 && total <= target + 12;
+console.log(ok ? `\n✅ PASS — build week filled to its target (${total} ≈ ${target}, maintenance-floored)`
+                : `\n❌ FAIL — week off target (${total} vs ${target}); fill/maintenance-floor not working`);
 process.exit(ok ? 0 : 1);

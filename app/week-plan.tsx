@@ -287,6 +287,17 @@ export default function WeekPlan() {
       const tof0 = [...tof];       // snapshot of actual ToF history — each projection pass replays from the same base
       const tofDate0 = [...tofDate];
 
+      // MAINTENANCE FLOOR (mirror of getWeekPlan): a BUILD week is never re-capped below the load that holds
+      // CTL (maintenance = CTL×7 in TRIMP → ToF-min via the easy rate), so the block's build weeks can't
+      // collapse to a deload — else a 4-on/1-off block reads as two easy weeks in a row. Bounded to +25%/wk
+      // over the recent base; the TSB floor + freshness cut still bound it above. Same formula/units as the
+      // planner so the two engines agree on the ceiling.
+      const easyTpmS  = (estimateDayTrimp('easy', 100, cal) / 100) || 1.3;
+      const maintMinS = ctl0 > 0 ? Math.round((ctl0 * 7) / easyTpmS) : 0;
+      const reentryS  = (coach.tof7d ?? 99) < 30;
+      const maintFloorS = (gross: number, recentBase: number, isBuild: boolean) =>
+        (isBuild && !reentryS && maintMinS > 0) ? Math.max(gross, Math.min(maintMinS, Math.round(recentBase * 1.25))) : gross;
+
       const walk = (taperSet: Set<number>): { rows: Row[]; cappedDays: number } => {
         const tofW = [...tof0];
         const tofDateW = [...tofDate0];
@@ -325,8 +336,9 @@ export default function WeekPlan() {
           const dDate = new Date(d.date + 'T00:00:00');
           const buildDay = per.on && cyclePhase(dDate, per).phase === 'build';
           const freshDay = freshnessCapFactor(coach.tsb, coach.acwr, buildDay);
-          // Reserve the long's minutes out of every day that comes BEFORE it, so the running budget leaves room.
-          const allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay - prior6 - (longIdxW > i ? longReserveMin : 0))) : heatMin;
+          // Floor a BUILD week at maintenance, then reserve the long's minutes out of every day before it.
+          const grossCap = maintFloorS(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildDay);
+          const allowance = baseRef > 0 ? Math.max(0, Math.round(grossCap - prior6 - (longIdxW > i ? longReserveMin : 0))) : heatMin;
           const isLongDay = d.kind === 'long' && d.intensity !== 'rest';   // the long is protected from the VOLUME cap (not only when shrink-forced)
           const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode || isLongDay) ? heatMin : Math.min(heatMin, allowance));
 

@@ -946,6 +946,17 @@ export async function getWeekPlan(
   //                           quality (incl. the long — verified in the harness: without it the long got squeezed out).
   const longTargetMin = await getLongRunMinutes().catch(() => 75);  // athlete's configured long-run length (not hardcoded 65)
   const minTSB = await getMinTSB().catch(() => -16);                 // the athlete's fatigue floor (for the trajectory-aware fill)
+  // MAINTENANCE FLOOR for BUILD weeks. A 4-on/1-off block only works if the build weeks actually build: a
+  // "+cap% over recent" week can land BELOW the load that holds CTL (maintenance = CTL×7 in TRIMP), so a
+  // fully-compliant build week detrains like a deload — and stacked with the real deload you get two easy
+  // weeks in a row. So on a BUILD week (healthy, not re-entry) the weekly ceiling is floored at maintenance:
+  // never prescribe a build week below what holds your fitness. Converted to the ToF basis via the easy
+  // TRIMP/min rate (the week is mostly easy, so TRIMP/min ≈ that), and BOUNDED to +25%/wk over the recent
+  // base so it stays a controlled ramp; the TSB floor + freshness cut remain the safety backstops above it.
+  const easyTpm  = estimateDayTrimp('easy', 100) / 100 || 1.3;       // easy TRIMP per minute
+  const maintMin = (snap.ctl && snap.ctl > 0) ? Math.round(snap.ctl * 7 / easyTpm) : 0;   // ToF-min that hold CTL
+  const maintFloor = (gross: number, recentBase: number, isBuild: boolean) =>
+    (isBuild && !reentry && maintMin > 0) ? Math.max(gross, Math.min(maintMin, Math.round(recentBase * 1.25))) : gross;
   // Grow an easy day to spend the SPARE budget (after reserving for quality still to place) up to EASY_MAX,
   // when green; hold at EASY_BASE when run-down or when there's no genuine surplus (never below EASY_BASE, so
   // it's always a real easy run — and never worse than the pre-growth fixed 35).
@@ -1001,7 +1012,7 @@ export async function getWeekPlan(
     for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
     const prior6   = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);
     const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
-    let allowance = baseRef > 0 ? Math.max(0, Math.round(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay - prior6)) : 45;
+    let allowance = baseRef > 0 ? Math.max(0, Math.round(maintFloor(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildWk) - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
     // Capture the week's +cap% ToF ceiling from day 0 — RAW recent-max weekly ToF × the (periodization- and
     // freshness-adjusted) cap multiplier. Same number the Volume-vs-Budget budget shows; the progressive-fill
@@ -1013,7 +1024,7 @@ export async function getWeekPlan(
       // drop the target.
       const w1 = tof.slice(j - 7, j).reduce((a, b) => a + (b || 0), 0);
       const w2 = tof.slice(j - 14, j - 7).reduce((a, b) => a + (b || 0), 0);
-      weekCeiling = Math.round(Math.max(w1, w2) * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay);
+      weekCeiling = Math.round(maintFloor(Math.max(w1, w2) * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, Math.max(w1, w2), buildWk));
     }
 
     const kind = template[d.getDay()];
