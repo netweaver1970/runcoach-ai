@@ -8,7 +8,7 @@ import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
-import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp } from '../src/services/trainingLoad';
+import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp, estimateDayTrimp } from '../src/services/trainingLoad';
 import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
@@ -451,11 +451,16 @@ export default function DailyCoachScreen() {
               {recoveryStale ? '⚠️ Estimate — watch not worn overnight' : (readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range')}
             </Text>
             <Text style={s.readyRange}>Target {strainObj?.safeLow ?? readiness.safeLow}–{strainObj?.safeHigh ?? readiness.safeHigh}% strain</Text>
-            {tof && (
-              <Text style={s.readyTof}>
-                7-day time on feet {tof.tof7d}m · +{capCtx?.capPct ?? 10}% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
-              </Text>
-            )}
+            {tof && (() => {
+              // Same reference as the 7-Day card: maintenance (CTL×7 in ToF-min) beside the ceiling, so the
+              // ceiling reads as HEADROOM (anchored to your recent peak), not a target.
+              const maintMin = target.ctl ? Math.round((target.ctl * 7) / (estimateDayTrimp('easy', 100) / 100)) : 0;
+              return (
+                <Text style={s.readyTof}>
+                  7-day time on feet {tof.tof7d}m{maintMin ? ` · maintenance ~${maintMin}m` : ''} · ceiling {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
+                </Text>
+              );
+            })()}
             {weather && targetIsToday && (
               <Text style={s.readyTof}>
                 🌡 {weatherSummary(weather)}{weather.place ? ` · ${weather.place}` : ''}

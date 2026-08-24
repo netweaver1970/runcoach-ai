@@ -8,7 +8,7 @@ import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
-import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, computeWorkoutLoad, trainingDayKey } from '../src/services/trainingLoad';
+import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, computeWorkoutLoad, trainingDayKey, estimateDayTrimp } from '../src/services/trainingLoad';
 import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, CoachPlan } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
@@ -369,11 +369,18 @@ export default function StrainDetailScreen() {
               {recoveryStale ? '⚠️ Estimate — watch not worn overnight' : (readiness.drivers.length ? readiness.drivers.join(' · ') : 'all signals in normal range')}
             </Text>
             <Text style={s.readyRange}>Target {strainToday?.safeLow ?? readiness.safeLow}–{strainToday?.safeHigh ?? readiness.safeHigh}% strain</Text>
-            {tof && (
-              <Text style={s.readyTof}>
-                7-day time on feet {tof.tof7d}m · +{capCtx?.capPct ?? 10}% cap {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
-              </Text>
-            )}
+            {tof && (() => {
+              // Show the SAME reference as the 7-Day card: what holds fitness (maintenance = CTL×7, in ToF-min
+              // via the easy rate) alongside the ceiling — so the ceiling reads as HEADROOM, not a target. The
+              // ceiling sits above maintenance because it's anchored to your recent PEAK week (anti-erosion +
+              // heat-credit), not this lighter week.
+              const maintMin = target.ctl ? Math.round((target.ctl * 7) / (estimateDayTrimp('easy', 100) / 100)) : 0;
+              return (
+                <Text style={s.readyTof}>
+                  7-day time on feet {tof.tof7d}m{maintMin ? ` · maintenance ~${maintMin}m` : ''} · ceiling {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
+                </Text>
+              );
+            })()}
             {weather && targetIsToday && (
               <Text style={s.readyTof}>
                 🌡 {weatherSummary(weather)}{weather.place ? ` · ${weather.place}` : ''}
