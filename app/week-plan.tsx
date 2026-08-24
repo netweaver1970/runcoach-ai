@@ -156,8 +156,9 @@ export default function WeekPlan() {
   const [periodLabel, setPeriodLabel] = useState('');
   const [raceWeek, setRaceWeek] = useState<RaceWeek | null>(null);
   const [shrink, setShrink] = useState(false);
-  const [thuDate, setThuDate] = useState<string | null>(null);   // the Thursday in the forward week (for the no-dance toggle)
-  const [danceOff, setDanceOff] = useState(false);               // is that Thursday marked "not dancing this week"?
+  const [commitDate, setCommitDate] = useState<string | null>(null);            // date of the forward week's standing commitment (e.g. dancing), whatever weekday
+  const [commitInfo, setCommitInfo] = useState<{ label: string; wd: string } | null>(null);
+  const [danceOff, setDanceOff] = useState(false);                              // is that day marked "skipping it this week"?
   useEffect(() => { getShrinkToFit().then(setShrink); }, []);
   const [err, setErr]     = useState<string | null>(null);
   const [busy, setBusy]   = useState(false);
@@ -242,10 +243,12 @@ export default function WeekPlan() {
         await saveWeekPlanCache({ date: todayKey, generatedAt, lastRunDate, days });
         setGenAt(generatedAt);
       }
-      // Surface the forward week's Thursday + whether it's marked "not dancing" (drives the toggle below).
-      const thu = days.find(d => new Date(d.date + 'T00:00:00').getDay() === 4);
-      setThuDate(thu?.date ?? null);
-      setDanceOff(thu ? (await getDanceOffDates()).has(thu.date) : false);
+      // Surface the forward week's standing commitment (dance night etc.) + whether it's marked "skip this week"
+      // (drives the toggle below). Found by the commitment itself, not a hardcoded weekday — resistant to schedule changes.
+      const cDay = days.find(d => d.commitment);
+      setCommitDate(cDay?.date ?? null);
+      setCommitInfo(cDay?.commitment ? { label: cDay.commitment, wd: cDay.weekday } : null);
+      setDanceOff(cDay ? (await getDanceOffDates()).has(cDay.date) : false);
 
       // Backward-looking ROLLING cap: each future run's trailing-7-day time-on-feet must not
       // exceed the 7-day window a week earlier by more than the cap %. Seed with the last 14 days
@@ -628,21 +631,24 @@ export default function WeekPlan() {
                     : 'Tight weeks: a quality that won’t fit is deferred to a later day.'}
           </Text>
 
-          {thuDate && (
-            <>
-              <TouchableOpacity
-                style={[s.btn, { backgroundColor: danceOff ? '#27ae60' : undefined }, busy && { opacity: 0.5 }]}
-                onPress={async () => { const on = await toggleDanceOff(thuDate); setDanceOff(on); build(true); }}
-                disabled={busy}
-              >
-                <Text style={s.btnText}>{danceOff ? '✓ Not dancing this Thu' : '🕺 Dancing Thursday'}</Text>
-              </TouchableOpacity>
-              <Text style={s.genLine}>
-                {danceOff ? 'Thursday is free to train this week — on a build week it becomes an easy run, adding the day the block needs to reach its peak.'
-                          : 'Thursday is kept rest for dancing. Tap if you’re NOT dancing this week to free it as a run.'}
-              </Text>
-            </>
-          )}
+          {commitDate && commitInfo && (() => {
+            const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
+            return (
+              <>
+                <TouchableOpacity
+                  style={[s.btn, { backgroundColor: danceOff ? '#27ae60' : undefined }, busy && { opacity: 0.5 }]}
+                  onPress={async () => { const on = await toggleDanceOff(commitDate); setDanceOff(on); build(true); }}
+                  disabled={busy}
+                >
+                  <Text style={s.btnText}>{danceOff ? `✓ Skipping ${commitInfo.label} this week` : `🕺 ${cap(commitInfo.label)} ${commitInfo.wd}`}</Text>
+                </TouchableOpacity>
+                <Text style={s.genLine}>
+                  {danceOff ? `${commitInfo.wd} is free to train this week — on a build week it becomes an easy run, adding the day the block needs to reach its peak.`
+                            : `${commitInfo.wd} is kept rest for ${commitInfo.label}. Tap if you’re skipping it this week to free it as a run.`}
+                </Text>
+              </>
+            );
+          })()}
 
           <TouchableOpacity style={[s.btn, busy && { opacity: 0.5 }]} onPress={() => build(true)} disabled={busy}>
             <Text style={s.btnText}>{busy ? 'Re-planning…' : '↻ Regenerate'}</Text>

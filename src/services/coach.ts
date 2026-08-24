@@ -685,6 +685,7 @@ export interface WeekPlanDay {
   kind?: string;       // resolved session kind: intervals|tempo|long|easy|rest — drives the synthesized structure + the UI label
   forced?: boolean;    // shrink-to-fit force-placed this short quality on its day — the screen must NOT re-trim it away
   runKm?: number;      // target distance (km) — shown instead of minutes when distance basis
+  commitment?: string; // standing commitment on this day (e.g. "dancing") — lets the UI find the day to offer the "not this week" toggle, whatever weekday it falls on
 }
 
 // Forward 7-day plan (tomorrow → +7), following the preferred weekly schedule but adjusted
@@ -1136,7 +1137,7 @@ export async function getWeekPlan(
       kind === 'flex'                 ? 'Easy recovery jog' : 'Easy aerobic Z2';
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
-    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm });
+    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm, commitment: commitments[d.getDay()]?.label });
   }
 
   // ── PROGRESSIVE FILL — trajectory-aware build instead of parking at maintenance ───────────────────────
