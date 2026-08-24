@@ -38,7 +38,7 @@ const CLIMATE_TINT: Record<Climate, string> = {
 // flat), plus the RAMP RATE = projected ΔCTL over the week, and the ACWR sweet-spot. All read straight off
 // the deterministic projection this screen already computes — no new model, so it can't disagree with the
 // chart below it.
-function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, floorBinding, capBinding, isDeload, minTSB, capPct, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; floorBinding: boolean; capBinding: boolean; isDeload: boolean; minTSB: number; capPct: number; s: any }) {
+function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, tsb, floorBinding, capBinding, isDeload, minTSB, capPct, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; tsb: number | null; floorBinding: boolean; capBinding: boolean; isDeload: boolean; minTSB: number; capPct: number; s: any }) {
   const ramp = projCtl - ctl0;            // CTL points / week (the PMC ramp rate)
   const maint = ctl0 * 7;                 // weekly load that holds CTL flat
   const overPct = maint > 0 ? Math.round(((plannedLoad - maint) / maint) * 100) : 0;
@@ -51,10 +51,17 @@ function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, floorBinding, capBin
   const inBand = acwr != null && acwr >= 0.8 && acwr <= 1.3;
   const acwrCol = acwr == null ? '#8a8f98' : inBand ? '#27ae60' : acwr > 1.5 ? '#e74c3c' : '#e67e22';
   const acwrWord = acwr == null ? '' : inBand ? 'sweet spot' : acwr > 1.5 ? 'spike risk' : acwr > 1.3 ? 'high' : 'detraining';
+  // A below-maintenance week is only a PROBLEM if you're fresh (detraining valley — raise the cap to build).
+  // If you came in FATIGUED — recent load spiked ATL, TSB is down near the floor — the ease is the plan
+  // ABSORBING that block on purpose, not a stall. Telling a fatigued athlete to "raise the cap % to build
+  // faster" is wrong; they need to consolidate. Distinguish the two by current form.
+  const absorbing = (tsb != null && tsb <= minTSB + 8) || (acwr != null && acwr > 1.15);
   const verdict =
     ramp > 10 ? 'Ease off — this ramp risks overreaching.'
     : (acwr != null && acwr > 1.5) ? 'Load is spiking vs your recent base — add easy volume, not intensity.'
     : (isDeload && ramp < 0.5) ? 'Deload week — easing on purpose to absorb load and freshen.'
+    : (belowMaint && capBinding && absorbing)
+        ? `Recovery week — you're absorbing your recent block (ACWR ${acwr?.toFixed(2) ?? '—'}${tsb != null ? `, TSB ${Math.round(tsb)}` : ''}). The plan eases so fatigue clears and CTL consolidates around ${Math.round(ctl0)} — it's banking your last weeks, not losing them. The budget returns as that load rolls off.`
     : (belowMaint && capBinding)
         ? `Held below maintenance by the +${capPct}%/wk volume cap — your recent load already used this week's budget, so it can't add more. It frees up as those days roll off; raise the cap % (Settings) to build faster.`
     : (belowMaint && floorBinding)
@@ -474,6 +481,7 @@ export default function WeekPlan() {
             plannedLoad={rows.reduce((a, r) => a + r.trimp, 0)}
             projCtl={rows[rows.length - 1]?.ctl ?? seed.ctl}
             acwr={acwrNow}
+            tsb={seed.ctl - seed.atl}
             capBinding={rows.some(r => r.capped)}
             floorBinding={rows.some(r => r.tsbTrim || r.floorRest)}
             isDeload={/deload/i.test(periodLabel)}
