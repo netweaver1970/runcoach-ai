@@ -1156,13 +1156,17 @@ export async function getWeekPlan(
       // builds). FLOOR: grow only until the day's OWN projected post-day TSB would reach here — a small buffer
       // over the hard floor so the fill never fights the screen's floor-trim, but low enough that a healthy week
       // still fills toward its ceiling (no regression to the flat-CTL under-build).
-      const growGateTSB  = minTSB + 4;
-      const growFloorTSB = minTSB + 2;
+      // BUILD weeks accumulate DEEPER fatigue on purpose — the deload that follows is what clears it — so on a
+      // build day the floor drops 4pt below the athlete's everyday floor (and the gate with it) so week 4 can
+      // reach a real PEAK instead of stalling at the leisure floor. Deload/leisure days snap back to minTSB.
       let ctlP = snap.ctl ?? 0, atlP = snap.atl ?? 0;   // seed from today (screen re-trims with today's run folded in)
       for (const o of out) {
         const preTSB = ctlP - atlP;
         const isEasy = o.kind === 'easy' || o.kind === 'flex';
         const isLong = o.kind === 'long';
+        const oBuild = periodization.on && cyclePhase(new Date(o.date + 'T00:00:00'), periodization).phase === 'build';
+        const growFloorTSB = oBuild ? Math.max(-25, minTSB - 2) : minTSB + 2;   // build weeks push ~4pt deeper
+        const growGateTSB  = growFloorTSB + 2;
         if (headroom >= 5 && o.intensity !== 'rest' && (isEasy || isLong) && preTSB >= growGateTSB) {
           // the most extra load this day can take while its OWN projected post-day TSB stays above the fill floor
           const tMax   = (ctlP * (1 - Lc) - atlP * (1 - La) - growFloorTSB) / (La - Lc);

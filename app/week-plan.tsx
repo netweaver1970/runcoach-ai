@@ -349,7 +349,10 @@ export default function WeekPlan() {
             mins = 0; taperRested = true;
           } else if (mins > 0 && !raceMode) {
             const floor = isLongDay ? LONG_FLOOR : MIN_QUALITY;
-            const tMax = (ctl * (1 - Lc) - atl * (1 - La) - minTSB) / (La - Lc); // max trimp that holds TSB ≥ minTSB
+            // BUILD weeks accumulate deeper fatigue on purpose (the deload clears it), so the form floor drops
+            // ~4pt below the everyday floor on a build day — letting week 4 peak — and snaps back for deload/leisure.
+            const tsbFloorDay = buildDay ? Math.max(-25, minTSB - 4) : minTSB;
+            const tMax = (ctl * (1 - Lc) - atl * (1 - La) - tsbFloorDay) / (La - Lc); // max trimp that holds TSB ≥ the day's floor
             // Trim toward the floor while the session would push form below minTSB (never trimming below the floor).
             for (let k = 0; k < 6 && mins > floor; k++) {
               const tr = estimateDayTrimp(d.intensity, mins, cal);
