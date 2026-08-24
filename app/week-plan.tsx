@@ -340,7 +340,14 @@ export default function WeekPlan() {
           const grossCap = maintFloorS(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildDay);
           const allowance = baseRef > 0 ? Math.max(0, Math.round(grossCap - prior6 - (longIdxW > i ? longReserveMin : 0))) : heatMin;
           const isLongDay = d.kind === 'long' && d.intensity !== 'rest';   // the long is protected from the VOLUME cap (not only when shrink-forced)
-          const volMin = d.intensity === 'rest' ? 0 : ((d.forced || raceMode || isLongDay) ? heatMin : Math.min(heatMin, allowance));
+          // TRUST THE PLANNER for volume. getWeekPlan already applied the +cap% cap, the maintenance floor, the
+          // tendon caps and the TSB-aware progressive fill — its runMinutes IS the prescription (and it's what
+          // the daily card + "next run" read). This screen only heat-adjusts for the day's forecast, PROJECTS
+          // the PMC columns forward, and applies the form-floor trim below. The old `Math.min(heatMin, allowance)`
+          // re-derived a SECOND rolling cap here that diverged from the planner and shrank build weeks
+          // (planner 230 → screen 188, an 18-min tempo down to 8, Fri rested). Single source of truth = the planner.
+          const volMin = d.intensity === 'rest' ? 0 : heatMin;
+          void allowance;   // still computed above for the cap-attribution flag; no longer gates the minutes
 
           let mins = volMin;
           let floorRested = false;
