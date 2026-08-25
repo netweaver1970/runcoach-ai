@@ -34,15 +34,6 @@
         "com.apple.developer.healthkit.background-delivery": true,
         "com.apple.security.application-groups": [
           "group.com.netweaver1970.runcoachai"
-        ],
-        "com.apple.developer.icloud-services": [
-          "CloudDocuments"
-        ],
-        "com.apple.developer.icloud-container-identifiers": [
-          "iCloud.com.netweaver1970.runcoachai"
-        ],
-        "com.apple.developer.ubiquity-container-identifiers": [
-          "iCloud.com.netweaver1970.runcoachai"
         ]
       }
     },
