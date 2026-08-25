@@ -28,8 +28,8 @@ const lat2px = (lat: number, z: number) => {
 };
 
 // ── Static map: OpenTopoMap tile grid + the route drawn as rotated View segments ──
-function StaticMap({ coords, start, width, height, line, c }: {
-  coords: [number, number][]; start: [number, number]; width: number; height: number; line: string; c: Palette;
+function StaticMap({ coords, start, here, width, height, line, c }: {
+  coords: [number, number][]; start: [number, number]; here: [number, number] | null; width: number; height: number; line: string; c: Palette;
 }) {
   if (width <= 0 || coords.length < 2) return <View style={{ width, height }} />;
   const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
@@ -55,6 +55,16 @@ function StaticMap({ coords, start, width, height, line, c }: {
       style={{ position: 'absolute', left: tx * TILE - ox, top: ty * TILE - oy, width: TILE, height: TILE }} />);
   }
   const pts = coords.map(px);
+  // travel-direction arrows (screen-space): id 0 = green + larger "start this way"; the rest are accent-coloured
+  // around the loop so clockwise vs counter-clockwise reads before you set off.
+  const ahead = Math.max(1, Math.floor(pts.length / 30));
+  const scrAng = (a: [number, number], b: [number, number]) => (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+  const arrows: { k: number; x: number; y: number; ang: number }[] = [];
+  for (let k = 0; k < 5; k++) {
+    const i = Math.floor((k / 5) * (pts.length - 1));
+    const j = Math.min(i + ahead, pts.length - 1);
+    if (i !== j) arrows.push({ k, x: pts[i][0], y: pts[i][1], ang: scrAng(pts[i], pts[j]) });
+  }
   const segs = pts.map((p, i) => {
     if (i === 0) return null;
     const [x1p, y1p] = pts[i - 1], [x2p, y2p] = p;
@@ -68,6 +78,20 @@ function StaticMap({ coords, start, width, height, line, c }: {
       {tiles}
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
+      {arrows.map(a => {
+        const big = a.k === 0, bl = big ? 15 : 9, bt = big ? 8 : 5;   // triangle points +x; rotate to heading
+        return <View key={`arw${a.k}`} pointerEvents="none" style={{
+          position: 'absolute', left: a.x - bl / 2, top: a.y - bt, width: 0, height: 0,
+          borderTopWidth: bt, borderBottomWidth: bt, borderLeftWidth: bl,
+          borderTopColor: 'transparent', borderBottomColor: 'transparent', borderLeftColor: big ? '#16a34a' : line,
+          transform: [{ rotate: `${a.ang}deg` }],
+        }} />;
+      })}
+      {here && (() => {
+        const [hx, hy] = px(here);
+        if (hx < -8 || hx > width + 8 || hy < -8 || hy > height + 8) return null;   // off the previewed loop
+        return <View key="here" pointerEvents="none" style={{ position: 'absolute', left: hx - 7, top: hy - 7, width: 14, height: 14, borderRadius: 7, backgroundColor: '#2f7bff', borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } }} />;
+      })()}
       <Text style={{ position: 'absolute', right: 4, bottom: 2, fontSize: 8.5, color: '#333', backgroundColor: '#ffffffaa', paddingHorizontal: 3, borderRadius: 2 }}>© OpenTopoMap (CC-BY-SA)</Text>
     </View>
   );
@@ -91,6 +115,7 @@ export default function WayfinderScreen() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [mapW, setMapW] = useState(0);
+  const [here, setHere] = useState<[number, number] | null>(null);   // live phone position, shown on the map
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -170,6 +195,25 @@ export default function WayfinderScreen() {
   const base = opts[sel];
   const cur: (RouteOption & { reachKm?: number }) | undefined =
     base ? (steered ? { ...base, ...steered } : base) : undefined;
+  const hasRoute = !!cur;
+
+  // While a loop is on screen, follow the phone's live GPS on the map — a glanceable backup if the watch map
+  // isn't detailed enough. Foreground-only, high accuracy; the subscription stops when you leave the screen.
+  useEffect(() => {
+    if (!hasRoute) { setHere(null); return; }
+    let alive = true; let sub: any = null;
+    (async () => {
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted' || !alive) return;
+        sub = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, distanceInterval: 4, timeInterval: 2000 },
+          pos => setHere([pos.coords.longitude, pos.coords.latitude]),
+        );
+      } catch { /* ignore — map still shows the loop without a live dot */ }
+    })();
+    return () => { alive = false; sub?.remove(); };
+  }, [hasRoute]);
   const [watchMsg, setWatchMsg] = useState('');
   const sendToWatch = useCallback(async () => {
     if (!cur) return;
@@ -238,7 +282,7 @@ export default function WayfinderScreen() {
                 </View>
 
                 {/* Map preview */}
-                {cur && mapW > 0 && <StaticMap coords={cur.coords} start={start} width={mapW} height={Math.round(mapW * 0.92)} line={c.accent} c={c} />}
+                {cur && mapW > 0 && <StaticMap coords={cur.coords} start={start} here={here} width={mapW} height={Math.round(mapW * 0.92)} line={c.accent} c={c} />}
 
                 {/* Selected stats + export */}
                 {cur && (
