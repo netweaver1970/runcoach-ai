@@ -901,6 +901,17 @@ export default function StatisticsScreen() {
         )}
       </View>
     ),
+    // The PMC (CTL/ATL/TSB history) has its own dedicated screen — this card links to it instead of
+    // duplicating the chart. It sits in the layout like any other card (reorder/hide via Customise).
+    pmc: (
+      <TouchableOpacity style={s.pmcLink} onPress={() => router.push('/training-load' as any)} activeOpacity={0.7}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.pmcLinkTitle}>Fitness / Fatigue / Form</Text>
+          <Text style={s.pmcLinkSub}>CTL · ATL · TSB over time — the PMC</Text>
+        </View>
+        <Text style={s.pmcLinkArrow}>›</Text>
+      </TouchableOpacity>
+    ),
     weeklyTss: (
       <View style={s.card}>
         <CardHead title="Weekly TSS">
@@ -1101,14 +1112,6 @@ export default function StatisticsScreen() {
       )}
 
       <ScrollView contentContainerStyle={s.scroll} onLayout={onLayout}>
-        {/* Fitness/Fatigue/Form (the PMC) has its own dedicated screen — link to it rather than duplicate the chart. */}
-        <TouchableOpacity style={s.pmcLink} onPress={() => router.push('/training-load' as any)} activeOpacity={0.7}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.pmcLinkTitle}>Fitness / Fatigue / Form</Text>
-            <Text style={s.pmcLinkSub}>CTL · ATL · TSB over time — the PMC</Text>
-          </View>
-          <Text style={s.pmcLinkArrow}>›</Text>
-        </TouchableOpacity>
         {layout.filter(l => l.on).map(l => <React.Fragment key={l.id}>{cardNodes[l.id]}</React.Fragment>)}
       </ScrollView>
 
