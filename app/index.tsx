@@ -839,6 +839,13 @@ export default function HomeScreen() {
           <Text style={styles.coachBtnText}>📊 Statistics</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={[styles.coachBtn, styles.coachBtnSecondary]}
+          onPress={() => router.push('/wayfinder' as any)}
+        >
+          <Text style={styles.coachBtnText}>🧭 Route</Text>
+        </TouchableOpacity>
+
         {/* Stats row */}
         <View style={styles.statsRow}>
           <TouchableOpacity
