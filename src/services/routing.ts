@@ -96,6 +96,53 @@ export async function orsRoundTripOptions(opts: {
   return out;
 }
 
+/**
+ * Actively STEER a loop toward a bearing (not a random seed): two waypoints in a wedge around `headingDeg` at
+ * `reachKm` out, routed as a loop. A narrower wedge + bigger reach pushes the far point FURTHER from home in
+ * that direction — the "amplify / explore further" control. `radiuses` snaps a waypoint that lands in a field
+ * or forest to the nearest path (avoids ORS 2099 "no route"). Returns the loop + how far it actually reaches.
+ */
+export async function orsDirectionalLoop(opts: {
+  lon: number; lat: number; headingDeg: number; reachKm: number; spreadDeg?: number; profile?: RouteProfile;
+}): Promise<(RouteLoop & { reachKm: number }) | null> {
+  const key = await getOrsApiKey();
+  if (!key) return null;
+  const spread = opts.spreadDeg ?? 60;
+  const kmLat = 1 / 111.32, kmLon = 1 / (111.32 * Math.cos(opts.lat * Math.PI / 180));
+  const proj = (brg: number, d: number): [number, number] => {
+    const r = (brg * Math.PI) / 180;
+    return [opts.lon + d * kmLon * Math.sin(r), opts.lat + d * kmLat * Math.cos(r)];
+  };
+  const v1 = proj(opts.headingDeg - spread / 2, opts.reachKm);
+  const v2 = proj(opts.headingDeg + spread / 2, opts.reachKm);
+  const profile = opts.profile ?? 'foot-hiking';
+  try {
+    const res = await fetch(`${ORS_BASE}/${profile}/geojson`, {
+      method: 'POST',
+      headers: { Authorization: key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinates: [[opts.lon, opts.lat], v1, v2, [opts.lon, opts.lat]], radiuses: [-1, 1500, 1500, -1], extra_info: ['waytype'] }),
+    });
+    if (!res.ok) return null;
+    const j: any = await res.json();
+    const f = j?.features?.[0];
+    if (!f) return null;
+    const sm = f.properties?.summary ?? {};
+    const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
+    let trail = 0, tot = 0;
+    for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; }
+    const coords: [number, number][] = (f.geometry?.coordinates ?? []).map((cc: number[]) => [cc[0], cc[1]] as [number, number]);
+    let maxD = 0;
+    for (const cc of coords) { const dx = (cc[0] - opts.lon) * 111.32 * Math.cos(opts.lat * Math.PI / 180), dy = (cc[1] - opts.lat) * 111.32; maxD = Math.max(maxD, Math.hypot(dx, dy)); }
+    return {
+      distanceKm: (sm.distance ?? 0) / 1000,
+      ascentM: Math.round(sm.ascent ?? 0),
+      coords,
+      trailPct: tot > 0 ? Math.round((trail / tot) * 100) : 0,
+      reachKm: Math.round(maxD * 10) / 10,
+    };
+  } catch { return null; }
+}
+
 /** Quick validity check for the Settings "Save" flow — a tiny round_trip against a fixed point. */
 export async function validateOrsKey(key: string): Promise<{ ok: boolean; error?: string }> {
   if (!key.trim()) return { ok: false, error: 'Enter a key first.' };
