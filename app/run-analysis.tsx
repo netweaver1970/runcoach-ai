@@ -6,6 +6,7 @@ import {
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import MarkdownBody from '../src/MarkdownBody';
 import { loadLatestRunAnalysis, maybeAnalyzeLatestRun, RunAnalysis } from '../src/services/runAnalysis';
+import { loadRunMetricsGlossary, RunMetricsGlossary } from '../src/services/runMetrics';
 import { TABLE_CELL } from '../src/mdTable';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { useLLMReady } from '../src/hooks/useLLMReady';
@@ -19,6 +20,8 @@ export default function RunAnalysisScreen() {
   const md = useThemedStyles(makeMarkdownStyles);
 
   const [analysis, setAnalysis] = useState<RunAnalysis | null>(null);
+  const [metrics, setMetrics]   = useState<RunMetricsGlossary | null>(null);
+  const [showGloss, setShowGloss] = useState(true);   // explanations expanded by default (that's the point)
   const [loading, setLoading]   = useState(true);
   const [regenning, setRegenning] = useState(false);
   const [error, setError]       = useState<string | null>(null);
@@ -28,6 +31,7 @@ export default function RunAnalysisScreen() {
     const a = await loadLatestRunAnalysis();
     setAnalysis(a);
     setLoading(false);
+    loadRunMetricsGlossary(a?.runUUID).then(setMetrics).catch(() => setMetrics(null));
   }, []);
 
   useEffect(() => { loadCached(); }, [loadCached]);
@@ -113,6 +117,30 @@ export default function RunAnalysisScreen() {
             <MarkdownBody content={analysis.full} style={md} c={c} />
           </View>
 
+          {/* TrainingPeaks-style metrics — plain-English glossary + this run's values + light history */}
+          {metrics && metrics.entries.length > 0 && (
+            <View style={styles.glossCard}>
+              <TouchableOpacity style={styles.glossHead} onPress={() => setShowGloss(v => !v)} activeOpacity={0.7}>
+                <Text style={styles.glossTitle}>What these numbers mean</Text>
+                <Text style={styles.glossToggle}>{showGloss ? 'Hide' : 'Show'}</Text>
+              </TouchableOpacity>
+              {showGloss && metrics.entries.map((m, i) => {
+                const tone = m.tone === 'good' ? '#27ae60' : m.tone === 'watch' ? '#e67e22' : c.textSub;
+                return (
+                  <View key={m.key} style={[styles.metricRow, i > 0 && styles.metricDivider]}>
+                    <View style={styles.metricTop}>
+                      <Text style={styles.metricLabel}>{m.label}</Text>
+                      <Text style={[styles.metricValue, { color: m.tone === 'good' ? '#27ae60' : m.tone === 'watch' ? '#e67e22' : c.text }]}>{m.value}</Text>
+                    </View>
+                    {m.read ? <Text style={[styles.metricRead, { color: tone }]}>{m.read}</Text> : null}
+                    <Text style={styles.metricPlain}>{m.plain}</Text>
+                  </View>
+                );
+              })}
+              <Text style={styles.glossFoot}>Trends over time live on the Statistics screen.</Text>
+            </View>
+          )}
+
           <Text style={styles.meta}>Generated {genLabel}</Text>
         </ScrollView>
       )}
@@ -156,6 +184,23 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   },
   meta: { fontSize: 12, color: c.textFaint, marginTop: 12, textAlign: 'center' },
   errorText: { fontSize: 14, color: '#c0392b', textAlign: 'center', marginVertical: 10, lineHeight: 20 },
+
+  glossCard: {
+    backgroundColor: c.surface, borderRadius: 14, padding: 16, marginTop: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.shadowOpacity, shadowRadius: 6, elevation: 3,
+  },
+  glossHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  glossTitle: { fontSize: 16, fontWeight: '700', color: c.text },
+  glossToggle: { fontSize: 13, fontWeight: '600', color: c.accent },
+  metricRow: { paddingVertical: 10 },
+  metricDivider: { borderTopWidth: 1, borderTopColor: c.border },
+  metricTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  metricLabel: { fontSize: 14, fontWeight: '700', color: c.text, flex: 1, paddingRight: 8 },
+  metricValue: { fontSize: 16, fontWeight: '800' },
+  metricRead: { fontSize: 12.5, fontWeight: '600', marginTop: 3 },
+  metricPlain: { fontSize: 12.5, color: c.textSub, marginTop: 3, lineHeight: 18 },
+  glossFoot: { fontSize: 11, color: c.textFaint, marginTop: 12, fontStyle: 'italic' },
 });
 
 const makeMarkdownStyles = (c: Palette) => StyleSheet.create({
