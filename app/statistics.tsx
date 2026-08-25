@@ -239,12 +239,13 @@ function CardHead({ title, children }: { title: string; children?: React.ReactNo
 // ─── Time-windowed series chart: cursor + events + date x-axis + optional band/refs/trend ─────────
 const TX_H = 20;
 interface TPt { t: number; v: number; color?: string }
-function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries }: {
+function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries, pts3, color3 }: {
   pts: TPt[]; t0: number; t1: number; color: string;
   band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
   trend?: boolean; events: Ev[]; showEvents: boolean; yfmt: (v: number) => string; innerW: number;
   pts2?: TPt[]; color2?: string; y2fmt?: (v: number) => string; y2label?: string;
   bandSeries?: { t: number; lo: number; hi: number }[];
+  pts3?: TPt[]; color3?: string;   // a SECOND line on the SAME primary axis (e.g. ATL drawn alongside CTL)
 }) {
   const { c } = useTheme();
   const ch = useThemedStyles(makeCh);
@@ -271,7 +272,11 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
 
   const bandWin = (bandSeries ?? []).filter(b => b.t >= t0 && b.t <= t1).sort((a, b) => a.t - b.t);
   const bandYs = bandWin.flatMap(b => [b.lo, b.hi]);
-  const vals = win.map(p => p.v);
+  // Optional SECOND same-axis line (e.g. ATL beside CTL) — shares the primary scale so the two are comparable.
+  const win3 = (pts3 ?? []).filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
+  const has3 = win3.length >= 2;
+  const c3 = color3 ?? '#ef4444';
+  const vals = [...win.map(p => p.v), ...(has3 ? win3.map(p => p.v) : [])];
   const lo = Math.min(...vals, band ? band[0] : Infinity, ...(refs?.map(r => r.y) ?? []), ...(bandYs.length ? bandYs : [Infinity]));
   const hi = Math.max(...vals, band ? band[1] : -Infinity, ...(refs?.map(r => r.y) ?? []), ...(bandYs.length ? bandYs : [-Infinity]));
   const pad = (hi - lo) * 0.15 || 1, yLo = lo - pad, yHi = hi + pad;
@@ -291,6 +296,7 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
   const yearly = span > 2.2 * 365 * 86400000;
   const evIn = showEvents ? events.filter(e => e.t >= t0 && e.t <= t1) : [];
   const nearest = cur == null ? win[win.length - 1] : win.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win[0]);
+  const near3 = has3 ? (cur == null ? win3[win3.length - 1] : win3.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win3[0])) : null;
   const nearEv = cur != null ? evIn.map(e => ({ e, dx: Math.abs(x(e.t) - x(cur)) })).sort((a, b) => a.dx - b.dx)[0] : null;
   const readEv = nearEv && nearEv.dx < 12 ? nearEv.e : null;
   let trendEl: React.ReactNode = null;
@@ -311,6 +317,7 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           {readEv ? <Text style={{ color: EV_COLOR[readEv.category] ?? c.textSub, fontSize: 11.5, fontWeight: '700' }} numberOfLines={1}>{readEv.label}</Text>
                   : <Text style={{ color, fontSize: 13, fontWeight: '800' }}>{yfmt(nearest.v)}</Text>}
+          {has3 && near3 && !readEv ? <Text style={{ color: c3, fontSize: 13, fontWeight: '800', marginLeft: 8 }}>{yfmt(near3.v)}</Text> : null}
           {has2 && near2 && !readEv ? <Text style={{ color: c2, fontSize: 12, fontWeight: '700', marginLeft: 8 }}>{f2(near2.v)}{y2label ? ` ${y2label}` : ''}</Text> : null}
         </View>
       </View>
@@ -325,6 +332,7 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
           {bandWin.map((b, i) => { const xL = x(b.t); const gap = (i < bandWin.length - 1 ? x(bandWin[i + 1].t) : xL + 3) - xL; const w = Math.min(Math.max(3, gap), plotW * 0.05); const top = toY(b.hi); return <View key={`bd${i}`} pointerEvents="none" style={{ position: 'absolute', left: xL - w / 2, top, width: Math.max(2, w), height: Math.max(1, toY(b.lo) - top), backgroundColor: '#3B82F61f' }} />; })}
           {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
           {has2 && win2.map((p, i) => { if (i === 0) return null; const x1 = x(win2[i - 1].t), y1 = toY2(win2[i - 1].v), x2 = x(p.t), y2 = toY2(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s2${i}`} pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c2, opacity: 0.5, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
+          {has3 && win3.map((p, i) => { if (i === 0) return null; const x1 = x(win3[i - 1].t), y1 = toY(win3[i - 1].v), x2 = x(p.t), y2 = toY(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s3${i}`} pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c3, opacity: 0.9, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
           {win.map((p, i) => { if (i === 0) return null; const x1 = x(win[i - 1].t), y1 = toY(win[i - 1].v), x2 = x(p.t), y2 = toY(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s${i}`} style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
           {win.map((p, i) => <View key={`d${i}`} style={{ position: 'absolute', left: x(p.t) - 2.5, top: toY(p.v) - 2.5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.color ?? color, borderWidth: 1, borderColor: c.surface }} />)}
           {trendEl}
@@ -709,6 +717,7 @@ export default function StatisticsScreen() {
   const [ef, setEf] = useState<EfPoint[]>([]);
   const [zones, setZones] = useState<ZoneSummary | null>(null);
   const [acwr, setAcwr] = useState<AcwrPoint[]>([]);
+  const [pmc, setPmc] = useState<{ date: string; ctl: number; atl: number; tsb: number }[]>([]);
   const [dc, setDc] = useState<DecouplePoint[] | null>(null);
   const [dcProg, setDcProg] = useState<{ done: number; total: number } | null>(null);
   const [allRuns, setAllRuns] = useState<any[]>([]);
@@ -744,7 +753,13 @@ export default function StatisticsScreen() {
       setZones(zoneSummary(runs, 56, (snap as any)?.estimatedMaxHR || 188));
       setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));   // instant, short (~45d) — replaced below
       // Full-history CTL/ATL for ACWR (snapshot only holds ~45d), + body-weight overlay for the EC chart.
-      fetchTrainingLoadHistory(24).then(load => setAcwr(acwrSeries(load))).catch(() => {});
+      fetchTrainingLoadHistory(24).then(load => {
+        setAcwr(acwrSeries(load));
+        const arr = (load ?? []).filter((e: any) => e && e.date).map((e: any) => ({ date: e.date, ctl: e.ctl ?? 0, atl: e.atl ?? e.cardioLoad ?? 0, tsb: e.tsb ?? ((e.ctl ?? 0) - (e.atl ?? 0)) }));
+        // CTL/ATL are smooth EWMAs — downsample to ≤365 pts so the 3-line chart stays light on the 'All' range.
+        const step = Math.max(1, Math.ceil(arr.length / 365));
+        setPmc(step > 1 ? arr.filter((_, i) => i % step === 0 || i === arr.length - 1) : arr);
+      }).catch(() => {});
       fetchBodyMassHistory(24).then(w => setWt((w ?? []).filter(p => p.value > 0).map(p => ({ t: tOf(p.date), v: p.value })))).catch(() => {});
       // Power curve (fetches run detail with progress).
       const cur = await computePowerCurve(runs, (done, total) => setProgress({ done, total }));
@@ -1013,6 +1028,18 @@ export default function StatisticsScreen() {
           A mostly-green base with a little red = well polarised.
         </CardHead>
         <StackedZoneChart weeks={zoneWeeks} t0={t0} t1={t1} events={events} showEvents={showEvents} innerW={innerW} />
+      </View>
+    ) : null,
+    pmc: pmc.length >= 3 ? (
+      <View style={s.card}>
+        <CardHead title="Fitness / Fatigue / Form (PMC)">
+          TrainingPeaks' core chart. <Text style={{ color: CTL_BLUE, fontWeight: '800' }}>CTL</Text> = fitness (42-day load) · <Text style={{ color: '#ef4444', fontWeight: '800' }}>ATL</Text> = fatigue (7-day load) · <Text style={{ color: '#f59e0b', fontWeight: '800' }}>TSB</Text> = form (fitness − fatigue, right axis). Rising CTL = getting fitter; negative TSB = training hard, positive = fresh/tapered.
+          {pmc.length ? `  Now: CTL ${Math.round(pmc[pmc.length - 1].ctl)} · ATL ${Math.round(pmc[pmc.length - 1].atl)} · TSB ${pmc[pmc.length - 1].tsb >= 0 ? '+' : ''}${Math.round(pmc[pmc.length - 1].tsb)}.` : ''}
+        </CardHead>
+        <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} yfmt={(v) => String(Math.round(v))}
+          pts={pmc.map(p => ({ t: tOf(p.date), v: p.ctl }))}
+          pts3={pmc.map(p => ({ t: tOf(p.date), v: p.atl }))} color3="#ef4444"
+          pts2={pmc.map(p => ({ t: tOf(p.date), v: p.tsb }))} color2="#f59e0b" y2fmt={(v) => `${v >= 0 ? '+' : ''}${Math.round(v)}`} y2label="TSB" />
       </View>
     ) : null,
     acwr: acwr.length >= 3 ? (

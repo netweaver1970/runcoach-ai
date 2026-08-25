@@ -2,13 +2,14 @@
 import * as FileSystem from 'expo-file-system';
 
 export type StatCardId =
-  | 'performance' | 'weeklyTss' | 'pdc' | 'race' | 'ef' | 'ec' | 'se'
+  | 'performance' | 'pmc' | 'weeklyTss' | 'pdc' | 'race' | 'ef' | 'ec' | 'se'
   | 'intensity' | 'mix' | 'acwr' | 'decoupling' | 'volume';
 
 export interface StatCard { id: StatCardId; on: boolean }
 
 export const STAT_CARD_TITLES: Record<StatCardId, string> = {
   performance: 'Performance',
+  pmc:        'Fitness / Fatigue / Form (PMC)',
   weeklyTss:  'Weekly TSS',
   pdc:        'Power–Duration Curve',
   race:       'Race Predictor',
@@ -25,7 +26,7 @@ export const STAT_CARD_TITLES: Record<StatCardId, string> = {
 // Default order = the historical top-to-bottom order; everything enabled. (Performance leads — it's the
 // headline overall-trajectory metric, moved here from the home screen.)
 export const DEFAULT_STATS_LAYOUT: StatCard[] = [
-  'performance', 'weeklyTss', 'pdc', 'race', 'ef', 'ec', 'se', 'intensity', 'mix', 'acwr', 'decoupling', 'volume',
+  'performance', 'pmc', 'weeklyTss', 'pdc', 'race', 'ef', 'ec', 'se', 'intensity', 'mix', 'acwr', 'decoupling', 'volume',
 ].map(id => ({ id: id as StatCardId, on: true }));
 
 const ALL_IDS = DEFAULT_STATS_LAYOUT.map(c => c.id);
