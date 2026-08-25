@@ -28,6 +28,7 @@ import {
 import { getAgenticMode, setAgenticMode } from '../src/services/agent';
 import { loadTranscriptionConfig, saveTranscriptionConfig, STT_PRESETS, matchPreset } from '../src/services/transcription';
 import { getFlightApiKey, setFlightApiKey } from '../src/services/flightLookup';
+import { getOrsApiKey, setOrsApiKey, validateOrsKey } from '../src/services/routing';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun, writeZonesFileFrom } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
@@ -76,6 +77,9 @@ export default function SettingsScreen() {
   const [sttSaved,    setSttSaved]    = useState(false);
   const [flightKey,   setFlightKey]   = useState('');
   const [flightSaved, setFlightSaved] = useState(false);
+  const [orsKey,      setOrsKey]      = useState('');
+  const [orsSaved,    setOrsSaved]    = useState(false);
+  const [orsBusy,     setOrsBusy]     = useState(false);
   const [model,         setModel]         = useState('');
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
@@ -463,6 +467,20 @@ export default function SettingsScreen() {
     setFlightSaved(true); setTimeout(() => setFlightSaved(false), 2000);
   }, [flightKey]);
 
+  // ── Route generation (OpenRouteService) — powers Wayfinder round-trip loops from the coach's distance ──
+  useEffect(() => { getOrsApiKey().then(setOrsKey).catch(() => {}); }, []);
+  const handleOrsSave = useCallback(async () => {
+    setOrsBusy(true);
+    const v = await validateOrsKey(orsKey);
+    if (!orsKey.trim() || v.ok) {
+      await setOrsApiKey(orsKey.trim());
+      setOrsSaved(true); setTimeout(() => setOrsSaved(false), 2000);
+    } else {
+      Alert.alert('Key not verified', v.error ?? 'Could not validate the key.');
+    }
+    setOrsBusy(false);
+  }, [orsKey]);
+
   // Reliable paste for the secure key fields: iOS is flaky about showing the long-press "Paste" callout on
   // secureTextEntry inputs (worse with Universal Clipboard's on-demand fetch from a Mac). Reading the
   // clipboard directly grabs the same content — including a key copied on the Mac — in one tap.
@@ -827,6 +845,34 @@ export default function SettingsScreen() {
           <View style={styles.row}>
             <TouchableOpacity style={[styles.btn, flightSaved && styles.btnSuccess]} onPress={handleFlightSave}>
               <Text style={styles.btnText}>{flightSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+        </Section>
+
+        {/* Route generation (Wayfinder) — OpenRouteService round-trip loops from the coach's prescribed distance. */}
+        <Section title="Route Generation" cat="coaching">
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.fieldLabel}>OpenRouteService key</Text>
+            <TouchableOpacity onPress={() => pasteInto(setOrsKey, () => setOrsSaved(false))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ color: c.accent, fontWeight: '600', fontSize: 13 }}>📋 Paste</Text>
+            </TouchableOpacity>
+          </View>
+          <TextInput
+            style={[styles.input, styles.apiKeyInput]}
+            value={orsKey}
+            onChangeText={t => { setOrsKey(t); setOrsSaved(false); }}
+            placeholder="ORS API token"
+            placeholderTextColor="#bbb"
+            autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" spellCheck={false} secureTextEntry
+          />
+          <Text style={styles.hint}>
+            Generates a running loop of your prescribed distance from where you are, favouring trails when you want them.
+            Get a FREE key: openrouteservice.org → sign up → Dashboard → request a token → paste it here.
+            Only your start point + target distance leave the phone.
+          </Text>
+          <View style={styles.row}>
+            <TouchableOpacity style={[styles.btn, orsSaved && styles.btnSuccess]} onPress={handleOrsSave} disabled={orsBusy}>
+              <Text style={styles.btnText}>{orsBusy ? 'Checking…' : orsSaved ? '✓ Saved' : 'Save & verify'}</Text>
             </TouchableOpacity>
           </View>
         </Section>
