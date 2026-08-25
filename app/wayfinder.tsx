@@ -12,6 +12,7 @@ import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getOrsApiKey, orsRoundTripOptions, orsDirectionalLoop, RouteOption, RouteLoop } from '../src/services/routing';
+import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
 
@@ -169,6 +170,13 @@ export default function WayfinderScreen() {
   const base = opts[sel];
   const cur: (RouteOption & { reachKm?: number }) | undefined =
     base ? (steered ? { ...base, ...steered } : base) : undefined;
+  const [watchMsg, setWatchMsg] = useState('');
+  const sendToWatch = useCallback(async () => {
+    if (!cur) return;
+    const ok = await sendRouteToWatch(cur, `${cur.heading} · ${cur.distanceKm.toFixed(1)}km`);
+    setWatchMsg(ok ? '✓ Sent to watch' : 'Watch not reachable — open the RunCoach watch app');
+    setTimeout(() => setWatchMsg(''), 2500);
+  }, [cur]);
 
   return (
     <SafeAreaView style={s.container}>
@@ -243,6 +251,12 @@ export default function WayfinderScreen() {
                       {cur.reachKm == null && cur.ascentM > 0 && <View style={s.stat}><Text style={s.statV}>{cur.ascentM}</Text><Text style={s.statL}>m up</Text></View>}
                     </View>
                     <TouchableOpacity style={s.btn} onPress={exportGpx}><Text style={s.btnT}>↑ Export GPX</Text></TouchableOpacity>
+                    {watchRouteAvailable() && (
+                      <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={sendToWatch}>
+                        <Text style={[s.btnT, { color: c.text }]}>⌚ Send to Watch</Text>
+                      </TouchableOpacity>
+                    )}
+                    {watchMsg ? <Text style={[s.hint, { textAlign: 'center' }]}>{watchMsg}</Text> : null}
                   </View>
                 )}
               </>

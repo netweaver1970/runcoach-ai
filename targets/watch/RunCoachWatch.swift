@@ -63,9 +63,13 @@ final class KPIStore: NSObject, ObservableObject, WCSessionDelegate {
   }
 
   private func ingest(_ context: [String: Any]) {
-    guard let json = context["json"] as? String, let data = json.data(using: .utf8),
-          let p = try? JSONDecoder().decode(KPIPayload.self, from: data) else { return }
-    DispatchQueue.main.async { self.payload = p; self.persist(data, p) }
+    guard let json = context["json"] as? String, let data = json.data(using: .utf8) else { return }
+    // Same channel carries KPIs OR a Wayfinder route — try KPIs first, then a route.
+    if let p = try? JSONDecoder().decode(KPIPayload.self, from: data) {
+      DispatchQueue.main.async { self.payload = p; self.persist(data, p) }
+    } else if let r = try? JSONDecoder().decode(RoutePayload.self, from: data), r.type == "route" {
+      RouteStore.shared.setRoute(r)
+    }
   }
 
   // WCSession delivers the latest state via application context + immediate messages.

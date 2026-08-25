@@ -49,18 +49,27 @@ private func contextCaption(_ kpi: KPI) -> String? {
 // ─── Root: hierarchical list of KPIs (tap one to open its graph) ───────────────
 struct ContentView: View {
   @EnvironmentObject var store: KPIStore
+  @ObservedObject var routeStore = RouteStore.shared
 
   var body: some View {
     NavigationStack {
-      if let p = store.payload, !p.kpis.isEmpty {
+      if store.payload?.kpis.isEmpty == false || routeStore.route != nil {
         List {
-          ForEach(p.kpis) { kpi in
-            NavigationLink(value: kpi) { KPIRow(kpi: kpi, selected: kpi.key == p.selected) }
+          if let r = routeStore.route {
+            NavigationLink { RouteView() } label: {
+              Label("\(r.name) · \(String(format: "%.1f", r.distanceKm)) km", systemImage: "map.fill")
+                .foregroundColor(.pink)
+            }
           }
-          if p.updatedAt > 0 {
-            Text("Updated \(relTime(p.updatedAt))")
-              .font(.system(size: 11)).foregroundColor(.secondary)
-              .listRowBackground(Color.clear)
+          if let p = store.payload {
+            ForEach(p.kpis) { kpi in
+              NavigationLink(value: kpi) { KPIRow(kpi: kpi, selected: kpi.key == p.selected) }
+            }
+            if p.updatedAt > 0 {
+              Text("Updated \(relTime(p.updatedAt))")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+                .listRowBackground(Color.clear)
+            }
           }
         }
         .navigationTitle("RunCoach")
