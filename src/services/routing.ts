@@ -69,6 +69,33 @@ export async function orsRoundTrip(opts: {
   } catch { return null; }
 }
 
+const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+export interface RouteOption extends RouteLoop { seed: number; headingDeg: number; heading: string; }
+
+/**
+ * Generate several loops (one per seed) and LABEL each by the compass direction it heads — the basis for the
+ * Garmin-style "pick a heading / explore that way" chooser (the runner usually knows which way the green is).
+ * Drops loops whose length is wildly off target (round_trip occasionally overshoots badly). Sequential to stay
+ * gentle on the free-tier rate limit.
+ */
+export async function orsRoundTripOptions(opts: {
+  lon: number; lat: number; km: number; count?: number; profile?: RouteProfile;
+}): Promise<RouteOption[]> {
+  const count = opts.count ?? 6;
+  const out: RouteOption[] = [];
+  for (let seed = 1; seed <= count; seed++) {
+    const loop = await orsRoundTrip({ lon: opts.lon, lat: opts.lat, km: opts.km, seed, profile: opts.profile });
+    if (!loop || loop.coords.length < 2) continue;
+    if (loop.distanceKm > opts.km * 1.6 || loop.distanceKm < opts.km * 0.6) continue;   // drop gross over/undershoots
+    let mx = 0, my = 0; for (const c of loop.coords) { mx += c[0]; my += c[1]; }
+    mx /= loop.coords.length; my /= loop.coords.length;
+    const dLon = (mx - opts.lon) * Math.cos(opts.lat * Math.PI / 180), dLat = my - opts.lat;
+    const brg = ((Math.atan2(dLon, dLat) * 180 / Math.PI) + 360) % 360;
+    out.push({ ...loop, seed, headingDeg: Math.round(brg), heading: DIRS[Math.round(brg / 45) % 8] });
+  }
+  return out;
+}
+
 /** Quick validity check for the Settings "Save" flow — a tiny round_trip against a fixed point. */
 export async function validateOrsKey(key: string): Promise<{ ok: boolean; error?: string }> {
   if (!key.trim()) return { ok: false, error: 'Enter a key first.' };
