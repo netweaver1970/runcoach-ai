@@ -38,6 +38,13 @@ function bboxCenter(coords: [number, number][]): [number, number] {
   const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
   return [(Math.min(...lons) + Math.max(...lons)) / 2, (Math.min(...lats) + Math.max(...lats)) / 2];
 }
+// Route-progress colour: green (start) → amber (middle) → red (finish).
+function gradeColor(t: number): string {
+  const stops = [[22, 163, 74], [234, 179, 8], [220, 38, 38]];
+  const seg = t < 0.5 ? 0 : 1, lt = t < 0.5 ? t / 0.5 : (t - 0.5) / 0.5;
+  const a = stops[seg], b = stops[seg + 1];
+  return `rgb(${Math.round(a[0] + (b[0] - a[0]) * lt)},${Math.round(a[1] + (b[1] - a[1]) * lt)},${Math.round(a[2] + (b[2] - a[2]) * lt)})`;
+}
 
 // Largest zoom at which the route bbox still fits the view (with padding) — the "fit whole loop" level.
 function fitZoom(coords: [number, number][], width: number, height: number): number {
@@ -105,7 +112,8 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
       {arrows.map(a => {
-        const big = a.k === 0, bl = big ? 16 : 11, bt = big ? 9 : 6;   // triangle points +x; rotate to heading
+        const big = a.k === 0, bl = big ? 16 : 13, bt = big ? 4.5 : 3.5;   // slender dart, points +x; rotate to heading
+        const col = gradeColor(a.k / Math.max(1, nArrows - 1));            // green start → red finish
         const tri = (w: number, h: number, color: string, key: string) => (
           <View key={key} pointerEvents="none" style={{
             position: 'absolute', left: a.x - w / 2, top: a.y - h, width: 0, height: 0,
@@ -114,8 +122,8 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
             transform: [{ rotate: `${a.ang}deg` }],
           }} />
         );
-        // dark casing behind a white (or green start) fill → chevrons stand out on the coloured route line
-        return [tri(bl + 3, bt + 2, 'rgba(0,0,0,0.5)', `ac${a.k}`), tri(bl, bt, big ? '#16a34a' : '#ffffff', `af${a.k}`)];
+        // dark casing behind the progress-coloured dart → slender arrows that stand out on the route line
+        return [tri(bl + 2, bt + 1.5, 'rgba(0,0,0,0.45)', `ac${a.k}`), tri(bl, bt, col, `af${a.k}`)];
       })}
       {here && (() => {
         const [hx, hy] = px(here);
