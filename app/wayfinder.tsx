@@ -16,6 +16,7 @@ import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, RouteOption, Route
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
+import type { WatchWorkout } from '../src/services/coach';
 
 const MERELBEKE: [number, number] = [3.7436, 50.9767];   // fallback start if location is unavailable
 const TILE = 256;
@@ -204,6 +205,7 @@ export default function WayfinderScreen() {
   const [targetKm, setTargetKm] = useState(8);
   const [trails, setTrails] = useState(true);          // foot-hiking (trails) vs foot-walking (roads)
   const [hilliness, setHilliness] = useState<'flat' | 'any' | 'hilly'>('any');   // prefer flat / any / hilly
+  const [dayWorkout, setDayWorkout] = useState<WatchWorkout | null>(null);        // today's structured session → watch intervals
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [opts, setOpts] = useState<RouteOption[]>([]);
   const [sel, setSel] = useState(0);
@@ -246,6 +248,7 @@ export default function WayfinderScreen() {
             const km = Math.round(((plan.runMinutes ?? 0) / (PACE[plan.intensity] ?? 6)) * 2) / 2;
             if (km >= 2 && km <= 30) setTargetKm(km);
           }
+          if (plan?.workout) setDayWorkout(plan.workout);   // today's intervals → sent with the route to the watch
         }
       } catch { /* keep default 8 */ }
     })();
@@ -321,10 +324,10 @@ export default function WayfinderScreen() {
   const [watchMsg, setWatchMsg] = useState('');
   const sendToWatch = useCallback(async () => {
     if (!cur) return;
-    const ok = await sendRouteToWatch(cur, `${cur.heading} · ${cur.distanceKm.toFixed(1)}km`);
+    const ok = await sendRouteToWatch(cur, `${cur.heading} · ${cur.distanceKm.toFixed(1)}km`, 'running', dayWorkout);
     setWatchMsg(ok ? '✓ Sent to watch' : 'Watch not reachable — open the RunCoach watch app');
     setTimeout(() => setWatchMsg(''), 2500);
-  }, [cur]);
+  }, [cur, dayWorkout]);
 
   // Map zoom/centre. Auto = fit the whole loop, but tighten-and-follow once you're actually running; manual
   // (±) forces a zoom, still following you when you move. A finger-pan sets panCenter and freezes the zoom.

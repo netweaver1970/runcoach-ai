@@ -19,22 +19,38 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var running = false
   @Published var paused = false
   @Published var heartRate: Double = 0     // bpm
+  @Published var power: Double = 0         // running power, W
   @Published var distanceM: Double = 0
   @Published var energyKcal: Double = 0
   @Published var elapsed: TimeInterval = 0
   @Published var paceStr = "--:--"         // min/km, from moving-average distance/time
+
+  // Structured-interval state (Stage 2).
+  @Published var segLabel = ""             // e.g. "Work" / "Recover" / "Warm-up"
+  @Published var segZone = ""              // e.g. "Z4"
+  @Published var segRemain = ""            // "2:14" (time) / "350 m" (distance) / "lap ▸" (open)
+  @Published var segKind = ""              // work / recovery / warmup / cooldown / drills
+  @Published var segIndex = 0
+  @Published var segCount = 0
+  @Published var segOpen = false           // no time/distance goal → advance with the lap button
+
+  private var segs: [RouteSeg] = []
+  private var segStartElapsed: TimeInterval = 0
+  private var segStartDist: Double = 0
 
   func requestAuth() async -> Bool {
     guard HKHealthStore.isHealthDataAvailable() else { return false }
     let share: Set<HKSampleType> = [HKObjectType.workoutType()]
     let read: Set<HKObjectType> = [
       HKQuantityType(.heartRate), HKQuantityType(.distanceWalkingRunning), HKQuantityType(.activeEnergyBurned),
+      HKQuantityType(.runningPower),
     ]
     do { try await store.requestAuthorization(toShare: share, read: read); return true } catch { return false }
   }
 
   // Kick off from a route payload (keeps HealthKit types out of the SwiftUI view). Requests auth first.
   func startFromRoute(_ r: RoutePayload) {
+    segs = r.workout ?? []
     Task {
       _ = await requestAuth()
       await MainActor.run { self.start(activity: (r.sport == "walking") ? .walking : .running) }
@@ -59,7 +75,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
       // Keep an active playback session so turn/interval voice prompts sound even wrist-down.
       try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
       try? AVAudioSession.sharedInstance().setActive(true)
-      DispatchQueue.main.async { self.running = true; self.paused = false; self.elapsed = 0 }
+      DispatchQueue.main.async {
+        self.running = true; self.paused = false; self.elapsed = 0
+        self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
+        if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
+      }
       startTicker()
     } catch {
       session = nil; builder = nil
@@ -81,16 +101,19 @@ final class WorkoutEngine: NSObject, ObservableObject {
       b.discardWorkout()
     }
     stopTicker()
-    session = nil; builder = nil
+    session = nil; builder = nil; segs = []
     try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-    DispatchQueue.main.async { self.running = false; self.paused = false }
+    DispatchQueue.main.async {
+      self.running = false; self.paused = false; self.power = 0
+      self.segLabel = ""; self.segRemain = ""; self.segZone = ""; self.segIndex = 0; self.segCount = 0
+    }
   }
 
   private func startTicker() {
     ticker?.invalidate()
     ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       guard let self, let sd = self.startDate, !self.paused else { return }
-      DispatchQueue.main.async { self.elapsed = Date().timeIntervalSince(sd); self.updatePace() }
+      DispatchQueue.main.async { self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.tickSegments() }
     }
   }
   private func stopTicker() { ticker?.invalidate(); ticker = nil }
@@ -99,6 +122,58 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard distanceM > 20, elapsed > 5 else { return }
     let secPerKm = elapsed / (distanceM / 1000)
     paceStr = String(format: "%d:%02d", Int(secPerKm) / 60, Int(secPerKm) % 60)
+  }
+
+  // ─── Structured intervals ───────────────────────────────────────────────────────────────────────────────
+  func lap() { if running { advanceSegment() } }   // manual advance (open segments, or skip)
+
+  private func tickSegments() {
+    guard running, !segs.isEmpty, segIndex < segs.count else { return }
+    let seg = segs[segIndex]
+    let inTime = elapsed - segStartElapsed
+    let inDist = distanceM - segStartDist
+    var done = false
+    if let d = seg.dur { done = inTime >= d }
+    else if let m = seg.dist { done = inDist >= m }
+    if done { advanceSegment() } else { updateSegDisplay(seg, inTime, inDist) }
+  }
+
+  private func advanceSegment() {
+    segIndex += 1
+    segStartElapsed = elapsed; segStartDist = distanceM
+    if segIndex >= segs.count {
+      segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
+      WKInterfaceDevice.current().play(.success); speak("Workout complete")
+      return
+    }
+    announceSegment(segs[segIndex])
+  }
+
+  private func announceSegment(_ seg: RouteSeg) {
+    WKInterfaceDevice.current().play(.start)
+    var phrase = seg.label
+    if let d = seg.dur {
+      let m = Int((d / 60).rounded())
+      phrase += m >= 1 ? ", \(m) minute\(m == 1 ? "" : "s")" : ", \(Int(d)) seconds"
+    } else if let mm = seg.dist {
+      phrase += ", \(Int(mm)) meters"
+    }
+    if let z = seg.zone, !z.isEmpty { phrase += ", \(z)" }
+    speak(phrase)
+    updateSegDisplay(seg, 0, 0)
+  }
+
+  private func updateSegDisplay(_ seg: RouteSeg, _ inTime: TimeInterval, _ inDist: Double) {
+    segLabel = seg.label; segZone = seg.zone ?? ""; segKind = seg.kind
+    segOpen = (seg.dur == nil && seg.dist == nil)
+    if let d = seg.dur {
+      let rem = max(0, d - inTime)
+      segRemain = String(format: "%d:%02d", Int(rem) / 60, Int(rem) % 60)
+    } else if let m = seg.dist {
+      segRemain = "\(max(0, Int(m - inDist))) m"
+    } else {
+      segRemain = "lap ▸"
+    }
   }
 }
 
@@ -126,6 +201,9 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
       } else if qt == HKQuantityType(.activeEnergyBurned) {
         let kcal = stat.sumQuantity()?.doubleValue(for: .kilocalorie()) ?? self.energyKcal
         DispatchQueue.main.async { self.energyKcal = kcal }
+      } else if qt == HKQuantityType(.runningPower) {
+        let w = stat.mostRecentQuantity()?.doubleValue(for: .watt()) ?? self.power
+        DispatchQueue.main.async { self.power = w }
       }
     }
   }

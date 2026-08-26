@@ -8,6 +8,8 @@ import AVFoundation
 // watch tries a KPIPayload decode first, then this. Keep the field names in sync with watchRoute.ts.
 struct RoutePoint: Codable, Hashable { let lat: Double; let lon: Double }
 struct RouteTurn: Codable, Hashable { let lat: Double; let lon: Double; let text: String; let dist: Double }
+// One structured-workout segment (Stage 2). dur (s) OR dist (m) → a goal; neither → OPEN (advance with the lap button).
+struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String? }
 struct RoutePayload: Codable {
   let type: String            // "route"
   let name: String
@@ -16,6 +18,7 @@ struct RoutePayload: Codable {
   let turns: [RouteTurn]?     // turn-by-turn maneuvers (optional — old phone builds omit it)
   let voice: Bool?            // initial voice-on state from the phone setting
   let sport: String?          // "walking" → walk session; anything else → run
+  let workout: [RouteSeg]?    // structured intervals the run session steps through
 }
 
 // ─── Route store: holds the pushed route + drives live guidance from the watch GPS ───────────────────────
@@ -161,6 +164,15 @@ private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
 private func fmtClock(_ t: TimeInterval) -> String {
   let s = Int(t); return String(format: "%d:%02d", s / 60, s % 60)
 }
+private func segColor(_ kind: String) -> Color {
+  switch kind {
+  case "work": return .orange
+  case "recovery": return .cyan
+  case "warmup", "cooldown": return .green
+  case "drills": return .purple
+  default: return .primary
+  }
+}
 
 struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
@@ -195,34 +207,40 @@ struct RouteView: View {
               Image(systemName: "chevron.compact.down").font(.system(size: 18)).foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 24).contentShape(Rectangle())   // whole strip tappable
             }.buttonStyle(.plain)
-            // Status line: off-route / start heading / upcoming turn (as before), or live HR+pace when running.
-            if store.offRoute {
-              Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
-            } else if !store.nextTurnText.isEmpty {
-              Text(store.nextTurnText).font(.caption2).bold().foregroundColor(.cyan)
-                .lineLimit(2).multilineTextAlignment(.center)
-            } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
-              Text(relStart(a.deg, store.heading)).font(.caption2).bold().foregroundColor(.green)
-            } else if engine.running {
-              HStack(spacing: 8) {
-                Label("\(Int(engine.heartRate))", systemImage: "heart.fill").foregroundColor(.red)
-                Text("\(engine.paceStr)/km").foregroundColor(.secondary)
+            if engine.running {
+              // Interval banner: label + zone + rep count, then the big remaining time/distance.
+              if store.offRoute {
+                Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
+              } else if !engine.segLabel.isEmpty {
+                HStack(spacing: 6) {
+                  Text(engine.segLabel.uppercased()).bold()
+                  if !engine.segZone.isEmpty { Text(engine.segZone).opacity(0.9) }
+                  Spacer()
+                  if engine.segCount > 0 { Text("\(min(engine.segIndex + 1, engine.segCount))/\(engine.segCount)").opacity(0.7) }
+                }.font(.caption2).foregroundColor(segColor(engine.segKind))
+                Text(engine.segRemain).font(.title3).monospacedDigit().foregroundColor(segColor(engine.segKind))
+              }
+              // Live metrics: HR · power · pace · distance.
+              HStack(spacing: 6) {
+                Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
+                if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(.orange) }
+                Text(engine.paceStr).foregroundColor(.secondary)
+                Text(String(format: "%.2fkm", engine.distanceM / 1000)).foregroundColor(.secondary)
               }.font(.caption2).monospacedDigit()
-            }
-            // Primary readout: distance+clock while running, else km-left to the finish.
-            if engine.running {
-              Text("\(String(format: "%.2f", engine.distanceM / 1000)) km · \(fmtClock(engine.elapsed))")
-                .font(.headline).monospacedDigit()
-            } else {
-              Text(String(format: "%.1f km left", store.remainingKm)).font(.headline).monospacedDigit()
-            }
-            // Controls.
-            if engine.running {
-              HStack(spacing: 10) {
+              HStack(spacing: 8) {
                 Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
+                if engine.segOpen { Button { engine.lap() } label: { Image(systemName: "forward.end.fill") } }
                 Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
               }.buttonStyle(.bordered).controlSize(.mini)
             } else {
+              if store.offRoute {
+                Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
+              } else if !store.nextTurnText.isEmpty {
+                Text(store.nextTurnText).font(.caption2).bold().foregroundColor(.cyan).lineLimit(2).multilineTextAlignment(.center)
+              } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
+                Text(relStart(a.deg, store.heading)).font(.caption2).bold().foregroundColor(.green)
+              }
+              Text(String(format: "%.1f km left", store.remainingKm)).font(.headline).monospacedDigit()
               Button { engine.startFromRoute(r) } label: { Label("Start run", systemImage: "figure.run") }
                 .buttonStyle(.borderedProminent).controlSize(.small).tint(.green)
             }

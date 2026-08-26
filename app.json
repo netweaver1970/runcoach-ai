@@ -3,6 +3,8 @@
     "name": "RunCoach AI",
     "slug": "running-coach-ai",
     "version": "1.0.0",
+    "runtimeVersion": { "policy": "appVersion" },
+    "updates": { "url": "https://u.expo.dev/221dae0d-a625-41a1-aec7-2e16ca6f6d1b" },
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
