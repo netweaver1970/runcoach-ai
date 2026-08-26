@@ -220,18 +220,16 @@ struct RouteView: View {
                 }.font(.caption2).foregroundColor(segColor(engine.segKind))
                 Text(engine.segRemain).font(.title3).monospacedDigit().foregroundColor(segColor(engine.segKind))
               }
-              // Live metrics: HR · power · pace · distance.
-              HStack(spacing: 6) {
-                Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
-                if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(.orange) }
-                Text(engine.paceStr).foregroundColor(.secondary)
-                Text(String(format: "%.2fkm", engine.distanceM / 1000)).foregroundColor(.secondary)
+              // Pace + distance here; HR + power are the always-on pill at the top.
+              HStack(spacing: 10) {
+                Text("\(engine.paceStr)/km").foregroundColor(.secondary)
+                Text(String(format: "%.2f km", engine.distanceM / 1000)).foregroundColor(.secondary)
               }.font(.caption2).monospacedDigit()
               HStack(spacing: 8) {
                 Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
                 if engine.segOpen { Button { engine.lap() } label: { Image(systemName: "forward.end.fill") } }
                 Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
-              }.buttonStyle(.bordered).controlSize(.mini)
+              }.buttonStyle(.bordered).controlSize(.small)
             } else {
               if store.offRoute {
                 Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
@@ -249,9 +247,10 @@ struct RouteView: View {
           .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
           .padding(.bottom, 6)
           } else {
-            // Collapsed → give the map the screen back; a small handle brings the panel (and controls) back.
+            // Collapsed → give the map the screen back; a big handle brings the panel (and controls) back.
             Button { withAnimation { panelUp = true } } label: {
-              Image(systemName: "chevron.compact.up").font(.system(size: 18)).padding(.horizontal, 22).padding(.vertical, 5)
+              Image(systemName: "chevron.up").font(.system(size: 16, weight: .bold)).foregroundColor(.primary)
+                .frame(width: 100, height: 34).contentShape(Rectangle())
                 .background(.ultraThinMaterial, in: Capsule())
             }.buttonStyle(.plain).padding(.bottom, 6)
           }
@@ -259,10 +258,29 @@ struct RouteView: View {
         .overlay(alignment: .topTrailing) {
           Button { store.voiceOn.toggle() } label: {
             Image(systemName: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
-              .font(.system(size: 12)).padding(6)
+              .font(.system(size: 15)).frame(width: 40, height: 40).contentShape(Rectangle())
               .background(.ultraThinMaterial, in: Circle())
+          }.buttonStyle(.plain).padding(4)
+        }
+        .overlay(alignment: .topLeading) {
+          // Re-engage heading-up follow after a crown/pan interaction dropped it.
+          Button { cam = .userLocation(followsHeading: true, fallback: .automatic) } label: {
+            Image(systemName: "location.north.line.fill")
+              .font(.system(size: 15)).frame(width: 40, height: 40).contentShape(Rectangle())
+              .background(.ultraThinMaterial, in: Circle())
+          }.buttonStyle(.plain).padding(4)
+        }
+        .overlay(alignment: .top) {
+          // HR + power always visible during a run, even when the panel is collapsed.
+          if engine.running {
+            HStack(spacing: 8) {
+              Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
+              if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(.orange) }
+            }.font(.caption2).bold().monospacedDigit()
+            .padding(.horizontal, 9).padding(.vertical, 3)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.top, 3)
           }
-          .buttonStyle(.plain).padding(6)
         }
         .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
         .navigationTitle(r.name)
