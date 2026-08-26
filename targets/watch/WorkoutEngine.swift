@@ -71,11 +71,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if paused { s.resume() } else { s.pause() }
   }
 
-  func end() {
+  // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
+  func end(save: Bool = true) {
     guard let s = session, let b = builder else { return }
     s.end()
-    let stop = Date()
-    b.endCollection(withEnd: stop) { _, _ in b.finishWorkout { _, _ in } }
+    if save {
+      b.endCollection(withEnd: Date()) { _, _ in b.finishWorkout { _, _ in } }
+    } else {
+      b.discardWorkout()
+    }
     stopTicker()
     session = nil; builder = nil
     try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])

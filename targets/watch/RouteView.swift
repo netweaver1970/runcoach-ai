@@ -150,6 +150,7 @@ struct RouteView: View {
   @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(fallback: .automatic)   // auto-follow the runner
   @State private var panelUp = true                                                 // collapse the bottom panel
+  @State private var showEndConfirm = false                                         // Save / Discard end sheet
 
   var body: some View {
     Group {
@@ -174,7 +175,8 @@ struct RouteView: View {
           if panelUp {
           VStack(spacing: 3) {
             Button { withAnimation { panelUp = false } } label: {
-              Image(systemName: "chevron.compact.down").font(.system(size: 15)).foregroundColor(.secondary).frame(maxWidth: .infinity)
+              Image(systemName: "chevron.compact.down").font(.system(size: 18)).foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 24).contentShape(Rectangle())   // whole strip tappable
             }.buttonStyle(.plain)
             // Status line: off-route / start heading / upcoming turn (as before), or live HR+pace when running.
             if store.offRoute {
@@ -201,7 +203,7 @@ struct RouteView: View {
             if engine.running {
               HStack(spacing: 10) {
                 Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
-                Button(role: .destructive) { engine.end() } label: { Image(systemName: "stop.fill") }
+                Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
               }.buttonStyle(.bordered).controlSize(.mini)
             } else {
               Button { engine.startFromRoute(r) } label: { Label("Start run", systemImage: "figure.run") }
@@ -229,6 +231,11 @@ struct RouteView: View {
         }
         .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
         .navigationTitle(r.name)
+        .confirmationDialog("End run?", isPresented: $showEndConfirm, titleVisibility: .visible) {
+          Button("Save & end") { engine.end(save: true) }
+          Button("Discard", role: .destructive) { engine.end(save: false) }
+          Button("Cancel", role: .cancel) { }
+        }
       } else {
         VStack(spacing: 6) {
           Image(systemName: "map").font(.title2).foregroundColor(.secondary)

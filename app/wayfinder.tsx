@@ -122,34 +122,50 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
 }
 
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
-function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, onPan, onZoomIn, onZoomOut, onAuto, onToggleFull }: {
+function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease }: {
   coords: [number, number][]; start: [number, number]; here: [number, number] | null;
   center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
   isFull: boolean; autoOn: boolean;
-  onPan: (c: [number, number]) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
+  onPan: (c: [number, number]) => void; onZoomTo: (z: number) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
+  onGrab?: () => void; onRelease?: () => void;
 }) {
   const s = useThemedStyles(makeStyles);
   const zRef = useRef(zoom); zRef.current = zoom;
   const cRef = useRef<[number, number]>(center ?? bboxCenter(coords)); cRef.current = center ?? bboxCenter(coords);
   const onPanRef = useRef(onPan); onPanRef.current = onPan;
+  const onZoomToRef = useRef(onZoomTo); onZoomToRef.current = onZoomTo;
   const startC = useRef<[number, number] | null>(null);
-  // Own the gesture on touch-start so the parent ScrollView doesn't steal vertical drags. Buttons are children
-  // and still win on their own area. Handlers read live zoom/centre from refs, so the responder never needs to
-  // be rebuilt mid-drag (rebuilding it was what killed panning).
+  const pinch = useRef<{ d: number; z: number } | null>(null);
+  // Own the gesture on touch-start; handlers read live zoom/centre from refs so the responder is never rebuilt
+  // mid-drag. Two fingers → pinch-zoom (stepped to tile levels); one finger → pan. The ScrollView is disabled
+  // via onGrab/onRelease (below) so it can't scroll while a finger is on the map — the real cure for the fight.
   const pan = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
-    onPanResponderTerminationRequest: () => false,   // don't let the ScrollView reclaim mid-pan
-    onPanResponderGrant: () => { startC.current = cRef.current; },
-    onPanResponderMove: (_, g) => {
-      const z = zRef.current, sc = startC.current; if (!sc) return;
-      const bx = lon2px(sc[0], z) - g.dx, by = lat2px(sc[1], z) - g.dy;   // drag content with the finger
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderGrant: () => { startC.current = cRef.current; pinch.current = null; },
+    onPanResponderMove: (evt, g) => {
+      const ts = evt.nativeEvent.touches;
+      if (ts.length >= 2) {                                            // pinch
+        const d = Math.hypot(ts[0].pageX - ts[1].pageX, ts[0].pageY - ts[1].pageY);
+        if (!pinch.current) { pinch.current = { d, z: zRef.current }; return; }
+        const target = pinch.current.z + Math.log2(d / pinch.current.d);
+        onZoomToRef.current(Math.max(11, Math.min(18, Math.round(target))));
+        return;
+      }
+      pinch.current = null;
+      const z = zRef.current, sc = startC.current; if (!sc) return;   // pan: drag content with the finger
+      const bx = lon2px(sc[0], z) - g.dx, by = lat2px(sc[1], z) - g.dy;
       onPanRef.current([px2lon(bx, z), px2lat(by, z)]);
     },
+    onPanResponderRelease: () => { pinch.current = null; },
+    onPanResponderTerminate: () => { pinch.current = null; },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
   return (
-    <View style={{ position: 'relative', width, height }} {...pan.panHandlers}>
+    <View style={{ position: 'relative', width, height }} {...pan.panHandlers}
+      onTouchStart={() => onGrab?.()} onTouchCancel={() => onRelease?.()}
+      onTouchEnd={e => { if (e.nativeEvent.touches.length === 0) onRelease?.(); }}>
       <StaticMap coords={coords} start={start} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
       <View style={s.zoomCtl}>
         <TouchableOpacity style={s.zoomBtn} onPress={onZoomIn}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
@@ -188,6 +204,7 @@ export default function WayfinderScreen() {
   const [panCenter, setPanCenter] = useState<[number, number] | null>(null);  // finger-panned map centre
   const [fullscreen, setFullscreen] = useState(false);
   const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
+  const [scrollLock, setScrollLock] = useState(false);   // disable page scroll while a finger is on the map
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -234,7 +251,7 @@ export default function WayfinderScreen() {
 
   // Amplify the chosen direction: level 0 = the round-trip loop; 1–3 push the far point further out (narrower
   // wedge + bigger reach) via a steered directional loop toward the selected heading.
-  const REACH_CFG = [null, { r: 0.30, s: 74 }, { r: 0.38, s: 56 }, { r: 0.46, s: 40 }];
+  const REACH_CFG = [null, { r: 0.38, s: 70 }, { r: 0.48, s: 54 }, { r: 0.58, s: 40 }];
   const applyReach = useCallback(async (level: number) => {
     setReach(level);
     const o = opts[sel];
@@ -306,18 +323,21 @@ export default function WayfinderScreen() {
   // Panning freezes the zoom (so auto-fit/follow stop fighting the drag); AUTO returns to automatic + recentres.
   // onPan is kept STABLE (reads zoom from a ref) so the pan responder is never rebuilt mid-drag.
   const onPan = useCallback((cc: [number, number]) => { setPanCenter(cc); setZoomMode(z => (z === 'auto' ? Math.round(effZoomRef.current) : z)); }, []);
+  const onZoomTo = useCallback((z: number) => setZoomMode(Math.max(11, Math.min(18, z))), []);
   const onZoomIn = useCallback(() => setZoomMode(Math.min(18, Math.round(effZoom) + 1)), [effZoom]);
   const onZoomOut = useCallback(() => setZoomMode(Math.max(11, Math.round(effZoom) - 1)), [effZoom]);
   const onAuto = useCallback(() => { setPanCenter(null); setZoomMode('auto'); }, []);
+  const onGrab = useCallback(() => setScrollLock(true), []);
+  const onRelease = useCallback(() => setScrollLock(false), []);
   const paneProps = cur ? {
     coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn,
-    onPan, onZoomIn, onZoomOut, onAuto,
+    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease,
   } : null;
 
   return (
     <SafeAreaView style={s.container}>
       <Stack.Screen options={{ title: 'Route' }} />
-      <ScrollView contentContainerStyle={s.scroll} onLayout={e => setMapW(e.nativeEvent.layout.width - 28)}>
+      <ScrollView contentContainerStyle={s.scroll} scrollEnabled={!scrollLock} onLayout={e => setMapW(e.nativeEvent.layout.width - 28)}>
 
         {hasKey === false ? (
           <View style={s.card}>

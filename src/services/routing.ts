@@ -171,9 +171,9 @@ export async function orsHeadingOptions(opts: {
     const deg = b * 45;
     const loop = await orsDirectionalLoop({
       lon: opts.lon, lat: opts.lat, headingDeg: deg,
-      reachKm: Math.max(1, opts.km * 0.3), spreadDeg: 78, profile: opts.profile,
+      reachKm: Math.max(1, opts.km * 0.24), spreadDeg: 86, profile: opts.profile,   // a COMPACT lean, so Reach can push further
     });
-    if (loop && loop.coords.length >= 2 && loop.distanceKm >= opts.km * 0.45) {
+    if (loop && loop.coords.length >= 2 && loop.distanceKm >= opts.km * 0.4) {
       out.push({ ...loop, seed: deg, headingDeg: deg, heading: DIRS[b] });
     }
   }
