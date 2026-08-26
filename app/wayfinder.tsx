@@ -3,9 +3,10 @@
  * prescribed distance, in a direction you pick, and previews it on an OpenTopoMap tile grid (trail/contour
  * detail, no native map module needed for v1). Export GPX to run it anywhere. See project_wayfinder.
  */
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, Image, Share, Switch,
+  Modal, PanResponder,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
@@ -26,6 +27,17 @@ const lat2px = (lat: number, z: number) => {
   const r = (lat * Math.PI) / 180;
   return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * Math.pow(2, z) * TILE;
 };
+// Inverse Web-Mercator (world px → lon/lat at zoom z) — for turning a finger-drag into a map-centre shift.
+const px2lon = (px: number, z: number) => (px / (Math.pow(2, z) * TILE)) * 360 - 180;
+const px2lat = (px: number, z: number) => {
+  const n = Math.PI - (2 * Math.PI * px) / (Math.pow(2, z) * TILE);
+  return (180 / Math.PI) * Math.atan(Math.sinh(n));
+};
+function bboxCenter(coords: [number, number][]): [number, number] {
+  const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
+  return [(Math.min(...lons) + Math.max(...lons)) / 2, (Math.min(...lats) + Math.max(...lats)) / 2];
+}
+
 // Largest zoom at which the route bbox still fits the view (with padding) — the "fit whole loop" level.
 function fitZoom(coords: [number, number][], width: number, height: number): number {
   const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
@@ -105,6 +117,42 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
   );
 }
 
+// Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
+function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, onPan, onZoomIn, onZoomOut, onAuto, onToggleFull }: {
+  coords: [number, number][]; start: [number, number]; here: [number, number] | null;
+  center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
+  isFull: boolean; autoOn: boolean;
+  onPan: (c: [number, number]) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
+}) {
+  const s = useThemedStyles(makeStyles);
+  const zRef = useRef(zoom); zRef.current = zoom;
+  const cRef = useRef<[number, number]>(center ?? bboxCenter(coords)); cRef.current = center ?? bboxCenter(coords);
+  const startC = useRef<[number, number] | null>(null);
+  const pan = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4,
+    onPanResponderGrant: () => { startC.current = cRef.current; },
+    onPanResponderMove: (_, g) => {
+      const z = zRef.current, sc = startC.current; if (!sc) return;
+      const bx = lon2px(sc[0], z) - g.dx, by = lat2px(sc[1], z) - g.dy;   // drag content with the finger
+      onPan([px2lon(bx, z), px2lat(by, z)]);
+    },
+  }), [onPan]);
+  return (
+    <View style={{ position: 'relative', width, height }} {...pan.panHandlers}>
+      <StaticMap coords={coords} start={start} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
+      <View style={s.zoomCtl}>
+        <TouchableOpacity style={s.zoomBtn} onPress={onZoomIn}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
+        <TouchableOpacity style={[s.zoomBtn, autoOn && s.zoomBtnOn]} onPress={onAuto}><Text style={[s.zoomTsm, autoOn && { color: '#fff' }]}>AUTO</Text></TouchableOpacity>
+        <TouchableOpacity style={s.zoomBtn} onPress={onZoomOut}><Text style={s.zoomT}>－</Text></TouchableOpacity>
+      </View>
+      <TouchableOpacity style={s.fullBtn} onPress={onToggleFull}>
+        <Text style={s.fullT}>{isFull ? '✕ Close' : '⤢ Full'}</Text>
+      </TouchableOpacity>
+      {moving && <View style={s.followPill}><Text style={s.followT}>● following</Text></View>}
+    </View>
+  );
+}
+
 export default function WayfinderScreen() {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
@@ -126,6 +174,9 @@ export default function WayfinderScreen() {
   const [here, setHere] = useState<[number, number] | null>(null);   // live phone position, shown on the map
   const [moving, setMoving] = useState(false);                       // running → auto-follow tighter
   const [zoomMode, setZoomMode] = useState<'auto' | number>('auto'); // 'auto' = fit loop / follow when running
+  const [panCenter, setPanCenter] = useState<[number, number] | null>(null);  // finger-panned map centre
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -233,11 +284,22 @@ export default function WayfinderScreen() {
   }, [cur]);
 
   // Map zoom/centre. Auto = fit the whole loop, but tighten-and-follow once you're actually running; manual
-  // (±) forces a zoom, still following you when you move. Centre snaps to you when moving, else the loop centre.
+  // (±) forces a zoom, still following you when you move. A finger-pan sets panCenter and freezes the zoom.
   const mapH = mapW > 0 ? Math.round(mapW * 0.92) : 0;
   const autoZ = cur && mapW > 0 ? fitZoom(cur.coords, mapW, mapH) : 15;
-  const effCenter: [number, number] | undefined = (moving && here) ? here : undefined;
   const effZoom = zoomMode === 'auto' ? ((moving && here) ? 16 : autoZ) : zoomMode;
+  const effCenter: [number, number] | undefined = panCenter ?? ((moving && here) ? here : undefined);
+  const autoOn = zoomMode === 'auto' && !panCenter;
+
+  // Panning freezes the zoom (so auto-fit/follow stop fighting the drag); AUTO returns to automatic + recentres.
+  const onPan = useCallback((cc: [number, number]) => { setPanCenter(cc); setZoomMode(z => (z === 'auto' ? Math.round(effZoom) : z)); }, [effZoom]);
+  const onZoomIn = useCallback(() => setZoomMode(Math.min(18, Math.round(effZoom) + 1)), [effZoom]);
+  const onZoomOut = useCallback(() => setZoomMode(Math.max(11, Math.round(effZoom) - 1)), [effZoom]);
+  const onAuto = useCallback(() => { setPanCenter(null); setZoomMode('auto'); }, []);
+  const paneProps = cur ? {
+    coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn,
+    onPan, onZoomIn, onZoomOut, onAuto,
+  } : null;
 
   return (
     <SafeAreaView style={s.container}>
@@ -298,17 +360,9 @@ export default function WayfinderScreen() {
                   ))}
                 </View>
 
-                {/* Map preview — auto-zoom while running, with manual −/AUTO/+ */}
-                {cur && mapW > 0 && (
-                  <View style={{ position: 'relative' }}>
-                    <StaticMap coords={cur.coords} start={start} here={here} center={effCenter} zoom={effZoom} width={mapW} height={mapH} line={c.accent} c={c} />
-                    <View style={s.zoomCtl}>
-                      <TouchableOpacity style={s.zoomBtn} onPress={() => setZoomMode(Math.min(18, Math.round(effZoom) + 1))}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
-                      <TouchableOpacity style={[s.zoomBtn, zoomMode === 'auto' && s.zoomBtnOn]} onPress={() => setZoomMode('auto')}><Text style={[s.zoomTsm, zoomMode === 'auto' && { color: '#fff' }]}>AUTO</Text></TouchableOpacity>
-                      <TouchableOpacity style={s.zoomBtn} onPress={() => setZoomMode(Math.max(11, Math.round(effZoom) - 1))}><Text style={s.zoomT}>－</Text></TouchableOpacity>
-                    </View>
-                    {moving && <View style={s.followPill}><Text style={s.followT}>● following</Text></View>}
-                  </View>
+                {/* Map preview — pan with a finger, −/AUTO/+ zoom, ⤢ for fullscreen */}
+                {paneProps && mapW > 0 && (
+                  <MapPane {...paneProps} width={mapW} height={mapH} isFull={false} onToggleFull={() => setFullscreen(true)} />
                 )}
 
                 {/* Selected stats + export */}
@@ -335,6 +389,16 @@ export default function WayfinderScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* Fullscreen map — same pan/zoom, filling the safe area. */}
+      <Modal visible={fullscreen} animationType="slide" onRequestClose={() => setFullscreen(false)}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}
+          onLayout={e => setFullDims({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}>
+          {paneProps && fullDims.w > 0 && (
+            <MapPane {...paneProps} width={fullDims.w} height={fullDims.h} isFull onToggleFull={() => setFullscreen(false)} />
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -368,6 +432,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   zoomTsm: { fontSize: 10, fontWeight: '800', color: '#222' },
   followPill: { position: 'absolute', left: 8, top: 8, backgroundColor: '#2f7bffE6', borderRadius: 100, paddingHorizontal: 9, paddingVertical: 4 },
   followT: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  fullBtn: { position: 'absolute', left: 8, bottom: 8, backgroundColor: '#ffffffE6', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } },
+  fullT: { fontSize: 12, fontWeight: '800', color: '#222' },
   statCard: { backgroundColor: c.surface, borderRadius: 14, padding: 16, marginTop: 12 },
   statRow: { flexDirection: 'row', justifyContent: 'space-around' },
   stat: { alignItems: 'center' },
