@@ -4,5 +4,13 @@
   <dict>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Shows your position on the route while you run and warns you if you drift off it.</string>
+    <key>NSHealthShareUsageDescription</key>
+    <string>Reads your heart rate, distance and energy during a route run to show live stats.</string>
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>Saves your route run as a workout in Apple Health.</string>
+    <key>WKBackgroundModes</key>
+    <array>
+      <string>workout-processing</string>
+    </array>
   </dict>
 </plist>

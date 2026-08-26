@@ -15,6 +15,7 @@ struct RoutePayload: Codable {
   let pts: [RoutePoint]
   let turns: [RouteTurn]?     // turn-by-turn maneuvers (optional — old phone builds omit it)
   let voice: Bool?            // initial voice-on state from the phone setting
+  let sport: String?          // "walking" → walk session; anything else → run
 }
 
 // ─── Route store: holds the pushed route + drives live guidance from the watch GPS ───────────────────────
@@ -140,8 +141,13 @@ private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
 }
 
 // ─── Guidance view: the route on a map + a live "km left" / off-route readout ─────────────────────────────
+private func fmtClock(_ t: TimeInterval) -> String {
+  let s = Int(t); return String(format: "%d:%02d", s / 60, s % 60)
+}
+
 struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
+  @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(fallback: .automatic)   // auto-follow the runner
 
   var body: some View {
@@ -164,21 +170,41 @@ struct RouteView: View {
             }
             UserAnnotation()
           }
-          VStack(spacing: 1) {
+          VStack(spacing: 3) {
+            // Status line: off-route / start heading / upcoming turn (as before), or live HR+pace when running.
             if store.offRoute {
               Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
-            } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
-              // Still at the start → spell out which way to set off (clockwise vs counter reads from the arrows).
-              Text("Head \(compass16(a.deg)) to start").font(.caption2).bold().foregroundColor(.green)
             } else if !store.nextTurnText.isEmpty {
               Text(store.nextTurnText).font(.caption2).bold().foregroundColor(.cyan)
                 .lineLimit(2).multilineTextAlignment(.center)
+            } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
+              Text("Head \(compass16(a.deg)) to start").font(.caption2).bold().foregroundColor(.green)
+            } else if engine.running {
+              HStack(spacing: 8) {
+                Label("\(Int(engine.heartRate))", systemImage: "heart.fill").foregroundColor(.red)
+                Text("\(engine.paceStr)/km").foregroundColor(.secondary)
+              }.font(.caption2).monospacedDigit()
             }
-            Text(String(format: "%.1f km left", store.remainingKm))
-              .font(.headline).monospacedDigit()
+            // Primary readout: distance+clock while running, else km-left to the finish.
+            if engine.running {
+              Text("\(String(format: "%.2f", engine.distanceM / 1000)) km · \(fmtClock(engine.elapsed))")
+                .font(.headline).monospacedDigit()
+            } else {
+              Text(String(format: "%.1f km left", store.remainingKm)).font(.headline).monospacedDigit()
+            }
+            // Controls.
+            if engine.running {
+              HStack(spacing: 10) {
+                Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
+                Button(role: .destructive) { engine.end() } label: { Image(systemName: "stop.fill") }
+              }.buttonStyle(.bordered).controlSize(.mini)
+            } else {
+              Button { engine.startFromRoute(r) } label: { Label("Start run", systemImage: "figure.run") }
+                .buttonStyle(.borderedProminent).controlSize(.small).tint(.green)
+            }
           }
           .padding(.vertical, 4).padding(.horizontal, 10)
-          .background(.ultraThinMaterial, in: Capsule())
+          .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
           .padding(.bottom, 6)
         }
         .overlay(alignment: .topTrailing) {

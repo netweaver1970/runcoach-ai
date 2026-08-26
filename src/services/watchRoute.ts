@@ -29,7 +29,7 @@ export async function setVoiceNav(on: boolean): Promise<void> {
 const r5 = (n: number) => Math.round(n * 1e5) / 1e5;
 
 /** Send the selected loop to the watch. `coords` are [lon, lat]; the watch expects {lat, lon}. */
-export async function sendRouteToWatch(loop: RouteLoop, name = 'Route'): Promise<boolean> {
+export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: 'running' | 'walking' = 'running'): Promise<boolean> {
   if (!WatchSync) return false;
   const co = loop.coords ?? [];
   if (co.length < 2) return false;
@@ -42,7 +42,7 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route'): Promise
     .filter((t): t is { lat: number; lon: number; text: string; dist: number } => t != null);
   const payload = {
     type: 'route', name, distanceKm: Math.round(loop.distanceKm * 10) / 10, pts, turns,
-    voice: await getVoiceNav(),
+    voice: await getVoiceNav(), sport,
   };
   try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }
 }
