@@ -26,21 +26,29 @@ const lat2px = (lat: number, z: number) => {
   const r = (lat * Math.PI) / 180;
   return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * Math.pow(2, z) * TILE;
 };
-
-// ── Static map: OpenTopoMap tile grid + the route drawn as rotated View segments ──
-function StaticMap({ coords, start, here, width, height, line, c }: {
-  coords: [number, number][]; start: [number, number]; here: [number, number] | null; width: number; height: number; line: string; c: Palette;
-}) {
-  if (width <= 0 || coords.length < 2) return <View style={{ width, height }} />;
+// Largest zoom at which the route bbox still fits the view (with padding) — the "fit whole loop" level.
+function fitZoom(coords: [number, number][], width: number, height: number): number {
   const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
   const minLon = Math.min(...lons), maxLon = Math.max(...lons), minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  // pick the largest zoom where the route bbox fits the view (with padding)
   let z = 16;
   for (; z > 10; z--) {
     const w = lon2px(maxLon, z) - lon2px(minLon, z), h = lat2px(minLat, z) - lat2px(maxLat, z);
     if (w <= width * 0.86 && h <= height * 0.86) break;
   }
-  const cx = (lon2px(minLon, z) + lon2px(maxLon, z)) / 2, cy = (lat2px(minLat, z) + lat2px(maxLat, z)) / 2;
+  return z;
+}
+
+// ── Static map: OpenTopoMap tile grid + the route drawn as rotated View segments ──
+function StaticMap({ coords, start, here, center, zoom, width, height, line, c }: {
+  coords: [number, number][]; start: [number, number]; here: [number, number] | null;
+  center?: [number, number]; zoom?: number; width: number; height: number; line: string; c: Palette;
+}) {
+  if (width <= 0 || coords.length < 2) return <View style={{ width, height }} />;
+  const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons), minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const z = zoom ?? fitZoom(coords, width, height);               // caller can force zoom (manual / follow)
+  const cx = center ? lon2px(center[0], z) : (lon2px(minLon, z) + lon2px(maxLon, z)) / 2;
+  const cy = center ? lat2px(center[1], z) : (lat2px(minLat, z) + lat2px(maxLat, z)) / 2;
   const ox = cx - width / 2, oy = cy - height / 2;                 // top-left origin in world px
   const px = (p: [number, number]) => [lon2px(p[0], z) - ox, lat2px(p[1], z) - oy] as [number, number];
 
@@ -116,6 +124,8 @@ export default function WayfinderScreen() {
   const [err, setErr] = useState<string | null>(null);
   const [mapW, setMapW] = useState(0);
   const [here, setHere] = useState<[number, number] | null>(null);   // live phone position, shown on the map
+  const [moving, setMoving] = useState(false);                       // running → auto-follow tighter
+  const [zoomMode, setZoomMode] = useState<'auto' | number>('auto'); // 'auto' = fit loop / follow when running
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -208,7 +218,7 @@ export default function WayfinderScreen() {
         if (status !== 'granted' || !alive) return;
         sub = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, distanceInterval: 4, timeInterval: 2000 },
-          pos => setHere([pos.coords.longitude, pos.coords.latitude]),
+          pos => { setHere([pos.coords.longitude, pos.coords.latitude]); setMoving((pos.coords.speed ?? 0) > 1); },
         );
       } catch { /* ignore — map still shows the loop without a live dot */ }
     })();
@@ -221,6 +231,13 @@ export default function WayfinderScreen() {
     setWatchMsg(ok ? '✓ Sent to watch' : 'Watch not reachable — open the RunCoach watch app');
     setTimeout(() => setWatchMsg(''), 2500);
   }, [cur]);
+
+  // Map zoom/centre. Auto = fit the whole loop, but tighten-and-follow once you're actually running; manual
+  // (±) forces a zoom, still following you when you move. Centre snaps to you when moving, else the loop centre.
+  const mapH = mapW > 0 ? Math.round(mapW * 0.92) : 0;
+  const autoZ = cur && mapW > 0 ? fitZoom(cur.coords, mapW, mapH) : 15;
+  const effCenter: [number, number] | undefined = (moving && here) ? here : undefined;
+  const effZoom = zoomMode === 'auto' ? ((moving && here) ? 16 : autoZ) : zoomMode;
 
   return (
     <SafeAreaView style={s.container}>
@@ -281,8 +298,18 @@ export default function WayfinderScreen() {
                   ))}
                 </View>
 
-                {/* Map preview */}
-                {cur && mapW > 0 && <StaticMap coords={cur.coords} start={start} here={here} width={mapW} height={Math.round(mapW * 0.92)} line={c.accent} c={c} />}
+                {/* Map preview — auto-zoom while running, with manual −/AUTO/+ */}
+                {cur && mapW > 0 && (
+                  <View style={{ position: 'relative' }}>
+                    <StaticMap coords={cur.coords} start={start} here={here} center={effCenter} zoom={effZoom} width={mapW} height={mapH} line={c.accent} c={c} />
+                    <View style={s.zoomCtl}>
+                      <TouchableOpacity style={s.zoomBtn} onPress={() => setZoomMode(Math.min(18, Math.round(effZoom) + 1))}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
+                      <TouchableOpacity style={[s.zoomBtn, zoomMode === 'auto' && s.zoomBtnOn]} onPress={() => setZoomMode('auto')}><Text style={[s.zoomTsm, zoomMode === 'auto' && { color: '#fff' }]}>AUTO</Text></TouchableOpacity>
+                      <TouchableOpacity style={s.zoomBtn} onPress={() => setZoomMode(Math.max(11, Math.round(effZoom) - 1))}><Text style={s.zoomT}>－</Text></TouchableOpacity>
+                    </View>
+                    {moving && <View style={s.followPill}><Text style={s.followT}>● following</Text></View>}
+                  </View>
+                )}
 
                 {/* Selected stats + export */}
                 {cur && (
@@ -334,6 +361,13 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   chipOn: { backgroundColor: c.accent, borderColor: c.accent },
   chipT: { fontSize: 13, fontWeight: '600', color: c.textSub },
   chipTOn: { color: '#fff' },
+  zoomCtl: { position: 'absolute', right: 8, top: 8, gap: 6 },
+  zoomBtn: { width: 36, height: 36, borderRadius: 9, backgroundColor: '#ffffffE6', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } },
+  zoomBtnOn: { backgroundColor: c.accent },
+  zoomT: { fontSize: 20, fontWeight: '700', color: '#222' },
+  zoomTsm: { fontSize: 10, fontWeight: '800', color: '#222' },
+  followPill: { position: 'absolute', left: 8, top: 8, backgroundColor: '#2f7bffE6', borderRadius: 100, paddingHorizontal: 9, paddingVertical: 4 },
+  followT: { color: '#fff', fontSize: 11, fontWeight: '700' },
   statCard: { backgroundColor: c.surface, borderRadius: 14, padding: 16, marginTop: 12 },
   statRow: { flexDirection: 'row', justifyContent: 'space-around' },
   stat: { alignItems: 'center' },

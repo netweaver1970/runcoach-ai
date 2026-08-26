@@ -26,6 +26,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   @Published var remainingKm: Double = 0
   @Published var voiceOn = true            // spoken turn cues (the heads-up haptic fires regardless)
   @Published var nextTurnText = ""         // upcoming maneuver, shown on screen
+  @Published var jumpToMap = 0             // bumped on each announcement → ContentView jumps to the map screen
 
   private let mgr = CLLocationManager()
   private var wasOff = false
@@ -43,6 +44,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     DispatchQueue.main.async {
       self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false
       self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true; self.announced = []; self.nextTurnText = ""
+      self.start()   // track from the moment a route lands, so turn cues fire on any screen (not just the map)
     }
   }
   func start() { mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation() }
@@ -73,6 +75,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     nextTurnText = t.text
     if bd < 40 {
       announced.insert(bi)
+      jumpToMap += 1   // a turn is happening → surface the map (ContentView watches this)
       WKInterfaceDevice.current().play(.directionUp)
       speak(bd > 18 ? "In \(Int((bd / 5).rounded()) * 5) meters, \(t.text)" : t.text)
     }
@@ -139,12 +142,13 @@ private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
 // ─── Guidance view: the route on a map + a live "km left" / off-route readout ─────────────────────────────
 struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
+  @State private var cam: MapCameraPosition = .userLocation(fallback: .automatic)   // auto-follow the runner
 
   var body: some View {
     Group {
       if let r = store.route {
         ZStack(alignment: .bottom) {
-          Map {
+          Map(position: $cam) {
             MapPolyline(coordinates: store.coords)
               .stroke(store.offRoute ? Color.orange : Color.pink, lineWidth: 4)
             // Travel-direction arrows. id 0 = a bold green "start this way" arrow; the rest show the loop's
@@ -185,8 +189,7 @@ struct RouteView: View {
           }
           .buttonStyle(.plain).padding(6)
         }
-        .onAppear { store.start() }
-        .onDisappear { store.stop() }
+        .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
         .navigationTitle(r.name)
       } else {
         VStack(spacing: 6) {

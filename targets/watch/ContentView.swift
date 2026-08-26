@@ -46,17 +46,20 @@ private func contextCaption(_ kpi: KPI) -> String? {
   return nil
 }
 
+struct RouteDest: Hashable {}   // nav sentinel for the route/map screen
+
 // ─── Root: hierarchical list of KPIs (tap one to open its graph) ───────────────
 struct ContentView: View {
   @EnvironmentObject var store: KPIStore
   @ObservedObject var routeStore = RouteStore.shared
+  @State private var path = NavigationPath()
 
   var body: some View {
-    NavigationStack {
+    NavigationStack(path: $path) {
       if store.payload?.kpis.isEmpty == false || routeStore.route != nil {
         List {
           if let r = routeStore.route {
-            NavigationLink { RouteView() } label: {
+            NavigationLink(value: RouteDest()) {
               Label("\(r.name) · \(String(format: "%.1f", r.distanceKm)) km", systemImage: "map.fill")
                 .foregroundColor(.pink)
             }
@@ -74,6 +77,7 @@ struct ContentView: View {
         }
         .navigationTitle("RunCoach")
         .navigationDestination(for: KPI.self) { KPIDetailView(kpi: $0) }
+        .navigationDestination(for: RouteDest.self) { _ in RouteView() }
       } else {
         VStack(spacing: 6) {
           Image(systemName: "applewatch.radiowaves.left.and.right").font(.title2).foregroundColor(.secondary)
@@ -81,6 +85,9 @@ struct ContentView: View {
         }.padding()
       }
     }
+    // A turn cue fired → bring the map forward (replace the stack so we never stack duplicate map screens).
+    .onChange(of: routeStore.jumpToMap) { path = NavigationPath([RouteDest()]) }
+    .onAppear { if routeStore.route != nil { routeStore.start() } }
   }
 }
 
