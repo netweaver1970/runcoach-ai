@@ -180,11 +180,13 @@ struct RouteView: View {
   @State private var cam: MapCameraPosition = .userLocation(followsHeading: true, fallback: .automatic)   // heading-up follow
   @State private var panelUp = true                                                 // collapse the bottom panel
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
+  @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
 
   var body: some View {
     Group {
       if let r = store.route {
         ZStack(alignment: .bottom) {
+          if mapOn {
           Map(position: $cam) {
             MapPolyline(coordinates: store.coords)
               .stroke(store.offRoute ? Color.orange : Color.pink, lineWidth: 4)
@@ -200,6 +202,9 @@ struct RouteView: View {
               }
             }
             UserAnnotation()
+          }
+          } else {
+            Color.black.ignoresSafeArea()   // metrics-only: no MapKit rendering → saves battery
           }
           if panelUp {
           VStack(spacing: 3) {
@@ -263,12 +268,22 @@ struct RouteView: View {
           }.buttonStyle(.plain).padding(4)
         }
         .overlay(alignment: .topLeading) {
-          // Re-engage heading-up follow after a crown/pan interaction dropped it.
-          Button { cam = .userLocation(followsHeading: true, fallback: .automatic) } label: {
-            Image(systemName: "location.north.line.fill")
-              .font(.system(size: 15)).frame(width: 40, height: 40).contentShape(Rectangle())
-              .background(.ultraThinMaterial, in: Circle())
-          }.buttonStyle(.plain).padding(4)
+          VStack(spacing: 6) {
+            // Map on/off — off = metrics-only, drops MapKit rendering to save battery on long runs.
+            Button { mapOn.toggle() } label: {
+              Image(systemName: mapOn ? "map.fill" : "map")
+                .font(.system(size: 14)).frame(width: 40, height: 40).contentShape(Rectangle())
+                .background(.ultraThinMaterial, in: Circle())
+            }.buttonStyle(.plain)
+            // Re-engage heading-up follow after a crown/pan interaction dropped it (only useful with the map on).
+            if mapOn {
+              Button { cam = .userLocation(followsHeading: true, fallback: .automatic) } label: {
+                Image(systemName: "location.north.line.fill")
+                  .font(.system(size: 14)).frame(width: 40, height: 40).contentShape(Rectangle())
+                  .background(.ultraThinMaterial, in: Circle())
+              }.buttonStyle(.plain)
+            }
+          }.padding(4)
         }
         .overlay(alignment: .top) {
           // HR + power always visible during a run, even when the panel is collapsed.
