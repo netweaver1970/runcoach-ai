@@ -121,6 +121,20 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
   );
 }
 
+// Compact elevation profile — a bar per sampled point, height ∝ elevation. Flat routes read as a flat strip.
+function ElevProfile({ elev, width, height, c }: { elev: number[]; width: number; height: number; c: Palette }) {
+  if (!elev || elev.length < 2) return null;
+  const min = Math.min(...elev), max = Math.max(...elev), span = Math.max(1, max - min);
+  const bw = width / elev.length;
+  return (
+    <View style={{ width, height, backgroundColor: c.surfaceAlt, borderRadius: 8, overflow: 'hidden', flexDirection: 'row', alignItems: 'flex-end' }}>
+      {elev.map((v, i) => (
+        <View key={i} style={{ width: bw + 0.5, height: 3 + ((v - min) / span) * (height - 6), backgroundColor: c.accent, opacity: 0.85 }} />
+      ))}
+    </View>
+  );
+}
+
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
 function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease }: {
   coords: [number, number][]; start: [number, number]; here: [number, number] | null;
@@ -189,6 +203,7 @@ export default function WayfinderScreen() {
   const [placed, setPlaced] = useState('Merelbeke (default)');
   const [targetKm, setTargetKm] = useState(8);
   const [trails, setTrails] = useState(true);          // foot-hiking (trails) vs foot-walking (roads)
+  const [hilliness, setHilliness] = useState<'flat' | 'any' | 'hilly'>('any');   // prefer flat / any / hilly
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [opts, setOpts] = useState<RouteOption[]>([]);
   const [sel, setSel] = useState(0);
@@ -241,13 +256,13 @@ export default function WayfinderScreen() {
     try {
       // one steered loop per compass point → every routable direction (incl. W/SW/NW) is offered
       const list = await orsHeadingOptions({
-        lon: start[0], lat: start[1], km: targetKm, profile: trails ? 'foot-hiking' : 'foot-walking',
+        lon: start[0], lat: start[1], km: targetKm, profile: trails ? 'foot-hiking' : 'foot-walking', hilliness,
       });
       if (!list.length) setErr('No routes came back — check the key in Settings, or try a different distance.');
       else { setOpts(list); setSel(0); setReach(0); setSteered(null); }
     } catch (e: any) { setErr(e?.message ?? 'Could not generate routes.'); }
     finally { setBusy(false); }
-  }, [start, targetKm, trails]);
+  }, [start, targetKm, trails, hilliness]);
 
   // Amplify the chosen direction: level 0 = the round-trip loop; 1–3 push the far point further out (narrower
   // wedge + bigger reach) via a steered directional loop toward the selected heading.
@@ -362,6 +377,16 @@ export default function WayfinderScreen() {
                 <Text style={s.label}>Prefer trails</Text>
                 <Switch value={trails} onValueChange={setTrails} />
               </View>
+              <View style={s.rowBetween}>
+                <Text style={s.label}>Terrain</Text>
+                <View style={s.seg}>
+                  {(['flat', 'any', 'hilly'] as const).map(h => (
+                    <TouchableOpacity key={h} style={[s.segBtn, hilliness === h && s.segBtnOn]} onPress={() => setHilliness(h)}>
+                      <Text style={[s.segT, hilliness === h && s.segTOn]}>{h === 'flat' ? 'Flat' : h === 'hilly' ? 'Hilly' : 'Any'}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
               <TouchableOpacity style={[s.btn, busy && { opacity: 0.6 }]} onPress={generate} disabled={busy}>
                 <Text style={s.btnT}>{busy ? 'Finding loops…' : opts.length ? '↻ New loops' : 'Generate loops'}</Text>
               </TouchableOpacity>
@@ -378,7 +403,7 @@ export default function WayfinderScreen() {
                 <View style={s.chips}>
                   {opts.map((o, i) => (
                     <TouchableOpacity key={o.seed} style={[s.chip, i === sel && s.chipOn]} onPress={() => pickHeading(i)}>
-                      <Text style={[s.chipT, i === sel && s.chipTOn]}>{o.heading} · {o.distanceKm.toFixed(1)}k</Text>
+                      <Text style={[s.chipT, i === sel && s.chipTOn]}>{o.heading} · {o.distanceKm.toFixed(1)}k · ↗{o.ascentM}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -405,9 +430,16 @@ export default function WayfinderScreen() {
                       <View style={s.stat}><Text style={s.statV}>{cur.distanceKm.toFixed(1)}</Text><Text style={s.statL}>km</Text></View>
                       <View style={s.stat}><Text style={s.statV}>{cur.heading}</Text><Text style={s.statL}>{cur.headingDeg}°</Text></View>
                       <View style={s.stat}><Text style={[s.statV, { color: cur.trailPct >= 30 ? '#2e9e5b' : c.text }]}>{cur.trailPct}%</Text><Text style={s.statL}>trail</Text></View>
-                      {cur.reachKm != null && <View style={s.stat}><Text style={s.statV}>{cur.reachKm}</Text><Text style={s.statL}>km out</Text></View>}
-                      {cur.reachKm == null && cur.ascentM > 0 && <View style={s.stat}><Text style={s.statV}>{cur.ascentM}</Text><Text style={s.statL}>m up</Text></View>}
+                      <View style={s.stat}><Text style={s.statV}>↗{cur.ascentM}</Text><Text style={s.statL}>m up</Text></View>
+                      <View style={s.stat}><Text style={s.statV}>↘{cur.descentM}</Text><Text style={s.statL}>m down</Text></View>
                     </View>
+                    {mapW > 0 && cur.elev?.length > 1 && (
+                      <>
+                        <Text style={[s.groupLabel, { marginTop: 12, marginBottom: 6 }]}>Elevation</Text>
+                        <ElevProfile elev={cur.elev} width={mapW - 32} height={44} c={c} />
+                      </>
+                    )}
+                    {cur.reachKm != null && <Text style={[s.hint, { marginTop: 8 }]}>Reaches {cur.reachKm} km out.</Text>}
                     <TouchableOpacity style={s.btn} onPress={exportGpx}><Text style={s.btnT}>↑ Export GPX</Text></TouchableOpacity>
                     {watchRouteAvailable() && (
                       <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={sendToWatch}>
@@ -454,6 +486,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   err: { color: '#c0392b', fontSize: 14, textAlign: 'center', marginVertical: 10, lineHeight: 20 },
   groupLabel: { fontSize: 11.5, fontWeight: '700', color: c.textFaint, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 7, marginTop: 2 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  seg: { flexDirection: 'row', backgroundColor: c.surfaceAlt, borderRadius: 8, padding: 2 },
+  segBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
+  segBtnOn: { backgroundColor: c.accent },
+  segT: { fontSize: 13, fontWeight: '600', color: c.textSub },
+  segTOn: { color: '#fff' },
   chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 100, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
   chipOn: { backgroundColor: c.accent, borderColor: c.accent },
   chipT: { fontSize: 13, fontWeight: '600', color: c.textSub },

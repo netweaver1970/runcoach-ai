@@ -28,6 +28,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   @Published var voiceOn = true            // spoken turn cues (the heads-up haptic fires regardless)
   @Published var nextTurnText = ""         // upcoming maneuver, shown on screen
   @Published var jumpToMap = 0             // bumped on each announcement → ContentView jumps to the map screen
+  @Published var heading: Double = 0       // device heading (deg) → keep direction arrows right on a rotated map
 
   private let mgr = CLLocationManager()
   private var wasOff = false
@@ -48,8 +49,11 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       self.start()   // track from the moment a route lands, so turn cues fire on any screen (not just the map)
     }
   }
-  func start() { mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation() }
-  func stop() { mgr.stopUpdatingLocation() }
+  func start() {
+    mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation()
+    if CLLocationManager.headingAvailable() { mgr.startUpdatingHeading() }
+  }
+  func stop() { mgr.stopUpdatingLocation(); mgr.stopUpdatingHeading() }
 
   private func speak(_ s: String) {
     guard voiceOn, !s.isEmpty else { return }
@@ -111,6 +115,11 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       self.checkTurns(loc)
     }
   }
+
+  func locationManager(_ m: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+    let h = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+    DispatchQueue.main.async { self.heading = h }
+  }
 }
 
 // Travel-direction arrows: the route coords are ordered start→…→start, so an arrow pointing from a point to
@@ -126,6 +135,14 @@ private func geoBearing(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D
 private func compass16(_ deg: Double) -> String {
   let dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
   return dirs[Int((deg / 45).rounded()) % 8]
+}
+// Which way to set off, RELATIVE to the way you're facing (map is heading-up) — beats an absolute compass point.
+private func relStart(_ bearing: Double, _ heading: Double) -> String {
+  var rel = (bearing - heading).truncatingRemainder(dividingBy: 360)
+  if rel > 180 { rel -= 360 }; if rel < -180 { rel += 360 }
+  if abs(rel) <= 30 { return "Straight ahead" }
+  if abs(rel) >= 150 { return "Turn around" }
+  return rel > 0 ? "Head right ↱" : "Head left ↰"
 }
 private struct DirArrow: Identifiable { let id: Int; let coord: CLLocationCoordinate2D; let deg: Double }
 private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
@@ -148,7 +165,7 @@ private func fmtClock(_ t: TimeInterval) -> String {
 struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
   @ObservedObject var engine = WorkoutEngine.shared
-  @State private var cam: MapCameraPosition = .userLocation(fallback: .automatic)   // auto-follow the runner
+  @State private var cam: MapCameraPosition = .userLocation(followsHeading: true, fallback: .automatic)   // heading-up follow
   @State private var panelUp = true                                                 // collapse the bottom panel
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
 
@@ -164,9 +181,9 @@ struct RouteView: View {
             ForEach(directionArrows(store.coords)) { a in
               Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
                 Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowtriangle.up.fill")
-                  .font(.system(size: a.id == 0 ? 20 : 11))
+                  .font(.system(size: a.id == 0 ? 30 : 11))
                   .foregroundColor(a.id == 0 ? .green : .pink)
-                  .rotationEffect(.degrees(a.deg))
+                  .rotationEffect(.degrees(a.deg - store.heading))   // map is heading-up → offset arrows by heading
                   .shadow(color: .black.opacity(0.5), radius: 1)
               }
             }
@@ -185,7 +202,7 @@ struct RouteView: View {
               Text(store.nextTurnText).font(.caption2).bold().foregroundColor(.cyan)
                 .lineLimit(2).multilineTextAlignment(.center)
             } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
-              Text("Head \(compass16(a.deg)) to start").font(.caption2).bold().foregroundColor(.green)
+              Text(relStart(a.deg, store.heading)).font(.caption2).bold().foregroundColor(.green)
             } else if engine.running {
               HStack(spacing: 8) {
                 Label("\(Int(engine.heartRate))", systemImage: "heart.fill").foregroundColor(.red)

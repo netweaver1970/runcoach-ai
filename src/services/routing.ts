@@ -31,26 +31,38 @@ export interface RouteStep {
 export interface RouteLoop {
   distanceKm: number;
   ascentM: number;
+  descentM: number;             // total descent (m)
   coords: [number, number][];   // [lon, lat] polyline
   trailPct: number;             // share on paths/tracks/footways
+  elev: number[];               // downsampled elevation profile (m) for the mini chart
   steps?: RouteStep[];          // turn-by-turn maneuvers — drives the watch voice/haptic guidance
 }
 
-// Equirectangular metres between two [lon,lat] — plenty accurate at running-loop scales, and cheap.
-function distM(a: [number, number], b: [number, number]): number {
+// Equirectangular metres between two points ([lon,lat,…] — extra dims ignored). Accurate at loop scale, cheap.
+function distM(a: number[], b: number[]): number {
   const toR = Math.PI / 180, R = 6371000;
   const x = (b[0] - a[0]) * toR * Math.cos(((a[1] + b[1]) / 2) * toR);
   const y = (b[1] - a[1]) * toR;
   return Math.hypot(x, y) * R;
 }
-const pathKm = (cs: [number, number][]) => { let m = 0; for (let i = 1; i < cs.length; i++) m += distM(cs[i - 1], cs[i]); return m / 1000; };
+const pathKm = (cs: number[][]) => { let m = 0; for (let i = 1; i < cs.length; i++) m += distM(cs[i - 1], cs[i]); return m / 1000; };
+
+// Ascent/descent (from the per-point elevation) + a downsampled profile for the little elevation chart.
+function elevStats(ele: number[]): { ascentM: number; descentM: number; elev: number[] } {
+  let asc = 0, desc = 0;
+  for (let i = 1; i < ele.length; i++) { const d = ele[i] - ele[i - 1]; if (d > 0) asc += d; else desc -= d; }
+  const N = 48, out: number[] = [];
+  if (ele.length <= N) out.push(...ele);
+  else for (let k = 0; k < N; k++) out.push(ele[Math.floor((k / (N - 1)) * (ele.length - 1))]);
+  return { ascentM: Math.round(asc), descentM: Math.round(desc), elev: out.map(v => Math.round(v)) };
+}
 
 // round_trip sometimes runs OUT to a dead-end waypoint and straight back over the same road — a short
 // out-and-back "appendix" hanging off the loop. Detect it as a point the path REVISITS within a short
 // excursion, and excise the excursion (keeping the route otherwise intact + step indices remapped). Bounded
 // so it only removes small artifacts (<~350 m), never a genuine there-and-back leg you'd actually run.
-function trimSpurs(coords: [number, number][], steps: RouteStep[]): { coords: [number, number][]; steps: RouteStep[]; trimmed: boolean } {
-  const TOL = 18, MAX_SPUR = 350, WINDOW = 60;   // metres / metres / index search window
+function trimSpurs(coords: number[][], steps: RouteStep[]): { coords: number[][]; steps: RouteStep[]; trimmed: boolean } {
+  const TOL = 18, MAX_SPUR = 900, WINDOW = 160;   // excise out-and-backs up to ~900 m of path (≈450 m out)
   const cs = coords.slice();
   const orig = coords.map((_, i) => i);          // original index living at each current position
   let changed = true;
@@ -102,6 +114,7 @@ export async function orsRoundTrip(opts: {
   const body = {
     coordinates: [[opts.lon, opts.lat]],
     options: { round_trip: { length: Math.round(opts.km * 1000), points: opts.points ?? 5, seed: opts.seed ?? 1 } },
+    elevation: true,
     extra_info: ['waytype'],
   };
   try {
@@ -118,13 +131,15 @@ export async function orsRoundTrip(opts: {
     const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
     let trail = 0, tot = 0;
     for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; } // path/track/footway
-    const raw = (f.geometry?.coordinates ?? []).map((c: number[]) => [c[0], c[1]] as [number, number]);
-    const t = trimSpurs(raw, stepsFromFeature(f));
+    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f));   // [lon,lat,ele]
+    const es = elevStats(t.coords.map(c => c[2] ?? 0));
     return {
       distanceKm: t.trimmed ? pathKm(t.coords) : (sm.distance ?? 0) / 1000,
-      ascentM: Math.round(sm.ascent ?? 0),
-      coords: t.coords,
+      ascentM: es.ascentM,
+      descentM: es.descentM,
+      coords: t.coords.map(c => [c[0], c[1]] as [number, number]),
       trailPct: tot > 0 ? Math.round((trail / tot) * 100) : 0,
+      elev: es.elev,
       steps: t.steps,
     };
   } catch { return null; }
@@ -164,18 +179,25 @@ export async function orsRoundTripOptions(opts: {
  * we steer a wedge loop toward each of the 8 bearings instead. Sequential to stay gentle on the free tier.
  */
 export async function orsHeadingOptions(opts: {
-  lon: number; lat: number; km: number; profile?: RouteProfile;
+  lon: number; lat: number; km: number; profile?: RouteProfile; hilliness?: 'flat' | 'any' | 'hilly';
 }): Promise<RouteOption[]> {
+  const hill = opts.hilliness ?? 'any';
+  // ORS has no "avoid hills" for foot profiles, so approximate it: for flat/hilly, try two wedge widths per
+  // direction and keep the one with least / most ascent. 'any' does a single shape (half the calls).
+  const spreads = hill === 'any' ? [86] : [86, 66];
   const out: RouteOption[] = [];
   for (let b = 0; b < 8; b++) {
     const deg = b * 45;
-    const loop = await orsDirectionalLoop({
-      lon: opts.lon, lat: opts.lat, headingDeg: deg,
-      reachKm: Math.max(1, opts.km * 0.24), spreadDeg: 86, profile: opts.profile,   // a COMPACT lean, so Reach can push further
-    });
-    if (loop && loop.coords.length >= 2 && loop.distanceKm >= opts.km * 0.4) {
-      out.push({ ...loop, seed: deg, headingDeg: deg, heading: DIRS[b] });
+    let best: (RouteLoop & { reachKm: number }) | null = null;
+    for (const sp of spreads) {
+      const loop = await orsDirectionalLoop({
+        lon: opts.lon, lat: opts.lat, headingDeg: deg,
+        reachKm: Math.max(1, opts.km * 0.24), spreadDeg: sp, profile: opts.profile,   // COMPACT lean, so Reach can push further
+      });
+      if (!loop || loop.coords.length < 2 || loop.distanceKm < opts.km * 0.4) continue;
+      if (!best || (hill === 'flat' && loop.ascentM < best.ascentM) || (hill === 'hilly' && loop.ascentM > best.ascentM)) best = loop;
     }
+    if (best) out.push({ ...best, seed: deg, headingDeg: deg, heading: DIRS[b] });
   }
   return out;
 }
@@ -204,7 +226,7 @@ export async function orsDirectionalLoop(opts: {
     const res = await fetch(`${ORS_BASE}/${profile}/geojson`, {
       method: 'POST',
       headers: { Authorization: key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ coordinates: [[opts.lon, opts.lat], v1, v2, [opts.lon, opts.lat]], radiuses: [-1, 1500, 1500, -1], extra_info: ['waytype'] }),
+      body: JSON.stringify({ coordinates: [[opts.lon, opts.lat], v1, v2, [opts.lon, opts.lat]], radiuses: [-1, 1500, 1500, -1], elevation: true, extra_info: ['waytype'] }),
     });
     if (!res.ok) return null;
     const j: any = await res.json();
@@ -214,16 +236,18 @@ export async function orsDirectionalLoop(opts: {
     const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
     let trail = 0, tot = 0;
     for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; }
-    const raw: [number, number][] = (f.geometry?.coordinates ?? []).map((cc: number[]) => [cc[0], cc[1]] as [number, number]);
-    const t = trimSpurs(raw, stepsFromFeature(f));
-    const coords = t.coords;
+    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f));   // [lon,lat,ele]
+    const coords = t.coords.map(c => [c[0], c[1]] as [number, number]);
+    const es = elevStats(t.coords.map(c => c[2] ?? 0));
     let maxD = 0;
     for (const cc of coords) { const dx = (cc[0] - opts.lon) * 111.32 * Math.cos(opts.lat * Math.PI / 180), dy = (cc[1] - opts.lat) * 111.32; maxD = Math.max(maxD, Math.hypot(dx, dy)); }
     return {
-      distanceKm: t.trimmed ? pathKm(coords) : (sm.distance ?? 0) / 1000,
-      ascentM: Math.round(sm.ascent ?? 0),
+      distanceKm: t.trimmed ? pathKm(t.coords) : (sm.distance ?? 0) / 1000,
+      ascentM: es.ascentM,
+      descentM: es.descentM,
       coords,
       trailPct: tot > 0 ? Math.round((trail / tot) * 100) : 0,
+      elev: es.elev,
       steps: t.steps,
       reachKm: Math.round(maxD * 10) / 10,
     };
