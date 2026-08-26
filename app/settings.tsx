@@ -29,6 +29,7 @@ import { getAgenticMode, setAgenticMode } from '../src/services/agent';
 import { loadTranscriptionConfig, saveTranscriptionConfig, STT_PRESETS, matchPreset } from '../src/services/transcription';
 import { getFlightApiKey, setFlightApiKey } from '../src/services/flightLookup';
 import { getOrsApiKey, setOrsApiKey, validateOrsKey } from '../src/services/routing';
+import { getVoiceNav, setVoiceNav as persistVoiceNav } from '../src/services/watchRoute';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun, writeZonesFileFrom } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
@@ -80,6 +81,7 @@ export default function SettingsScreen() {
   const [orsKey,      setOrsKey]      = useState('');
   const [orsSaved,    setOrsSaved]    = useState(false);
   const [orsBusy,     setOrsBusy]     = useState(false);
+  const [voiceNav,    setVoiceNav]    = useState(true);
   const [model,         setModel]         = useState('');
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
@@ -468,7 +470,7 @@ export default function SettingsScreen() {
   }, [flightKey]);
 
   // ── Route generation (OpenRouteService) — powers Wayfinder round-trip loops from the coach's distance ──
-  useEffect(() => { getOrsApiKey().then(setOrsKey).catch(() => {}); }, []);
+  useEffect(() => { getOrsApiKey().then(setOrsKey).catch(() => {}); getVoiceNav().then(setVoiceNav).catch(() => {}); }, []);
   const handleOrsSave = useCallback(async () => {
     setOrsBusy(true);
     const v = await validateOrsKey(orsKey);
@@ -874,6 +876,22 @@ export default function SettingsScreen() {
             <TouchableOpacity style={[styles.btn, orsSaved && styles.btnSuccess]} onPress={handleOrsSave} disabled={orsBusy}>
               <Text style={styles.btnText}>{orsBusy ? 'Checking…' : orsSaved ? '✓ Saved' : 'Save & verify'}</Text>
             </TouchableOpacity>
+          </View>
+          <View style={[styles.switchRow, { marginTop: 6 }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Voice navigation on watch</Text>
+              <Text style={styles.switchSub}>
+                Speak turn-by-turn cues through the watch (AirPods or speaker) as you run a sent loop, with a
+                heads-up buzz at each turn. Best on roads; forest trails give sparser directions. You can also
+                mute it live from the watch.
+              </Text>
+            </View>
+            <Switch
+              value={voiceNav}
+              onValueChange={async (v) => { setVoiceNav(v); await persistVoiceNav(v); }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
+              thumbColor="#fff"
+            />
           </View>
         </Section>
 

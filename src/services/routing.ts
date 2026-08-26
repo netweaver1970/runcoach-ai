@@ -22,11 +22,32 @@ export async function setOrsApiKey(v: string): Promise<void> {
 export async function hasOrsApiKey(): Promise<boolean> { return !!(await getOrsApiKey()); }
 
 export type RouteProfile = 'foot-hiking' | 'foot-walking';
+export interface RouteStep {
+  i: number;      // index into `coords` where the maneuver happens (way_points[0])
+  text: string;   // ORS instruction, e.g. "Turn left onto Main Street"
+  dist: number;   // metres this step covers (≈ distance to the next maneuver)
+  type: number;   // ORS maneuver code (0 left, 1 right, 6 continue, 10 arrive, …)
+}
 export interface RouteLoop {
   distanceKm: number;
   ascentM: number;
   coords: [number, number][];   // [lon, lat] polyline
   trailPct: number;             // share on paths/tracks/footways
+  steps?: RouteStep[];          // turn-by-turn maneuvers — drives the watch voice/haptic guidance
+}
+
+// ORS GeoJSON carries turn-by-turn under properties.segments[].steps[] (instructions are on by default). Each
+// step's way_points index into the geometry, so the maneuver's coordinate = coords[step.way_points[0]].
+function stepsFromFeature(f: any): RouteStep[] {
+  const out: RouteStep[] = [];
+  for (const seg of (f?.properties?.segments ?? [])) {
+    for (const st of (seg.steps ?? [])) {
+      const text = String(st.instruction ?? '').trim();
+      if (!text) continue;
+      out.push({ i: st.way_points?.[0] ?? 0, text, dist: Math.round(st.distance ?? 0), type: st.type ?? 0 });
+    }
+  }
+  return out;
 }
 
 /**
@@ -65,6 +86,7 @@ export async function orsRoundTrip(opts: {
       ascentM: Math.round(sm.ascent ?? 0),
       coords: (f.geometry?.coordinates ?? []).map((c: number[]) => [c[0], c[1]] as [number, number]),
       trailPct: tot > 0 ? Math.round((trail / tot) * 100) : 0,
+      steps: stepsFromFeature(f),
     };
   } catch { return null; }
 }
@@ -138,6 +160,7 @@ export async function orsDirectionalLoop(opts: {
       ascentM: Math.round(sm.ascent ?? 0),
       coords,
       trailPct: tot > 0 ? Math.round((trail / tot) * 100) : 0,
+      steps: stepsFromFeature(f),
       reachKm: Math.round(maxD * 10) / 10,
     };
   } catch { return null; }

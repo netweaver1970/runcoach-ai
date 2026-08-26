@@ -2,15 +2,19 @@ import SwiftUI
 import MapKit
 import CoreLocation
 import WatchKit
+import AVFoundation
 
 // Route pushed from the phone (Wayfinder). Sent over the SAME WCSession channel as the KPI payload — the
 // watch tries a KPIPayload decode first, then this. Keep the field names in sync with watchRoute.ts.
 struct RoutePoint: Codable, Hashable { let lat: Double; let lon: Double }
+struct RouteTurn: Codable, Hashable { let lat: Double; let lon: Double; let text: String; let dist: Double }
 struct RoutePayload: Codable {
   let type: String            // "route"
   let name: String
   let distanceKm: Double
   let pts: [RoutePoint]
+  let turns: [RouteTurn]?     // turn-by-turn maneuvers (optional — old phone builds omit it)
+  let voice: Bool?            // initial voice-on state from the phone setting
 }
 
 // ─── Route store: holds the pushed route + drives live guidance from the watch GPS ───────────────────────
@@ -20,9 +24,14 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   @Published var here: CLLocationCoordinate2D?
   @Published var offRoute = false
   @Published var remainingKm: Double = 0
+  @Published var voiceOn = true            // spoken turn cues (the heads-up haptic fires regardless)
+  @Published var nextTurnText = ""         // upcoming maneuver, shown on screen
 
   private let mgr = CLLocationManager()
   private var wasOff = false
+  private let synth = AVSpeechSynthesizer()
+  private var turns: [RouteTurn] = []
+  private var announced: Set<Int> = []     // turn indices already spoken for this route
 
   override init() {
     super.init()
@@ -31,10 +40,43 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   }
 
   func setRoute(_ r: RoutePayload) {
-    DispatchQueue.main.async { self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false }
+    DispatchQueue.main.async {
+      self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false
+      self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true; self.announced = []; self.nextTurnText = ""
+    }
   }
   func start() { mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation() }
   func stop() { mgr.stopUpdatingLocation() }
+
+  private func speak(_ s: String) {
+    guard voiceOn, !s.isEmpty else { return }
+    do {
+      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+      try AVAudioSession.sharedInstance().setActive(true)
+    } catch { }
+    let u = AVSpeechUtterance(string: s)
+    u.rate = AVSpeechUtteranceDefaultSpeechRate
+    synth.speak(u)
+  }
+
+  // Fire the nearest not-yet-announced turn once you're within ~40 m: a heads-up haptic (always) + a spoken
+  // cue (when voice is on). `nextTurnText` tracks the upcoming maneuver for the on-screen readout.
+  private func checkTurns(_ loc: CLLocation) {
+    guard !turns.isEmpty else { return }
+    var bi = -1; var bd = Double.greatestFiniteMagnitude
+    for (i, t) in turns.enumerated() where !announced.contains(i) {
+      let d = loc.distance(from: CLLocation(latitude: t.lat, longitude: t.lon))
+      if d < bd { bd = d; bi = i }
+    }
+    guard bi >= 0 else { nextTurnText = ""; return }
+    let t = turns[bi]
+    nextTurnText = t.text
+    if bd < 40 {
+      announced.insert(bi)
+      WKInterfaceDevice.current().play(.directionUp)
+      speak(bd > 18 ? "In \(Int((bd / 5).rounded()) * 5) meters, \(t.text)" : t.text)
+    }
+  }
 
   var coords: [CLLocationCoordinate2D] {
     (route?.pts ?? []).map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
@@ -62,6 +104,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       self.offRoute = off
       if off && !self.wasOff { WKInterfaceDevice.current().play(.notification) }  // buzz once on going off-route
       self.wasOff = off
+      self.checkTurns(loc)
     }
   }
 }
@@ -123,6 +166,9 @@ struct RouteView: View {
             } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
               // Still at the start → spell out which way to set off (clockwise vs counter reads from the arrows).
               Text("Head \(compass16(a.deg)) to start").font(.caption2).bold().foregroundColor(.green)
+            } else if !store.nextTurnText.isEmpty {
+              Text(store.nextTurnText).font(.caption2).bold().foregroundColor(.cyan)
+                .lineLimit(2).multilineTextAlignment(.center)
             }
             Text(String(format: "%.1f km left", store.remainingKm))
               .font(.headline).monospacedDigit()
@@ -130,6 +176,14 @@ struct RouteView: View {
           .padding(.vertical, 4).padding(.horizontal, 10)
           .background(.ultraThinMaterial, in: Capsule())
           .padding(.bottom, 6)
+        }
+        .overlay(alignment: .topTrailing) {
+          Button { store.voiceOn.toggle() } label: {
+            Image(systemName: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
+              .font(.system(size: 12)).padding(6)
+              .background(.ultraThinMaterial, in: Circle())
+          }
+          .buttonStyle(.plain).padding(6)
         }
         .onAppear { store.start() }
         .onDisappear { store.stop() }
