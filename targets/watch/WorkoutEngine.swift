@@ -15,6 +15,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var builder: HKLiveWorkoutBuilder?
   private var startDate: Date?
   private var ticker: Timer?
+  private let synth = AVSpeechSynthesizer()
 
   @Published var running = false
   @Published var paused = false
@@ -122,6 +123,14 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard distanceM > 20, elapsed > 5 else { return }
     let secPerKm = elapsed / (distanceM / 1000)
     paceStr = String(format: "%d:%02d", Int(secPerKm) / 60, Int(secPerKm) % 60)
+  }
+
+  // Interval voice cues (audio session already active from start()); honours the same mute toggle as turn cues.
+  private func speak(_ s: String) {
+    guard RouteStore.shared.voiceOn, !s.isEmpty else { return }
+    let u = AVSpeechUtterance(string: s)
+    u.rate = AVSpeechUtteranceDefaultSpeechRate
+    synth.speak(u)
   }
 
   // ─── Structured intervals ───────────────────────────────────────────────────────────────────────────────
