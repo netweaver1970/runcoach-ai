@@ -149,6 +149,7 @@ struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
   @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(fallback: .automatic)   // auto-follow the runner
+  @State private var panelUp = true                                                 // collapse the bottom panel
 
   var body: some View {
     Group {
@@ -170,7 +171,11 @@ struct RouteView: View {
             }
             UserAnnotation()
           }
+          if panelUp {
           VStack(spacing: 3) {
+            Button { withAnimation { panelUp = false } } label: {
+              Image(systemName: "chevron.compact.down").font(.system(size: 15)).foregroundColor(.secondary).frame(maxWidth: .infinity)
+            }.buttonStyle(.plain)
             // Status line: off-route / start heading / upcoming turn (as before), or live HR+pace when running.
             if store.offRoute {
               Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
@@ -206,6 +211,13 @@ struct RouteView: View {
           .padding(.vertical, 4).padding(.horizontal, 10)
           .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
           .padding(.bottom, 6)
+          } else {
+            // Collapsed → give the map the screen back; a small handle brings the panel (and controls) back.
+            Button { withAnimation { panelUp = true } } label: {
+              Image(systemName: "chevron.compact.up").font(.system(size: 18)).padding(.horizontal, 22).padding(.vertical, 5)
+                .background(.ultraThinMaterial, in: Capsule())
+            }.buttonStyle(.plain).padding(.bottom, 6)
+          }
         }
         .overlay(alignment: .topTrailing) {
           Button { store.voiceOn.toggle() } label: {

@@ -158,6 +158,29 @@ export async function orsRoundTripOptions(opts: {
 }
 
 /**
+ * The heading chooser: ONE genuinely-directional loop per compass point (N..NW), so all eight directions are
+ * offered where routable and picking a heading actually goes that way. round_trip's seed loops are centred on
+ * the start (centroid ≈ start → the compass label is noise, and whole directions like W/SW/NW never appear), so
+ * we steer a wedge loop toward each of the 8 bearings instead. Sequential to stay gentle on the free tier.
+ */
+export async function orsHeadingOptions(opts: {
+  lon: number; lat: number; km: number; profile?: RouteProfile;
+}): Promise<RouteOption[]> {
+  const out: RouteOption[] = [];
+  for (let b = 0; b < 8; b++) {
+    const deg = b * 45;
+    const loop = await orsDirectionalLoop({
+      lon: opts.lon, lat: opts.lat, headingDeg: deg,
+      reachKm: Math.max(1, opts.km * 0.3), spreadDeg: 78, profile: opts.profile,
+    });
+    if (loop && loop.coords.length >= 2 && loop.distanceKm >= opts.km * 0.45) {
+      out.push({ ...loop, seed: deg, headingDeg: deg, heading: DIRS[b] });
+    }
+  }
+  return out;
+}
+
+/**
  * Actively STEER a loop toward a bearing (not a random seed): two waypoints in a wedge around `headingDeg` at
  * `reachKm` out, routed as a loop. A narrower wedge + bigger reach pushes the far point FURTHER from home in
  * that direction — the "amplify / explore further" control. `radiuses` snaps a waypoint that lands in a field

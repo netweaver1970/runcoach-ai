@@ -12,7 +12,7 @@ import { Stack, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { getOrsApiKey, orsRoundTripOptions, orsDirectionalLoop, RouteOption, RouteLoop } from '../src/services/routing';
+import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, RouteOption, RouteLoop } from '../src/services/routing';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
@@ -75,6 +75,13 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
       style={{ position: 'absolute', left: tx * TILE - ox, top: ty * TILE - oy, width: TILE, height: TILE }} />);
   }
   const pts = coords.map(px);
+  const segView = (a: [number, number], b: [number, number], key: string, h: number, color: string) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.sqrt(dx * dx + dy * dy);
+    const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+    return <View key={key} pointerEvents="none" style={{ position: 'absolute', left: (a[0] + b[0]) / 2 - len / 2, top: (a[1] + b[1]) / 2 - h / 2, width: len, height: h, backgroundColor: color, borderRadius: h / 2, transform: [{ rotate: `${ang}deg` }] }} />;
+  };
+  // White casing under the coloured line → the route reads clearly over streets/houses.
+  const casing = pts.map((p, i) => i === 0 ? null : segView(pts[i - 1], p, `c${i}`, 8, '#ffffff'));
   // travel-direction arrows (screen-space): id 0 = green + larger "start this way"; the rest are accent-coloured
   // around the loop so clockwise vs counter-clockwise reads before you set off.
   const ahead = Math.max(1, Math.floor(pts.length / 30));
@@ -85,17 +92,14 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
     const j = Math.min(i + ahead, pts.length - 1);
     if (i !== j) arrows.push({ k, x: pts[i][0], y: pts[i][1], ang: scrAng(pts[i], pts[j]) });
   }
-  const segs = pts.map((p, i) => {
-    if (i === 0) return null;
-    const [x1p, y1p] = pts[i - 1], [x2p, y2p] = p;
-    const dx = x2p - x1p, dy = y2p - y1p, len = Math.sqrt(dx * dx + dy * dy);
-    const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
-    return <View key={i} pointerEvents="none" style={{ position: 'absolute', left: (x1p + x2p) / 2 - len / 2, top: (y1p + y2p) / 2 - 2, width: len, height: 4, backgroundColor: line, borderRadius: 2, transform: [{ rotate: `${ang}deg` }] }} />;
-  });
+  const segs = pts.map((p, i) => i === 0 ? null : segView(pts[i - 1], p, `l${i}`, 4.5, line));
   const [sx, sy] = px(start);
   return (
     <View style={{ width, height, borderRadius: 14, overflow: 'hidden', backgroundColor: c.surfaceAlt }}>
       {tiles}
+      {/* Fade the busy topo tiles so the route + markers read clearly against the houses/streets. */}
+      <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width, height, backgroundColor: 'rgba(255,255,255,0.42)' }} />
+      {casing}
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
       {arrows.map(a => {
@@ -127,16 +131,23 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
   const s = useThemedStyles(makeStyles);
   const zRef = useRef(zoom); zRef.current = zoom;
   const cRef = useRef<[number, number]>(center ?? bboxCenter(coords)); cRef.current = center ?? bboxCenter(coords);
+  const onPanRef = useRef(onPan); onPanRef.current = onPan;
   const startC = useRef<[number, number] | null>(null);
+  // Own the gesture on touch-start so the parent ScrollView doesn't steal vertical drags. Buttons are children
+  // and still win on their own area. Handlers read live zoom/centre from refs, so the responder never needs to
+  // be rebuilt mid-drag (rebuilding it was what killed panning).
   const pan = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4,
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderTerminationRequest: () => false,   // don't let the ScrollView reclaim mid-pan
     onPanResponderGrant: () => { startC.current = cRef.current; },
     onPanResponderMove: (_, g) => {
       const z = zRef.current, sc = startC.current; if (!sc) return;
       const bx = lon2px(sc[0], z) - g.dx, by = lat2px(sc[1], z) - g.dy;   // drag content with the finger
-      onPan([px2lon(bx, z), px2lat(by, z)]);
+      onPanRef.current([px2lon(bx, z), px2lat(by, z)]);
     },
-  }), [onPan]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
   return (
     <View style={{ position: 'relative', width, height }} {...pan.panHandlers}>
       <StaticMap coords={coords} start={start} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
@@ -211,9 +222,9 @@ export default function WayfinderScreen() {
   const generate = useCallback(async () => {
     setBusy(true); setErr(null); setOpts([]);
     try {
-      // request a touch under target (round_trip overshoots), gather a batch across directions
-      const list = await orsRoundTripOptions({
-        lon: start[0], lat: start[1], km: Math.max(2, targetKm * 0.9), count: 6, profile: trails ? 'foot-hiking' : 'foot-walking',
+      // one steered loop per compass point → every routable direction (incl. W/SW/NW) is offered
+      const list = await orsHeadingOptions({
+        lon: start[0], lat: start[1], km: targetKm, profile: trails ? 'foot-hiking' : 'foot-walking',
       });
       if (!list.length) setErr('No routes came back — check the key in Settings, or try a different distance.');
       else { setOpts(list); setSel(0); setReach(0); setSteered(null); }
@@ -290,9 +301,11 @@ export default function WayfinderScreen() {
   const effZoom = zoomMode === 'auto' ? ((moving && here) ? 16 : autoZ) : zoomMode;
   const effCenter: [number, number] | undefined = panCenter ?? ((moving && here) ? here : undefined);
   const autoOn = zoomMode === 'auto' && !panCenter;
+  const effZoomRef = useRef(effZoom); effZoomRef.current = effZoom;
 
   // Panning freezes the zoom (so auto-fit/follow stop fighting the drag); AUTO returns to automatic + recentres.
-  const onPan = useCallback((cc: [number, number]) => { setPanCenter(cc); setZoomMode(z => (z === 'auto' ? Math.round(effZoom) : z)); }, [effZoom]);
+  // onPan is kept STABLE (reads zoom from a ref) so the pan responder is never rebuilt mid-drag.
+  const onPan = useCallback((cc: [number, number]) => { setPanCenter(cc); setZoomMode(z => (z === 'auto' ? Math.round(effZoomRef.current) : z)); }, []);
   const onZoomIn = useCallback(() => setZoomMode(Math.min(18, Math.round(effZoom) + 1)), [effZoom]);
   const onZoomOut = useCallback(() => setZoomMode(Math.max(11, Math.round(effZoom) - 1)), [effZoom]);
   const onAuto = useCallback(() => { setPanCenter(null); setZoomMode('auto'); }, []);
@@ -430,10 +443,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   zoomBtnOn: { backgroundColor: c.accent },
   zoomT: { fontSize: 20, fontWeight: '700', color: '#222' },
   zoomTsm: { fontSize: 10, fontWeight: '800', color: '#222' },
-  followPill: { position: 'absolute', left: 8, top: 8, backgroundColor: '#2f7bffE6', borderRadius: 100, paddingHorizontal: 9, paddingVertical: 4 },
+  followPill: { position: 'absolute', left: 8, bottom: 8, backgroundColor: '#2f7bffE6', borderRadius: 100, paddingHorizontal: 9, paddingVertical: 4 },
   followT: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  fullBtn: { position: 'absolute', left: 8, bottom: 8, backgroundColor: '#ffffffE6', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } },
-  fullT: { fontSize: 12, fontWeight: '800', color: '#222' },
+  fullBtn: { position: 'absolute', left: 8, top: 8, backgroundColor: '#ffffffF2', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } },
+  fullT: { fontSize: 13, fontWeight: '800', color: '#222' },
   statCard: { backgroundColor: c.surface, borderRadius: 14, padding: 16, marginTop: 12 },
   statRow: { flexDirection: 'row', justifyContent: 'space-around' },
   stat: { alignItems: 'center' },
