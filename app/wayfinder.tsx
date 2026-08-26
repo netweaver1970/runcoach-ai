@@ -85,11 +85,12 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
   const casing = pts.map((p, i) => i === 0 ? null : segView(pts[i - 1], p, `c${i}`, 8, '#ffffff'));
   // travel-direction arrows (screen-space): id 0 = green + larger "start this way"; the rest are accent-coloured
   // around the loop so clockwise vs counter-clockwise reads before you set off.
-  const ahead = Math.max(1, Math.floor(pts.length / 30));
+  const ahead = Math.max(1, Math.floor(pts.length / 40));
   const scrAng = (a: [number, number], b: [number, number]) => (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
   const arrows: { k: number; x: number; y: number; ang: number }[] = [];
-  for (let k = 0; k < 5; k++) {
-    const i = Math.floor((k / 5) * (pts.length - 1));
+  const nArrows = Math.min(30, Math.max(6, Math.floor(pts.length / 6)));   // dense direction chevrons along the loop
+  for (let k = 0; k < nArrows; k++) {
+    const i = Math.floor((k / nArrows) * (pts.length - 1));
     const j = Math.min(i + ahead, pts.length - 1);
     if (i !== j) arrows.push({ k, x: pts[i][0], y: pts[i][1], ang: scrAng(pts[i], pts[j]) });
   }
@@ -104,13 +105,17 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
       {arrows.map(a => {
-        const big = a.k === 0, bl = big ? 15 : 9, bt = big ? 8 : 5;   // triangle points +x; rotate to heading
-        return <View key={`arw${a.k}`} pointerEvents="none" style={{
-          position: 'absolute', left: a.x - bl / 2, top: a.y - bt, width: 0, height: 0,
-          borderTopWidth: bt, borderBottomWidth: bt, borderLeftWidth: bl,
-          borderTopColor: 'transparent', borderBottomColor: 'transparent', borderLeftColor: big ? '#16a34a' : line,
-          transform: [{ rotate: `${a.ang}deg` }],
-        }} />;
+        const big = a.k === 0, bl = big ? 16 : 11, bt = big ? 9 : 6;   // triangle points +x; rotate to heading
+        const tri = (w: number, h: number, color: string, key: string) => (
+          <View key={key} pointerEvents="none" style={{
+            position: 'absolute', left: a.x - w / 2, top: a.y - h, width: 0, height: 0,
+            borderTopWidth: h, borderBottomWidth: h, borderLeftWidth: w,
+            borderTopColor: 'transparent', borderBottomColor: 'transparent', borderLeftColor: color,
+            transform: [{ rotate: `${a.ang}deg` }],
+          }} />
+        );
+        // dark casing behind a white (or green start) fill → chevrons stand out on the coloured route line
+        return [tri(bl + 3, bt + 2, 'rgba(0,0,0,0.5)', `ac${a.k}`), tri(bl, bt, big ? '#16a34a' : '#ffffff', `af${a.k}`)];
       })}
       {here && (() => {
         const [hx, hy] = px(here);
@@ -269,17 +274,28 @@ export default function WayfinderScreen() {
 
   // Amplify the chosen direction: level 0 = the round-trip loop; 1–3 push the far point further out (narrower
   // wedge + bigger reach) via a steered directional loop toward the selected heading.
-  const REACH_CFG = [null, { r: 0.38, s: 70 }, { r: 0.48, s: 54 }, { r: 0.58, s: 40 }];
+  const REACH_CFG = [null, { r: 0.30, s: 72 }, { r: 0.36, s: 58 }, { r: 0.42, s: 46 }];
   const applyReach = useCallback(async (level: number) => {
     setReach(level);
     const o = opts[sel];
     if (level === 0 || !o) { setSteered(null); return; }
     setSteerBusy(true);
     const cfg = REACH_CFG[level]!;
-    const loop = await orsDirectionalLoop({
+    const profile = trails ? 'foot-hiking' : 'foot-walking';
+    let loop = await orsDirectionalLoop({
       lon: start[0], lat: start[1], headingDeg: o.headingDeg,
-      reachKm: Math.max(1, targetKm * cfg.r), spreadDeg: cfg.s, profile: trails ? 'foot-hiking' : 'foot-walking',
+      reachKm: Math.max(1, targetKm * cfg.r), spreadDeg: cfg.s, profile,
     }).catch(() => null);
+    // Directional loops can balloon unpredictably; if it overshoots the target badly, scale the reach down to
+    // aim for ~1.45× target and retry once, keeping whichever is shorter.
+    if (loop && loop.distanceKm > targetKm * 1.7) {
+      const scale = Math.max(0.4, (targetKm * 1.45) / loop.distanceKm);
+      const loop2 = await orsDirectionalLoop({
+        lon: start[0], lat: start[1], headingDeg: o.headingDeg,
+        reachKm: Math.max(1, targetKm * cfg.r * scale), spreadDeg: Math.min(90, cfg.s + 12), profile,
+      }).catch(() => null);
+      if (loop2 && loop2.distanceKm < loop.distanceKm) loop = loop2;
+    }
     if (!loop) setErr('Could not push that way — no path far enough that direction. Try another heading.');
     setSteered(loop);
     setSteerBusy(false);
