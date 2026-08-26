@@ -112,7 +112,8 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
       {arrows.map(a => {
-        const big = a.k === 0, bl = big ? 16 : 13, bt = big ? 4.5 : 3.5;   // slender dart, points +x; rotate to heading
+        const zScale = 1 + Math.max(0, z - 14) * 0.4;                      // arrows grow when zoomed in (else invisible)
+        const big = a.k === 0, bl = (big ? 16 : 13) * zScale, bt = (big ? 4.5 : 3.5) * zScale;   // slender dart, points +x
         const col = gradeColor(a.k / Math.max(1, nArrows - 1));            // green start → red finish
         const tri = (w: number, h: number, color: string, key: string) => (
           <View key={key} pointerEvents="none" style={{
