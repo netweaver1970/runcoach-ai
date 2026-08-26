@@ -92,14 +92,14 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
   const casing = pts.map((p, i) => i === 0 ? null : segView(pts[i - 1], p, `c${i}`, 8, '#ffffff'));
   // travel-direction arrows (screen-space): id 0 = green + larger "start this way"; the rest are accent-coloured
   // around the loop so clockwise vs counter-clockwise reads before you set off.
-  const ahead = Math.max(1, Math.floor(pts.length / 40));
   const scrAng = (a: [number, number], b: [number, number]) => (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
   const arrows: { k: number; x: number; y: number; ang: number }[] = [];
   const nArrows = Math.min(30, Math.max(6, Math.floor(pts.length / 6)));   // dense direction chevrons along the loop
+  const tanSpan = Math.max(1, Math.floor(pts.length / 80));                // small span → arrow aligns with the LOCAL route direction
   for (let k = 0; k < nArrows; k++) {
     const i = Math.floor((k / nArrows) * (pts.length - 1));
-    const j = Math.min(i + ahead, pts.length - 1);
-    if (i !== j) arrows.push({ k, x: pts[i][0], y: pts[i][1], ang: scrAng(pts[i], pts[j]) });
+    const lo = Math.max(0, i - tanSpan), hi = Math.min(pts.length - 1, i + tanSpan);
+    if (lo !== hi) arrows.push({ k, x: pts[i][0], y: pts[i][1], ang: scrAng(pts[lo], pts[hi]) });
   }
   const segs = pts.map((p, i) => i === 0 ? null : segView(pts[i - 1], p, `l${i}`, 4.5, line));
   const [sx, sy] = px(start);
@@ -112,9 +112,9 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
       {arrows.map(a => {
-        const zScale = 1 + Math.max(0, z - 14) * 0.4;                      // arrows grow when zoomed in (else invisible)
-        const big = a.k === 0, bl = (big ? 16 : 13) * zScale, bt = (big ? 4.5 : 3.5) * zScale;   // slender dart, points +x
-        const col = gradeColor(a.k / Math.max(1, nArrows - 1));            // green start → red finish
+        const zScale = Math.min(2, 1 + Math.max(0, z - 14) * 0.35);       // grow when zoomed in (capped)
+        const big = a.k === 0, bl = (big ? 20 : 17) * zScale, bt = (big ? 6 : 5) * zScale;   // dart points +x; rotate to heading
+        const col = gradeColor(a.k / Math.max(1, nArrows - 1));           // green start → red finish
         const tri = (w: number, h: number, color: string, key: string) => (
           <View key={key} pointerEvents="none" style={{
             position: 'absolute', left: a.x - w / 2, top: a.y - h, width: 0, height: 0,
@@ -123,8 +123,8 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
             transform: [{ rotate: `${a.ang}deg` }],
           }} />
         );
-        // dark casing behind the progress-coloured dart → slender arrows that stand out on the route line
-        return [tri(bl + 2, bt + 1.5, 'rgba(0,0,0,0.45)', `ac${a.k}`), tri(bl, bt, col, `af${a.k}`)];
+        // colour fill ringed by white then black → arrows read clearly on any map colour
+        return [tri(bl + 6, bt + 4, '#000000', `ab${a.k}`), tri(bl + 3, bt + 2, '#ffffff', `aw${a.k}`), tri(bl, bt, col, `af${a.k}`)];
       })}
       {here && (() => {
         const [hx, hy] = px(here);
