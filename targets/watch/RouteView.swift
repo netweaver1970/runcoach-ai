@@ -184,6 +184,7 @@ struct RouteView: View {
   @State private var panelUp = true                                                 // collapse the bottom panel
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
+  @State private var headingUp = true                                               // true = heading-up, false = north-up
   @AppStorage("autoPause") private var autoPause = false                            // pause when stationary
 
   var body: some View {
@@ -199,11 +200,11 @@ struct RouteView: View {
             ForEach(directionArrows(store.coords)) { a in
               Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
                 Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowtriangle.up.fill")
-                  .font(.system(size: a.id == 0 ? 30 : 17, weight: .black))
-                  .foregroundColor(a.id == 0 ? .green : .pink)
-                  .shadow(color: .white, radius: 1.5)                 // white outline → visible on any map colour
-                  .shadow(color: .black.opacity(0.7), radius: 1)
-                  .rotationEffect(.degrees(a.deg - store.heading))   // map is heading-up → offset arrows by heading
+                  .font(.system(size: a.id == 0 ? 30 : 18, weight: .black))
+                  .foregroundColor(a.id == 0 ? .green : .white)      // white = distinct from the pink route line
+                  .shadow(color: .black, radius: 1)                  // black outline → visible on the light map
+                  .shadow(color: .black.opacity(0.8), radius: 2)
+                  .rotationEffect(.degrees(a.deg - (headingUp ? store.heading : 0)))   // offset only when heading-up
               }
             }
             UserAnnotation()
@@ -248,18 +249,18 @@ struct RouteView: View {
               } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
                 Text(relStart(a.deg, store.heading)).font(.caption2).bold().foregroundColor(.green)
               }
-              Text(String(format: "%.1f km left", store.remainingKm)).font(.headline).monospacedDigit()
-              Button { engine.startFromRoute(r) } label: { Label("Start run", systemImage: "figure.run") }
-                .buttonStyle(.borderedProminent).controlSize(.small).tint(.green)
+              Text(String(format: "%.1f km left", store.remainingKm)).font(.subheadline).monospacedDigit()
+              Button { engine.startFromRoute(r) } label: { Label("Start", systemImage: "figure.run").font(.caption) }
+                .buttonStyle(.borderedProminent).controlSize(.mini).tint(.green)
               Button { autoPause.toggle() } label: {
                 Label(autoPause ? "Auto-pause on" : "Auto-pause off", systemImage: autoPause ? "pause.circle.fill" : "pause.circle")
                   .font(.caption2)
               }.buttonStyle(.plain).foregroundColor(autoPause ? .green : .secondary)
             }
           }
-          .padding(.vertical, 4).padding(.horizontal, 10)
-          .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-          .padding(.bottom, 6)
+          .padding(.vertical, 2).padding(.horizontal, 8)
+          .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+          .padding(.bottom, 4)
           } else {
             // Collapsed → give the map the screen back; a big handle brings the panel (and controls) back.
             Button { withAnimation { panelUp = true } } label: {
@@ -284,11 +285,15 @@ struct RouteView: View {
                 .font(.system(size: 14)).frame(width: 40, height: 40).contentShape(Rectangle())
                 .background(.ultraThinMaterial, in: Circle())
             }.buttonStyle(.plain)
-            // Re-engage heading-up follow after a crown/pan interaction dropped it (only useful with the map on).
+            // Toggle north-up ↔ heading-up (also re-centres, recovering from a crown/pan interaction).
             if mapOn {
-              Button { cam = .userLocation(followsHeading: true, fallback: .automatic) } label: {
-                Image(systemName: "location.north.line.fill")
-                  .font(.system(size: 14)).frame(width: 40, height: 40).contentShape(Rectangle())
+              Button {
+                headingUp.toggle()
+                cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
+                                : .userLocation(fallback: .automatic)
+              } label: {
+                Image(systemName: headingUp ? "location.north.line.fill" : "n.circle.fill")
+                  .font(.system(size: 15)).frame(width: 40, height: 40).contentShape(Rectangle())
                   .background(.ultraThinMaterial, in: Circle())
               }.buttonStyle(.plain)
             }
@@ -308,11 +313,12 @@ struct RouteView: View {
         }
         .onChange(of: store.turnDistM) {
           // A turn is coming up → zoom the map to street detail so a detour isn't missed; restore follow after.
-          guard mapOn else { return }
+          guard mapOn, engine.running else { return }
           if store.turnDistM < 80, let h = store.here {
-            cam = .camera(MapCamera(centerCoordinate: h, distance: 140, heading: store.heading))
+            cam = .camera(MapCamera(centerCoordinate: h, distance: 140, heading: headingUp ? store.heading : 0))
           } else if store.turnDistM > 140 {
-            cam = .userLocation(followsHeading: true, fallback: .automatic)
+            cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
+                            : .userLocation(fallback: .automatic)
           }
         }
         .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
