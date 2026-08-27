@@ -32,6 +32,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   @Published var nextTurnText = ""         // upcoming maneuver, shown on screen
   @Published var jumpToMap = 0             // bumped on each announcement → ContentView jumps to the map screen
   @Published var heading: Double = 0       // device heading (deg) → keep direction arrows right on a rotated map
+  @Published var turnDistM: Double = 9999  // metres to the next un-announced turn → drives the approach zoom
 
   private let mgr = CLLocationManager()
   private var wasOff = false
@@ -43,6 +44,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     super.init()
     mgr.delegate = self
     mgr.desiredAccuracy = kCLLocationAccuracyBest
+    mgr.headingFilter = kCLHeadingFilterNone   // frequent heading updates → a steadier compass fan
   }
 
   func setRoute(_ r: RoutePayload) {
@@ -61,7 +63,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   private func speak(_ s: String) {
     guard voiceOn, !s.isEmpty else { return }
     do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
       try AVAudioSession.sharedInstance().setActive(true)
     } catch { }
     let u = AVSpeechUtterance(string: s)
@@ -78,9 +80,10 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       let d = loc.distance(from: CLLocation(latitude: t.lat, longitude: t.lon))
       if d < bd { bd = d; bi = i }
     }
-    guard bi >= 0 else { nextTurnText = ""; return }
+    guard bi >= 0 else { nextTurnText = ""; turnDistM = 9999; return }
     let t = turns[bi]
     nextTurnText = t.text
+    turnDistM = bd                 // distance to the next turn → the map zooms in as this shrinks
     if bd < 40 {
       announced.insert(bi)
       jumpToMap += 1   // a turn is happening → surface the map (ContentView watches this)
@@ -150,7 +153,7 @@ private func relStart(_ bearing: Double, _ heading: Double) -> String {
 private struct DirArrow: Identifiable { let id: Int; let coord: CLLocationCoordinate2D; let deg: Double }
 private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
   guard c.count > 4 else { return [] }
-  let n = 5, ahead = max(1, c.count / 30)
+  let n = min(16, max(6, c.count / 8)), ahead = max(1, c.count / 40)
   var out: [DirArrow] = []
   for k in 0..<n {
     let i = Int(Double(k) / Double(n) * Double(c.count - 1))
@@ -181,6 +184,7 @@ struct RouteView: View {
   @State private var panelUp = true                                                 // collapse the bottom panel
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
+  @AppStorage("autoPause") private var autoPause = false                            // pause when stationary
 
   var body: some View {
     Group {
@@ -195,10 +199,11 @@ struct RouteView: View {
             ForEach(directionArrows(store.coords)) { a in
               Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
                 Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowtriangle.up.fill")
-                  .font(.system(size: a.id == 0 ? 30 : 11))
+                  .font(.system(size: a.id == 0 ? 30 : 17, weight: .black))
                   .foregroundColor(a.id == 0 ? .green : .pink)
+                  .shadow(color: .white, radius: 1.5)                 // white outline → visible on any map colour
+                  .shadow(color: .black.opacity(0.7), radius: 1)
                   .rotationEffect(.degrees(a.deg - store.heading))   // map is heading-up → offset arrows by heading
-                  .shadow(color: .black.opacity(0.5), radius: 1)
               }
             }
             UserAnnotation()
@@ -246,6 +251,10 @@ struct RouteView: View {
               Text(String(format: "%.1f km left", store.remainingKm)).font(.headline).monospacedDigit()
               Button { engine.startFromRoute(r) } label: { Label("Start run", systemImage: "figure.run") }
                 .buttonStyle(.borderedProminent).controlSize(.small).tint(.green)
+              Button { autoPause.toggle() } label: {
+                Label(autoPause ? "Auto-pause on" : "Auto-pause off", systemImage: autoPause ? "pause.circle.fill" : "pause.circle")
+                  .font(.caption2)
+              }.buttonStyle(.plain).foregroundColor(autoPause ? .green : .secondary)
             }
           }
           .padding(.vertical, 4).padding(.horizontal, 10)
@@ -286,15 +295,24 @@ struct RouteView: View {
           }.padding(4)
         }
         .overlay(alignment: .top) {
-          // HR + power always visible during a run, even when the panel is collapsed.
+          // HR + power always visible during a run, even when the panel is collapsed — big + prominent.
           if engine.running {
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
               Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
               if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(.orange) }
-            }.font(.caption2).bold().monospacedDigit()
-            .padding(.horizontal, 9).padding(.vertical, 3)
+            }.font(.title3).bold().monospacedDigit()
+            .padding(.horizontal, 12).padding(.vertical, 4)
             .background(.ultraThinMaterial, in: Capsule())
-            .padding(.top, 3)
+            .padding(.top, 2)
+          }
+        }
+        .onChange(of: store.turnDistM) {
+          // A turn is coming up → zoom the map to street detail so a detour isn't missed; restore follow after.
+          guard mapOn else { return }
+          if store.turnDistM < 80, let h = store.here {
+            cam = .camera(MapCamera(centerCoordinate: h, distance: 140, heading: store.heading))
+          } else if store.turnDistM > 140 {
+            cam = .userLocation(followsHeading: true, fallback: .automatic)
           }
         }
         .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere

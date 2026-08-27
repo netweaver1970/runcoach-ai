@@ -38,6 +38,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var segs: [RouteSeg] = []
   private var segStartElapsed: TimeInterval = 0
   private var segStartDist: Double = 0
+  private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
+  private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
 
   func requestAuth() async -> Bool {
     guard HKHealthStore.isHealthDataAvailable() else { return false }
@@ -79,6 +81,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       DispatchQueue.main.async {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
+        self.lastMoveAt = Date(); self.autoPaused = false
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
       startTicker()
@@ -89,6 +92,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
 
   func togglePause() {
     guard let s = session else { return }
+    autoPaused = false                     // a manual pause/resume overrides auto-pause bookkeeping
     if paused { s.resume() } else { s.pause() }
   }
 
@@ -114,7 +118,13 @@ final class WorkoutEngine: NSObject, ObservableObject {
     ticker?.invalidate()
     ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       guard let self, let sd = self.startDate, !self.paused else { return }
-      DispatchQueue.main.async { self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.tickSegments() }
+      DispatchQueue.main.async {
+        self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.tickSegments()
+        // Auto-pause (opt-in) when stationary for 12 s; the distance handler auto-resumes on the next movement.
+        if UserDefaults.standard.bool(forKey: "autoPause"), let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12 {
+          self.autoPaused = true; self.session?.pause()
+        }
+      }
     }
   }
   private func stopTicker() { ticker?.invalidate(); ticker = nil }
@@ -125,9 +135,14 @@ final class WorkoutEngine: NSObject, ObservableObject {
     paceStr = String(format: "%d:%02d", Int(secPerKm) / 60, Int(secPerKm) % 60)
   }
 
-  // Interval voice cues (audio session already active from start()); honours the same mute toggle as turn cues.
+  // Interval voice cues; honours the same mute toggle as turn cues. Re-activate the audio session per utterance
+  // — during a workout watchOS can drop it, which silenced the cues.
   private func speak(_ s: String) {
     guard RouteStore.shared.voiceOn, !s.isEmpty else { return }
+    do {
+      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
+      try AVAudioSession.sharedInstance().setActive(true)
+    } catch { }
     let u = AVSpeechUtterance(string: s)
     u.rate = AVSpeechUtteranceDefaultSpeechRate
     synth.speak(u)
@@ -206,7 +221,13 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
         DispatchQueue.main.async { self.heartRate = bpm }
       } else if qt == HKQuantityType(.distanceWalkingRunning) {
         let m = stat.sumQuantity()?.doubleValue(for: .meter()) ?? self.distanceM
-        DispatchQueue.main.async { self.distanceM = m; self.updatePace() }
+        DispatchQueue.main.async {
+          if m > self.distanceM + 1 {                       // advanced ≥1 m → moving
+            self.lastMoveAt = Date()
+            if self.autoPaused { self.autoPaused = false; self.session?.resume() }   // moving again → auto-resume
+          }
+          self.distanceM = m; self.updatePace()
+        }
       } else if qt == HKQuantityType(.activeEnergyBurned) {
         let kcal = stat.sumQuantity()?.doubleValue(for: .kilocalorie()) ?? self.energyKcal
         DispatchQueue.main.async { self.energyKcal = kcal }
