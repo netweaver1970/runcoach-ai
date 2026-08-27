@@ -63,7 +63,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   private func speak(_ s: String) {
     guard voiceOn, !s.isEmpty else { return }
     do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
+      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
       try AVAudioSession.sharedInstance().setActive(true)
     } catch { }
     let u = AVSpeechUtterance(string: s)
@@ -150,7 +150,7 @@ private func relStart(_ bearing: Double, _ heading: Double) -> String {
   if abs(rel) >= 150 { return "Turn around" }
   return rel > 0 ? "Head right ↱" : "Head left ↰"
 }
-private struct DirArrow: Identifiable { let id: Int; let coord: CLLocationCoordinate2D; let deg: Double }
+private struct DirArrow: Identifiable { let id: Int; let coord: CLLocationCoordinate2D; let deg: Double; let t: Double }
 private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
   guard c.count > 4 else { return [] }
   let n = min(16, max(6, c.count / 8)), ahead = max(1, c.count / 40)
@@ -158,9 +158,16 @@ private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
   for k in 0..<n {
     let i = Int(Double(k) / Double(n) * Double(c.count - 1))
     let j = min(i + ahead, c.count - 1)
-    if i != j { out.append(DirArrow(id: k, coord: c[i], deg: geoBearing(c[i], c[j]))) }
+    if i != j { out.append(DirArrow(id: k, coord: c[i], deg: geoBearing(c[i], c[j]), t: Double(k) / Double(max(1, n - 1)))) }
   }
   return out
+}
+// Route-progress colour: green (start) → amber (middle) → red (finish) — shows direction AND how far along.
+private func gradeColor(_ t: Double) -> Color {
+  let stops: [(Double, Double, Double)] = [(0.13, 0.64, 0.29), (0.92, 0.70, 0.03), (0.86, 0.15, 0.15)]
+  let seg = t < 0.5 ? 0 : 1, lt = t < 0.5 ? t / 0.5 : (t - 0.5) / 0.5
+  let a = stops[seg], b = stops[seg + 1]
+  return Color(red: a.0 + (b.0 - a.0) * lt, green: a.1 + (b.1 - a.1) * lt, blue: a.2 + (b.2 - a.2) * lt)
 }
 
 // ─── Guidance view: the route on a map + a live "km left" / off-route readout ─────────────────────────────
@@ -185,7 +192,11 @@ struct RouteView: View {
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
   @State private var headingUp = true                                               // true = heading-up, false = north-up
+  @State private var pillHR: Bool? = nil                                            // collapsed metric pill: nil=auto, true=HR, false=power
   @AppStorage("autoPause") private var autoPause = false                            // pause when stationary
+
+  // Which metric the collapsed pill shows: manual tap override, else the segment's target (HR zone) — power if none.
+  private var pillShowsHR: Bool { pillHR ?? !engine.segZone.isEmpty }
 
   var body: some View {
     Group {
@@ -194,16 +205,16 @@ struct RouteView: View {
           if mapOn {
           Map(position: $cam) {
             MapPolyline(coordinates: store.coords)
-              .stroke(store.offRoute ? Color.orange : Color.pink, lineWidth: 4)
+              .stroke(store.offRoute ? Color.orange : Color.blue, lineWidth: 4)
             // Travel-direction arrows. id 0 = a bold green "start this way" arrow; the rest show the loop's
             // direction around its length so clockwise vs counter-clockwise reads at a glance.
             ForEach(directionArrows(store.coords)) { a in
               Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
                 Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowtriangle.up.fill")
                   .font(.system(size: a.id == 0 ? 30 : 18, weight: .black))
-                  .foregroundColor(a.id == 0 ? .green : .white)      // white = distinct from the pink route line
-                  .shadow(color: .black, radius: 1)                  // black outline → visible on the light map
-                  .shadow(color: .black.opacity(0.8), radius: 2)
+                  .foregroundColor(gradeColor(a.t))                  // green start → red finish (direction + progress)
+                  .shadow(color: .white, radius: 1.5)                // white halo → the coloured dart pops on the blue line
+                  .shadow(color: .black.opacity(0.7), radius: 1)
                   .rotationEffect(.degrees(a.deg - (headingUp ? store.heading : 0)))   // offset only when heading-up
               }
             }
@@ -262,12 +273,24 @@ struct RouteView: View {
           .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
           .padding(.bottom, 4)
           } else {
-            // Collapsed → give the map the screen back; a big handle brings the panel (and controls) back.
-            Button { withAnimation { panelUp = true } } label: {
-              Image(systemName: "chevron.up").font(.system(size: 16, weight: .bold)).foregroundColor(.primary)
-                .frame(width: 100, height: 34).contentShape(Rectangle())
-                .background(.ultraThinMaterial, in: Capsule())
-            }.buttonStyle(.plain).padding(.bottom, 6)
+            // Collapsed → map gets the screen. Bottom-left: tappable HR/power pill; bottom-right: open caret.
+            HStack(alignment: .bottom) {
+              if engine.running {
+                Button { pillHR = !pillShowsHR } label: {
+                  Text(pillShowsHR ? "♥\(Int(engine.heartRate))" : "\(Int(engine.power))w")
+                    .font(.title3).bold().monospacedDigit().foregroundColor(pillShowsHR ? .red : .orange)
+                    .padding(.horizontal, 12).padding(.vertical, 6).contentShape(Rectangle())
+                    .background(.ultraThinMaterial, in: Capsule())
+                }.buttonStyle(.plain)
+              }
+              Spacer()
+              Button { withAnimation { panelUp = true } } label: {
+                Image(systemName: "chevron.up").font(.system(size: 17, weight: .bold)).foregroundColor(.primary)
+                  .frame(width: 56, height: 36).contentShape(Rectangle())
+                  .background(.ultraThinMaterial, in: Capsule())
+              }.buttonStyle(.plain)
+            }
+            .padding(.horizontal, 6).padding(.bottom, 2)
           }
         }
         .overlay(alignment: .topTrailing) {
@@ -300,8 +323,8 @@ struct RouteView: View {
           }.padding(4)
         }
         .overlay(alignment: .top) {
-          // HR + power always visible during a run, even when the panel is collapsed — big + prominent.
-          if engine.running {
+          // HR + power at the top while the panel is expanded; collapsed uses the bottom-left pill instead.
+          if engine.running && panelUp {
             HStack(spacing: 12) {
               Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
               if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(.orange) }

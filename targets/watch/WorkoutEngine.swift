@@ -140,7 +140,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private func speak(_ s: String) {
     guard RouteStore.shared.voiceOn, !s.isEmpty else { return }
     do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
+      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
       try AVAudioSession.sharedInstance().setActive(true)
     } catch { }
     let u = AVSpeechUtterance(string: s)
