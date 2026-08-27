@@ -9,6 +9,8 @@ import {
   RefreshControl,
   SafeAreaView,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
   AppState,
   AppStateStatus,
   PanResponder,
@@ -1028,6 +1030,7 @@ export default function HomeScreen() {
 
       {/* Post-run comment prompt — captured BEFORE the first analysis so it's in the 1st LLM call */}
       <Modal visible={!!commentRun} transparent animationType="fade" onRequestClose={() => submitRunComment(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}>
           <View style={{ backgroundColor: c.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 34, borderTopWidth: 1, borderColor: c.border }}>
             <Text style={{ color: c.text, fontSize: 17, fontWeight: '800', marginBottom: 4 }}>How did that run go?</Text>
@@ -1055,6 +1058,7 @@ export default function HomeScreen() {
             </View>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Day picker */}
