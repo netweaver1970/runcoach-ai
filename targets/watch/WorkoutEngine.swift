@@ -53,9 +53,12 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // Kick off from a route payload (keeps HealthKit types out of the SwiftUI view). Requests auth first.
   func startFromRoute(_ r: RoutePayload) {
     segs = r.workout ?? []
-    Task {
-      _ = await requestAuth()
-      await MainActor.run { self.start(activity: (r.sport == "walking") ? .walking : .running) }
+    let activity: HKWorkoutActivityType = (r.sport == "walking") ? .walking : .running
+    // Only prompt when not already granted — avoids re-asking on every run within an install.
+    if store.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized {
+      start(activity: activity)
+    } else {
+      Task { _ = await requestAuth(); await MainActor.run { self.start(activity: activity) } }
     }
   }
 
