@@ -15,7 +15,6 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var builder: HKLiveWorkoutBuilder?
   private var startDate: Date?
   private var ticker: Timer?
-  private let synth = AVSpeechSynthesizer()
 
   @Published var running = false
   @Published var paused = false
@@ -75,9 +74,6 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let now = Date(); startDate = now
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { _, _ in }
-      // Keep an active playback session so turn/interval voice prompts sound even wrist-down.
-      try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
-      try? AVAudioSession.sharedInstance().setActive(true)
       DispatchQueue.main.async {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
@@ -120,8 +116,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
       guard let self, let sd = self.startDate, !self.paused else { return }
       DispatchQueue.main.async {
         self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.tickSegments()
-        // Auto-pause (opt-in) when stationary for 12 s; the distance handler auto-resumes on the next movement.
-        if UserDefaults.standard.bool(forKey: "autoPause"), let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12 {
+        // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
+        // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
+        if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15,
+           let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12 {
           self.autoPaused = true; self.session?.pause()
         }
       }
@@ -137,16 +135,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
 
   // Interval voice cues; honours the same mute toggle as turn cues. Re-activate the audio session per utterance
   // — during a workout watchOS can drop it, which silenced the cues.
-  private func speak(_ s: String) {
-    guard RouteStore.shared.voiceOn, !s.isEmpty else { return }
-    do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
-      try AVAudioSession.sharedInstance().setActive(true)
-    } catch { }
-    let u = AVSpeechUtterance(string: s)
-    u.rate = AVSpeechUtteranceDefaultSpeechRate
-    synth.speak(u)
-  }
+  private func speak(_ s: String) { guard RouteStore.shared.voiceOn else { return }; SpeechCue.shared.say(s) }
 
   // ─── Structured intervals ───────────────────────────────────────────────────────────────────────────────
   func lap() { if running { advanceSegment() } }   // manual advance (open segments, or skip)
@@ -174,7 +163,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   }
 
   private func announceSegment(_ seg: RouteSeg) {
-    WKInterfaceDevice.current().play(.start)
+    WKInterfaceDevice.current().play(.notification)   // firm cue on each interval change
     var phrase = seg.label
     if let d = seg.dur {
       let m = Int((d / 60).rounded())

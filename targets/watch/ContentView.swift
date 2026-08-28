@@ -52,6 +52,8 @@ struct RouteDest: Hashable {}   // nav sentinel for the route/map screen
 struct ContentView: View {
   @EnvironmentObject var store: KPIStore
   @ObservedObject var routeStore = RouteStore.shared
+  @ObservedObject var engine = WorkoutEngine.shared
+  @Environment(\.scenePhase) private var scenePhase
   @State private var path = NavigationPath()
 
   var body: some View {
@@ -87,7 +89,13 @@ struct ContentView: View {
     }
     // A turn cue fired → bring the map forward (replace the stack so we never stack duplicate map screens).
     .onChange(of: routeStore.jumpToMap) { path = NavigationPath([RouteDest()]) }
-    .onAppear { if routeStore.route != nil { routeStore.start() } }
+    // A run started, or the app was reopened mid-run → auto-show the map + follow (the watch backup).
+    .onChange(of: engine.running) { if engine.running { path = NavigationPath([RouteDest()]) } }
+    .onChange(of: scenePhase) { if scenePhase == .active && engine.running { path = NavigationPath([RouteDest()]) } }
+    .onAppear {
+      if routeStore.route != nil { routeStore.start() }
+      if engine.running { path = NavigationPath([RouteDest()]) }
+    }
   }
 }
 

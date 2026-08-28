@@ -21,6 +21,24 @@ struct RoutePayload: Codable {
   let workout: [RouteSeg]?    // structured intervals the run session steps through
 }
 
+// Shared speech: activates a .playback session (INTERRUPTS other audio like phone YouTube), speaks, then
+// deactivates with notifyOthers so that audio RESUMES — the Apple-Workout behaviour. One synth so cues queue.
+final class SpeechCue: NSObject, AVSpeechSynthesizerDelegate {
+  static let shared = SpeechCue()
+  private let synth = AVSpeechSynthesizer()
+  override init() { super.init(); synth.delegate = self }
+  func say(_ s: String) {
+    guard !s.isEmpty else { return }
+    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt)   // no mix/duck → interrupts others
+    try? AVAudioSession.sharedInstance().setActive(true)
+    let u = AVSpeechUtterance(string: s); u.rate = AVSpeechUtteranceDefaultSpeechRate
+    synth.speak(u)
+  }
+  func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+    if !s.isSpeaking { try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation]) }
+  }
+}
+
 // ─── Route store: holds the pushed route + drives live guidance from the watch GPS ───────────────────────
 final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   static let shared = RouteStore()
@@ -36,7 +54,6 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
 
   private let mgr = CLLocationManager()
   private var wasOff = false
-  private let synth = AVSpeechSynthesizer()
   private var turns: [RouteTurn] = []
   private var announced: Set<Int> = []     // turn indices already spoken for this route
 
@@ -60,16 +77,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   }
   func stop() { mgr.stopUpdatingLocation(); mgr.stopUpdatingHeading() }
 
-  private func speak(_ s: String) {
-    guard voiceOn, !s.isEmpty else { return }
-    do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
-      try AVAudioSession.sharedInstance().setActive(true)
-    } catch { }
-    let u = AVSpeechUtterance(string: s)
-    u.rate = AVSpeechUtteranceDefaultSpeechRate
-    synth.speak(u)
-  }
+  private func speak(_ s: String) { guard voiceOn else { return }; SpeechCue.shared.say(s) }
 
   // Fire the nearest not-yet-announced turn once you're within ~40 m: a heads-up haptic (always) + a spoken
   // cue (when voice is on). `nextTurnText` tracks the upcoming maneuver for the on-screen readout.
@@ -87,7 +95,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     if bd < 40 {
       announced.insert(bi)
       jumpToMap += 1   // a turn is happening → surface the map (ContentView watches this)
-      WKInterfaceDevice.current().play(.directionUp)
+      WKInterfaceDevice.current().play(.notification)   // firm double-tap so it's felt mid-run
       speak(bd > 18 ? "In \(Int((bd / 5).rounded()) * 5) meters, \(t.text)" : t.text)
     }
   }
@@ -153,7 +161,7 @@ private func relStart(_ bearing: Double, _ heading: Double) -> String {
 private struct DirArrow: Identifiable { let id: Int; let coord: CLLocationCoordinate2D; let deg: Double; let t: Double }
 private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
   guard c.count > 4 else { return [] }
-  let n = min(16, max(6, c.count / 8)), ahead = max(1, c.count / 40)
+  let n = min(26, max(10, c.count / 5)), ahead = max(1, c.count / 40)
   var out: [DirArrow] = []
   for k in 0..<n {
     let i = Int(Double(k) / Double(n) * Double(c.count - 1))
@@ -210,8 +218,8 @@ struct RouteView: View {
             // direction around its length so clockwise vs counter-clockwise reads at a glance.
             ForEach(directionArrows(store.coords)) { a in
               Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
-                Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowtriangle.up.fill")
-                  .font(.system(size: a.id == 0 ? 30 : 18, weight: .black))
+                Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowshape.up.fill")
+                  .font(.system(size: a.id == 0 ? 30 : 19, weight: .black))
                   .foregroundColor(gradeColor(a.t))                  // green start → red finish (direction + progress)
                   .shadow(color: .white, radius: 1.5)                // white halo → the coloured dart pops on the blue line
                   .shadow(color: .black.opacity(0.7), radius: 1)
@@ -249,7 +257,7 @@ struct RouteView: View {
               }.font(.caption2).monospacedDigit()
               HStack(spacing: 8) {
                 Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
-                if engine.segOpen { Button { engine.lap() } label: { Image(systemName: "forward.end.fill") } }
+                if engine.segCount > 0 { Button { engine.lap() } label: { Image(systemName: "forward.end.fill") } }   // → next segment (announces it)
                 Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
               }.buttonStyle(.bordered).controlSize(.small)
             } else {
