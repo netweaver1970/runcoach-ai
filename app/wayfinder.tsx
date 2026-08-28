@@ -8,7 +8,7 @@ import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, Image, Share, Switch,
   Modal, PanResponder,
 } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -211,6 +211,8 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
 
 export default function WayfinderScreen() {
   const router = useRouter();
+  const { km: kmParam } = useLocalSearchParams<{ km?: string }>();   // distance passed from Daily Coach's session
+  useEffect(() => { const k = Number(kmParam); if (k >= 2 && k <= 30) setTargetKm(Math.round(k * 2) / 2); }, [kmParam]);
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
 
@@ -260,7 +262,7 @@ export default function WayfinderScreen() {
           const plan = cs ? await deterministicCoachPlan(cs).catch(() => null) : null;
           if (plan && plan.intensity !== 'rest' && (plan.runMinutes ?? 0) > 0) {
             const km = Math.round(((plan.runMinutes ?? 0) / (PACE[plan.intensity] ?? 6)) * 2) / 2;
-            if (km >= 2 && km <= 30) setTargetKm(km);
+            if (!kmParam && km >= 2 && km <= 30) setTargetKm(km);   // Daily-Coach km wins over the generic plan seed
           }
           if (plan?.workout) setDayWorkout(plan.workout);   // today's intervals → sent with the route to the watch
         }

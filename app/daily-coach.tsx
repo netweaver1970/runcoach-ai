@@ -638,6 +638,16 @@ export default function DailyCoachScreen() {
                   <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
                     <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
+                  {/* Plan a route sized to THIS session (warm-up/cool-down metres + work/rest/drills minutes ÷ pace),
+                      then Wayfinder sends the route + the full structure (targets/limits) to the watch run screen. */}
+                  <TouchableOpacity style={[s.watchBtn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={() => {
+                    const w = watchWorkout; let min = w?.drillsMinutes || 0;
+                    for (const b of (w?.blocks ?? [])) min += ((b.workMinutes || 0) + (b.restMinutes || 0)) * Math.max(1, b.repeats || 1);
+                    const km = Math.round(((((w?.warmupMeters || 0) + (w?.cooldownMeters || 0)) / 1000 + min / 5.7)) * 2) / 2;
+                    router.push({ pathname: '/wayfinder' as any, params: km >= 2 ? { km: String(km) } : {} });
+                  }}>
+                    <Text style={[s.watchBtnText, { color: c.text }]}>🧭 Plan a route for this</Text>
+                  </TouchableOpacity>
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
               )}
