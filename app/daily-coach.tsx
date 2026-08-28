@@ -640,13 +640,13 @@ export default function DailyCoachScreen() {
                   </TouchableOpacity>
                   {/* Plan a route sized to THIS session (warm-up/cool-down metres + work/rest/drills minutes ÷ pace),
                       then Wayfinder sends the route + the full structure (targets/limits) to the watch run screen. */}
-                  <TouchableOpacity style={[s.watchBtn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={() => {
+                  <TouchableOpacity style={[s.watchBtn, s.routeBtn]} onPress={() => {
                     const w = watchWorkout; let min = w?.drillsMinutes || 0;
                     for (const b of (w?.blocks ?? [])) min += ((b.workMinutes || 0) + (b.restMinutes || 0)) * Math.max(1, b.repeats || 1);
                     const km = Math.round(((((w?.warmupMeters || 0) + (w?.cooldownMeters || 0)) / 1000 + min / 5.7)) * 2) / 2;
                     router.push({ pathname: '/wayfinder' as any, params: km >= 2 ? { km: String(km) } : {} });
                   }}>
-                    <Text style={[s.watchBtnText, { color: c.text }]}>🧭 Plan a route for this</Text>
+                    <Text style={[s.watchBtnText, s.routeBtnText]}>🧭 Plan a route for this</Text>
                   </TouchableOpacity>
                   {watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
@@ -860,6 +860,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  routeBtn: { backgroundColor: c.surfaceAlt, marginTop: 8 },
+  routeBtnText: { color: c.text },
   testBtn: { backgroundColor: 'transparent', borderRadius: 8, borderWidth: 1, borderColor: c.accent,
              paddingVertical: 8, alignItems: 'center', marginTop: 8 },
   testBtnText: { color: c.accent, fontWeight: '700', fontSize: 12 },
