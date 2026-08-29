@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, Image, Share, Switch,
-  Modal, PanResponder,
+  Modal, PanResponder, TextInput,
 } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import * as Location from 'expo-location';
@@ -238,6 +238,19 @@ export default function WayfinderScreen() {
   const [fullscreen, setFullscreen] = useState(false);
   const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
   const [scrollLock, setScrollLock] = useState(false);   // disable page scroll while a finger is on the map
+  const [addr, setAddr] = useState('');                  // address search box
+  const [addrBusy, setAddrBusy] = useState(false);
+  // Geocode a typed address → set the loop start there (map re-fits on the next generate).
+  const jumpToAddress = useCallback(async () => {
+    const q = addr.trim(); if (!q) return;
+    setAddrBusy(true); setErr(null);
+    try {
+      const r = await Location.geocodeAsync(q);
+      if (r?.[0]) { setStart([r[0].longitude, r[0].latitude]); setPlaced(q); }
+      else setErr('Address not found — try adding the town/country.');
+    } catch { setErr('Could not look up that address.'); }
+    finally { setAddrBusy(false); }
+  }, [addr]);
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -395,6 +408,14 @@ export default function WayfinderScreen() {
             {/* Controls */}
             <View style={s.card}>
               <Text style={s.h}>Loop from {placed}</Text>
+              <View style={s.addrRow}>
+                <TextInput style={s.addrInput} value={addr} onChangeText={setAddr}
+                  placeholder="Start from an address…" placeholderTextColor={c.textFaint}
+                  autoCapitalize="words" returnKeyType="search" onSubmitEditing={jumpToAddress} />
+                <TouchableOpacity style={s.addrGo} onPress={jumpToAddress} disabled={addrBusy}>
+                  <Text style={s.addrGoT}>{addrBusy ? '…' : 'Go'}</Text>
+                </TouchableOpacity>
+              </View>
               <View style={s.rowBetween}>
                 <Text style={s.label}>Distance</Text>
                 <View style={s.stepper}>
@@ -509,6 +530,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   step: { width: 34, height: 34, borderRadius: 8, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
+  addrRow: { flexDirection: 'row', gap: 8, marginTop: 10, marginBottom: 2 },
+  addrInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: c.border, color: c.text, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
+  addrGo: { backgroundColor: c.accent, borderRadius: 8, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
+  addrGoT: { color: '#fff', fontWeight: '800', fontSize: 14 },
   stepT: { fontSize: 20, color: c.text, fontWeight: '600' },
   stepVal: { fontSize: 15, fontWeight: '700', color: c.text, minWidth: 62, textAlign: 'center' },
   btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
