@@ -46,6 +46,21 @@ function gradeColor(t: number): string {
   return `rgb(${Math.round(a[0] + (b[0] - a[0]) * lt)},${Math.round(a[1] + (b[1] - a[1]) * lt)},${Math.round(a[2] + (b[2] - a[2]) * lt)})`;
 }
 
+// Top-left world-px origin of the map view — the SINGLE source of truth shared by StaticMap's render and the
+// tap→lon/lat inverse, so a tapped pixel maps back to exactly the coordinate drawn there. Centre = the given
+// `center`, else the bbox centre taken in PIXEL space. (lat is non-linear in Mercator, so the pixel-average is
+// NOT lat2px of the lat midpoint — using bboxCenter here shifts every tap in latitude, the old bug.)
+function mapOrigin(coords: [number, number][], center: [number, number] | undefined, z: number, width: number, height: number): [number, number] {
+  let cx: number, cy: number;
+  if (center) { cx = lon2px(center[0], z); cy = lat2px(center[1], z); }
+  else {
+    const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
+    cx = (lon2px(Math.min(...lons), z) + lon2px(Math.max(...lons), z)) / 2;
+    cy = (lat2px(Math.min(...lats), z) + lat2px(Math.max(...lats), z)) / 2;
+  }
+  return [cx - width / 2, cy - height / 2];
+}
+
 // Largest zoom at which the route bbox still fits the view (with padding) — the "fit whole loop" level.
 function fitZoom(coords: [number, number][], width: number, height: number): number {
   const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
@@ -64,12 +79,8 @@ function StaticMap({ coords, start, dest, here, center, zoom, width, height, lin
   center?: [number, number]; zoom?: number; width: number; height: number; line: string; c: Palette;
 }) {
   if (width <= 0 || coords.length < 2) return <View style={{ width, height }} />;
-  const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
-  const minLon = Math.min(...lons), maxLon = Math.max(...lons), minLat = Math.min(...lats), maxLat = Math.max(...lats);
   const z = zoom ?? fitZoom(coords, width, height);               // caller can force zoom (manual / follow)
-  const cx = center ? lon2px(center[0], z) : (lon2px(minLon, z) + lon2px(maxLon, z)) / 2;
-  const cy = center ? lat2px(center[1], z) : (lat2px(minLat, z) + lat2px(maxLat, z)) / 2;
-  const ox = cx - width / 2, oy = cy - height / 2;                 // top-left origin in world px
+  const [ox, oy] = mapOrigin(coords, center, z, width, height);   // top-left origin in world px (shared w/ tap inverse)
   const px = (p: [number, number]) => [lon2px(p[0], z) - ox, lat2px(p[1], z) - oy] as [number, number];
 
   const tiles: React.ReactNode[] = [];
@@ -170,9 +181,12 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
   const onPickRef = useRef(onPickMap); onPickRef.current = onPickMap;
   const pickRef = useRef(picking); pickRef.current = picking;
   const dimRef = useRef({ width, height }); dimRef.current = { width, height };   // live dims for tap→lon/lat
+  const coordsRef = useRef(coords); coordsRef.current = coords;                   // live coords/center for the tap inverse
+  const centerRef = useRef(center); centerRef.current = center;
+  const rootRef = useRef<View>(null);                                            // measured in-window to make taps container-relative
   const startC = useRef<[number, number] | null>(null);
   const pinch = useRef<{ d: number; z: number } | null>(null);
-  const tapLoc = useRef<{ x: number; y: number } | null>(null);   // touch-down point → "tap to set start"
+  const tapLoc = useRef<{ x: number; y: number } | null>(null);   // touch-down point (WINDOW coords) → "tap to place"
   // Own the gesture on touch-start; handlers read live zoom/centre from refs so the responder is never rebuilt
   // mid-drag. Two fingers → pinch-zoom (stepped to tile levels); one finger → pan. The ScrollView is disabled
   // via onGrab/onRelease (below) so it can't scroll while a finger is on the map — the real cure for the fight.
@@ -182,7 +196,8 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: (evt) => {
       startC.current = cRef.current; pinch.current = null;
-      tapLoc.current = { x: evt.nativeEvent.locationX, y: evt.nativeEvent.locationY };
+      // pageX/pageY (WINDOW coords) — locationX/Y is relative to whatever child tile got touched, not the map.
+      tapLoc.current = { x: evt.nativeEvent.pageX, y: evt.nativeEvent.pageY };
     },
     onPanResponderMove: (evt, g) => {
       if (Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6) tapLoc.current = null;   // moved → it's a drag, not a tap
@@ -201,12 +216,17 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
     },
     onPanResponderRelease: () => {
       pinch.current = null;
-      // A tap (no drag) while "set start" mode is on → convert the touch point to lon/lat and set the loop start.
-      if (pickRef.current && tapLoc.current) {
-        const z = zRef.current, ctr = cRef.current, { width: w, height: h } = dimRef.current;
-        const ox = lon2px(ctr[0], z) - w / 2, oy = lat2px(ctr[1], z) - h / 2;
-        const lon = px2lon(ox + tapLoc.current.x, z), lat = px2lat(oy + tapLoc.current.y, z);
-        if (Number.isFinite(lon) && Number.isFinite(lat)) onPickRef.current?.([lon, lat]);
+      // A tap (no drag) while a place-pin mode is on → convert the touch point to lon/lat via the SAME origin
+      // StaticMap draws with. Measure the map's window position so the tap is container-relative (pageX/pageY −
+      // container origin), matching the coordinate rendered under the finger.
+      if (pickRef.current && tapLoc.current && rootRef.current) {
+        const { x: pageX, y: pageY } = tapLoc.current;
+        rootRef.current.measureInWindow((wx, wy) => {
+          const z = zRef.current, { width: w, height: h } = dimRef.current;
+          const [ox, oy] = mapOrigin(coordsRef.current, centerRef.current, z, w, h);
+          const lon = px2lon(ox + (pageX - wx), z), lat = px2lat(oy + (pageY - wy), z);
+          if (Number.isFinite(lon) && Number.isFinite(lat)) onPickRef.current?.([lon, lat]);
+        });
       }
       tapLoc.current = null;
     },
@@ -214,7 +234,7 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
   return (
-    <View style={{ position: 'relative', width, height }} {...pan.panHandlers}
+    <View ref={rootRef} style={{ position: 'relative', width, height }} {...pan.panHandlers}
       onTouchStart={() => onGrab?.()} onTouchCancel={() => onRelease?.()}
       onTouchEnd={e => { if (e.nativeEvent.touches.length === 0) onRelease?.(); }}>
       <StaticMap coords={coords} start={start} dest={dest} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
