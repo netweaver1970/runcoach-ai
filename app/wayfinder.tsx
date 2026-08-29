@@ -151,20 +151,24 @@ function ElevProfile({ elev, width, height, c }: { elev: number[]; width: number
 }
 
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
-function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease }: {
+function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, pickStart, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickStart }: {
   coords: [number, number][]; start: [number, number]; here: [number, number] | null;
   center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
-  isFull: boolean; autoOn: boolean;
+  isFull: boolean; autoOn: boolean; pickStart?: boolean;
   onPan: (c: [number, number]) => void; onZoomTo: (z: number) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
-  onGrab?: () => void; onRelease?: () => void;
+  onGrab?: () => void; onRelease?: () => void; onPickStart?: (c: [number, number]) => void;
 }) {
   const s = useThemedStyles(makeStyles);
   const zRef = useRef(zoom); zRef.current = zoom;
   const cRef = useRef<[number, number]>(center ?? bboxCenter(coords)); cRef.current = center ?? bboxCenter(coords);
   const onPanRef = useRef(onPan); onPanRef.current = onPan;
   const onZoomToRef = useRef(onZoomTo); onZoomToRef.current = onZoomTo;
+  const onPickRef = useRef(onPickStart); onPickRef.current = onPickStart;
+  const pickRef = useRef(pickStart); pickRef.current = pickStart;
+  const dimRef = useRef({ width, height }); dimRef.current = { width, height };   // live dims for tap→lon/lat
   const startC = useRef<[number, number] | null>(null);
   const pinch = useRef<{ d: number; z: number } | null>(null);
+  const tapLoc = useRef<{ x: number; y: number } | null>(null);   // touch-down point → "tap to set start"
   // Own the gesture on touch-start; handlers read live zoom/centre from refs so the responder is never rebuilt
   // mid-drag. Two fingers → pinch-zoom (stepped to tile levels); one finger → pan. The ScrollView is disabled
   // via onGrab/onRelease (below) so it can't scroll while a finger is on the map — the real cure for the fight.
@@ -172,8 +176,12 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: () => { startC.current = cRef.current; pinch.current = null; },
+    onPanResponderGrant: (evt) => {
+      startC.current = cRef.current; pinch.current = null;
+      tapLoc.current = { x: evt.nativeEvent.locationX, y: evt.nativeEvent.locationY };
+    },
     onPanResponderMove: (evt, g) => {
+      if (Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6) tapLoc.current = null;   // moved → it's a drag, not a tap
       const ts = evt.nativeEvent.touches;
       if (ts.length >= 2) {                                            // pinch
         const d = Math.hypot(ts[0].pageX - ts[1].pageX, ts[0].pageY - ts[1].pageY);
@@ -187,8 +195,18 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
       const bx = lon2px(sc[0], z) - g.dx, by = lat2px(sc[1], z) - g.dy;
       onPanRef.current([px2lon(bx, z), px2lat(by, z)]);
     },
-    onPanResponderRelease: () => { pinch.current = null; },
-    onPanResponderTerminate: () => { pinch.current = null; },
+    onPanResponderRelease: () => {
+      pinch.current = null;
+      // A tap (no drag) while "set start" mode is on → convert the touch point to lon/lat and set the loop start.
+      if (pickRef.current && tapLoc.current) {
+        const z = zRef.current, ctr = cRef.current, { width: w, height: h } = dimRef.current;
+        const ox = lon2px(ctr[0], z) - w / 2, oy = lat2px(ctr[1], z) - h / 2;
+        const lon = px2lon(ox + tapLoc.current.x, z), lat = px2lat(oy + tapLoc.current.y, z);
+        if (Number.isFinite(lon) && Number.isFinite(lat)) onPickRef.current?.([lon, lat]);
+      }
+      tapLoc.current = null;
+    },
+    onPanResponderTerminate: () => { pinch.current = null; tapLoc.current = null; },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
   return (
@@ -205,6 +223,7 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
         <Text style={s.fullT}>{isFull ? '✕ Close' : '⤢ Full'}</Text>
       </TouchableOpacity>
       {moving && <View style={s.followPill}><Text style={s.followT}>● following</Text></View>}
+      {pickStart && <View style={s.pickBanner}><Text style={s.pickBannerT}>Tap the map to set the loop start</Text></View>}
     </View>
   );
 }
@@ -239,6 +258,7 @@ export default function WayfinderScreen() {
   const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
   const [scrollLock, setScrollLock] = useState(false);   // disable page scroll while a finger is on the map
   const [addr, setAddr] = useState('');                  // place-search box
+  const [pickStart, setPickStart] = useState(false);     // tap-the-map-to-move-the-loop-start mode
   const [suggests, setSuggests] = useState<GeoHit[]>([]);  // type-ahead results
   const startRef = useRef(start); startRef.current = start;
   // Debounced type-ahead search (Photon), biased toward the current start so nearby places rank first.
@@ -404,9 +424,14 @@ export default function WayfinderScreen() {
   const onAuto = useCallback(() => { setPanCenter(null); setZoomMode('auto'); }, []);
   const onGrab = useCallback(() => setScrollLock(true), []);
   const onRelease = useCallback(() => setScrollLock(false), []);
+  // Tap a spot on the map → make it the loop start (marker moves; the OLD loop stays visible until you
+  // regenerate). Mirrors pickSuggest — just sets state, no async/geocoder, so it can't stall generation.
+  const onPickStart = useCallback((cc: [number, number]) => {
+    setStart(cc); setPlaced('map point'); setPickStart(false);
+  }, []);
   const paneProps = cur ? {
-    coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn,
-    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease,
+    coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn, pickStart,
+    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease, onPickStart,
   } : null;
 
   return (
@@ -493,6 +518,11 @@ export default function WayfinderScreen() {
                 {paneProps && mapW > 0 && (
                   <MapPane {...paneProps} width={mapW} height={mapH} isFull={false} onToggleFull={() => setFullscreen(true)} />
                 )}
+                {cur && (
+                  <TouchableOpacity style={[s.chip, pickStart && s.chipOn, { alignSelf: 'flex-start', marginTop: 8, marginBottom: 4 }]} onPress={() => setPickStart(v => !v)}>
+                    <Text style={[s.chipT, pickStart && s.chipTOn]}>📍 {pickStart ? 'Tap the map to set start…' : 'Move start point'}</Text>
+                  </TouchableOpacity>
+                )}
 
                 {/* Selected stats + export */}
                 {cur && (
@@ -557,6 +587,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   addrInput: { backgroundColor: c.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: c.border, color: c.text, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
   suggest: { paddingVertical: 9, paddingHorizontal: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
   suggestT: { color: c.text, fontSize: 13.5 },
+  pickBanner: { position: 'absolute', top: 8, left: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.72)', borderRadius: 8, paddingVertical: 7, paddingHorizontal: 10, alignItems: 'center' },
+  pickBannerT: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
   stepT: { fontSize: 20, color: c.text, fontWeight: '600' },
   stepVal: { fontSize: 15, fontWeight: '700', color: c.text, minWidth: 62, textAlign: 'center' },
   btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
