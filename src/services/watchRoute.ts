@@ -32,14 +32,15 @@ const r5 = (n: number) => Math.round(n * 1e5) / 1e5;
 // A flat, ordered list of segments the watch engine steps through (Stage 2). Mirrors how RunCoachWorkoutModule
 // builds the WorkoutKit intervals: warmup → drills → per block reps×(work[,recover]) with NO trailing recover →
 // cooldown. dur (s) OR dist (m) → a goal; neither → an OPEN segment advanced by the lap button.
-export interface WorkoutSeg { kind: string; dur?: number; dist?: number; label: string; zone?: string }
+export interface WorkoutSeg { kind: string; dur?: number; dist?: number; label: string; zone?: string; pLo?: number; pHi?: number }
 export function flattenWorkout(w: WatchWorkout): WorkoutSeg[] {
   const segs: WorkoutSeg[] = [];
   segs.push(w.warmupMeters > 0 ? { kind: 'warmup', dist: w.warmupMeters, label: 'Warm-up' } : { kind: 'warmup', label: 'Warm-up' });
   if (w.drillsMinutes > 0) segs.push({ kind: 'drills', dur: w.drillsMinutes * 60, label: 'Drills' });
   for (const b of w.blocks ?? []) {
     const reps = Math.max(1, b.repeats || 1);
-    const work = (): WorkoutSeg => ({ kind: 'work', ...(b.workMinutes > 0 ? { dur: b.workMinutes * 60 } : {}), label: b.label || 'Work', zone: b.hrZone });
+    const work = (): WorkoutSeg => ({ kind: 'work', ...(b.workMinutes > 0 ? { dur: b.workMinutes * 60 } : {}), label: b.label || 'Work', zone: b.hrZone,
+      ...(b.powerLowWatts && b.powerHighWatts ? { pLo: b.powerLowWatts, pHi: b.powerHighWatts } : {}) });   // watch reports under/over
     if (b.restMinutes > 0) {
       const rec = (): WorkoutSeg => ({ kind: 'recovery', dur: b.restMinutes * 60, label: 'Recover', zone: b.recoveryZone });
       for (let i = 0; i < reps - 1; i++) { segs.push(work()); segs.push(rec()); }

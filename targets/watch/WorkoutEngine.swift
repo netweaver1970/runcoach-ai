@@ -33,12 +33,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var segIndex = 0
   @Published var segCount = 0
   @Published var segOpen = false           // no time/distance goal → advance with the lap button
+  @Published var targetState = 0           // power vs the work target: 0 in-range/none, -1 under, +1 over
 
   private var segs: [RouteSeg] = []
   private var segStartElapsed: TimeInterval = 0
   private var segStartDist: Double = 0
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
+  private var outSince: Date?             // when power went out of the target band
+  private var lastTargetCue: Date?        // throttle the under/over spoken cue
 
   func requestAuth() async -> Bool {
     guard HKHealthStore.isHealthDataAvailable() else { return false }
@@ -151,12 +154,28 @@ final class WorkoutEngine: NSObject, ObservableObject {
     var done = false
     if let d = seg.dur { done = inTime >= d }
     else if let m = seg.dist { done = inDist >= m }
-    if done { advanceSegment() } else { updateSegDisplay(seg, inTime, inDist) }
+    if done { advanceSegment() } else { updateSegDisplay(seg, inTime, inDist); checkTarget(seg) }
+  }
+
+  // During a WORK segment with a power band, colour the power (targetState) and speak a throttled under/over cue.
+  private func checkTarget(_ seg: RouteSeg) {
+    guard seg.kind == "work", let lo = seg.pLo, let hi = seg.pHi, power > 5 else { targetState = 0; outSince = nil; return }
+    let st = power < lo ? -1 : (power > hi ? 1 : 0)
+    targetState = st
+    if st == 0 { outSince = nil; return }
+    if outSince == nil { outSince = Date() }
+    let now = Date()
+    if now.timeIntervalSince(outSince!) > 8, lastTargetCue == nil || now.timeIntervalSince(lastTargetCue!) > 25 {
+      lastTargetCue = now
+      WKInterfaceDevice.current().play(st < 0 ? .directionUp : .directionDown)
+      speak(st < 0 ? "Under power, pick it up" : "Over power, ease off")
+    }
   }
 
   private func advanceSegment() {
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
+    targetState = 0; outSince = nil; lastTargetCue = nil   // reset the power-target tracker for the new segment
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")

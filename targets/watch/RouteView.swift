@@ -9,7 +9,7 @@ import AVFoundation
 struct RoutePoint: Codable, Hashable { let lat: Double; let lon: Double }
 struct RouteTurn: Codable, Hashable { let lat: Double; let lon: Double; let text: String; let dist: Double }
 // One structured-workout segment (Stage 2). dur (s) OR dist (m) → a goal; neither → OPEN (advance with the lap button).
-struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String? }
+struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String?; let pLo: Double?; let pHi: Double? }
 struct RoutePayload: Codable {
   let type: String            // "route"
   let name: String
@@ -205,6 +205,8 @@ struct RouteView: View {
 
   // Which metric the collapsed pill shows: manual tap override, else the segment's target (HR zone) — power if none.
   private var pillShowsHR: Bool { pillHR ?? !engine.segZone.isEmpty }
+  // Power tinted by the work target: blue = under, red = over, orange = in-band / no target.
+  private var powerColor: Color { engine.targetState < 0 ? .blue : (engine.targetState > 0 ? .red : .orange) }
 
   var body: some View {
     Group {
@@ -286,7 +288,7 @@ struct RouteView: View {
               if engine.running {
                 Button { pillHR = !pillShowsHR } label: {
                   Text(pillShowsHR ? "♥\(Int(engine.heartRate))" : "\(Int(engine.power))w")
-                    .font(.title3).bold().monospacedDigit().foregroundColor(pillShowsHR ? .red : .orange)
+                    .font(.title3).bold().monospacedDigit().foregroundColor(pillShowsHR ? .red : powerColor)
                     .padding(.horizontal, 12).padding(.vertical, 6).contentShape(Rectangle())
                     .background(.ultraThinMaterial, in: Capsule())
                 }.buttonStyle(.plain)
@@ -335,7 +337,7 @@ struct RouteView: View {
           if engine.running && panelUp {
             HStack(spacing: 12) {
               Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
-              if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(.orange) }
+              if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(powerColor) }
             }.font(.title3).bold().monospacedDigit()
             .padding(.horizontal, 12).padding(.vertical, 4)
             .background(.ultraThinMaterial, in: Capsule())
