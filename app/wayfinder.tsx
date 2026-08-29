@@ -12,7 +12,7 @@ import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, RouteOption, RouteLoop } from '../src/services/routing';
+import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, geocodeSearch, GeoHit, RouteOption, RouteLoop } from '../src/services/routing';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
@@ -238,19 +238,22 @@ export default function WayfinderScreen() {
   const [fullscreen, setFullscreen] = useState(false);
   const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
   const [scrollLock, setScrollLock] = useState(false);   // disable page scroll while a finger is on the map
-  const [addr, setAddr] = useState('');                  // address search box
-  const [addrBusy, setAddrBusy] = useState(false);
-  // Geocode a typed address → set the loop start there (map re-fits on the next generate).
-  const jumpToAddress = useCallback(async () => {
-    const q = addr.trim(); if (!q) return;
-    setAddrBusy(true); setErr(null);
-    try {
-      const r = await Location.geocodeAsync(q);
-      if (r?.[0]) { setStart([r[0].longitude, r[0].latitude]); setPlaced(q); }
-      else setErr('Address not found — try adding the town/country.');
-    } catch { setErr('Could not look up that address.'); }
-    finally { setAddrBusy(false); }
+  const [addr, setAddr] = useState('');                  // place-search box
+  const [suggests, setSuggests] = useState<GeoHit[]>([]);  // type-ahead results
+  const startRef = useRef(start); startRef.current = start;
+  // Debounced type-ahead search (Photon), biased toward the current start so nearby places rank first.
+  useEffect(() => {
+    const q = addr.trim();
+    if (q.length < 3) { setSuggests([]); return; }
+    const t = setTimeout(async () => {
+      setSuggests(await geocodeSearch(q, { lon: startRef.current[0], lat: startRef.current[1] }));
+    }, 300);
+    return () => clearTimeout(t);
   }, [addr]);
+  // Pick a suggestion → set the loop start there (map re-fits on the next generate).
+  const pickSuggest = useCallback((g: GeoHit) => {
+    setStart([g.lon, g.lat]); setPlaced(g.label); setAddr(''); setSuggests([]);
+  }, []);
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -410,11 +413,14 @@ export default function WayfinderScreen() {
               <Text style={s.h}>Loop from {placed}</Text>
               <View style={s.addrRow}>
                 <TextInput style={s.addrInput} value={addr} onChangeText={setAddr}
-                  placeholder="Start from an address…" placeholderTextColor={c.textFaint}
-                  autoCapitalize="words" returnKeyType="search" onSubmitEditing={jumpToAddress} />
-                <TouchableOpacity style={s.addrGo} onPress={jumpToAddress} disabled={addrBusy}>
-                  <Text style={s.addrGoT}>{addrBusy ? '…' : 'Go'}</Text>
-                </TouchableOpacity>
+                  placeholder="Search a place to start from…" placeholderTextColor={c.textFaint}
+                  autoCapitalize="words" autoCorrect={false} returnKeyType="search"
+                  onSubmitEditing={() => suggests[0] && pickSuggest(suggests[0])} />
+                {suggests.map((g, i) => (
+                  <TouchableOpacity key={i} style={s.suggest} onPress={() => pickSuggest(g)}>
+                    <Text style={s.suggestT} numberOfLines={1}>📍 {g.label}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
               <View style={s.rowBetween}>
                 <Text style={s.label}>Distance</Text>
@@ -530,10 +536,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   step: { width: 34, height: 34, borderRadius: 8, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
-  addrRow: { flexDirection: 'row', gap: 8, marginTop: 10, marginBottom: 2 },
-  addrInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: c.border, color: c.text, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
-  addrGo: { backgroundColor: c.accent, borderRadius: 8, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
-  addrGoT: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  addrRow: { marginTop: 10, marginBottom: 2 },
+  addrInput: { backgroundColor: c.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: c.border, color: c.text, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
+  suggest: { paddingVertical: 9, paddingHorizontal: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
+  suggestT: { color: c.text, fontSize: 13.5 },
   stepT: { fontSize: 20, color: c.text, fontWeight: '600' },
   stepVal: { fontSize: 15, fontWeight: '700', color: c.text, minWidth: 62, textAlign: 'center' },
   btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },

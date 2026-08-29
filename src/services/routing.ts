@@ -254,6 +254,29 @@ export async function orsDirectionalLoop(opts: {
   } catch { return null; }
 }
 
+// Type-ahead place search via Photon (Komoot's free, keyless OSM autocomplete). Biased toward `near` so local
+// hits rank first. Returns a clean label + coords for the Wayfinder address box.
+export interface GeoHit { label: string; lon: number; lat: number }
+export async function geocodeSearch(text: string, near?: { lon: number; lat: number }): Promise<GeoHit[]> {
+  const q = text.trim(); if (q.length < 3) return [];
+  const bias = near ? `&lat=${near.lat}&lon=${near.lon}` : '';
+  try {
+    const res = await fetch(`https://photon.komoot.io/api?q=${encodeURIComponent(q)}&limit=6&lang=en${bias}`);
+    if (!res.ok) return [];
+    const j: any = await res.json();
+    const seen = new Set<string>(); const out: GeoHit[] = [];
+    for (const f of (j.features ?? [])) {
+      const p = f.properties ?? {}, cc = f.geometry?.coordinates;
+      if (!cc || cc.length < 2) continue;
+      const label = [p.name, p.street && p.street !== p.name ? p.street : null, p.city || p.county || p.state,
+        String(p.country || '').split('/')[0].trim()].filter(Boolean).join(', ');
+      if (!label || seen.has(label)) continue;
+      seen.add(label); out.push({ label, lon: cc[0], lat: cc[1] });
+    }
+    return out;
+  } catch { return []; }
+}
+
 /** Quick validity check for the Settings "Save" flow — a tiny round_trip against a fixed point. */
 export async function validateOrsKey(key: string): Promise<{ ok: boolean; error?: string }> {
   if (!key.trim()) return { ok: false, error: 'Enter a key first.' };
