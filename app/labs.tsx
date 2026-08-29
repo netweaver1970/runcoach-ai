@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, useWindowDimensions, ActivityIndicator, Alert, PanResponder } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
-import { loadLabs, LabStore, loadTemplates, saveTemplate, deleteTemplate, LabTemplate } from '../src/services/labsStore';
+import { loadLabs, LabStore, loadTemplates, saveTemplate, deleteTemplate, LabTemplate, unionHkIntoLabs } from '../src/services/labsStore';
 import { LabAnalyte } from '../src/services/labs';
+import { fetchBloodGlucoseHistory } from '../src/services/healthkit';
 import { analyseLab } from '../src/services/labsAnalysis';
 import { loadEvents } from '../src/services/timelineEvents';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -130,7 +131,21 @@ export default function LabsScreen() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedOnly, setSelectedOnly] = useState(false);
 
-  useEffect(() => { loadLabs().then(setStore); }, []);
+  // Load the imported labs, then fold in any glucose the user logged straight into Apple Health (display-only
+  // union — HK read in mg/dL, converted to the analyte's unit; mirrored/duplicate days are dropped in the merge).
+  useEffect(() => {
+    (async () => {
+      const s = await loadLabs();
+      const GLU = 'HKQuantityTypeIdentifierBloodGlucose';
+      if (!s.analytes.some(a => a.hkType === GLU)) { setStore(s); return; }
+      try {
+        const hk = await fetchBloodGlucoseHistory(480);   // wide window so all lab history + recent HK is covered
+        const toCanonical = (mgdl: number, unit: string) =>
+          /mmol/i.test(unit) ? Math.round((mgdl / 18.0156) * 100) / 100 : Math.round(mgdl);
+        setStore(unionHkIntoLabs(s, GLU, hk, toCanonical).store);
+      } catch { setStore(s); }
+    })();
+  }, []);
   useEffect(() => { loadTemplates().then(setTemplates); }, []);
   useEffect(() => { loadEvents().then(list => setEvents(
     list.filter((e: any) => e.type === 'event' && (e.category === 'medical' || e.category === 'life'))

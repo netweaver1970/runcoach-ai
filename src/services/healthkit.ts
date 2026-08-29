@@ -241,6 +241,7 @@ export async function requestPermissions(): Promise<boolean> {
       'HKQuantityTypeIdentifierLeanBodyMass',
       'HKQuantityTypeIdentifierBodyMassIndex',
       'HKQuantityTypeIdentifierWaistCircumference',
+      'HKQuantityTypeIdentifierBloodGlucose',   // read glucose the user logged straight into Health (union into Labs)
       // Category types
       'HKCategoryTypeIdentifierSleepAnalysis',
       // Heartbeat series — raw R-R intervals for HRV quality filtering
@@ -3930,6 +3931,11 @@ export function fetchBodyMassHistory(months: number, toDate?: Date) {
 }
 export function fetchLeanBodyMassHistory(months: number, toDate?: Date) {
   return fetchQuantitySeries(HKQuantityTypeIdentifier.leanBodyMass, 'kg', months, toDate, 1);
+}
+// Blood glucose, ALWAYS read in mg/dL (HK converts from however it was stored, sparing us the locale guess);
+// the caller converts to the Labs analyte's canonical unit (mmol/L ÷18.0156, or mg/dL as-is).
+export function fetchBloodGlucoseHistory(months: number, toDate?: Date) {
+  return fetchQuantitySeries('HKQuantityTypeIdentifierBloodGlucose', 'mg/dL', months, toDate, 1);
 }
 // Body-fat is stored as a ratio (0–1) under the percent unit; normalise to a 0–100 percentage.
 export async function fetchBodyFatHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {

@@ -2,11 +2,44 @@
 // (added to backup.ts FILES). The importer (app/labs-import.tsx) parses a spreadsheet with
 // parseClinicalGrid, the user de-selects dates/analytes, and the survivors are merged in here.
 import * as FileSystem from 'expo-file-system';
-import { LabAnalyte } from './labs';
+import { LabAnalyte, LabValue } from './labs';
 
 const LABS_FILE = `${FileSystem.documentDirectory}runcoach-labs.json`;
 
 export interface LabStore { analytes: LabAnalyte[]; updatedAt: string }
+
+// ── Union Apple-Health readings into a Labs analyte (display-only, NOT persisted) ─────────────────
+// The user sometimes logs a value straight into Health rather than importing a blood test; fold those in
+// so the chart shows the full picture. Pure + deterministic. Dedup is by DAY: we mirror imported labs INTO
+// Health (same reading, at that day's midnight), so a matching day is a duplicate and is dropped — only
+// Health-only days are added. `toCanonical(hkValue, analyteUnit)` converts the HK reading (in its fixed read
+// unit) into the analyte's stored unit. Returns a fresh store (touched analyte re-sorted, note annotated)
+// plus how many readings were folded in. Called at load time; never written back to disk.
+export function unionHkIntoLabs(
+  store: LabStore, hkType: string,
+  hkReadings: { date: string; value: number }[],
+  toCanonical: (hkValue: number, analyteUnit: string) => number,
+): { store: LabStore; added: number } {
+  if (!hkReadings?.length) return { store, added: 0 };
+  let added = 0;
+  const analytes = store.analytes.map(a => {
+    if (a.hkType !== hkType) return a;
+    const days = new Set(a.series.map(v => v.date.slice(0, 10)));
+    const extra: LabValue[] = [];
+    for (const r of hkReadings) {
+      const day = (r.date || '').slice(0, 10);
+      if (day.length !== 10 || days.has(day)) continue;   // malformed, or a mirrored/already-imported day
+      days.add(day);
+      const value = toCanonical(r.value, a.unit);
+      if (Number.isFinite(value)) { extra.push({ date: day, value }); added++; }
+    }
+    if (!extra.length) return a;
+    const series = [...a.series, ...extra].sort((x, y) => x.date.localeCompare(y.date));
+    const base = (a.note ?? '').replace(/\s*·?\s*\+\d+ from Apple Health$/, '');   // don't stack the note
+    return { ...a, series, note: `${base ? base + ' · ' : ''}+${extra.length} from Apple Health` };
+  });
+  return { store: { ...store, analytes }, added };
+}
 
 export async function loadLabs(): Promise<LabStore> {
   try {
