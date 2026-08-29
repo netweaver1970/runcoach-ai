@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, Image, Share, Switch,
-  Modal, PanResponder, TextInput,
+  Modal, PanResponder, TextInput, Linking,
 } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import * as Location from 'expo-location';
@@ -347,6 +347,16 @@ export default function WayfinderScreen() {
     base ? (steered ? { ...base, ...steered } : base) : undefined;
   const hasRoute = !!cur;
 
+  // Open the loop in Google Maps as a WALKING round-trip through ~8 waypoints — detailed street/satellite view.
+  const openInGoogleMaps = useCallback(() => {
+    const co = cur?.coords; if (!co || co.length < 2) return;
+    const s = `${co[0][1]},${co[0][0]}`;   // lat,lon of start (origin = destination for a loop)
+    const wps: string[] = [];
+    for (let k = 1; k <= 8; k++) { const i = Math.floor((k / 9) * (co.length - 1)); wps.push(`${co[i][1]},${co[i][0]}`); }
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${s}&destination=${s}&travelmode=walking&waypoints=${encodeURIComponent(wps.join('|'))}`;
+    Linking.openURL(url).catch(() => {});
+  }, [cur]);
+
   // While a loop is on screen, follow the phone's live GPS on the map — a glanceable backup if the watch map
   // isn't detailed enough. Foreground-only, high accuracy; the subscription stops when you leave the screen.
   useEffect(() => {
@@ -498,6 +508,9 @@ export default function WayfinderScreen() {
                     )}
                     {cur.reachKm != null && <Text style={[s.hint, { marginTop: 8 }]}>Reaches {cur.reachKm} km out.</Text>}
                     <TouchableOpacity style={s.btn} onPress={exportGpx}><Text style={s.btnT}>↑ Export GPX</Text></TouchableOpacity>
+                    <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={openInGoogleMaps}>
+                      <Text style={[s.btnT, { color: c.text }]}>🗺️ Open in Google Maps</Text>
+                    </TouchableOpacity>
                     {watchRouteAvailable() && (
                       <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={sendToWatch}>
                         <Text style={[s.btnT, { color: c.text }]}>⌚ Send to Watch</Text>
