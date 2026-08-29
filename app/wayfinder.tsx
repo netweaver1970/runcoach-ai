@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, Image, Share, Switch,
-  Modal, PanResponder, TextInput,
+  Modal, PanResponder,
 } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import * as Location from 'expo-location';
@@ -151,23 +151,20 @@ function ElevProfile({ elev, width, height, c }: { elev: number[]; width: number
 }
 
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
-function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, pickStart, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickStart }: {
+function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease }: {
   coords: [number, number][]; start: [number, number]; here: [number, number] | null;
   center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
-  isFull: boolean; autoOn: boolean; pickStart?: boolean;
+  isFull: boolean; autoOn: boolean;
   onPan: (c: [number, number]) => void; onZoomTo: (z: number) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
-  onGrab?: () => void; onRelease?: () => void; onPickStart?: (c: [number, number]) => void;
+  onGrab?: () => void; onRelease?: () => void;
 }) {
   const s = useThemedStyles(makeStyles);
   const zRef = useRef(zoom); zRef.current = zoom;
   const cRef = useRef<[number, number]>(center ?? bboxCenter(coords)); cRef.current = center ?? bboxCenter(coords);
   const onPanRef = useRef(onPan); onPanRef.current = onPan;
   const onZoomToRef = useRef(onZoomTo); onZoomToRef.current = onZoomTo;
-  const onPickRef = useRef(onPickStart); onPickRef.current = onPickStart;
-  const pickRef = useRef(pickStart); pickRef.current = pickStart;
   const startC = useRef<[number, number] | null>(null);
   const pinch = useRef<{ d: number; z: number } | null>(null);
-  const tapLoc = useRef<{ x: number; y: number } | null>(null);   // touch-down point → "tap to set start"
   // Own the gesture on touch-start; handlers read live zoom/centre from refs so the responder is never rebuilt
   // mid-drag. Two fingers → pinch-zoom (stepped to tile levels); one finger → pan. The ScrollView is disabled
   // via onGrab/onRelease (below) so it can't scroll while a finger is on the map — the real cure for the fight.
@@ -175,12 +172,8 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: (evt) => {
-      startC.current = cRef.current; pinch.current = null;
-      tapLoc.current = { x: evt.nativeEvent.locationX, y: evt.nativeEvent.locationY };
-    },
+    onPanResponderGrant: () => { startC.current = cRef.current; pinch.current = null; },
     onPanResponderMove: (evt, g) => {
-      if (Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6) tapLoc.current = null;   // moved → it's a drag, not a tap
       const ts = evt.nativeEvent.touches;
       if (ts.length >= 2) {                                            // pinch
         const d = Math.hypot(ts[0].pageX - ts[1].pageX, ts[0].pageY - ts[1].pageY);
@@ -194,17 +187,8 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
       const bx = lon2px(sc[0], z) - g.dx, by = lat2px(sc[1], z) - g.dy;
       onPanRef.current([px2lon(bx, z), px2lat(by, z)]);
     },
-    onPanResponderRelease: () => {
-      pinch.current = null;
-      // A tap (no drag) in "set start" mode → convert the touch point to lon/lat and set it as the loop start.
-      if (pickRef.current && tapLoc.current) {
-        const z = zRef.current, ctr = cRef.current;
-        const ox = lon2px(ctr[0], z) - width / 2, oy = lat2px(ctr[1], z) - height / 2;
-        onPickRef.current?.([px2lon(ox + tapLoc.current.x, z), px2lat(oy + tapLoc.current.y, z)]);
-      }
-      tapLoc.current = null;
-    },
-    onPanResponderTerminate: () => { pinch.current = null; tapLoc.current = null; },
+    onPanResponderRelease: () => { pinch.current = null; },
+    onPanResponderTerminate: () => { pinch.current = null; },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
   return (
@@ -253,9 +237,6 @@ export default function WayfinderScreen() {
   const [panCenter, setPanCenter] = useState<[number, number] | null>(null);  // finger-panned map centre
   const [fullscreen, setFullscreen] = useState(false);
   const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
-  const [pickStart, setPickStart] = useState(false);   // tap-the-map-to-move-the-loop-start mode
-  const [addr, setAddr] = useState('');                // address search box
-  const [addrBusy, setAddrBusy] = useState(false);
   const [scrollLock, setScrollLock] = useState(false);   // disable page scroll while a finger is on the map
 
   // On mount: key present? where am I? what did the coach prescribe today?
@@ -393,25 +374,9 @@ export default function WayfinderScreen() {
   const onAuto = useCallback(() => { setPanCenter(null); setZoomMode('auto'); }, []);
   const onGrab = useCallback(() => setScrollLock(true), []);
   const onRelease = useCallback(() => setScrollLock(false), []);
-  // Tap a spot on the map → make it the loop's start. Keep the current preview visible (start marker moves)
-  // so you can see where it landed; the "↻ New loops" button then regenerates from there.
-  const onPickStart = useCallback((c: [number, number]) => {
-    setStart(c); setPlaced('map point'); setPickStart(false); setPanCenter(null);
-  }, []);
-  // Geocode a typed address → set the loop start there and jump the map to it.
-  const jumpToAddress = useCallback(async () => {
-    const q = addr.trim(); if (!q) return;
-    setAddrBusy(true); setErr(null);
-    try {
-      const r = await Location.geocodeAsync(q);
-      if (r?.[0]) { const c: [number, number] = [r[0].longitude, r[0].latitude]; setStart(c); setPlaced(q); setPanCenter(c); }
-      else setErr('Address not found — try adding the town/country.');
-    } catch { setErr('Could not look up that address.'); }
-    finally { setAddrBusy(false); }
-  }, [addr]);
   const paneProps = cur ? {
-    coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn, pickStart,
-    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease, onPickStart,
+    coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn,
+    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease,
   } : null;
 
   return (
@@ -430,14 +395,6 @@ export default function WayfinderScreen() {
             {/* Controls */}
             <View style={s.card}>
               <Text style={s.h}>Loop from {placed}</Text>
-              <View style={s.addrRow}>
-                <TextInput style={s.addrInput} value={addr} onChangeText={setAddr}
-                  placeholder="Start from an address…" placeholderTextColor={c.textFaint}
-                  autoCapitalize="words" returnKeyType="search" onSubmitEditing={jumpToAddress} />
-                <TouchableOpacity style={s.addrGo} onPress={jumpToAddress} disabled={addrBusy}>
-                  <Text style={s.addrGoT}>{addrBusy ? '…' : 'Go'}</Text>
-                </TouchableOpacity>
-              </View>
               <View style={s.rowBetween}>
                 <Text style={s.label}>Distance</Text>
                 <View style={s.stepper}>
@@ -494,11 +451,6 @@ export default function WayfinderScreen() {
                 {/* Map preview — pan with a finger, −/AUTO/+ zoom, ⤢ for fullscreen */}
                 {paneProps && mapW > 0 && (
                   <MapPane {...paneProps} width={mapW} height={mapH} isFull={false} onToggleFull={() => setFullscreen(true)} />
-                )}
-                {cur && (
-                  <TouchableOpacity style={[s.chip, pickStart && s.chipOn, { alignSelf: 'flex-start', marginTop: 8 }]} onPress={() => setPickStart(v => !v)}>
-                    <Text style={[s.chipT, pickStart && s.chipTOn]}>📍 {pickStart ? 'Tap the map to set start…' : 'Move start point'}</Text>
-                  </TouchableOpacity>
                 )}
 
                 {/* Selected stats + export */}
@@ -557,10 +509,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   step: { width: 34, height: 34, borderRadius: 8, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
-  addrRow: { flexDirection: 'row', gap: 8, marginTop: 10, marginBottom: 2 },
-  addrInput: { flex: 1, backgroundColor: c.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: c.border, color: c.text, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
-  addrGo: { backgroundColor: c.accent, borderRadius: 8, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
-  addrGoT: { color: '#fff', fontWeight: '800', fontSize: 14 },
   stepT: { fontSize: 20, color: c.text, fontWeight: '600' },
   stepVal: { fontSize: 15, fontWeight: '700', color: c.text, minWidth: 62, textAlign: 'center' },
   btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
