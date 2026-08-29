@@ -347,14 +347,18 @@ export default function WayfinderScreen() {
     base ? (steered ? { ...base, ...steered } : base) : undefined;
   const hasRoute = !!cur;
 
-  // Open the loop in Google Maps as a WALKING round-trip through ~8 waypoints — detailed street/satellite view.
+  // Open the loop in Google Maps as a WALKING round-trip through ~8 waypoints. Prefer the app URL scheme
+  // (comgooglemaps://) — the universal https link only re-parses on a COLD launch, so a warm app just shows
+  // your current location; the scheme re-triggers reliably. Falls back to the web link if the app isn't there.
   const openInGoogleMaps = useCallback(() => {
     const co = cur?.coords; if (!co || co.length < 2) return;
-    const s = `${co[0][1]},${co[0][0]}`;   // lat,lon of start (origin = destination for a loop)
+    const s = `${co[0][1]},${co[0][0]}`;   // lat,lon of the start
     const wps: string[] = [];
     for (let k = 1; k <= 8; k++) { const i = Math.floor((k / 9) * (co.length - 1)); wps.push(`${co[i][1]},${co[i][0]}`); }
-    const url = `https://www.google.com/maps/dir/?api=1&origin=${s}&destination=${s}&travelmode=walking&waypoints=${encodeURIComponent(wps.join('|'))}`;
-    Linking.openURL(url).catch(() => {});
+    const daddr = [...wps, s].join('+to:');   // wp1 +to: wp2 … +to: back-to-start = the loop
+    const appUrl = `comgooglemaps://?saddr=${s}&daddr=${daddr}&directionsmode=walking`;
+    const webUrl = `https://www.google.com/maps/dir/?api=1&origin=${s}&destination=${s}&travelmode=walking&waypoints=${encodeURIComponent(wps.join('|'))}`;
+    Linking.openURL(appUrl).catch(() => Linking.openURL(webUrl).catch(() => {}));
   }, [cur]);
 
   // While a loop is on screen, follow the phone's live GPS on the map — a glanceable backup if the watch map
