@@ -254,6 +254,93 @@ export async function orsDirectionalLoop(opts: {
   } catch { return null; }
 }
 
+/**
+ * A point-to-point route from → to, optionally bowed out through a `via` waypoint so a short direct path can be
+ * padded toward a target length. Same RouteLoop shape as a loop, so the UI treats both identically. The via
+ * point is snapped to a nearby path (radiuses) to dodge ORS 2099 "no route" when it lands in a field/forest.
+ */
+export async function orsRouteVia(opts: {
+  from: [number, number]; to: [number, number]; via?: [number, number]; profile?: RouteProfile;
+}): Promise<RouteLoop | null> {
+  const key = await getOrsApiKey();
+  if (!key) return null;
+  const profile = opts.profile ?? 'foot-hiking';
+  const coordinates = opts.via ? [opts.from, opts.via, opts.to] : [opts.from, opts.to];
+  const body: any = { coordinates, elevation: true, extra_info: ['waytype'] };
+  if (opts.via) body.radiuses = [-1, 1500, -1];   // snap only the invented mid point; keep from/to exact
+  try {
+    const res = await fetch(`${ORS_BASE}/${profile}/geojson`, {
+      method: 'POST',
+      headers: { Authorization: key, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return null;
+    const j: any = await res.json();
+    const f = j?.features?.[0];
+    if (!f) return null;
+    const sm = f.properties?.summary ?? {};
+    const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
+    let trail = 0, tot = 0;
+    for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; }
+    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f));
+    const es = elevStats(t.coords.map(c => c[2] ?? 0));
+    return {
+      distanceKm: t.trimmed ? pathKm(t.coords) : (sm.distance ?? 0) / 1000,
+      ascentM: es.ascentM,
+      descentM: es.descentM,
+      coords: t.coords.map(c => [c[0], c[1]] as [number, number]),
+      trailPct: tot > 0 ? Math.round((trail / tot) * 100) : 0,
+      elev: es.elev,
+      steps: t.steps,
+    };
+  } catch { return null; }
+}
+
+/**
+ * Point-to-point options MATCHED to a target distance. Always offers the DIRECT route (its length is also the
+ * shortest A→B possible). When the target is longer than direct, it also bows the route out through a point set
+ * perpendicular to the A→B line — both sides × two magnitudes — to pad the length up toward the target. The
+ * straight-bow height for a target T is h=√((T/2)²−(chord/2)²); real roads overshoot, so we aim a little under
+ * and keep whatever actually comes back. Sorted by closeness to the target, so the first option is the best
+ * match. Sequential (≤5 calls) to stay gentle on the free tier.
+ */
+export async function orsPointToPointOptions(opts: {
+  from: [number, number]; to: [number, number]; km: number; profile?: RouteProfile;
+}): Promise<RouteOption[]> {
+  const [lonA, latA] = opts.from, [lonB, latB] = opts.to;
+  const latMid = (latA + latB) / 2, cosL = Math.cos(latMid * Math.PI / 180);
+  const kmPerLon = 111.32 * cosL, kmPerLat = 111.32;
+  const bx = (lonB - lonA) * kmPerLon, by = (latB - latA) * kmPerLat;   // B relative to A, in km
+  const chord = Math.hypot(bx, by) || 0.001;
+  const brgAB = ((Math.atan2(bx, by) * 180 / Math.PI) + 360) % 360;     // travel bearing A→B
+  const dir = DIRS[Math.round(brgAB / 45) % 8];
+
+  const out: RouteOption[] = [];
+  const direct = await orsRouteVia({ from: opts.from, to: opts.to, profile: opts.profile });
+  if (direct && direct.coords.length >= 2) {
+    out.push({ ...direct, seed: 0, headingDeg: Math.round(brgAB), heading: `${dir} · direct` });
+  }
+  const directKm = direct?.distanceKm ?? chord;
+  if (opts.km > directKm * 1.1) {
+    const mx = bx / 2, my = by / 2;                     // A→B midpoint (km, relative to A)
+    const ux = -by / chord, uy = bx / chord;            // unit vector perpendicular to A→B
+    const hFor = (T: number) => Math.sqrt(Math.max(0, (T / 2) ** 2 - (chord / 2) ** 2));
+    const mags = [hFor(opts.km * 0.82), hFor(opts.km)];
+    let seed = 1;
+    for (const side of [-1, 1]) for (const h of mags) {
+      if (h < 0.1) continue;
+      const vx = mx + side * h * ux, vy = my + side * h * uy;
+      const via: [number, number] = [lonA + vx / kmPerLon, latA + vy / kmPerLat];
+      const r = await orsRouteVia({ from: opts.from, to: opts.to, via, profile: opts.profile });
+      if (!r || r.coords.length < 2 || r.distanceKm < directKm * 1.02) continue;   // detour that added nothing → skip
+      out.push({ ...r, seed, headingDeg: Math.round(brgAB), heading: `${side < 0 ? '↰' : '↱'} detour` });
+      seed++;
+    }
+  }
+  out.sort((p, q) => Math.abs(p.distanceKm - opts.km) - Math.abs(q.distanceKm - opts.km));
+  return out;
+}
+
 // Type-ahead place search via Photon (Komoot's free, keyless OSM autocomplete). Biased toward `near` so local
 // hits rank first. Returns a clean label + coords for the Wayfinder address box.
 export interface GeoHit { label: string; lon: number; lat: number }

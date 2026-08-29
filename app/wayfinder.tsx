@@ -12,7 +12,7 @@ import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, geocodeSearch, GeoHit, RouteOption, RouteLoop } from '../src/services/routing';
+import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, orsPointToPointOptions, geocodeSearch, GeoHit, RouteOption, RouteLoop } from '../src/services/routing';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
@@ -59,8 +59,8 @@ function fitZoom(coords: [number, number][], width: number, height: number): num
 }
 
 // ── Static map: OpenTopoMap tile grid + the route drawn as rotated View segments ──
-function StaticMap({ coords, start, here, center, zoom, width, height, line, c }: {
-  coords: [number, number][]; start: [number, number]; here: [number, number] | null;
+function StaticMap({ coords, start, dest, here, center, zoom, width, height, line, c }: {
+  coords: [number, number][]; start: [number, number]; dest?: [number, number] | null; here: [number, number] | null;
   center?: [number, number]; zoom?: number; width: number; height: number; line: string; c: Palette;
 }) {
   if (width <= 0 || coords.length < 2) return <View style={{ width, height }} />;
@@ -111,6 +111,10 @@ function StaticMap({ coords, start, here, center, zoom, width, height, line, c }
       {casing}
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
+      {dest && (() => {
+        const [dx, dy] = px(dest);   // point-to-point destination — a distinct red pin at the finish
+        return <View key="dest" pointerEvents="none" style={{ position: 'absolute', left: dx - 9, top: dy - 9, width: 18, height: 18, borderRadius: 9, backgroundColor: '#e5484d', borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } }} />;
+      })()}
       {arrows.map(a => {
         const zScale = Math.min(2, 1 + Math.max(0, z - 14) * 0.35);       // grow when zoomed in (capped)
         const big = a.k === 0, bl = (big ? 20 : 17) * zScale, bt = (big ? 6 : 5) * zScale;   // dart points +x; rotate to heading
@@ -151,20 +155,20 @@ function ElevProfile({ elev, width, height, c }: { elev: number[]; width: number
 }
 
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
-function MapPane({ coords, start, here, center, zoom, width, height, c, moving, isFull, autoOn, pickStart, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickStart }: {
-  coords: [number, number][]; start: [number, number]; here: [number, number] | null;
+function MapPane({ coords, start, dest, here, center, zoom, width, height, c, moving, isFull, autoOn, picking, pickLabel, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickMap }: {
+  coords: [number, number][]; start: [number, number]; dest?: [number, number] | null; here: [number, number] | null;
   center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
-  isFull: boolean; autoOn: boolean; pickStart?: boolean;
+  isFull: boolean; autoOn: boolean; picking?: boolean; pickLabel?: string;
   onPan: (c: [number, number]) => void; onZoomTo: (z: number) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
-  onGrab?: () => void; onRelease?: () => void; onPickStart?: (c: [number, number]) => void;
+  onGrab?: () => void; onRelease?: () => void; onPickMap?: (c: [number, number]) => void;
 }) {
   const s = useThemedStyles(makeStyles);
   const zRef = useRef(zoom); zRef.current = zoom;
   const cRef = useRef<[number, number]>(center ?? bboxCenter(coords)); cRef.current = center ?? bboxCenter(coords);
   const onPanRef = useRef(onPan); onPanRef.current = onPan;
   const onZoomToRef = useRef(onZoomTo); onZoomToRef.current = onZoomTo;
-  const onPickRef = useRef(onPickStart); onPickRef.current = onPickStart;
-  const pickRef = useRef(pickStart); pickRef.current = pickStart;
+  const onPickRef = useRef(onPickMap); onPickRef.current = onPickMap;
+  const pickRef = useRef(picking); pickRef.current = picking;
   const dimRef = useRef({ width, height }); dimRef.current = { width, height };   // live dims for tap→lon/lat
   const startC = useRef<[number, number] | null>(null);
   const pinch = useRef<{ d: number; z: number } | null>(null);
@@ -213,7 +217,7 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
     <View style={{ position: 'relative', width, height }} {...pan.panHandlers}
       onTouchStart={() => onGrab?.()} onTouchCancel={() => onRelease?.()}
       onTouchEnd={e => { if (e.nativeEvent.touches.length === 0) onRelease?.(); }}>
-      <StaticMap coords={coords} start={start} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
+      <StaticMap coords={coords} start={start} dest={dest} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
       <View style={s.zoomCtl}>
         <TouchableOpacity style={s.zoomBtn} onPress={onZoomIn}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
         <TouchableOpacity style={[s.zoomBtn, autoOn && s.zoomBtnOn]} onPress={onAuto}><Text style={[s.zoomTsm, autoOn && { color: '#fff' }]}>AUTO</Text></TouchableOpacity>
@@ -223,7 +227,7 @@ function MapPane({ coords, start, here, center, zoom, width, height, c, moving, 
         <Text style={s.fullT}>{isFull ? '✕ Close' : '⤢ Full'}</Text>
       </TouchableOpacity>
       {moving && <View style={s.followPill}><Text style={s.followT}>● following</Text></View>}
-      {pickStart && <View style={s.pickBanner}><Text style={s.pickBannerT}>Tap the map to set the loop start</Text></View>}
+      {picking && <View style={s.pickBanner}><Text style={s.pickBannerT}>{pickLabel ?? 'Tap the map to set the point'}</Text></View>}
     </View>
   );
 }
@@ -257,23 +261,35 @@ export default function WayfinderScreen() {
   const [fullscreen, setFullscreen] = useState(false);
   const [fullDims, setFullDims] = useState({ w: 0, h: 0 });
   const [scrollLock, setScrollLock] = useState(false);   // disable page scroll while a finger is on the map
-  const [addr, setAddr] = useState('');                  // place-search box
-  const [pickStart, setPickStart] = useState(false);     // tap-the-map-to-move-the-loop-start mode
-  const [suggests, setSuggests] = useState<GeoHit[]>([]);  // type-ahead results
+  const [dest, setDest] = useState<[number, number] | null>(null);   // TO — null = loop from start; set = A→B route
+  const [destPlaced, setDestPlaced] = useState('');
+  const [addr, setAddr] = useState('');                  // FROM place-search box
+  const [addrTo, setAddrTo] = useState('');              // TO place-search box
+  const [pickMode, setPickMode] = useState<null | 'from' | 'to'>(null);   // tap-the-map to place from / to
+  const [suggests, setSuggests] = useState<GeoHit[]>([]);      // FROM type-ahead
+  const [suggestsTo, setSuggestsTo] = useState<GeoHit[]>([]);  // TO type-ahead
   const startRef = useRef(start); startRef.current = start;
-  // Debounced type-ahead search (Photon), biased toward the current start so nearby places rank first.
+  // Debounced type-ahead (Photon), biased toward the current start so nearby places rank first. Two boxes.
   useEffect(() => {
     const q = addr.trim();
     if (q.length < 3) { setSuggests([]); return; }
-    const t = setTimeout(async () => {
-      setSuggests(await geocodeSearch(q, { lon: startRef.current[0], lat: startRef.current[1] }));
-    }, 300);
+    const t = setTimeout(async () => setSuggests(await geocodeSearch(q, { lon: startRef.current[0], lat: startRef.current[1] })), 300);
     return () => clearTimeout(t);
   }, [addr]);
-  // Pick a suggestion → set the loop start there (map re-fits on the next generate).
+  useEffect(() => {
+    const q = addrTo.trim();
+    if (q.length < 3) { setSuggestsTo([]); return; }
+    const t = setTimeout(async () => setSuggestsTo(await geocodeSearch(q, { lon: startRef.current[0], lat: startRef.current[1] })), 300);
+    return () => clearTimeout(t);
+  }, [addrTo]);
+  // Pick a suggestion → set FROM (loop start / A) or TO (destination / B); map re-fits on the next generate.
   const pickSuggest = useCallback((g: GeoHit) => {
     setStart([g.lon, g.lat]); setPlaced(g.label); setAddr(''); setSuggests([]);
   }, []);
+  const pickSuggestTo = useCallback((g: GeoHit) => {
+    setDest([g.lon, g.lat]); setDestPlaced(g.label); setAddrTo(''); setSuggestsTo([]);
+  }, []);
+  const clearDest = useCallback(() => { setDest(null); setDestPlaced(''); setAddrTo(''); setSuggestsTo([]); }, []);
 
   // On mount: key present? where am I? what did the coach prescribe today?
   useEffect(() => {
@@ -309,15 +325,19 @@ export default function WayfinderScreen() {
   const generate = useCallback(async () => {
     setBusy(true); setErr(null); setOpts([]);
     try {
-      // one steered loop per compass point → every routable direction (incl. W/SW/NW) is offered
-      const list = await orsHeadingOptions({
-        lon: start[0], lat: start[1], km: targetKm, profile: trails ? 'foot-hiking' : 'foot-walking', hilliness,
-      });
-      if (!list.length) setErr('No routes came back — check the key in Settings, or try a different distance.');
+      const profile = trails ? 'foot-hiking' : 'foot-walking';
+      // TO set → a point-to-point route matched to the target distance; TO empty → a loop from the start.
+      const list = dest
+        ? await orsPointToPointOptions({ from: start, to: dest, km: targetKm, profile })
+        // one steered loop per compass point → every routable direction (incl. W/SW/NW) is offered
+        : await orsHeadingOptions({ lon: start[0], lat: start[1], km: targetKm, profile, hilliness });
+      if (!list.length) setErr(dest
+        ? 'No route came back for that from/to — check the pins and the key in Settings.'
+        : 'No routes came back — check the key in Settings, or try a different distance.');
       else { setOpts(list); setSel(0); setReach(0); setSteered(null); }
     } catch (e: any) { setErr(e?.message ?? 'Could not generate routes.'); }
     finally { setBusy(false); }
-  }, [start, targetKm, trails, hilliness]);
+  }, [start, dest, targetKm, trails, hilliness]);
 
   // Amplify the chosen direction: level 0 = the round-trip loop; 1–3 push the far point further out (narrower
   // wedge + bigger reach) via a steered directional loop toward the selected heading.
@@ -352,32 +372,34 @@ export default function WayfinderScreen() {
 
   const exportGpx = useCallback(async () => {
     const o = opts[sel]; if (!o) return;
-    let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="RunCoachAI Wayfinder" xmlns="http://www.topografix.com/GPX/1/1">\n <trk><name>${o.distanceKm.toFixed(1)}km ${o.heading} loop</name><trkseg>\n`;
+    const kind = dest ? 'route' : 'loop';
+    let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="RunCoachAI Wayfinder" xmlns="http://www.topografix.com/GPX/1/1">\n <trk><name>${o.distanceKm.toFixed(1)}km ${o.heading} ${kind}</name><trkseg>\n`;
     for (const cc of o.coords) gpx += `  <trkpt lat="${cc[1]}" lon="${cc[0]}"></trkpt>\n`;
     gpx += ' </trkseg></trk>\n</gpx>\n';
     try {
-      const uri = `${FileSystem.cacheDirectory}wayfinder-${o.distanceKm.toFixed(1)}km-${o.heading}.gpx`;
+      const uri = `${FileSystem.cacheDirectory}wayfinder-${o.distanceKm.toFixed(1)}km-${kind}.gpx`;
       await FileSystem.writeAsStringAsync(uri, gpx);
-      await Share.share({ url: uri, message: `${o.distanceKm.toFixed(1)} km ${o.heading} loop` });
+      await Share.share({ url: uri, message: `${o.distanceKm.toFixed(1)} km ${o.heading} ${kind}` });
     } catch { await Share.share({ message: gpx }); }
-  }, [opts, sel]);
+  }, [opts, sel, dest]);
 
   const base = opts[sel];
   const cur: (RouteOption & { reachKm?: number }) | undefined =
     base ? (steered ? { ...base, ...steered } : base) : undefined;
   const hasRoute = !!cur;
 
-  // Open the loop in Google Maps as a WALKING round-trip through ~8 waypoints. Prefer the app URL scheme
+  // Open the route in Google Maps as a WALKING trip through ~8 waypoints. Endpoint = the route's LAST coord —
+  // for a loop that ≈ the start (a round-trip), for A→B it's the destination. Prefer the app URL scheme
   // (comgooglemaps://) — the universal https link only re-parses on a COLD launch, so a warm app just shows
   // your current location; the scheme re-triggers reliably. Falls back to the web link if the app isn't there.
   const openInGoogleMaps = useCallback(() => {
     const co = cur?.coords; if (!co || co.length < 2) return;
-    const s = `${co[0][1]},${co[0][0]}`;   // lat,lon of the start
+    const ll = (p: [number, number]) => `${p[1]},${p[0]}`;
+    const s = ll(co[0]), e = ll(co[co.length - 1]);
     const wps: string[] = [];
-    for (let k = 1; k <= 8; k++) { const i = Math.floor((k / 9) * (co.length - 1)); wps.push(`${co[i][1]},${co[i][0]}`); }
-    const daddr = [...wps, s].join('+to:');   // wp1 +to: wp2 … +to: back-to-start = the loop
-    const appUrl = `comgooglemaps://?saddr=${s}&daddr=${daddr}&directionsmode=walking`;
-    const webUrl = `https://www.google.com/maps/dir/?api=1&origin=${s}&destination=${s}&travelmode=walking&waypoints=${encodeURIComponent(wps.join('|'))}`;
+    for (let k = 1; k <= 8; k++) { const i = Math.floor((k / 9) * (co.length - 1)); wps.push(ll(co[i])); }
+    const appUrl = `comgooglemaps://?saddr=${s}&daddr=${[...wps, e].join('+to:')}&directionsmode=walking`;
+    const webUrl = `https://www.google.com/maps/dir/?api=1&origin=${s}&destination=${e}&travelmode=walking&waypoints=${encodeURIComponent(wps.join('|'))}`;
     Linking.openURL(appUrl).catch(() => Linking.openURL(webUrl).catch(() => {}));
   }, [cur]);
 
@@ -424,14 +446,17 @@ export default function WayfinderScreen() {
   const onAuto = useCallback(() => { setPanCenter(null); setZoomMode('auto'); }, []);
   const onGrab = useCallback(() => setScrollLock(true), []);
   const onRelease = useCallback(() => setScrollLock(false), []);
-  // Tap a spot on the map → make it the loop start (marker moves; the OLD loop stays visible until you
-  // regenerate). Mirrors pickSuggest — just sets state, no async/geocoder, so it can't stall generation.
-  const onPickStart = useCallback((cc: [number, number]) => {
-    setStart(cc); setPlaced('map point'); setPickStart(false);
-  }, []);
+  // Tap a spot on the map → set the FROM (start) or TO (destination) pin, per the armed mode. Marker moves;
+  // the previewed route stays until you regenerate. Just sets state (no async/geocoder), so it can't stall.
+  const onPickMap = useCallback((cc: [number, number]) => {
+    if (pickMode === 'to') { setDest(cc); setDestPlaced('map point'); }
+    else { setStart(cc); setPlaced('map point'); }
+    setPickMode(null);
+  }, [pickMode]);
   const paneProps = cur ? {
-    coords: cur.coords, start, here, center: effCenter, zoom: effZoom, c, moving, autoOn, pickStart,
-    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease, onPickStart,
+    coords: cur.coords, start, dest, here, center: effCenter, zoom: effZoom, c, moving, autoOn,
+    picking: !!pickMode, pickLabel: pickMode === 'to' ? 'Tap the map to set the destination' : 'Tap the map to set the start',
+    onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease, onPickMap,
   } : null;
 
   return (
@@ -449,10 +474,12 @@ export default function WayfinderScreen() {
           <>
             {/* Controls */}
             <View style={s.card}>
-              <Text style={s.h}>Loop from {placed}</Text>
+              <Text style={s.h}>{dest ? `${placed} → ${destPlaced || 'destination'}` : `Loop from ${placed}`}</Text>
+              {/* FROM — defaults to your GPS position. */}
               <View style={s.addrRow}>
+                <View style={s.fieldHead}><View style={[s.dot, { backgroundColor: c.accent }]} /><Text style={s.fieldLbl}>From · {placed}</Text></View>
                 <TextInput style={s.addrInput} value={addr} onChangeText={setAddr}
-                  placeholder="Search a place to start from…" placeholderTextColor={c.textFaint}
+                  placeholder="Search a start place…" placeholderTextColor={c.textFaint}
                   autoCapitalize="words" autoCorrect={false} returnKeyType="search"
                   onSubmitEditing={() => suggests[0] && pickSuggest(suggests[0])} />
                 {suggests.map((g, i) => (
@@ -461,8 +488,25 @@ export default function WayfinderScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
+              {/* TO — leave empty for a loop; set it for a point-to-point route padded to the distance below. */}
+              <View style={s.addrRow}>
+                <View style={s.fieldHead}>
+                  <View style={[s.dot, { backgroundColor: '#e5484d' }]} />
+                  <Text style={s.fieldLbl}>To · {dest ? (destPlaced || 'set') : 'empty = loop'}</Text>
+                  {dest && <TouchableOpacity onPress={clearDest} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={s.clearX}>✕ clear</Text></TouchableOpacity>}
+                </View>
+                <TextInput style={s.addrInput} value={addrTo} onChangeText={setAddrTo}
+                  placeholder="Search a destination (optional)…" placeholderTextColor={c.textFaint}
+                  autoCapitalize="words" autoCorrect={false} returnKeyType="search"
+                  onSubmitEditing={() => suggestsTo[0] && pickSuggestTo(suggestsTo[0])} />
+                {suggestsTo.map((g, i) => (
+                  <TouchableOpacity key={i} style={s.suggest} onPress={() => pickSuggestTo(g)}>
+                    <Text style={s.suggestT} numberOfLines={1}>📍 {g.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
               <View style={s.rowBetween}>
-                <Text style={s.label}>Distance</Text>
+                <Text style={s.label}>Distance to match</Text>
                 <View style={s.stepper}>
                   <TouchableOpacity style={s.step} onPress={() => setTargetKm(k => Math.max(2, Math.round((k - 0.5) * 2) / 2))}><Text style={s.stepT}>−</Text></TouchableOpacity>
                   <Text style={s.stepVal}>{targetKm.toFixed(1)} km</Text>
@@ -473,20 +517,24 @@ export default function WayfinderScreen() {
                 <Text style={s.label}>Prefer trails</Text>
                 <Switch value={trails} onValueChange={setTrails} />
               </View>
-              <View style={s.rowBetween}>
-                <Text style={s.label}>Terrain</Text>
-                <View style={s.seg}>
-                  {(['flat', 'any', 'hilly'] as const).map(h => (
-                    <TouchableOpacity key={h} style={[s.segBtn, hilliness === h && s.segBtnOn]} onPress={() => setHilliness(h)}>
-                      <Text style={[s.segT, hilliness === h && s.segTOn]}>{h === 'flat' ? 'Flat' : h === 'hilly' ? 'Hilly' : 'Any'}</Text>
-                    </TouchableOpacity>
-                  ))}
+              {!dest && (
+                <View style={s.rowBetween}>
+                  <Text style={s.label}>Terrain</Text>
+                  <View style={s.seg}>
+                    {(['flat', 'any', 'hilly'] as const).map(h => (
+                      <TouchableOpacity key={h} style={[s.segBtn, hilliness === h && s.segBtnOn]} onPress={() => setHilliness(h)}>
+                        <Text style={[s.segT, hilliness === h && s.segTOn]}>{h === 'flat' ? 'Flat' : h === 'hilly' ? 'Hilly' : 'Any'}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 </View>
-              </View>
+              )}
               <TouchableOpacity style={[s.btn, busy && { opacity: 0.6 }]} onPress={generate} disabled={busy}>
-                <Text style={s.btnT}>{busy ? 'Finding loops…' : opts.length ? '↻ New loops' : 'Generate loops'}</Text>
+                <Text style={s.btnT}>{busy ? (dest ? 'Finding routes…' : 'Finding loops…') : opts.length ? (dest ? '↻ New routes' : '↻ New loops') : (dest ? 'Find route' : 'Generate loops')}</Text>
               </TouchableOpacity>
-              <Text style={s.hint}>Default distance comes from today's session. Pick a heading below to steer it toward the green you know.</Text>
+              <Text style={s.hint}>{dest
+                ? 'From → To, padded with a detour to match the distance (direct route is offered too). Leave To empty for a loop.'
+                : 'Default distance comes from today\'s session. Set a “To” above for a point-to-point run instead of a loop.'}</Text>
             </View>
 
             {err && <Text style={s.err}>{err}</Text>}
@@ -495,7 +543,7 @@ export default function WayfinderScreen() {
             {/* Heading chooser */}
             {opts.length > 0 && (
               <>
-                <Text style={s.groupLabel}>Heading — pick a way to explore</Text>
+                <Text style={s.groupLabel}>{dest ? 'Route — closest distance match first' : 'Heading — pick a way to explore'}</Text>
                 <View style={s.chips}>
                   {opts.map((o, i) => (
                     <TouchableOpacity key={o.seed} style={[s.chip, i === sel && s.chipOn]} onPress={() => pickHeading(i)}>
@@ -504,24 +552,36 @@ export default function WayfinderScreen() {
                   ))}
                 </View>
 
-                {/* Reach — amplify the chosen direction (push the loop further out that way) */}
-                <Text style={s.groupLabel}>Reach {steerBusy ? '· steering…' : ''}</Text>
-                <View style={s.chips}>
-                  {['Balanced', 'Further', 'Deeper', 'Farthest'].map((lbl, lv) => (
-                    <TouchableOpacity key={lv} style={[s.chip, reach === lv && s.chipOn, steerBusy && { opacity: 0.5 }]} onPress={() => applyReach(lv)} disabled={steerBusy}>
-                      <Text style={[s.chipT, reach === lv && s.chipTOn]}>{lbl}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                {/* Reach — amplify the chosen direction (loop mode only; point-to-point matches via the options above) */}
+                {!dest && <>
+                  <Text style={s.groupLabel}>Reach {steerBusy ? '· steering…' : ''}</Text>
+                  <View style={s.chips}>
+                    {['Balanced', 'Further', 'Deeper', 'Farthest'].map((lbl, lv) => (
+                      <TouchableOpacity key={lv} style={[s.chip, reach === lv && s.chipOn, steerBusy && { opacity: 0.5 }]} onPress={() => applyReach(lv)} disabled={steerBusy}>
+                        <Text style={[s.chipT, reach === lv && s.chipTOn]}>{lbl}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>}
 
                 {/* Map preview — pan with a finger, −/AUTO/+ zoom, ⤢ for fullscreen */}
                 {paneProps && mapW > 0 && (
                   <MapPane {...paneProps} width={mapW} height={mapH} isFull={false} onToggleFull={() => setFullscreen(true)} />
                 )}
                 {cur && (
-                  <TouchableOpacity style={[s.chip, pickStart && s.chipOn, { alignSelf: 'flex-start', marginTop: 8, marginBottom: 4 }]} onPress={() => setPickStart(v => !v)}>
-                    <Text style={[s.chipT, pickStart && s.chipTOn]}>📍 {pickStart ? 'Tap the map to set start…' : 'Move start point'}</Text>
-                  </TouchableOpacity>
+                  <View style={[s.chips, { marginTop: 8, marginBottom: 4 }]}>
+                    <TouchableOpacity style={[s.chip, pickMode === 'from' && s.chipOn]} onPress={() => setPickMode(m => m === 'from' ? null : 'from')}>
+                      <Text style={[s.chipT, pickMode === 'from' && s.chipTOn]}>📍 {pickMode === 'from' ? 'Tap map — start…' : 'Move start'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[s.chip, pickMode === 'to' && s.chipOn]} onPress={() => setPickMode(m => m === 'to' ? null : 'to')}>
+                      <Text style={[s.chipT, pickMode === 'to' && s.chipTOn]}>🎯 {pickMode === 'to' ? 'Tap map — destination…' : dest ? 'Move destination' : 'Set destination'}</Text>
+                    </TouchableOpacity>
+                    {dest && (
+                      <TouchableOpacity style={s.chip} onPress={clearDest}>
+                        <Text style={s.chipT}>✕ To → loop</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 )}
 
                 {/* Selected stats + export */}
@@ -584,6 +644,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   stepper: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   step: { width: 34, height: 34, borderRadius: 8, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
   addrRow: { marginTop: 10, marginBottom: 2 },
+  fieldHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  dot: { width: 9, height: 9, borderRadius: 5, borderWidth: 1.5, borderColor: '#fff' },
+  fieldLbl: { fontSize: 12, fontWeight: '700', color: c.textSub, flex: 1 },
+  clearX: { fontSize: 12, fontWeight: '700', color: c.accent },
   addrInput: { backgroundColor: c.surfaceAlt, borderRadius: 8, borderWidth: 1, borderColor: c.border, color: c.text, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14 },
   suggest: { paddingVertical: 9, paddingHorizontal: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
   suggestT: { color: c.text, fontSize: 13.5 },
