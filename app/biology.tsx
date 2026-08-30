@@ -272,7 +272,7 @@ export default function BiologyMode() {
           <View style={{ flex: 1 }} />
           {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
           <TouchableOpacity style={s.eyeBtn} onPress={() => setCustomising(true)}>
-            <Text style={[s.eyeTxt, { fontSize: 24 }]}>⚙︎</Text>
+            <Text style={s.eyeTxt}>⚙︎</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/data-chat?mode=biology' as any)}>
             <Text style={s.eyeTxt}>💬</Text>
@@ -372,7 +372,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   loadCardTxt: { color: c.textSub, fontSize: 13, textAlign: 'center' },
   eyeBtn:    { paddingVertical: 5, paddingHorizontal: 8, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
   eyeBtnOff: { borderColor: c.accent },
-  eyeTxt:    { color: c.text, fontSize: 18, fontWeight: '600' },
+  eyeTxt:    { color: c.text, fontSize: 20, fontWeight: '600' },
   eyeTxtOff: { color: c.accent },
   compRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
   compBar:   { flex: 1, height: 14, borderRadius: 5, overflow: 'hidden', flexDirection: 'row', backgroundColor: c.surfaceAlt },
