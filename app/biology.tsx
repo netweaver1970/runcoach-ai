@@ -16,7 +16,7 @@ const CAT_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981',
 const CAT_ICON: Record<string, string> = { medical: '🩺', life: '🎉', travel: '✈️', holiday: '🏖️', other: '📌' };
 const SERIES: Record<string, string> = { weight: '#3b82f6', bodyfat: '#f59e0b', lean: '#10b981', bpSys: '#ef4444', bpDia: '#8b5cf6' };
 
-const CH_H = 128, PAD_L = 34, PAD_R = 10, PAD_T = 8, PAD_B = 16;
+const CH_H = 104, PAD_L = 34, PAD_R = 10, PAD_T = 6, PAD_B = 14;
 const monthYear = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 const labelAt = (t: number, months: number) => months > 12
   ? new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
@@ -146,7 +146,7 @@ export default function BiologyMode() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const innerW = width - 32 - 24;
+  const innerW = width - 24 - 20;
   const [range, setRange] = useState<Range>('6M');
   const [offset, setOffset] = useState(0);            // periods shifted back (0 = current)
   const [cursorTime, setCursorTime] = useState<number | null>(null);   // coupled cursor across all charts
@@ -216,22 +216,18 @@ export default function BiologyMode() {
           <Text style={s.cardTitle}>Fat vs lean change</Text>
           <Text style={[s.latest, { color: comp.dW <= 0 ? SERIES.lean : c.textSub }]}>{sgn(comp.dW)} kg</Text>
         </View>
-        <Text style={s.compSub}>{monthYear(comp.fromT)} → {monthYear(comp.toT)} · of your {sgn(comp.dW)} kg: <Text style={{ color: SERIES.bodyfat, fontWeight: '700' }}>fat {sgn(comp.dFat)} kg</Text>, <Text style={{ color: SERIES.lean, fontWeight: '700' }}>lean {sgn(comp.dLean)} kg</Text></Text>
         <View style={s.compRow}>
           <View style={s.compBar}>
             <View style={{ flex: compFatW, backgroundColor: SERIES.bodyfat }} />
             <View style={{ flex: compLeanW, backgroundColor: SERIES.lean }} />
           </View>
         </View>
-        {comp.dW < -0.3 && comp.dLean < -0.2 && leanShare > 0.25 && (
-          <Text style={s.compWarn}>⚠ {Math.round(leanShare * 100)}% of the loss is lean mass — protect it with protein (~1.6 g/kg) + resistance work.</Text>
-        )}
-        {comp.dW < -0.3 && !(comp.dLean < -0.2 && leanShare > 0.25) && (
-          <Text style={[s.compSub, { color: SERIES.lean }]}>Good — the loss is mostly fat, lean largely preserved.</Text>
-        )}
-        {comp.dW >= -0.3 && comp.dFat < -0.2 && comp.dLean > 0.2 && (
-          <Text style={[s.compSub, { color: SERIES.lean }]}>Recomposition — fat down, lean up. Ideal.</Text>
-        )}
+        <View style={s.compLegend}>
+          <Text style={[s.compVal, { color: SERIES.bodyfat }]}>fat {sgn(comp.dFat)} kg</Text>
+          <Text style={[s.compVal, { color: SERIES.lean }]}>lean {sgn(comp.dLean)} kg</Text>
+          <View style={{ flex: 1 }} />
+          <Text style={s.compRange}>{monthYear(comp.fromT)} → {monthYear(comp.toT)}</Text>
+        </View>
       </View>
     ) : null,
   };
@@ -261,7 +257,7 @@ export default function BiologyMode() {
           <View style={{ flex: 1 }} />
           {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
           <TouchableOpacity style={s.eyeBtn} onPress={() => setCustomising(true)}>
-            <Text style={s.eyeTxt}>⚙︎</Text>
+            <Text style={[s.eyeTxt, { fontSize: 24 }]}>⚙︎</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/data-chat?mode=biology' as any)}>
             <Text style={s.eyeTxt}>💬</Text>
@@ -295,7 +291,7 @@ export default function BiologyMode() {
         )}
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 48 }}>
+      <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
         {loading && <View style={s.loadCard}><ActivityIndicator color={c.accent} /><Text style={s.loadCardTxt}>Loading your full history from Apple Health…</Text></View>}
 
         {!loading && rep && !rep.hasAnyData && (
@@ -343,7 +339,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   navTxt:    { color: c.text, fontWeight: '700', fontSize: 15 },
   navTxtOff: { color: c.textFaint },
   navLabel:  { color: c.textSub, fontSize: 12, fontWeight: '600' },
-  card:      { backgroundColor: c.surface, borderRadius: 16, padding: 12, borderWidth: 1, borderColor: c.border, marginBottom: 12 },
+  card:      { backgroundColor: c.surface, borderRadius: 14, padding: 10, borderWidth: 1, borderColor: c.border, marginBottom: 8 },
   cardHead:  { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 2 },
   cardTitle: { color: c.text, fontSize: 15, fontWeight: '700' },
   latest:    { fontSize: 15, fontWeight: '800', marginLeft: 8 },
@@ -363,8 +359,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   eyeBtnOff: { borderColor: c.accent },
   eyeTxt:    { color: c.text, fontSize: 18, fontWeight: '600' },
   eyeTxtOff: { color: c.accent },
-  compRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
-  compBar:   { flex: 1, height: 16, borderRadius: 5, overflow: 'hidden', flexDirection: 'row', backgroundColor: c.surfaceAlt },
+  compRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
+  compBar:   { flex: 1, height: 14, borderRadius: 5, overflow: 'hidden', flexDirection: 'row', backgroundColor: c.surfaceAlt },
+  compLegend:{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
+  compVal:   { fontSize: 12.5, fontWeight: '800' },
+  compRange: { color: c.textFaint, fontSize: 11, fontWeight: '600' },
   sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
   sheet:     { backgroundColor: c.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 34, maxHeight: '92%' },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
