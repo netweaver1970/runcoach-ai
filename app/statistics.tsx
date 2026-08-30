@@ -993,6 +993,28 @@ export default function StatisticsScreen() {
           pts2={wt} color2="#a855f7" y2fmt={(v) => v.toFixed(1)} y2label="kg" />
       </View>
     ); })() : null,
+    ecn: (() => {
+      // Weight-adjusted EC = raw EC × body-weight-at-run. Since power ∝ mass, EC = speed÷power ∝ 1/mass, so
+      // EC×mass cancels the mass term → a genuinely weight-independent economy signal. Skip runs with no
+      // weigh-in within ±45 d (can't normalise them).
+      const p = ef.filter(x => x.ec > 0);
+      if (p.length < 2 || wt.length < 2) return null;
+      const nearW = (t: number) => { let best = wt[0], bd = Infinity; for (const w of wt) { const d = Math.abs(w.t - t); if (d < bd) { bd = d; best = w; } } return bd <= 45 * 86_400_000 ? best.v : null; };
+      const pts = p.map(x => { const w = nearW(tOf(x.date)); return w ? { t: tOf(x.date), v: x.ec * w, color: x.aerobic ? '#14b8a6' : '#cbd5e1' } : null; })
+        .filter(Boolean) as { t: number; v: number; color: string }[];
+      if (pts.length < 2) return null;
+      const d = pts[pts.length - 1].v - pts[0].v;
+      return (
+        <View style={s.card}>
+          <CardHead title="Economy (weight-adjusted)">
+            Speed ÷ power-per-kg — i.e. raw EC × body weight, which cancels the mass term (watch/pod power ∝ your weight). THIS is the economy signal to trust across a weight change: rising = a genuine efficiency gain, not just a lighter body inflating raw EC.
+            {' '}Grey line = trend. Latest {pts[pts.length - 1].v.toFixed(2)} ({(d >= 0 ? '+' : '') + d.toFixed(2)} over the window).
+          </CardHead>
+          <TChart innerW={innerW} t0={t0} t1={t1} color="#14b8a6" events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
+            pts={pts} />
+        </View>
+      );
+    })(),
     se: ef.filter(p => p.se > 0).length >= 2 ? (() => { const p = ef.filter(x => x.se > 0); return (
       <View style={s.card}>
         <CardHead title="Speed Efficiency (SE)">
