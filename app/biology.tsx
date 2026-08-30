@@ -156,6 +156,7 @@ export default function BiologyMode() {
   // Customise sheet: which cards show, in what order (persisted). Reorder is drag-based (shared ReorderList).
   const [layout, setLayout] = useState<BioCard[]>(DEFAULT_BIO_LAYOUT);
   const [customising, setCustomising] = useState(false);
+  const [dragActive, setDragActive] = useState(false);   // freeze the sheet's ScrollView mid-drag
   useEffect(() => { loadBioLayout().then(setLayout); }, []);
   const commitLayout = useCallback((next: BioCard[]) => { setLayout(next); saveBioLayout(next); }, []);
 
@@ -328,7 +329,9 @@ export default function BiologyMode() {
               <TouchableOpacity onPress={() => setCustomising(false)}><Text style={s.sheetDone}>Done</Text></TouchableOpacity>
             </View>
             <Text style={s.sheetHint}>Drag ≡ to reorder · switch to show or hide</Text>
-            <ReorderList items={layout} titleOf={(id) => BIO_CARD_TITLES[id as BioCardId]} onCommit={commitLayout} />
+            <ScrollView style={{ flexShrink: 1 }} scrollEnabled={!dragActive} showsVerticalScrollIndicator keyboardShouldPersistTaps="handled">
+              <ReorderList items={layout} titleOf={(id) => BIO_CARD_TITLES[id as BioCardId]} onCommit={commitLayout} onDragActive={setDragActive} />
+            </ScrollView>
           </View>
         </View>
       </Modal>

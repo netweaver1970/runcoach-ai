@@ -8,12 +8,14 @@ import { View, Text, Switch, PanResponder, Animated, StyleSheet } from 'react-na
 import { useThemedStyles, Palette } from './theme';
 
 export interface ReorderItem { id: string; on: boolean }
-export const REORDER_ROW_H = 54;
+export const REORDER_ROW_H = 46;
 
-export function ReorderList<T extends ReorderItem>({ items, titleOf, onCommit }: {
+export function ReorderList<T extends ReorderItem>({ items, titleOf, onCommit, onDragActive }: {
   items: T[]; titleOf: (id: string) => string; onCommit: (next: T[]) => void;
+  onDragActive?: (active: boolean) => void;   // parent disables its ScrollView while a drag is in progress
 }) {
   const rs = useThemedStyles(makeReorder);
+  const onDragActiveRef = useRef(onDragActive); onDragActiveRef.current = onDragActive;
   const [order, setOrder] = useState<T[]>(items);
   // Re-seed only when the incoming set genuinely differs (ignores our own committed round-trips, which are
   // byte-identical to the internal order and would otherwise fight an in-flight drag).
@@ -44,6 +46,7 @@ export function ReorderList<T extends ReorderItem>({ items, titleOf, onCommit }:
     const idx = arr.findIndex(x => x.id === id);
     if (idx >= 0) Animated.timing(tops.get(id)!, { toValue: idx * REORDER_ROW_H, duration: 140, useNativeDriver: false }).start();
     setDragId(null);
+    onDragActiveRef.current?.(false);   // re-enable the parent ScrollView
     onCommit(arr);
   };
 
@@ -61,6 +64,7 @@ export function ReorderList<T extends ReorderItem>({ items, titleOf, onCommit }:
       onPanResponderGrant: () => {
         dragStartY.current = orderRef.current.findIndex(x => x.id === id) * REORDER_ROW_H;
         setDragId(id);
+        onDragActiveRef.current?.(true);   // freeze the parent ScrollView so it can't steal the drag
       },
       onPanResponderMove: (_e, g) => {
         // Live Y is anchored to the grab slot + gesture delta — NOT the row's live index, which changes as we
