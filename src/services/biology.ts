@@ -305,7 +305,16 @@ export function invalidateBiologyReport() { _bioMemo = null; }
 function cleanReadings(pts: BioPoint[], relTol: number): BioPoint[] {
   const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
   const hourOf = (iso: string) => iso.length <= 10 ? 8 : new Date(iso).getHours();   // date-only → treat as morning
-  let m = pts.filter(p => { const h = hourOf(p.date); return h >= 2 && h < 10; });
+  const isMorning = (p: BioPoint) => { const h = hourOf(p.date); return h >= 2 && h < 10; };
+  // PREFER morning weigh-ins (diurnal water swings distort weight/BF%), but do it LOCALLY: keep a non-morning
+  // reading when there is NO morning reading within ±3 days of it. The old global filter dropped EVERY
+  // non-morning reading as soon as ≥3 morning ones existed — silently deleting years of early data (e.g. 2022
+  // evening weigh-ins), which collapsed the fat/lean window to just the recent morning-logging era.
+  let m = pts.filter(p => {
+    if (isMorning(p)) return true;
+    const t = tt(p.date);
+    return !pts.some(q => isMorning(q) && Math.abs(tt(q.date) - t) <= 3 * 86_400_000);
+  });
   if (m.length < 3) m = pts.slice();
   m.sort((a, b) => tt(a.date) - tt(b.date));
   const med = (arr: number[]) => { const s = [...arr].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
@@ -326,7 +335,7 @@ export function compositionChange(weightRaw: BioPoint[], fatRaw: BioPoint[], t0:
   const fat    = cleanReadings(fatRaw, 0.15);      // BIA fat% is noisier
   if (weight.length < 1 || fat.length < 2) return null;
   const tt = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
-  const nearestW = (t: number) => { let best: BioPoint | null = null, bd = Infinity; for (const p of weight) { const d = Math.abs(tt(p.date) - t); if (d < bd) { bd = d; best = p; } } return bd <= 10 * 86_400_000 ? best : null; };
+  const nearestW = (t: number) => { let best: BioPoint | null = null, bd = Infinity; for (const p of weight) { const d = Math.abs(tt(p.date) - t); if (d < bd) { bd = d; best = p; } } return bd <= 30 * 86_400_000 ? best : null; };   // ±30d — early data is sparse (BF% + weigh-in not always same-day)
   const paired = fat
     .filter(f => tt(f.date) >= t0 && tt(f.date) <= t1)
     .map(f => { const w = nearestW(tt(f.date)); if (!w) return null; const fatMass = w.value * f.value / 100; return { t: tt(f.date), w: w.value, fatPct: f.value, fatMass, leanMass: w.value - fatMass }; })
