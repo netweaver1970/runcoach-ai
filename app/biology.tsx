@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, PanResponder, Modal } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
@@ -9,9 +9,9 @@ import { BioCard, BioCardId, BIO_CARD_TITLES, DEFAULT_BIO_LAYOUT, loadBioLayout,
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type Range = '1M' | '3M' | '6M' | '1Y' | '5Y' | '10Y';
-const RANGES: Range[] = ['1M', '3M', '6M', '1Y', '5Y', '10Y'];
-const RANGE_MONTHS: Record<Range, number> = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12, '5Y': 60, '10Y': 120 };
+type Range = '1M' | '3M' | '6M' | '1Y' | '5Y' | '10Y' | 'All';
+const RANGES: Range[] = ['1M', '3M', '6M', '1Y', '5Y', '10Y', 'All'];
+const RANGE_MONTHS: Record<Range, number> = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12, '5Y': 60, '10Y': 120, 'All': 0 };
 const CAT_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981', travel: '#3b82f6', holiday: '#f59e0b', other: '#9ca3af' };
 const CAT_ICON: Record<string, string> = { medical: '🩺', life: '🎉', travel: '✈️', holiday: '🏖️', other: '📌' };
 const SERIES: Record<string, string> = { weight: '#3b82f6', bodyfat: '#f59e0b', lean: '#10b981', bpSys: '#ef4444', bpDia: '#8b5cf6' };
@@ -159,10 +159,25 @@ export default function BiologyMode() {
   useEffect(() => { loadBioLayout().then(setLayout); }, []);
   const commitLayout = useCallback((next: BioCard[]) => { setLayout(next); saveBioLayout(next); }, []);
 
-  const months = RANGE_MONTHS[range];
+  // Earliest reading across every metric (+CTL) — the left edge for the 'All' range.
+  const earliest = useMemo(() => {
+    if (!rep) return null;
+    const p2 = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
+    let min = Infinity;
+    for (const m of rep.metrics) for (const p of m.points) { const t = p2(p.date); if (t < min) min = t; }
+    for (const p of rep.ctl) { const t = p2(p.date); if (t < min) min = t; }
+    return Number.isFinite(min) ? min : null;
+  }, [rep]);
+
+  // 'All' spans earliest→now (no sliding window); the fixed ranges are a window shifted back by `offset`.
+  const isAll = range === 'All';
+  const now = Date.now();
+  const months = isAll
+    ? Math.max(1, Math.ceil((now - (earliest ?? now - 180 * 86_400_000)) / (30 * 86_400_000)))
+    : RANGE_MONTHS[range];
   const spanMs = months * 30 * 86_400_000;
-  const t1 = Date.now() - offset * spanMs;
-  const t0 = t1 - spanMs;
+  const t1 = isAll ? now : now - offset * spanMs;
+  const t0 = isAll ? (earliest ?? now - spanMs) : t1 - spanMs;
 
   useEffect(() => { requestPermissions().catch(() => {}); }, []);
   useEffect(() => { setCursorTime(null); }, [range, offset]);
@@ -193,7 +208,7 @@ export default function BiologyMode() {
             <Text key={m.key} style={[s.latest, { color: SERIES[m.key] }]}>{m.latest}{m.unit === '%' ? '%' : ` ${m.unit}`}</Text>
           ))}
         </View>
-        <BioChart lines={lines} t0={t0} t1={t1} ctl={rep!.ctl} events={showEvents ? rep!.events : []} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
+        <BioChart lines={lines} t0={t0} t1={t1} ctl={showEvents ? rep!.ctl : []} events={showEvents ? rep!.events : []} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
       </View>
     );
   };
@@ -263,7 +278,7 @@ export default function BiologyMode() {
             <Text style={s.eyeTxt}>💬</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/labs' as any)}>
-            <Text style={s.eyeTxt}>Labs</Text>
+            <Text style={s.eyeTxt}>🧪</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} disabled={loading} onPress={() => load(true)}>
             <Text style={[s.eyeTxt, loading && s.eyeTxtOff]}>↻</Text>
@@ -273,12 +288,12 @@ export default function BiologyMode() {
           </TouchableOpacity>
         </View>
         <View style={s.tabs}>{RANGES.map(r => (
-          <TouchableOpacity key={r} onPress={() => setRange(r)} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>
+          <TouchableOpacity key={r} onPress={() => { setRange(r); setOffset(0); }} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>
         ))}</View>
         <View style={s.navRow}>
-          <TouchableOpacity style={s.navBtn} onPress={() => setOffset(o => o + 1)}><Text style={s.navTxt}>◀ Prev</Text></TouchableOpacity>
+          <TouchableOpacity style={[s.navBtn, isAll && s.navBtnOff]} disabled={isAll} onPress={() => setOffset(o => o + 1)}><Text style={[s.navTxt, isAll && s.navTxtOff]}>◀ Prev</Text></TouchableOpacity>
           <Text style={s.navLabel}>{monthYear(t0)} – {monthYear(t1)}</Text>
-          <TouchableOpacity style={[s.navBtn, offset === 0 && s.navBtnOff]} disabled={offset === 0} onPress={() => setOffset(o => Math.max(0, o - 1))}><Text style={[s.navTxt, offset === 0 && s.navTxtOff]}>Next ▶</Text></TouchableOpacity>
+          <TouchableOpacity style={[s.navBtn, (offset === 0 || isAll) && s.navBtnOff]} disabled={offset === 0 || isAll} onPress={() => setOffset(o => Math.max(0, o - 1))}><Text style={[s.navTxt, (offset === 0 || isAll) && s.navTxtOff]}>Next ▶</Text></TouchableOpacity>
         </View>
         {rep && rep.hasAnyData && showEvents && (
           <View style={s.eventBar}>
@@ -324,7 +339,7 @@ export default function BiologyMode() {
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:    { flex: 1, backgroundColor: c.bg },
   header:    { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, minHeight: 52, backgroundColor: c.bg, borderBottomWidth: 1, borderColor: c.border },
-  headerTop: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 },
+  headerTop: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
   homeBtn:   { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
   homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 20 },
   hTitle:    { color: c.text, fontSize: 18, fontWeight: '800' },
@@ -355,7 +370,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   loadTxt:   { color: c.textSub, fontSize: 12, fontWeight: '600' },
   loadCard:  { backgroundColor: c.surface, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: c.border, alignItems: 'center', gap: 10, marginTop: 8 },
   loadCardTxt: { color: c.textSub, fontSize: 13, textAlign: 'center' },
-  eyeBtn:    { paddingVertical: 5, paddingHorizontal: 10, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
+  eyeBtn:    { paddingVertical: 5, paddingHorizontal: 8, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border },
   eyeBtnOff: { borderColor: c.accent },
   eyeTxt:    { color: c.text, fontSize: 18, fontWeight: '600' },
   eyeTxtOff: { color: c.accent },
