@@ -985,7 +985,7 @@ export default function StatisticsScreen() {
         <CardHead title="Running Economy (EC)">
           Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy (and heat-proof: no 🟠 flags needed here). Rising = more speed per watt.
           {' '}Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).
-          {wt.length >= 2 ? '  Purple = body weight (right axis) — if EC falls as weight falls, it\'s the power-from-mass estimate, not a real economy loss.' : ''}
+          {wt.length >= 2 ? '  Purple = body weight (right axis) — if EC RISES as weight falls, it\'s the power-from-mass estimate (power ∝ mass), not a real economy gain.' : ''}
           {p.some(x => x.repaired) ? `  ${p.filter(x => x.repaired).length} run${p.filter(x => x.repaired).length === 1 ? '' : 's'} had stationary time (unpaused stops) removed from the work averages before plotting.` : ''}
         </CardHead>
         <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
