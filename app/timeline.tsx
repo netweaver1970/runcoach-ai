@@ -273,6 +273,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   suppTextOn: { color: c.onAccent },
   suppAdh: { fontSize: 11, fontWeight: '700', color: c.textFaint },
   suppAdd: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 18, borderWidth: 1, borderColor: c.accent, borderStyle: 'dashed' },
-  suppAddText: { fontSize: 14, fontWeight: '700', color: c.accent },
+  suppAddText: { fontSize: 15, fontWeight: '700', color: c.accent },
   suppHint: { fontSize: 11, color: c.textFaint, marginTop: 10 },
 });

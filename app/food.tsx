@@ -32,7 +32,7 @@ export default function FoodMode() {
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:    { flex: 1, backgroundColor: c.bg },
   homeBtn:   { alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, marginBottom: 18 },
-  homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 14 },
+  homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 16 },
   emoji:     { fontSize: 44, textAlign: 'center', marginTop: 8 },
   h1:        { color: c.text, fontSize: 26, fontWeight: '800', textAlign: 'center', marginTop: 6 },
   sub:       { color: c.textSub, fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: 8, marginBottom: 20 },

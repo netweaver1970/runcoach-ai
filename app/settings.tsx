@@ -2115,7 +2115,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, marginBottom: 8,
   },
   providerSelectText: { fontSize: 15, fontWeight: '600', color: c.text },
-  providerSelectChevron: { fontSize: 11, color: c.textSub },
+  providerSelectChevron: { fontSize: 16, color: c.textSub },
   providerMenu: {
     backgroundColor: c.surface, borderRadius: 8, borderWidth: 1, borderColor: c.border,
     marginBottom: 10, overflow: 'hidden',

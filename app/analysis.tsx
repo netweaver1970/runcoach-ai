@@ -187,7 +187,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     borderColor: c.border,
   },
   actionBtnActive: { backgroundColor: c.accent, borderColor: c.accent },
-  actionBtnText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
+  actionBtnText: { fontSize: 15, color: c.textSub, fontWeight: '600' },
   actionBtnActiveText: { color: '#fff' },
   meta: { fontSize: 12, color: c.textFaint, marginBottom: 10, textAlign: 'center' },
   reportCard: {

@@ -491,7 +491,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   saveBtn:         { backgroundColor: ACCENT, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10 },
   saveBtnDisabled: { backgroundColor: t.border },
-  saveBtnText:     { color: '#fff', fontWeight: '700', fontSize: 14 },
+  saveBtnText:     { color: '#fff', fontWeight: '700', fontSize: 15 },
 
   resultsCard: {
     backgroundColor: t.surface, borderRadius: 12, padding: 14, marginBottom: 14,

@@ -167,7 +167,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   actions: { flexDirection: 'row', gap: 10 },
   action: { flex: 1, backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
   actionAlt: { backgroundColor: 'transparent', borderWidth: 1, borderColor: c.accent },
-  actionText: { color: c.onAccent, fontSize: 14, fontWeight: '700' },
+  actionText: { color: c.onAccent, fontSize: 15, fontWeight: '700' },
 
   center: { alignItems: 'center', gap: 10, marginTop: 40 },
   muted: { color: c.textSub, fontSize: 13 },

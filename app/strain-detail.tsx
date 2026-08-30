@@ -664,7 +664,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   adjustRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' },
   adjustLabel: { fontSize: 12, color: c.textSub, fontWeight: '600' },
   adjustBtn:   { backgroundColor: c.surface, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: c.border },
-  adjustBtnText: { fontSize: 14, fontWeight: '800', color: c.text },
+  adjustBtnText: { fontSize: 18, fontWeight: '800', color: c.text },
   adjustVal:   { fontSize: 13, fontWeight: '700', color: c.text, minWidth: 44, textAlign: 'center' },
   adjustReset: { fontSize: 12, color: c.accent, fontWeight: '600' },
   projStrain:  { fontSize: 13, fontWeight: '700', marginTop: 8 },

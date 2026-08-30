@@ -159,7 +159,7 @@ const styles = (c: Palette) => StyleSheet.create({
   center:  { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: c.bg },
   lede:    { color: c.textSub, fontSize: 13, lineHeight: 19, marginBottom: 14 },
   addBtn:  { backgroundColor: c.accent, borderRadius: 12, paddingVertical: 13, alignItems: 'center', marginBottom: 14 },
-  addTxt:  { color: '#fff', fontWeight: '700', fontSize: 14 },
+  addTxt:  { color: '#fff', fontWeight: '700', fontSize: 15 },
   card:    { backgroundColor: c.surface, borderRadius: 14, padding: 14, marginBottom: 10 },
   cardHead:{ flexDirection: 'row', alignItems: 'center', gap: 8 },
   kindDot: { width: 10, height: 10, borderRadius: 5 },

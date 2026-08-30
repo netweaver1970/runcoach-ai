@@ -237,7 +237,7 @@ const styles = (c: Palette) => StyleSheet.create({
   cardTitle: { color: c.text, fontSize: 15, fontWeight: '700', marginBottom: 10 },
   note:      { color: c.textSub, fontSize: 11.5, lineHeight: 17, marginTop: 12 },
   cta:       { marginTop: 14, backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
-  ctaTxt:    { color: '#fff', fontWeight: '700', fontSize: 14 },
+  ctaTxt:    { color: '#fff', fontWeight: '700', fontSize: 15 },
   legend:    { flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 8 },
   // race-day readout
   rdRow:     { flexDirection: 'row', gap: 8 },
@@ -251,8 +251,8 @@ const styles = (c: Palette) => StyleSheet.create({
   tblRow:    { flexDirection: 'row', alignItems: 'center', paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
   td:        { flex: 1, color: c.text, fontSize: 14, textAlign: 'right' },
   dot:       { width: 8, height: 8, borderRadius: 4 },
-  phaseTxt:  { fontSize: 12.5, fontWeight: '700' },
+  phaseTxt:  { fontSize: 14, fontWeight: '700' },
   exportBtn:  { backgroundColor: c.surface, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, paddingVertical: 13, alignItems: 'center', marginTop: 16 },
-  exportTxt:  { color: c.accent, fontWeight: '700', fontSize: 14 },
+  exportTxt:  { color: c.accent, fontWeight: '700', fontSize: 15 },
   exportHint: { color: c.textFaint, fontSize: 11, lineHeight: 16, marginTop: 8, paddingHorizontal: 4 },
 });

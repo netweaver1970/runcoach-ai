@@ -167,7 +167,7 @@ const statusStyles = (c: Palette) => StyleSheet.create({
   pillText: { fontSize: 14, fontWeight: '700', color: c.text },
   pillTextAlert: { color: c.accent },
   tlBtn: { backgroundColor: c.surface, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: c.border, justifyContent: 'center' },
-  tlText: { fontSize: 14, fontWeight: '600', color: c.textSub },
+  tlText: { fontSize: 15, fontWeight: '600', color: c.textSub },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 24 },
   sheet: { backgroundColor: c.surface, borderRadius: 16, padding: 16 },
   sheetTitle: { fontSize: 16, fontWeight: '700', color: c.text, marginBottom: 10 },
@@ -1775,7 +1775,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     borderRadius: 8, borderWidth: 1, borderColor: c.border,
     backgroundColor: c.surface, paddingHorizontal: 8, paddingVertical: 3,
   },
-  monthsBtnText: { fontSize: 11, color: c.textSub, fontWeight: '600' },
+  monthsBtnText: { fontSize: 14, color: c.textSub, fontWeight: '600' },
 
   wellnessCard: {
     backgroundColor: c.surface, margin: 12, marginBottom: 8, borderRadius: 16,

@@ -175,7 +175,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     flex: 1, backgroundColor: c.surface, borderRadius: 8, paddingVertical: 9,
     alignItems: 'center', borderWidth: 1, borderColor: c.border,
   },
-  actionBtnText: { fontSize: 13, color: c.textSub, fontWeight: '600' },
+  actionBtnText: { fontSize: 15, color: c.textSub, fontWeight: '600' },
 
   reportCard: {
     backgroundColor: c.surface, borderRadius: 14, padding: 16,
