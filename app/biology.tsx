@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, PanResponder } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, PanResponder, Modal } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { requestPermissions } from '../src/services/healthkit';
 import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
+import { ReorderList } from '../src/ReorderList';
+import { BioCard, BioCardId, BIO_CARD_TITLES, DEFAULT_BIO_LAYOUT, loadBioLayout, saveBioLayout } from '../src/services/bioLayout';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -151,6 +153,11 @@ export default function BiologyMode() {
   const [showEvents, setShowEvents] = useState(false);                 // default OFF; toggle 👁 to overlay events
   const [rep, setRep] = useState<BiologyReport | null>(null);
   const [loading, setLoading] = useState(true);
+  // Customise sheet: which cards show, in what order (persisted). Reorder is drag-based (shared ReorderList).
+  const [layout, setLayout] = useState<BioCard[]>(DEFAULT_BIO_LAYOUT);
+  const [customising, setCustomising] = useState(false);
+  useEffect(() => { loadBioLayout().then(setLayout); }, []);
+  const commitLayout = useCallback((next: BioCard[]) => { setLayout(next); saveBioLayout(next); }, []);
 
   const months = RANGE_MONTHS[range];
   const spanMs = months * 30 * 86_400_000;
@@ -173,18 +180,61 @@ export default function BiologyMode() {
   useEffect(() => load(), [load]);
 
   const byKey = (k: string): BioMetric | undefined => rep?.metrics.find(m => m.key === k);
-  const chartCards: { title: string; keys: string[] }[] = [
-    { title: 'Weight', keys: ['weight'] },
-    { title: 'Body fat %', keys: ['bodyfat'] },
-    { title: 'Lean mass', keys: ['lean'] },
-    { title: 'Blood pressure', keys: ['bpSys', 'bpDia'] },
-  ];
+  // One metric-chart card (returns null when no data in the loaded history, so the card just hides).
+  const renderChartCard = (id: BioCardId, keys: string[]): React.ReactNode => {
+    if (!keys.some(k => (byKey(k)?.points.length ?? 0) > 0)) return null;
+    const metrics = keys.map(byKey).filter(Boolean) as BioMetric[];
+    const lines = metrics.filter(m => m.points.length > 0).map(m => ({ key: m.key, label: m.label, points: m.points }));
+    return (
+      <View style={s.card}>
+        <View style={s.cardHead}>
+          <Text style={s.cardTitle}>{BIO_CARD_TITLES[id]}</Text>
+          {metrics.map(m => m.latest != null && (
+            <Text key={m.key} style={[s.latest, { color: SERIES[m.key] }]}>{m.latest}{m.unit === '%' ? '%' : ` ${m.unit}`}</Text>
+          ))}
+        </View>
+        <BioChart lines={lines} t0={t0} t1={t1} ctl={rep!.ctl} events={showEvents ? rep!.events : []} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
+      </View>
+    );
+  };
   const comp = rep && rep.hasAnyData ? compositionChange(byKey('weight')?.points ?? [], byKey('bodyfat')?.points ?? [], t0, t1) : null;
   const compShow = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) >= 0.3;   // only when there's a real move
   const compFatW = comp ? Math.abs(comp.dFat) : 1;    // true magnitudes → bar matches the numbers (no floor)
   const compLeanW = comp ? Math.abs(comp.dLean) : 1;
   const leanShare = comp && (Math.abs(comp.dFat) + Math.abs(comp.dLean)) > 0 ? Math.abs(comp.dLean) / (Math.abs(comp.dFat) + Math.abs(comp.dLean)) : 0;
   const sgn = (n: number) => (n > 0 ? '+' : '') + n;
+
+  // Each card keyed by id → rendered in the user's chosen order/enabled set (Customise sheet). Null = no data.
+  const cardNodes: Record<BioCardId, React.ReactNode> = {
+    weight:  renderChartCard('weight', ['weight']),
+    bodyfat: renderChartCard('bodyfat', ['bodyfat']),
+    lean:    renderChartCard('lean', ['lean']),
+    bp:      renderChartCard('bp', ['bpSys', 'bpDia']),
+    composition: (compShow && comp) ? (
+      <View style={s.card}>
+        <View style={s.cardHead}>
+          <Text style={s.cardTitle}>Fat vs lean change</Text>
+          <Text style={[s.latest, { color: comp.dW <= 0 ? SERIES.lean : c.textSub }]}>{sgn(comp.dW)} kg</Text>
+        </View>
+        <Text style={s.compSub}>{monthYear(comp.fromT)} → {monthYear(comp.toT)} · of your {sgn(comp.dW)} kg: <Text style={{ color: SERIES.bodyfat, fontWeight: '700' }}>fat {sgn(comp.dFat)} kg</Text>, <Text style={{ color: SERIES.lean, fontWeight: '700' }}>lean {sgn(comp.dLean)} kg</Text></Text>
+        <View style={s.compRow}>
+          <View style={s.compBar}>
+            <View style={{ flex: compFatW, backgroundColor: SERIES.bodyfat }} />
+            <View style={{ flex: compLeanW, backgroundColor: SERIES.lean }} />
+          </View>
+        </View>
+        {comp.dW < -0.3 && comp.dLean < -0.2 && leanShare > 0.25 && (
+          <Text style={s.compWarn}>⚠ {Math.round(leanShare * 100)}% of the loss is lean mass — protect it with protein (~1.6 g/kg) + resistance work.</Text>
+        )}
+        {comp.dW < -0.3 && !(comp.dLean < -0.2 && leanShare > 0.25) && (
+          <Text style={[s.compSub, { color: SERIES.lean }]}>Good — the loss is mostly fat, lean largely preserved.</Text>
+        )}
+        {comp.dW >= -0.3 && comp.dFat < -0.2 && comp.dLean > 0.2 && (
+          <Text style={[s.compSub, { color: SERIES.lean }]}>Recomposition — fat down, lean up. Ideal.</Text>
+        )}
+      </View>
+    ) : null,
+  };
 
   // ONE shared EVENT row (rendered once under the nav bar). Event titles were repeating on every graph
   // (1↔2 lines each) → the whole screen jumped; here the event shows a single time. The per-graph cursor
@@ -210,6 +260,9 @@ export default function BiologyMode() {
           <Text style={s.hTitle}>Biology</Text>
           <View style={{ flex: 1 }} />
           {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
+          <TouchableOpacity style={s.eyeBtn} onPress={() => setCustomising(true)}>
+            <Text style={s.eyeTxt}>⚙︎</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/data-chat?mode=biology' as any)}>
             <Text style={s.eyeTxt}>💬</Text>
           </TouchableOpacity>
@@ -251,50 +304,23 @@ export default function BiologyMode() {
           </View>
         )}
 
-        {!loading && rep && rep.hasAnyData && chartCards
-          .filter(card => card.keys.some(k => (byKey(k)?.points.length ?? 0) > 0))
-          .map(card => {
-            const metrics = card.keys.map(byKey).filter(Boolean) as BioMetric[];
-            const lines = metrics.filter(m => m.points.length > 0).map(m => ({ key: m.key, label: m.label, points: m.points }));
-            return (
-              <View key={card.title} style={s.card}>
-                <View style={s.cardHead}>
-                  <Text style={s.cardTitle}>{card.title}</Text>
-                  {metrics.map(m => m.latest != null && (
-                    <Text key={m.key} style={[s.latest, { color: SERIES[m.key] }]}>{m.latest}{m.unit === '%' ? '%' : ` ${m.unit}`}</Text>
-                  ))}
-                </View>
-                <BioChart lines={lines} t0={t0} t1={t1} ctl={rep.ctl} events={showEvents ? rep.events : []} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
-              </View>
-            );
-          })}
-
-        {/* Fat vs lean change — where weight + body-fat both exist. Relevant on GLP-1: is the loss fat or lean? */}
-        {!loading && compShow && comp && (
-          <View style={s.card}>
-            <View style={s.cardHead}>
-              <Text style={s.cardTitle}>Fat vs lean change</Text>
-              <Text style={[s.latest, { color: comp.dW <= 0 ? SERIES.lean : c.textSub }]}>{sgn(comp.dW)} kg</Text>
-            </View>
-            <Text style={s.compSub}>{monthYear(comp.fromT)} → {monthYear(comp.toT)} · of your {sgn(comp.dW)} kg: <Text style={{ color: SERIES.bodyfat, fontWeight: '700' }}>fat {sgn(comp.dFat)} kg</Text>, <Text style={{ color: SERIES.lean, fontWeight: '700' }}>lean {sgn(comp.dLean)} kg</Text></Text>
-            <View style={s.compRow}>
-              <View style={s.compBar}>
-                <View style={{ flex: compFatW, backgroundColor: SERIES.bodyfat }} />
-                <View style={{ flex: compLeanW, backgroundColor: SERIES.lean }} />
-              </View>
-            </View>
-            {comp.dW < -0.3 && comp.dLean < -0.2 && leanShare > 0.25 && (
-              <Text style={s.compWarn}>⚠ {Math.round(leanShare * 100)}% of the loss is lean mass — protect it with protein (~1.6 g/kg) + resistance work.</Text>
-            )}
-            {comp.dW < -0.3 && !(comp.dLean < -0.2 && leanShare > 0.25) && (
-              <Text style={[s.compSub, { color: SERIES.lean }]}>Good — the loss is mostly fat, lean largely preserved.</Text>
-            )}
-            {comp.dW >= -0.3 && comp.dFat < -0.2 && comp.dLean > 0.2 && (
-              <Text style={[s.compSub, { color: SERIES.lean }]}>Recomposition — fat down, lean up. Ideal.</Text>
-            )}
-          </View>
-        )}
+        {!loading && rep && rep.hasAnyData &&
+          layout.filter(l => l.on).map(l => <React.Fragment key={l.id}>{cardNodes[l.id]}</React.Fragment>)}
       </ScrollView>
+
+      {/* Customise sheet — toggle + reorder cards (persisted) */}
+      <Modal visible={customising} animationType="slide" transparent onRequestClose={() => setCustomising(false)}>
+        <View style={s.sheetBackdrop}>
+          <View style={s.sheet}>
+            <View style={s.sheetHead}>
+              <Text style={s.sheetTitle}>Customise cards</Text>
+              <TouchableOpacity onPress={() => setCustomising(false)}><Text style={s.sheetDone}>Done</Text></TouchableOpacity>
+            </View>
+            <Text style={s.sheetHint}>Drag ≡ to reorder · switch to show or hide</Text>
+            <ReorderList items={layout} titleOf={(id) => BIO_CARD_TITLES[id as BioCardId]} onCommit={commitLayout} />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -339,6 +365,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   eyeTxtOff: { color: c.accent },
   compRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
   compBar:   { flex: 1, height: 16, borderRadius: 5, overflow: 'hidden', flexDirection: 'row', backgroundColor: c.surfaceAlt },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  sheet:     { backgroundColor: c.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 34, maxHeight: '92%' },
+  sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  sheetTitle: { fontSize: 17, fontWeight: '800', color: c.text },
+  sheetDone: { fontSize: 16, fontWeight: '700', color: c.accent },
+  sheetHint: { fontSize: 12, color: c.textSub, marginBottom: 10 },
   compSub:   { color: c.textSub, fontSize: 12, lineHeight: 18, marginTop: 8 },
   compWarn:  { color: '#f59e0b', fontSize: 12, lineHeight: 18, marginTop: 6, fontWeight: '600' },
 });
