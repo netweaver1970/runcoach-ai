@@ -94,8 +94,12 @@ enum WorkoutPusher {
     }
 
     let workout = build(spec)
-    let name = workout.displayName ?? "Day"
-    try await removeNamed(name)
+    // Clear EVERY previously-scheduled workout of ours before adding the new one. `scheduledWorkouts` is
+    // per-app so these are only ours, and in practice only today's is ever live (we always schedule at
+    // now+5min). Removing by NAME alone left stale entries — e.g. when a `remove` silently failed, or the
+    // name differed between the coach's plan and an adjusted re-synth — so the watch kept showing the OLD
+    // duration next to the new one. Remove-all guarantees the pushed (adjusted) workout is the only one.
+    await removeAllScheduled()
 
     let plan = WorkoutPlan(.custom(workout))
     let when = Calendar.current.dateComponents(
@@ -104,6 +108,12 @@ enum WorkoutPusher {
     )
     try await WorkoutScheduler.shared.schedule(plan, at: when)
     return true
+  }
+
+  // Remove EVERY workout we've scheduled (the list is per-app → all ours). Best-effort per entry.
+  static func removeAllScheduled() async {
+    let scheduled = await WorkoutScheduler.shared.scheduledWorkouts
+    for sw in scheduled { try? await WorkoutScheduler.shared.remove(sw.plan, at: sw.date) }
   }
 
   // Remove all currently-scheduled custom workouts whose display name matches.

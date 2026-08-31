@@ -65,8 +65,17 @@ final class WorkoutEngine: NSObject, ObservableObject {
     }
   }
 
+  // Clear a finished/failed session so the NEXT Start can build a fresh one. Without this, a session that
+  // failed to start (e.g. a transient HealthKit error) left `session` non-nil while `running` went false —
+  // so the Start button reappeared but every press hit the `session == nil` guard and silently no-op'd.
+  private func teardown() {
+    stopTicker()
+    session = nil; builder = nil; segs = []
+  }
+
   func start(activity: HKWorkoutActivityType) {
-    guard session == nil else { return }
+    if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
+    guard session == nil else { return }           // a genuinely running session → ignore a double-Start
     let cfg = HKWorkoutConfiguration()
     cfg.activityType = activity
     cfg.locationType = .outdoor
@@ -215,10 +224,13 @@ final class WorkoutEngine: NSObject, ObservableObject {
 extension WorkoutEngine: HKWorkoutSessionDelegate {
   func workoutSession(_ ws: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
                       from: HKWorkoutSessionState, date: Date) {
-    DispatchQueue.main.async { self.paused = (toState == .paused) }
+    DispatchQueue.main.async {
+      self.paused = (toState == .paused)
+      if toState == .ended { self.running = false; self.teardown() }   // ended (incl. by the system) → allow a fresh Start
+    }
   }
   func workoutSession(_ ws: HKWorkoutSession, didFailWithError error: Error) {
-    DispatchQueue.main.async { self.running = false }
+    DispatchQueue.main.async { self.running = false; self.paused = false; self.teardown() }
   }
 }
 
