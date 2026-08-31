@@ -23,7 +23,8 @@
         "NSLocationWhenInUseUsageDescription": "RunCoach AI uses your location to fetch the current weather so it can factor temperature and conditions into today's training recommendation.",
         "UIBackgroundModes": [
           "fetch",
-          "remote-notification"
+          "remote-notification",
+          "audio"
         ],
         "ITSAppUsesNonExemptEncryption": false,
         "UIDesignRequiresCompatibility": true,

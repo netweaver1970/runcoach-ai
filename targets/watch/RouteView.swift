@@ -3,6 +3,7 @@ import MapKit
 import CoreLocation
 import WatchKit
 import AVFoundation
+import WatchConnectivity
 
 // Route pushed from the phone (Wayfinder). Sent over the SAME WCSession channel as the KPI payload — the
 // watch tries a KPIPayload decode first, then this. Keep the field names in sync with watchRoute.ts.
@@ -21,14 +22,29 @@ struct RoutePayload: Codable {
   let workout: [RouteSeg]?    // structured intervals the run session steps through
 }
 
-// Shared speech: activates a .playback session (INTERRUPTS other audio like phone YouTube), speaks, then
-// deactivates with notifyOthers so that audio RESUMES — the Apple-Workout behaviour. One synth so cues queue.
+// Shared speech. Prefer the PHONE: forward each cue's text over WatchConnectivity and let the phone speak it
+// on ITS audio device (earbuds/BT), ducking music — the Apple-Workout behaviour the user wanted (watch audio
+// can't reach phone-paired earbuds). The phone replies `handled:true` only when it actually has an external
+// output; if it declines, or is unreachable, we speak on the WATCH (a .playback session that interrupts other
+// audio, then resumes). Haptics fire separately regardless of where the voice lands.
 final class SpeechCue: NSObject, AVSpeechSynthesizerDelegate {
   static let shared = SpeechCue()
   private let synth = AVSpeechSynthesizer()
   override init() { super.init(); synth.delegate = self }
   func say(_ s: String) {
     guard !s.isEmpty else { return }
+    let session = WCSession.default
+    if session.activationState == .activated && session.isReachable {
+      session.sendMessage(["cue": s],
+        replyHandler: { [weak self] reply in
+          if (reply["handled"] as? Bool) != true { DispatchQueue.main.async { self?.sayOnWatch(s) } }
+        },
+        errorHandler: { [weak self] _ in DispatchQueue.main.async { self?.sayOnWatch(s) } })
+    } else {
+      sayOnWatch(s)   // no phone reachable → the watch speaks (its own earbuds or speaker)
+    }
+  }
+  private func sayOnWatch(_ s: String) {
     try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt)   // no mix/duck → interrupts others
     try? AVAudioSession.sharedInstance().setActive(true)
     let u = AVSpeechUtterance(string: s); u.rate = AVSpeechUtteranceDefaultSpeechRate
