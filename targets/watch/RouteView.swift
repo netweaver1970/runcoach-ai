@@ -239,7 +239,7 @@ struct RouteView: View {
           mediaScreen().tag(2)         // ▸ pause / resume the audio you're listening to
         }
         .tabViewStyle(.page)
-        .navigationTitle(r.name)
+        .navigationTitle("")   // drop the run title → more room (back-swipe still works)
         .confirmationDialog("End run?", isPresented: $showEndConfirm, titleVisibility: .visible) {
           Button("Save & end") { engine.end(save: true) }
           Button("Discard", role: .destructive) { engine.end(save: false) }
@@ -335,7 +335,7 @@ struct RouteView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 4)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.bottom, 6).padding(.horizontal, 6)
+        .padding(.bottom, 18).padding(.horizontal, 6)   // sit just ABOVE the TabView page dots
       }
     }
     .overlay(alignment: .topTrailing) {
@@ -344,19 +344,7 @@ struct RouteView: View {
           Image(systemName: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
             .font(.system(size: 14)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
         }.buttonStyle(.plain)
-        Button { withAnimation { infoOn.toggle() } } label: {   // minimise/show the metrics strip
-          Image(systemName: infoOn ? "eye.fill" : "eye.slash.fill")
-            .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
-        }.buttonStyle(.plain)
-      }.padding(4)
-    }
-    .overlay(alignment: .topLeading) {
-      VStack(spacing: 6) {
-        Button { mapOn.toggle() } label: {
-          Image(systemName: mapOn ? "map.fill" : "map")
-            .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
-        }.buttonStyle(.plain)
-        if mapOn {
+        if mapOn {   // compass: heading-up ↔ north-up (between the speaker and eye)
           Button {
             headingUp.toggle()
             cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
@@ -366,7 +354,17 @@ struct RouteView: View {
               .font(.system(size: 14)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
           }.buttonStyle(.plain)
         }
+        Button { withAnimation { infoOn.toggle() } } label: {   // minimise/show the metrics strip
+          Image(systemName: infoOn ? "eye.fill" : "eye.slash.fill")
+            .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
+        }.buttonStyle(.plain)
       }.padding(4)
+    }
+    .overlay(alignment: .topLeading) {
+      Button { mapOn.toggle() } label: {
+        Image(systemName: mapOn ? "map.fill" : "map")
+          .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
+      }.buttonStyle(.plain).padding(4)
     }
     .onChange(of: store.turnDistM) {
       guard mapOn, engine.running else { return }
