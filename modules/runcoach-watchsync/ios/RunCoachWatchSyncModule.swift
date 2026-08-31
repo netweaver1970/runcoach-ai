@@ -73,16 +73,29 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
       }
     }
   }
-  private func speak(_ text: String) {
+  private func speakNow(_ text: String) {   // the cue handler has already activated the session
     guard !text.isEmpty else { return }
-    let sess = AVAudioSession.sharedInstance()
-    try? sess.setCategory(.playback, mode: .voicePrompt)   // NO .duckOthers → INTERRUPTS (pauses) music; it resumes on deactivate
-    try? sess.setActive(true)
     let u = AVSpeechUtterance(string: text); u.rate = AVSpeechUtteranceDefaultSpeechRate
     synth.speak(u)
   }
   func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
     if !s.isSpeaking { try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation]) }
+  }
+
+  // Pause/resume whatever the phone is playing, driven from the watch's Media screen. Activating a non-mixing
+  // playback session INTERRUPTS (pauses) the other app; deactivating with notifyOthers hands it back so it
+  // resumes — a manual lever for when a cue's auto-resume doesn't take.
+  private func handleMedia(_ dict: [String: Any]) {
+    guard let action = dict["media"] as? String else { return }
+    let sess = AVAudioSession.sharedInstance()
+    DispatchQueue.main.async {
+      if action == "pause" {
+        try? sess.setCategory(.playback, mode: .default)
+        try? sess.setActive(true)
+      } else {
+        try? sess.setActive(false, options: [.notifyOthersOnDeactivation])
+      }
+    }
   }
 
   // A run-start/end signal → forward to JS (the keep-alive). transferUserInfo wakes the phone even when
@@ -95,18 +108,25 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   func session(_ s: WCSession, activationDidCompleteWith st: WCSessionActivationState, error: Error?) {}
   func sessionDidBecomeInactive(_ s: WCSession) {}
   func sessionDidDeactivate(_ s: WCSession) { WCSession.default.activate() }
-  func session(_ s: WCSession, didReceiveUserInfo u: [String: Any]) { handleRun(u) }
-  func session(_ s: WCSession, didReceiveMessage m: [String: Any]) { handleRun(m) }
+  func session(_ s: WCSession, didReceiveUserInfo u: [String: Any]) { handleRun(u); handleMedia(u) }
+  func session(_ s: WCSession, didReceiveMessage m: [String: Any]) { handleRun(m); handleMedia(m) }
 
   // Run cue from the watch, WITH a reply so the watch knows whether we took it (→ stay silent) or not (→
   // speak on the watch). `handled: true` only when the phone has an external audio device to play it on.
   func session(_ s: WCSession, didReceiveMessage m: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-    handleRun(m)
+    handleRun(m); handleMedia(m)
     guard let cue = m["cue"] as? String else { replyHandler(["handled": false]); return }
+    // Activate our session FIRST — that routes audio to any CONNECTED earbuds, so currentRoute then reflects
+    // them. Checking BEFORE activation reported the built-in speaker while the buds sat idle, so the initial
+    // cue wrongly fell back to the watch until music was already playing (the bug the user hit).
+    let sess = AVAudioSession.sharedInstance()
+    try? sess.setCategory(.playback, mode: .voicePrompt)   // no duck → INTERRUPTS (pauses) other audio
+    try? sess.setActive(true)
     if hasExternalAudioOutput() {
-      DispatchQueue.main.async { self.speak(cue) }
+      DispatchQueue.main.async { self.speakNow(cue) }
       replyHandler(["handled": true])
     } else {
+      try? sess.setActive(false, options: [.notifyOthersOnDeactivation])   // no good phone output → let the watch speak
       replyHandler(["handled": false])
     }
   }

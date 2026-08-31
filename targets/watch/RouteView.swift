@@ -212,171 +212,41 @@ struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
   @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(followsHeading: true, fallback: .automatic)   // heading-up follow
-  @State private var panelUp = true                                                 // collapse the bottom panel
+  @State private var page = 1                                                       // 0 = controls · 1 = map (centre) · 2 = media
+  @State private var infoOn = true                                                  // map screen: show/hide the metrics strip (minimise)
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
   @State private var headingUp = true                                               // true = heading-up, false = north-up
-  @State private var pillHR: Bool? = nil                                            // collapsed metric pill: nil=auto, true=HR, false=power
   @AppStorage("autoPause") private var autoPause = false                            // pause when stationary
 
-  // Which metric the collapsed pill shows: manual tap override, else the segment's target (HR zone) — power if none.
-  private var pillShowsHR: Bool { pillHR ?? !engine.segZone.isEmpty }
   // Power tinted by the work target: blue = under, red = over, orange = in-band / no target.
   private var powerColor: Color { engine.targetState < 0 ? .blue : (engine.targetState > 0 ? .red : .orange) }
+
+  // Tell the phone to pause/resume whatever it's playing (music/podcast) — our own audio session interrupts it.
+  private func sendMedia(_ action: String) {
+    let s = WCSession.default
+    guard s.activationState == .activated else { return }
+    if s.isReachable { s.sendMessage(["media": action], replyHandler: nil, errorHandler: nil) }
+    else { s.transferUserInfo(["media": action]) }
+  }
 
   var body: some View {
     Group {
       if let r = store.route {
-        ZStack(alignment: .bottom) {
-          if mapOn {
-          Map(position: $cam) {
-            MapPolyline(coordinates: store.coords)
-              .stroke(store.offRoute ? Color.orange : Color.blue, lineWidth: 4)
-            // Travel-direction arrows. id 0 = a bold green "start this way" arrow; the rest show the loop's
-            // direction around its length so clockwise vs counter-clockwise reads at a glance.
-            ForEach(directionArrows(store.coords)) { a in
-              Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
-                Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowshape.up.fill")
-                  .font(.system(size: a.id == 0 ? 30 : 19, weight: .black))
-                  .foregroundColor(gradeColor(a.t))                  // green start → red finish (direction + progress)
-                  .shadow(color: .white, radius: 1.5)                // white halo → the coloured dart pops on the blue line
-                  .shadow(color: .black.opacity(0.7), radius: 1)
-                  .rotationEffect(.degrees(a.deg - (headingUp ? store.heading : 0)))   // offset only when heading-up
-              }
-            }
-            UserAnnotation()
-          }
-          } else {
-            Color.black.ignoresSafeArea()   // metrics-only: no MapKit rendering → saves battery
-          }
-          if panelUp {
-          VStack(spacing: 3) {
-            Button { withAnimation { panelUp = false } } label: {
-              Image(systemName: "chevron.compact.down").font(.system(size: 18)).foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 24).contentShape(Rectangle())   // whole strip tappable
-            }.buttonStyle(.plain)
-            if engine.running {
-              // Interval banner: label + zone + rep count, then the big remaining time/distance.
-              if store.offRoute {
-                Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
-              } else if !engine.segLabel.isEmpty {
-                HStack(spacing: 6) {
-                  Text(engine.segLabel.uppercased()).bold()
-                  if !engine.segZone.isEmpty { Text(engine.segZone).opacity(0.9) }
-                  Spacer()
-                  if engine.segCount > 0 { Text("\(min(engine.segIndex + 1, engine.segCount))/\(engine.segCount)").opacity(0.7) }
-                }.font(.caption2).foregroundColor(segColor(engine.segKind))
-                Text(engine.segRemain).font(.title3).monospacedDigit().foregroundColor(segColor(engine.segKind))
-              }
-              // Pace + distance here; HR + power are the always-on pill at the top.
-              HStack(spacing: 10) {
-                Text("\(engine.paceStr)/km").foregroundColor(.secondary)
-                Text(String(format: "%.2f km", engine.distanceM / 1000)).foregroundColor(.secondary)
-              }.font(.caption2).monospacedDigit()
-              HStack(spacing: 8) {
-                Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
-                if engine.segCount > 0 { Button { engine.lap() } label: { Image(systemName: "forward.end.fill") } }   // → next segment (announces it)
-                Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
-              }.buttonStyle(.bordered).controlSize(.small)
-            } else {
-              if store.offRoute {
-                Text("OFF ROUTE").font(.caption2).bold().foregroundColor(.orange)
-              } else if !store.nextTurnText.isEmpty {
-                Text(store.nextTurnText).font(.caption2).bold().foregroundColor(.cyan).lineLimit(2).multilineTextAlignment(.center)
-              } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
-                Text(relStart(a.deg, store.heading)).font(.caption2).bold().foregroundColor(.green)
-              }
-              Text(String(format: "%.1f km left", store.remainingKm)).font(.subheadline).monospacedDigit()
-              Button { engine.startFromRoute(r) } label: { Label("Start", systemImage: "figure.run").font(.caption) }
-                .buttonStyle(.borderedProminent).controlSize(.mini).tint(.green)
-              Button { autoPause.toggle() } label: {
-                Label(autoPause ? "Auto-pause on" : "Auto-pause off", systemImage: autoPause ? "pause.circle.fill" : "pause.circle")
-                  .font(.caption2)
-              }.buttonStyle(.plain).foregroundColor(autoPause ? .green : .secondary)
-            }
-          }
-          .padding(.vertical, 2).padding(.horizontal, 8)
-          .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-          .padding(.bottom, 4)
-          } else {
-            // Collapsed → map gets the screen. Bottom-left: tappable HR/power pill; bottom-right: open caret.
-            HStack(alignment: .bottom) {
-              if engine.running {
-                Button { pillHR = !pillShowsHR } label: {
-                  Text(pillShowsHR ? "♥\(Int(engine.heartRate))" : "\(Int(engine.power))w")
-                    .font(.title3).bold().monospacedDigit().foregroundColor(pillShowsHR ? .red : powerColor)
-                    .padding(.horizontal, 12).padding(.vertical, 6).contentShape(Rectangle())
-                    .background(.ultraThinMaterial, in: Capsule())
-                }.buttonStyle(.plain)
-              }
-              Spacer()
-              Button { withAnimation { panelUp = true } } label: {
-                Image(systemName: "chevron.up").font(.system(size: 17, weight: .bold)).foregroundColor(.primary)
-                  .frame(width: 56, height: 36).contentShape(Rectangle())
-                  .background(.ultraThinMaterial, in: Capsule())
-              }.buttonStyle(.plain)
-            }
-            .padding(.horizontal, 6).padding(.bottom, 2)
-          }
+        TabView(selection: $page) {
+          controlsScreen(r).tag(0)     // ◂ start / pause / lap / stop
+          mapScreen(r).tag(1)          // centre: map + a minimisable metrics strip
+          mediaScreen().tag(2)         // ▸ pause / resume the audio you're listening to
         }
-        .overlay(alignment: .topTrailing) {
-          Button { store.voiceOn.toggle() } label: {
-            Image(systemName: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
-              .font(.system(size: 15)).frame(width: 40, height: 40).contentShape(Rectangle())
-              .background(.ultraThinMaterial, in: Circle())
-          }.buttonStyle(.plain).padding(4)
-        }
-        .overlay(alignment: .topLeading) {
-          VStack(spacing: 6) {
-            // Map on/off — off = metrics-only, drops MapKit rendering to save battery on long runs.
-            Button { mapOn.toggle() } label: {
-              Image(systemName: mapOn ? "map.fill" : "map")
-                .font(.system(size: 14)).frame(width: 40, height: 40).contentShape(Rectangle())
-                .background(.ultraThinMaterial, in: Circle())
-            }.buttonStyle(.plain)
-            // Toggle north-up ↔ heading-up (also re-centres, recovering from a crown/pan interaction).
-            if mapOn {
-              Button {
-                headingUp.toggle()
-                cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
-                                : .userLocation(fallback: .automatic)
-              } label: {
-                Image(systemName: headingUp ? "location.north.line.fill" : "n.circle.fill")
-                  .font(.system(size: 15)).frame(width: 40, height: 40).contentShape(Rectangle())
-                  .background(.ultraThinMaterial, in: Circle())
-              }.buttonStyle(.plain)
-            }
-          }.padding(4)
-        }
-        .overlay(alignment: .top) {
-          // HR + power at the top while the panel is expanded; collapsed uses the bottom-left pill instead.
-          if engine.running && panelUp {
-            HStack(spacing: 12) {
-              Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
-              if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(powerColor) }
-            }.font(.title3).bold().monospacedDigit()
-            .padding(.horizontal, 12).padding(.vertical, 4)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(.top, 2)
-          }
-        }
-        .onChange(of: store.turnDistM) {
-          // A turn is coming up → zoom the map to street detail so a detour isn't missed; restore follow after.
-          guard mapOn, engine.running else { return }
-          if store.turnDistM < 80, let h = store.here {
-            cam = .camera(MapCamera(centerCoordinate: h, distance: 140, heading: headingUp ? store.heading : 0))
-          } else if store.turnDistM > 140 {
-            cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
-                            : .userLocation(fallback: .automatic)
-          }
-        }
-        .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
+        .tabViewStyle(.page)
         .navigationTitle(r.name)
         .confirmationDialog("End run?", isPresented: $showEndConfirm, titleVisibility: .visible) {
           Button("Save & end") { engine.end(save: true) }
           Button("Discard", role: .destructive) { engine.end(save: false) }
           Button("Cancel", role: .cancel) { }
         }
+        .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
+        .onChange(of: store.jumpToMap) { page = 1 }   // a turn/announcement surfaces the centre map screen
       } else {
         VStack(spacing: 6) {
           Image(systemName: "map").font(.title2).foregroundColor(.secondary)
@@ -386,5 +256,137 @@ struct RouteView: View {
         }.padding()
       }
     }
+  }
+
+  // ── CONTROLS screen (swipe here for start / pause / lap / stop) ──────────────────────────────────────────
+  @ViewBuilder private func controlsScreen(_ r: RoutePayload) -> some View {
+    VStack(spacing: 10) {
+      if engine.running {
+        if !engine.segLabel.isEmpty {
+          Text(engine.segLabel.uppercased()).font(.caption).bold().foregroundColor(segColor(engine.segKind))
+            .lineLimit(1).minimumScaleFactor(0.6)
+          Text(engine.segRemain).font(.title2).monospacedDigit().foregroundColor(segColor(engine.segKind))
+        }
+        HStack(spacing: 16) {
+          Button { engine.togglePause() } label: { Image(systemName: engine.paused ? "play.fill" : "pause.fill") }
+          if engine.segCount > 0 { Button { engine.lap() } label: { Image(systemName: "forward.end.fill") } }   // → next segment
+          Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
+        }.buttonStyle(.bordered).controlSize(.large).font(.title3)
+      } else {
+        Text(String(format: "%.1f km", r.distanceKm)).font(.caption).foregroundColor(.secondary)
+        Button { engine.startFromRoute(r) } label: { Label("Start", systemImage: "figure.run") }
+          .buttonStyle(.borderedProminent).controlSize(.large).tint(.green)
+        Button { autoPause.toggle() } label: {
+          Label(autoPause ? "Auto-pause on" : "Auto-pause off", systemImage: autoPause ? "pause.circle.fill" : "pause.circle").font(.caption)
+        }.buttonStyle(.plain).foregroundColor(autoPause ? .green : .secondary)
+      }
+      Text("swipe → map").font(.caption2).foregroundColor(.secondary)
+    }.padding(.horizontal, 8)
+  }
+
+  // ── MAP screen (centre) — map + a minimisable metrics strip ─────────────────────────────────────────────
+  @ViewBuilder private func mapScreen(_ r: RoutePayload) -> some View {
+    ZStack(alignment: .bottom) {
+      if mapOn {
+        Map(position: $cam) {
+          MapPolyline(coordinates: store.coords)
+            .stroke(store.offRoute ? Color.orange : Color.blue, lineWidth: 4)
+          ForEach(directionArrows(store.coords)) { a in
+            Annotation(a.id == 0 ? "Start" : "", coordinate: a.coord) {
+              Image(systemName: a.id == 0 ? "arrow.up.circle.fill" : "arrowshape.up.fill")
+                .font(.system(size: a.id == 0 ? 30 : 19, weight: .black))
+                .foregroundColor(gradeColor(a.t))
+                .shadow(color: .white, radius: 1.5).shadow(color: .black.opacity(0.7), radius: 1)
+                .rotationEffect(.degrees(a.deg - (headingUp ? store.heading : 0)))
+            }
+          }
+          UserAnnotation()
+        }
+      } else {
+        Color.black.ignoresSafeArea()   // metrics-only: no MapKit rendering → saves battery
+      }
+      if infoOn {
+        VStack(spacing: 2) {
+          if engine.running {
+            HStack(spacing: 10) {
+              Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
+              if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(powerColor) }
+            }.font(.title3).bold().monospacedDigit()
+            if store.offRoute {
+              Text("OFF ROUTE").font(.caption).bold().foregroundColor(.orange)
+            } else if !engine.segLabel.isEmpty {
+              Text(engine.segZone.isEmpty ? engine.segLabel.uppercased() : "\(engine.segLabel.uppercased()) \(engine.segZone)")
+                .font(.caption).bold().foregroundColor(segColor(engine.segKind)).lineLimit(1).minimumScaleFactor(0.6)
+            }
+            Text(engine.segRemain).font(.title3).monospacedDigit().foregroundColor(segColor(engine.segKind))
+          } else {
+            if store.offRoute {
+              Text("OFF ROUTE").font(.caption).bold().foregroundColor(.orange)
+            } else if !store.nextTurnText.isEmpty {
+              Text(store.nextTurnText).font(.caption).bold().foregroundColor(.cyan).lineLimit(2).multilineTextAlignment(.center)
+            } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
+              Text(relStart(a.deg, store.heading)).font(.caption).bold().foregroundColor(.green)
+            }
+            Text(String(format: "%.1f km left", store.remainingKm)).font(.subheadline).monospacedDigit()
+            Text("swipe → controls").font(.caption2).foregroundColor(.secondary)
+          }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.bottom, 6).padding(.horizontal, 6)
+      }
+    }
+    .overlay(alignment: .topTrailing) {
+      VStack(spacing: 6) {
+        Button { store.voiceOn.toggle() } label: {
+          Image(systemName: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
+            .font(.system(size: 14)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
+        }.buttonStyle(.plain)
+        Button { withAnimation { infoOn.toggle() } } label: {   // minimise/show the metrics strip
+          Image(systemName: infoOn ? "eye.fill" : "eye.slash.fill")
+            .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
+        }.buttonStyle(.plain)
+      }.padding(4)
+    }
+    .overlay(alignment: .topLeading) {
+      VStack(spacing: 6) {
+        Button { mapOn.toggle() } label: {
+          Image(systemName: mapOn ? "map.fill" : "map")
+            .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
+        }.buttonStyle(.plain)
+        if mapOn {
+          Button {
+            headingUp.toggle()
+            cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
+                            : .userLocation(fallback: .automatic)
+          } label: {
+            Image(systemName: headingUp ? "location.north.line.fill" : "n.circle.fill")
+              .font(.system(size: 14)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
+          }.buttonStyle(.plain)
+        }
+      }.padding(4)
+    }
+    .onChange(of: store.turnDistM) {
+      guard mapOn, engine.running else { return }
+      if store.turnDistM < 80, let h = store.here {
+        cam = .camera(MapCamera(centerCoordinate: h, distance: 140, heading: headingUp ? store.heading : 0))
+      } else if store.turnDistM > 140 {
+        cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
+                        : .userLocation(fallback: .automatic)
+      }
+    }
+  }
+
+  // ── MEDIA screen (pause / resume the audio you're listening to) ─────────────────────────────────────────
+  @ViewBuilder private func mediaScreen() -> some View {
+    VStack(spacing: 12) {
+      Text("Music").font(.headline)
+      Button { sendMedia("pause") } label: { Label("Pause", systemImage: "pause.circle.fill").frame(maxWidth: .infinity) }.tint(.orange)
+      Button { sendMedia("resume") } label: { Label("Resume", systemImage: "play.circle.fill").frame(maxWidth: .infinity) }.tint(.green)
+      Button { store.voiceOn.toggle() } label: {
+        Label(store.voiceOn ? "Cues on" : "Cues off", systemImage: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill").frame(maxWidth: .infinity)
+      }
+      Text("← swipe to map").font(.caption2).foregroundColor(.secondary)
+    }.buttonStyle(.bordered).controlSize(.large).padding(.horizontal, 10)
   }
 }
