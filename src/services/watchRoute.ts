@@ -4,6 +4,7 @@
  * WCSession message stays small. See targets/watch/RouteView.swift for the receiver.
  */
 import { requireNativeModule } from 'expo-modules-core';
+import { startRunKeepAlive } from './runKeepAlive';
 import * as SecureStore from 'expo-secure-store';
 import { RouteLoop } from './routing';
 import type { WatchWorkout } from './coach';
@@ -70,5 +71,8 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
     voice: await getVoiceNav(), sport,
     workout: workout ? flattenWorkout(workout) : [],       // Stage 2: structured intervals for the run session
   };
+  // Sending a route = the user is about to run → start the keep-alive NOW (foreground, so WhenInUse suffices)
+  // and it continues in the background, keeping the phone reachable to speak cues on the earbuds.
+  startRunKeepAlive().catch(() => {});
   try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }
 }

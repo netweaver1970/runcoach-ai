@@ -8,6 +8,7 @@ import { cancelDailyRecoveryReminder } from '../src/services/notifications';
 import { initICloudAutoSave, maybeRestoreFromICloud, scheduleICloudSync } from '../src/services/icloudSync';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
+import '../src/services/runKeepAlive';   // side effect: registers the background-location task + run-state listener at launch
 
 // Route a tapped notification to the right screen based on its `data.screen`.
 function routeNotification(router: ReturnType<typeof useRouter>, data: any) {

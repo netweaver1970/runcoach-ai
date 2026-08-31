@@ -21,10 +21,12 @@
         "NSHealthShareUsageDescription": "RunCoach AI reads your running workouts, heart rate, VO2 max, HRV, and sleep data to provide personalised coaching advice.",
         "NSHealthUpdateUsageDescription": "RunCoach AI can write imported blood-test values you choose (weight, blood pressure, glucose) into Apple Health.",
         "NSLocationWhenInUseUsageDescription": "RunCoach AI uses your location to fetch the current weather so it can factor temperature and conditions into today's training recommendation.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "During a run, RunCoach AI keeps location active in the background so your phone can speak the coaching cues through your earbuds even with the screen off.",
         "UIBackgroundModes": [
           "fetch",
           "remote-notification",
-          "audio"
+          "audio",
+          "location"
         ],
         "ITSAppUsesNonExemptEncryption": false,
         "UIDesignRequiresCompatibility": true,
@@ -46,6 +48,13 @@
       "./plugins/withHealthKitCapability",
       "expo-router",
       "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "isIosBackgroundLocationEnabled": true,
+          "locationAlwaysAndWhenInUsePermission": "During a run, RunCoach AI keeps location active in the background so your phone can speak the coaching cues through your earbuds even with the screen off."
+        }
+      ],
       [
         "expo-notifications",
         {

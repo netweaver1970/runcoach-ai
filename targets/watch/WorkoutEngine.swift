@@ -2,6 +2,7 @@ import Foundation
 import HealthKit
 import AVFoundation
 import WatchKit
+import WatchConnectivity
 
 // Owns the run on the watch: an HKWorkoutSession + live builder so OUR app (not Apple's Workout app) records
 // the run. That gives us three things the companion-only route screen couldn't have: the app stays alive in
@@ -73,6 +74,16 @@ final class WorkoutEngine: NSObject, ObservableObject {
     session = nil; builder = nil; segs = []
   }
 
+  // Tell the phone a run began/ended so it can keep itself alive (background location) → stays reachable to
+  // speak cues on the earbuds. transferUserInfo is guaranteed + wakes a suspended phone; sendMessage is the
+  // immediate path when it's already reachable.
+  private func signalRun(_ state: String) {
+    let s = WCSession.default
+    guard s.activationState == .activated else { return }
+    s.transferUserInfo(["run": state])
+    if s.isReachable { s.sendMessage(["run": state], replyHandler: nil, errorHandler: nil) }
+  }
+
   func start(activity: HKWorkoutActivityType) {
     if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
     guard session == nil else { return }           // a genuinely running session → ignore a double-Start
@@ -89,6 +100,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let now = Date(); startDate = now
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { _, _ in }
+      signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
       DispatchQueue.main.async {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
@@ -110,6 +122,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
   func end(save: Bool = true) {
     guard let s = session, let b = builder else { return }
+    signalRun("end")   // let the phone stop the background keep-alive
     s.end()
     if save {
       b.endCollection(withEnd: Date()) { _, _ in b.finishWorkout { _, _ in } }

@@ -6,9 +6,16 @@ public class RunCoachWatchSyncModule: Module {
   public func definition() -> ModuleDefinition {
     Name("RunCoachWatchSync")
 
+    // "start"/"end" when the watch begins/ends a run → JS starts/stops the background keep-alive.
+    Events("onRunState")
+
     // Instantiate the WCSession delegate at launch so the phone is always ready to RECEIVE run cues from the
     // watch (not just to send). Without this it's created lazily on the first send() and could miss early cues.
-    OnCreate { _ = WatchSync.shared }
+    OnCreate {
+      WatchSync.shared.onRunState = { [weak self] state in
+        self?.sendEvent("onRunState", ["state": state])
+      }
+    }
 
     AsyncFunction("isSupported") { () -> Bool in
       WCSession.isSupported()
@@ -28,6 +35,7 @@ public class RunCoachWatchSyncModule: Module {
 final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate {
   static let shared = WatchSync()
   private let synth = AVSpeechSynthesizer()
+  var onRunState: ((String) -> Void)?   // "start"/"end" from the watch → JS keep-alive
 
   override init() {
     super.init()
@@ -77,14 +85,23 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     if !s.isSpeaking { try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation]) }
   }
 
+  // A run-start/end signal → forward to JS (the keep-alive). transferUserInfo wakes the phone even when
+  // suspended, so the keep-alive can (re)start on a background run start.
+  private func handleRun(_ dict: [String: Any]) {
+    if let run = dict["run"] as? String { DispatchQueue.main.async { self.onRunState?(run) } }
+  }
+
   // WCSessionDelegate (iOS requires these).
   func session(_ s: WCSession, activationDidCompleteWith st: WCSessionActivationState, error: Error?) {}
   func sessionDidBecomeInactive(_ s: WCSession) {}
   func sessionDidDeactivate(_ s: WCSession) { WCSession.default.activate() }
+  func session(_ s: WCSession, didReceiveUserInfo u: [String: Any]) { handleRun(u) }
+  func session(_ s: WCSession, didReceiveMessage m: [String: Any]) { handleRun(m) }
 
   // Run cue from the watch, WITH a reply so the watch knows whether we took it (→ stay silent) or not (→
   // speak on the watch). `handled: true` only when the phone has an external audio device to play it on.
   func session(_ s: WCSession, didReceiveMessage m: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+    handleRun(m)
     guard let cue = m["cue"] as? String else { replyHandler(["handled": false]); return }
     if hasExternalAudioOutput() {
       DispatchQueue.main.async { self.speak(cue) }
