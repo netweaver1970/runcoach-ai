@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, SafeAreaView, ActivityIndicator, TouchableOpacity, Modal } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import Svg, { Polyline, Line, Rect, Circle, Ellipse } from 'react-native-svg';
+import Svg, { Polyline, Polygon, Line, Rect, Circle, Ellipse, Text as SvgText } from 'react-native-svg';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { HRVReading, getCachedReading, hrvGrade, gradeColor, gradeLabel } from '../src/services/hrvDetail';
-import { fetchHRVReadings } from '../src/services/healthkit';
+import { fetchHRVReadings, clearSnapshotCache } from '../src/services/healthkit';
+import { toggleHRVIgnore, isHRVIgnored } from '../src/services/hrvIgnore';
+import { clearDetailCache } from '../src/services/detailCache';
 import { ReorderList } from '../src/ReorderList';
 import { HRVCard, HRVCardId, HRV_CARD_TITLES, DEFAULT_HRV_LAYOUT, loadHRVLayout, saveHRVLayout } from '../src/services/hrvLayout';
 
@@ -34,6 +36,12 @@ export default function HRVReadingScreen() {
   const [w, setW] = useState(0);
   const [layout, setLayout] = useState<HRVCard[]>(DEFAULT_HRV_LAYOUT);
   const [customising, setCustomising] = useState(false);
+  const [ignored, setIgnored] = useState(() => (startMs ? isHRVIgnored(startMs) : false));
+  const onToggleIgnore = useCallback(async () => {
+    if (!startMs) return;
+    setIgnored(await toggleHRVIgnore(startMs));
+    clearDetailCache(); clearSnapshotCache().catch(() => {});   // recovery score & HRV KPIs recompute on next load
+  }, [startMs]);
   useEffect(() => { loadHRVLayout().then(setLayout); }, []);
   const commitLayout = useCallback((next: HRVCard[]) => { setLayout(next); saveHRVLayout(next); }, []);
 
@@ -76,23 +84,33 @@ export default function HRVReadingScreen() {
       <View style={s.card} key="hr">
         <Text style={s.big}>{m?.hrAvg ?? 0}<Text style={s.bigUnit}> bpm avg</Text></Text>
         {innerW > 40 && reading && reading.hr.length > 1 && (() => {
-          const H = 92, PT = 6, PB = 14, PL = 4, PR = 4;
-          const pw = innerW - PL - PR, ph = H - PT - PB;
+          const H = 104, PT = 8, PB = 8, PL = 28, PR = 6;
+          const pw = innerW - PL - PR, ph = H - PT - PB, base = PT + ph;
           const t1 = reading.hr[reading.hr.length - 1].t || 1;
           const lo = m!.hrMin, hi = Math.max(m!.hrMax, lo + 1);
           const x = (t: number) => PL + (t / t1) * pw;
           const y = (b: number) => PT + (1 - (b - lo) / (hi - lo)) * ph;
-          // One polyline PER gap-free segment → the line breaks at gaps instead of jumping across them.
-          const segs = new Map<number, string[]>();
-          for (const p of reading.hr) { const a = segs.get(p.seg) ?? []; a.push(`${x(p.t).toFixed(1)},${y(p.bpm).toFixed(1)}`); segs.set(p.seg, a); }
+          // One line + area fill PER gap-free segment → the line breaks at gaps instead of jumping across them.
+          const segs = new Map<number, { t: number; bpm: number }[]>();
+          for (const p of reading.hr) { const a = segs.get(p.seg) ?? []; a.push(p); segs.set(p.seg, a); }
           return (
             <Svg width={innerW} height={H}>
-              <Line x1={PL} y1={y(m!.hrAvg)} x2={PL + pw} y2={y(m!.hrAvg)} stroke={c.textFaint} strokeWidth={0.5} strokeDasharray="3 3" />
-              {[...segs.values()].map((pts, i) => <Polyline key={i} points={pts.join(' ')} fill="none" stroke={HR_RED} strokeWidth={1.6} />)}
+              {[...segs.values()].map((pts, i) => {
+                if (pts.length < 2) return null;
+                const line = pts.map(p => `${x(p.t).toFixed(1)},${y(p.bpm).toFixed(1)}`).join(' ');
+                const area = `${x(pts[0].t).toFixed(1)},${base} ${line} ${x(pts[pts.length - 1].t).toFixed(1)},${base}`;
+                return <React.Fragment key={i}>
+                  <Polygon points={area} fill={HR_RED} opacity={0.12} />
+                  <Polyline points={line} fill="none" stroke={HR_RED} strokeWidth={1.6} />
+                </React.Fragment>;
+              })}
+              <Line x1={PL} y1={y(m!.hrAvg)} x2={PL + pw} y2={y(m!.hrAvg)} stroke={c.textFaint} strokeWidth={0.6} strokeDasharray="3 3" />
+              <SvgText x={PL - 5} y={PT + 7} fontSize={9} fill={c.textFaint} textAnchor="end">{hi}</SvgText>
+              <SvgText x={PL - 5} y={base + 3} fontSize={9} fill={c.textFaint} textAnchor="end">{lo}</SvgText>
+              <SvgText x={PL - 5} y={y(m!.hrAvg) + 3} fontSize={9} fill={c.textSub} textAnchor="end" fontWeight="700">{m!.hrAvg}</SvgText>
             </Svg>
           );
         })()}
-        <View style={s.legend}><Text style={s.legendT}>{m?.hrMin}–{m?.hrMax} bpm</Text></View>
       </View>
     ),
     timedomain: (
@@ -184,6 +202,11 @@ export default function HRVReadingScreen() {
             <Text style={s.heroLbl}>HRV Stress (Baevsky)</Text>
           </View>
 
+          <TouchableOpacity style={[s.ignoreBtn, ignored && s.ignoreBtnOn]} onPress={onToggleIgnore}>
+            <Text style={[s.ignoreTxt, ignored && s.ignoreTxtOn]}>{ignored ? '↺ Un-ignore this reading' : '⊘ Ignore this reading'}</Text>
+          </TouchableOpacity>
+          {ignored && <Text style={s.ignoreNote}>Excluded from your recovery score & HRV baseline — they recompute next time you open Recovery. (HealthKit keeps the raw reading; only the app ignores it.)</Text>}
+
           {layout.filter(l => l.on).map(l => (
             <React.Fragment key={l.id}>
               <Text style={s.sectionTitle}>{HRV_CARD_TITLES[l.id]}</Text>
@@ -228,6 +251,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   heroSub: { fontSize: 11.5, color: c.textFaint },
   heroVal: { fontSize: 34, fontWeight: '800', marginTop: 0 },
   heroLbl: { fontSize: 11.5, color: c.textSub, marginTop: -2 },
+  ignoreBtn: { alignSelf: 'center', marginTop: 8, paddingVertical: 8, paddingHorizontal: 16, borderRadius: 10, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  ignoreBtnOn: { backgroundColor: '#c0392b', borderColor: '#c0392b' },
+  ignoreTxt: { fontSize: 13, fontWeight: '700', color: c.textSub },
+  ignoreTxtOn: { color: '#fff' },
+  ignoreNote: { fontSize: 11, color: c.textFaint, lineHeight: 15, textAlign: 'center', marginTop: 6, paddingHorizontal: 8 },
   sectionTitle: { fontSize: 12.5, fontWeight: '800', color: HR_RED, marginTop: 12, marginBottom: 5, marginLeft: 2 },
   card: { backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
   row: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 14, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },

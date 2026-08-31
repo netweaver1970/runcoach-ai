@@ -74,14 +74,12 @@ export function computeHRVMetrics(rr: number[]): HRVMetrics {
   for (const v of rr) { const b = Math.round(v / BIN); binsHi[b] = (binsHi[b] ?? 0) + 1; }
   const maxBin = Math.max(...Object.values(binsHi));
   const hrvi = maxBin > 0 ? n / maxBin : 0;
-  // Baevsky SI = AMo / (2·Mo·MxDMn), Mo/MxDMn in seconds, AMo the modal-bin share (%) at 50 ms bins.
-  const B50 = 50;
-  const bins50: Record<number, number> = {};
-  for (const v of rr) { const b = Math.round(v / B50); bins50[b] = (bins50[b] ?? 0) + 1; }
+  // Baevsky SI = AMo / (2·Mo·MxDMn), Mo/MxDMn in seconds, AMo the modal-bin share (%). Uses the SAME 1/128 s
+  // (7.8125 ms) bin as Kubios / the reference HRV app — the old 50 ms bin inflated AMo and blew SI up ~8×.
   let modeBin = 0, modeCount = 0;
-  for (const [b, c] of Object.entries(bins50)) if (c > modeCount) { modeCount = c; modeBin = Number(b); }
+  for (const [b, cnt] of Object.entries(binsHi)) if (cnt > modeCount) { modeCount = cnt; modeBin = Number(b); }
   const amo = (modeCount / n) * 100;
-  const mo = (modeBin * B50) / 1000;
+  const mo = (modeBin * BIN) / 1000;
   const mxdmn = (Math.max(...rr) - Math.min(...rr)) / 1000;
   const baevsky = (mo > 0 && mxdmn > 0) ? amo / (2 * mo * mxdmn) : 0;
   // HR

@@ -64,6 +64,8 @@ const FILES = [
   'runcoach-workout-library.json',  // reusable structured-workout library
   'runcoach-supplements.json',      // supplement list + daily intake log
   'runcoach-labs.json',             // imported blood-test / clinical-lab history
+  'runcoach-hrv-ignore.json',       // user-ignored HRV readings (excluded from recovery/HRV KPIs)
+  'runcoach-hrv-layout.json',       // HRV-reading-detail card order/visibility
   'runcoach-lab-templates.json',    // saved lab marker templates (named selections)
   'runcoach-labs-driveurl.json',    // remembered Google Drive import link
   'runcoach-labs-chat.json',        // Labs chat history

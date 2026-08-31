@@ -1,14 +1,15 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { DailyRecovery } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, scoreToLabel, scoreToColor, fetchHRVReadings } from '../src/services/healthkit';
 import { HRVReading, setCachedReadings, hrvGrade, gradeColor, gradeLabel } from '../src/services/hrvDetail';
+import { getIgnoreVersion, isHRVIgnored } from '../src/services/hrvIgnore';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { KpiTabs } from '../src/components/KpiTabs';
 import { DayNav } from '../src/components/DayNav';
@@ -82,7 +83,7 @@ export default function RecoveryDetailScreen() {
   const [readings, setReadings] = useState<HRVReading[]>([]);
   const nightBed  = useRec ? recovery?.sleep?.bedtime  : undefined;   // exact sleep window when viewing today
   const nightWake = useRec ? recovery?.sleep?.wakeTime : undefined;
-  useEffect(() => {
+  const loadReadings = useCallback(() => {
     let from: Date, to: Date;
     if (nightBed && nightWake) {
       from = new Date(new Date(nightBed).getTime() - 20 * 60_000);    // small pads for pre-sleep / post-wake reads
@@ -94,6 +95,12 @@ export default function RecoveryDetailScreen() {
     }
     fetchHRVReadings(from, to).then(rs => { setReadings(rs); setCachedReadings(rs); }).catch(() => setReadings([]));
   }, [viewedDate, nightBed, nightWake]);
+  useEffect(() => { loadReadings(); }, [loadReadings]);
+  // Coming back from a reading where an ignore was toggled → recompute the score + refresh the list.
+  const ignoreVerRef = useRef(getIgnoreVersion());
+  useFocusEffect(useCallback(() => {
+    if (getIgnoreVersion() !== ignoreVerRef.current) { ignoreVerRef.current = getIgnoreVersion(); loadComps(true); loadReadings(); }
+  }, [loadComps, loadReadings]));
   const hhmm = (ms: number) => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
   // Score + colour/label: rec when viewing today, else the viewed day's stored components.
@@ -285,17 +292,18 @@ export default function RecoveryDetailScreen() {
           <Section title={`HRV readings · ${(nightBed && nightWake) ? 'this sleep night' : 'sleep night'} (${readings.length})`}>
             {readings.slice().reverse().map(r => {   // newest on top
               const g = hrvGrade(r);
+              const ign = isHRVIgnored(r.startMs);
               return (
-                <TouchableOpacity key={r.startMs} onPress={() => router.push({ pathname: '/hrv-reading' as any, params: { ts: String(r.startMs) } })} style={s.hrvRow}>
-                  <View style={[s.qDot, { backgroundColor: gradeColor(g) }]} />
+                <TouchableOpacity key={r.startMs} onPress={() => router.push({ pathname: '/hrv-reading' as any, params: { ts: String(r.startMs) } })} style={[s.hrvRow, ign && { opacity: 0.4 }]}>
+                  <View style={[s.qDot, { backgroundColor: ign ? '#888' : gradeColor(g) }]} />
                   <Text style={s.hrvTime}>{hhmm(r.startMs)}</Text>
                   <Text style={s.hrvRmssd}>{r.metrics.rmssd}<Text style={s.hrvUnit}> ms rMSSD</Text></Text>
-                  <Text style={s.hrvMeta}>{r.metrics.n} R-R · {gradeLabel(g)}</Text>
+                  <Text style={s.hrvMeta}>{r.metrics.n} R-R · {ign ? 'ignored' : gradeLabel(g)}</Text>
                   <Text style={s.hrvChev}>›</Text>
                 </TouchableOpacity>
               );
             })}
-            <Text style={s.hrvHint}>Green = clean · amber = a little missing/noisy · red = gaps or artifacts make it unreliable (RMSSD becomes noise). Tap for the full breakdown.</Text>
+            <Text style={s.hrvHint}>Green = clean · amber = a little missing/noisy · red = gaps/artifacts make it unreliable. Tap for the breakdown; ignored readings are dimmed and excluded from your recovery score.</Text>
           </Section>
         )}
 

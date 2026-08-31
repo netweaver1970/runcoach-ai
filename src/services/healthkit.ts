@@ -2,6 +2,7 @@ import HealthKit, { subscribeToChanges } from '@kingstinct/react-native-healthki
 import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
+import { isHRVIgnored } from './hrvIgnore';
 
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
 // series-stored workout HR/power that the JS library's sample query returns only sparsely.
@@ -552,7 +553,7 @@ function nightlyTrueRMSSD(session: SleepSession, allSeries: readonly any[]): num
   const end   = new Date(session.wakeTime).getTime() + 60 * 60_000;
   const series = allSeries.filter((s) => {
     const t = new Date(s.startDate).getTime();
-    return t >= start && t <= end;
+    return t >= start && t <= end && !isHRVIgnored(t);   // drop user-ignored readings
   });
   return series.length > 0 ? computeRMSSD(series as any) : 0;
 }
@@ -589,6 +590,7 @@ function computeWeightedRMSSD(
   let nightSamples = hrvSamples.filter((s) => {
     const t = new Date(s.startDate).getTime();
     if (t < sessionStart || t > sessionEnd) return false;
+    if (isHRVIgnored(t)) return false;   // user-ignored reading
     // Quality filter: exclude readings where the 1-min window had mid-reading gaps
     if (qualityMap && qualityMap.size > 0 && !isGoodHRVSample(t, qualityMap)) return false;
     return true;
@@ -604,6 +606,7 @@ function computeWeightedRMSSD(
     nightSamples = hrvSamples.filter((s) => {
       const t = new Date(s.startDate).getTime();
       if (t < nightStart || t > nightEnd) return false;
+      if (isHRVIgnored(t)) return false;   // user-ignored reading
       if (qualityMap && qualityMap.size > 0 && !isGoodHRVSample(t, qualityMap)) return false;
       return true;
     });
