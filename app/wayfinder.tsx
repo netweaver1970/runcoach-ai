@@ -75,18 +75,24 @@ function fitZoom(coords: [number, number][], width: number, height: number): num
 }
 
 // ── Static map: OpenTopoMap tile grid + the route drawn as rotated View segments ──
-function StaticMap({ coords, start, dest, here, center, zoom, width, height, line, c }: {
+// `bearing` (deg) = heading-up follow mode: the whole map is rotated so your course points UP. To avoid blank
+// corners under rotation the tile+route canvas is drawn at the view's DIAGONAL size (cw×ch), centred, then the
+// rotated square is clipped back to width×height by the outer overflow:hidden.
+function StaticMap({ coords, start, dest, here, center, zoom, width, height, line, c, bearing }: {
   coords: [number, number][]; start: [number, number]; dest?: [number, number] | null; here: [number, number] | null;
-  center?: [number, number]; zoom?: number; width: number; height: number; line: string; c: Palette;
+  center?: [number, number]; zoom?: number; width: number; height: number; line: string; c: Palette; bearing?: number;
 }) {
   if (width <= 0 || coords.length < 2) return <View style={{ width, height }} />;
   const z = zoom ?? fitZoom(coords, width, height);               // caller can force zoom (manual / follow)
-  const [ox, oy] = mapOrigin(coords, center, z, width, height);   // top-left origin in world px (shared w/ tap inverse)
+  const rot = (bearing != null && isFinite(bearing)) ? bearing : null;   // heading-up when set
+  const cw = rot != null ? Math.ceil(Math.hypot(width, height)) : width;  // canvas covers the rotated view's corners
+  const ch = rot != null ? cw : height;
+  const [ox, oy] = mapOrigin(coords, center, z, cw, ch);          // top-left origin in world px (shared w/ tap inverse)
   const px = (p: [number, number]) => [lon2px(p[0], z) - ox, lat2px(p[1], z) - oy] as [number, number];
 
   const tiles: React.ReactNode[] = [];
-  const x0 = Math.floor(ox / TILE), x1 = Math.floor((ox + width) / TILE);
-  const y0 = Math.floor(oy / TILE), y1 = Math.floor((oy + height) / TILE);
+  const x0 = Math.floor(ox / TILE), x1 = Math.floor((ox + cw) / TILE);
+  const y0 = Math.floor(oy / TILE), y1 = Math.floor((oy + ch) / TILE);
   const n = Math.pow(2, z);
   for (let tx = x0; tx <= x1; tx++) for (let ty = y0; ty <= y1; ty++) {
     if (ty < 0 || ty >= n) continue;
@@ -115,11 +121,13 @@ function StaticMap({ coords, start, dest, here, center, zoom, width, height, lin
   }
   const segs = pts.map((p, i) => i === 0 ? null : segView(pts[i - 1], p, `l${i}`, 4.5, line));
   const [sx, sy] = px(start);
+  const offX = (width - cw) / 2, offY = (height - ch) / 2;   // centre the (possibly larger) canvas in the view
   return (
     <View style={{ width, height, borderRadius: 14, overflow: 'hidden', backgroundColor: c.surfaceAlt }}>
+      <View style={{ position: 'absolute', left: offX, top: offY, width: cw, height: ch, transform: rot != null ? [{ rotate: `${-rot}deg` }] : [] }}>
       {tiles}
       {/* Fade the busy topo tiles so the route + markers read clearly against the houses/streets. */}
-      <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width, height, backgroundColor: 'rgba(255,255,255,0.42)' }} />
+      <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: cw, height: ch, backgroundColor: 'rgba(255,255,255,0.42)' }} />
       {casing}
       {segs}
       <View pointerEvents="none" style={{ position: 'absolute', left: sx - 8, top: sy - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: line, borderWidth: 3, borderColor: '#fff' }} />
@@ -144,10 +152,13 @@ function StaticMap({ coords, start, dest, here, center, zoom, width, height, lin
       })}
       {here && (() => {
         const [hx, hy] = px(here);
-        if (hx < -8 || hx > width + 8 || hy < -8 || hy > height + 8) return null;   // off the previewed loop
+        if (hx < -8 || hx > cw + 8 || hy < -8 || hy > ch + 8) return null;   // off the canvas
         return <View key="here" pointerEvents="none" style={{ position: 'absolute', left: hx - 7, top: hy - 7, width: 14, height: 14, borderRadius: 7, backgroundColor: '#2f7bff', borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } }} />;
       })()}
+      </View>
+      {/* Attribution + a heading-up 'N' hint stay UNrotated on the outer view. */}
       <Text style={{ position: 'absolute', right: 4, bottom: 2, fontSize: 8.5, color: '#333', backgroundColor: '#ffffffaa', paddingHorizontal: 3, borderRadius: 2 }}>© OpenTopoMap (CC-BY-SA)</Text>
+      {rot != null && <Text style={{ position: 'absolute', left: 6, top: 4, fontSize: 10, fontWeight: '800', color: '#111', backgroundColor: '#ffffffcc', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4 }}>▲ heading-up</Text>}
     </View>
   );
 }
@@ -167,10 +178,10 @@ function ElevProfile({ elev, width, height, c }: { elev: number[]; width: number
 }
 
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
-function MapPane({ coords, start, dest, here, center, zoom, width, height, c, moving, isFull, autoOn, picking, pickLabel, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickMap }: {
+function MapPane({ coords, start, dest, here, center, zoom, width, height, c, moving, isFull, autoOn, picking, pickLabel, bearing, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickMap }: {
   coords: [number, number][]; start: [number, number]; dest?: [number, number] | null; here: [number, number] | null;
   center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
-  isFull: boolean; autoOn: boolean; picking?: boolean; pickLabel?: string;
+  isFull: boolean; autoOn: boolean; picking?: boolean; pickLabel?: string; bearing?: number;
   onPan: (c: [number, number]) => void; onZoomTo: (z: number) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
   onGrab?: () => void; onRelease?: () => void; onPickMap?: (c: [number, number]) => void;
 }) {
@@ -238,7 +249,7 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
     <View ref={rootRef} style={{ position: 'relative', width, height }} {...pan.panHandlers}
       onTouchStart={() => onGrab?.()} onTouchCancel={() => onRelease?.()}
       onTouchEnd={e => { if (e.nativeEvent.touches.length === 0) onRelease?.(); }}>
-      <StaticMap coords={coords} start={start} dest={dest} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} />
+      <StaticMap coords={coords} start={start} dest={dest} here={here} center={center} zoom={zoom} width={width} height={height} line={c.accent} c={c} bearing={bearing} />
       <View style={s.zoomCtl}>
         <TouchableOpacity style={s.zoomBtn} onPress={onZoomIn}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
         <TouchableOpacity style={[s.zoomBtn, autoOn && s.zoomBtnOn]} onPress={onAuto}><Text style={[s.zoomTsm, autoOn && { color: '#fff' }]}>AUTO</Text></TouchableOpacity>
@@ -278,6 +289,7 @@ export default function WayfinderScreen() {
   const [mapW, setMapW] = useState(0);
   const [here, setHere] = useState<[number, number] | null>(null);   // live phone position, shown on the map
   const [moving, setMoving] = useState(false);                       // running → auto-follow tighter
+  const [courseDeg, setCourseDeg] = useState<number | null>(null);   // direction of travel → heading-up in follow mode
   const [zoomMode, setZoomMode] = useState<'auto' | number>('auto'); // 'auto' = fit loop / follow when running
   const [panCenter, setPanCenter] = useState<[number, number] | null>(null);  // finger-panned map centre
   const [fullscreen, setFullscreen] = useState(false);
@@ -449,7 +461,12 @@ export default function WayfinderScreen() {
         if (status !== 'granted' || !alive) return;
         sub = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, distanceInterval: 4, timeInterval: 2000 },
-          pos => { setHere([pos.coords.longitude, pos.coords.latitude]); setMoving((pos.coords.speed ?? 0) > 1); },
+          pos => {
+            setHere([pos.coords.longitude, pos.coords.latitude]);
+            setMoving((pos.coords.speed ?? 0) > 1);
+            const h = pos.coords.heading;   // course over ground; hold the last valid one (iOS gives -1 when unknown)
+            if (h != null && h >= 0) setCourseDeg(h);
+          },
         );
       } catch { /* ignore — map still shows the loop without a live dot */ }
     })();
@@ -470,6 +487,9 @@ export default function WayfinderScreen() {
   const effZoom = zoomMode === 'auto' ? ((moving && here) ? 16 : autoZ) : zoomMode;
   const effCenter: [number, number] | undefined = panCenter ?? ((moving && here) ? here : undefined);
   const autoOn = zoomMode === 'auto' && !panCenter;
+  // Heading-up ONLY when actively following you (centred on your position, not panning) and a travel direction
+  // exists — rotates the whole map so your course points UP (easier to follow than north-up).
+  const followBearing = (effCenter === here && here != null && courseDeg != null) ? courseDeg : undefined;
   const effZoomRef = useRef(effZoom); effZoomRef.current = effZoom;
 
   // Panning freezes the zoom (so auto-fit/follow stop fighting the drag); AUTO returns to automatic + recentres.
@@ -489,7 +509,7 @@ export default function WayfinderScreen() {
     setPickMode(null);
   }, [pickMode]);
   const paneProps = cur ? {
-    coords: cur.coords, start, dest, here, center: effCenter, zoom: effZoom, c, moving, autoOn,
+    coords: cur.coords, start, dest, here, center: effCenter, zoom: effZoom, c, moving, autoOn, bearing: followBearing,
     picking: !!pickMode, pickLabel: pickMode === 'to' ? 'Tap the map to set the destination' : 'Tap the map to set the start',
     onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease, onPickMap,
   } : null;
