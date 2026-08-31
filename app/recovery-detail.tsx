@@ -76,15 +76,24 @@ export default function RecoveryDetailScreen() {
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
-  // The viewed day's individual HRV readings (each heartbeat-series sample) — listed with a green/red quality
-  // dot; tap one for the full metric breakdown. Overnight readings land in the early morning of the viewed day.
+  // The SLEEP NIGHT's individual HRV readings (each heartbeat-series sample) — listed with a green/red quality
+  // dot; tap one for the full metric breakdown. Grouped by sleep night, not calendar day: use the exact
+  // bedtime→wake window when we have it (today's snapshot), else an evening→noon window for the viewed day.
   const [readings, setReadings] = useState<HRVReading[]>([]);
+  const nightBed  = useRec ? recovery?.sleep?.bedtime  : undefined;   // exact sleep window when viewing today
+  const nightWake = useRec ? recovery?.sleep?.wakeTime : undefined;
   useEffect(() => {
-    const d = viewedDate || todayKey;
-    const from = new Date(d + 'T00:00:00');
-    const to = new Date(from.getTime() + 24 * 3600_000);
+    let from: Date, to: Date;
+    if (nightBed && nightWake) {
+      from = new Date(new Date(nightBed).getTime() - 20 * 60_000);    // small pads for pre-sleep / post-wake reads
+      to   = new Date(new Date(nightWake).getTime() + 60 * 60_000);
+    } else {
+      const base = new Date((viewedDate || todayKey) + 'T00:00:00').getTime();
+      from = new Date(base - 6 * 3600_000);    // previous evening 18:00
+      to   = new Date(base + 12 * 3600_000);   // viewed day noon → the sleep night
+    }
     fetchHRVReadings(from, to).then(rs => { setReadings(rs); setCachedReadings(rs); }).catch(() => setReadings([]));
-  }, [viewedDate]);
+  }, [viewedDate, nightBed, nightWake]);
   const hhmm = (ms: number) => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
   // Score + colour/label: rec when viewing today, else the viewed day's stored components.
@@ -273,7 +282,7 @@ export default function RecoveryDetailScreen() {
         </>)}
 
         {readings.length > 0 && (
-          <Section title={`HRV readings · ${viewedDate || 'today'} (${readings.length})`}>
+          <Section title={`HRV readings · ${(nightBed && nightWake) ? 'this sleep night' : 'sleep night'} (${readings.length})`}>
             {readings.map(r => (
               <TouchableOpacity key={r.startMs} onPress={() => router.push({ pathname: '/hrv-reading' as any, params: { ts: String(r.startMs) } })} style={s.hrvRow}>
                 <View style={[s.qDot, { backgroundColor: r.ok ? '#27ae60' : '#c0392b' }]} />
