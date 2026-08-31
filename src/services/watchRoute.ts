@@ -5,6 +5,7 @@
  */
 import { requireNativeModule } from 'expo-modules-core';
 import { startRunKeepAlive } from './runKeepAlive';
+import { saveActiveRoute } from './activeRoute';
 import * as SecureStore from 'expo-secure-store';
 import { RouteLoop } from './routing';
 import type { WatchWorkout } from './coach';
@@ -74,5 +75,6 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
   // Sending a route = the user is about to run → start the keep-alive NOW (foreground, so WhenInUse suffices)
   // and it continues in the background, keeping the phone reachable to speak cues on the earbuds.
   startRunKeepAlive().catch(() => {});
+  saveActiveRoute(loop, name).catch(() => {});   // persist so Wayfinder can back up the run if reopened
   try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }
 }

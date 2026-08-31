@@ -13,6 +13,7 @@ import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, orsPointToPointOptions, geocodeSearch, GeoHit, RouteOption, RouteLoop } from '../src/services/routing';
+import { loadActiveRoute } from '../src/services/activeRoute';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
@@ -268,6 +269,7 @@ export default function WayfinderScreen() {
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [opts, setOpts] = useState<RouteOption[]>([]);
   const [sel, setSel] = useState(0);
+  const [followingRun, setFollowingRun] = useState(false);   // showing an in-progress run as a backup to the watch
   const [reach, setReach] = useState(0);                       // 0 = the round-trip loop; 1–3 = steered further out
   const [steered, setSteered] = useState<(RouteLoop & { reachKm: number }) | null>(null);
   const [steerBusy, setSteerBusy] = useState(false);
@@ -342,8 +344,21 @@ export default function WayfinderScreen() {
     })();
   }, []);
 
+  // If a run is in progress (a route was sent to the watch and hasn't ended), restore it so THIS screen backs
+  // up the tiny watch display — the loop + your live position — instead of opening blank. Runs once on mount.
+  useEffect(() => {
+    (async () => {
+      const ar = await loadActiveRoute();
+      if (ar?.active && (ar.loop?.coords?.length ?? 0) >= 2) {
+        setOpts([{ ...ar.loop, seed: 0, headingDeg: 0, heading: '▶ run' }]);
+        setSel(0); setFollowingRun(true);
+        setStart(ar.loop.coords[0]); setPlaced(ar.name || 'your run');
+      }
+    })();
+  }, []);
+
   const generate = useCallback(async () => {
-    setBusy(true); setErr(null); setOpts([]);
+    setBusy(true); setErr(null); setOpts([]); setFollowingRun(false);
     try {
       const profile = trails ? 'foot-hiking' : 'foot-walking';
       // TO set → a point-to-point route matched to the target distance; TO empty → a loop from the start.
@@ -560,10 +575,16 @@ export default function WayfinderScreen() {
             {err && <Text style={s.err}>{err}</Text>}
             {busy && !opts.length && <ActivityIndicator style={{ marginTop: 20 }} color={c.accent} />}
 
+            {followingRun && (
+              <View style={s.followBanner}>
+                <Text style={s.followBannerT}>● Following your run on the watch — the loop + your live position below. Tap “Generate” to plan a new one.</Text>
+              </View>
+            )}
+
             {/* Heading chooser */}
             {opts.length > 0 && (
               <>
-                <Text style={s.groupLabel}>{dest ? 'Route — closest distance match first' : 'Heading — pick a way to explore'}</Text>
+                <Text style={s.groupLabel}>{followingRun ? 'Your run' : dest ? 'Route — closest distance match first' : 'Heading — pick a way to explore'}</Text>
                 <View style={s.chips}>
                   {opts.map((o, i) => (
                     <TouchableOpacity key={o.seed} style={[s.chip, i === sel && s.chipOn]} onPress={() => pickHeading(i)}>
@@ -673,6 +694,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   suggestT: { color: c.text, fontSize: 15 },
   pickBanner: { position: 'absolute', top: 8, left: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.72)', borderRadius: 8, paddingVertical: 7, paddingHorizontal: 10, alignItems: 'center' },
   pickBannerT: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
+  followBanner: { backgroundColor: '#2e9e5b', borderRadius: 10, paddingVertical: 9, paddingHorizontal: 12, marginBottom: 10 },
+  followBannerT: { color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 },
   stepT: { fontSize: 20, color: c.text, fontWeight: '600' },
   stepVal: { fontSize: 15, fontWeight: '700', color: c.text, minWidth: 62, textAlign: 'center' },
   btn: { backgroundColor: c.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },

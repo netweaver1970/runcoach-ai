@@ -76,7 +76,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   private func speak(_ text: String) {
     guard !text.isEmpty else { return }
     let sess = AVAudioSession.sharedInstance()
-    try? sess.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])   // duck music, speak over it
+    try? sess.setCategory(.playback, mode: .voicePrompt)   // NO .duckOthers → INTERRUPTS (pauses) music; it resumes on deactivate
     try? sess.setActive(true)
     let u = AVSpeechUtterance(string: text); u.rate = AVSpeechUtteranceDefaultSpeechRate
     synth.speak(u)

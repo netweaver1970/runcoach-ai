@@ -14,6 +14,7 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { requireNativeModule } from 'expo-modules-core';
+import { setRunActive } from './activeRoute';
 
 const TASK = 'runcoach-run-keepalive';
 const MAX_MS = 3 * 3600 * 1000;   // hard stop after 3h if no run-end ever arrives
@@ -56,6 +57,6 @@ try {
   const sync: any = requireNativeModule('RunCoachWatchSync');
   sync?.addListener?.('onRunState', (e: { state?: string }) => {
     if (e?.state === 'start') void startRunKeepAlive();
-    else if (e?.state === 'end') void stopRunKeepAlive();
+    else if (e?.state === 'end') { void stopRunKeepAlive(); void setRunActive(false); }   // run over → Wayfinder stops backing it up
   });
 } catch { /* module not in this build */ }
