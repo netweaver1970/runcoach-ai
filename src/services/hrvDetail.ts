@@ -74,14 +74,19 @@ export function computeHRVMetrics(rr: number[]): HRVMetrics {
   for (const v of rr) { const b = Math.round(v / BIN); binsHi[b] = (binsHi[b] ?? 0) + 1; }
   const maxBin = Math.max(...Object.values(binsHi));
   const hrvi = maxBin > 0 ? n / maxBin : 0;
-  // Baevsky SI = AMo / (2·Mo·MxDMn), Mo/MxDMn in seconds, AMo the modal-bin share (%). Uses the SAME 1/128 s
-  // (7.8125 ms) bin as Kubios / the reference HRV app — the old 50 ms bin inflated AMo and blew SI up ~8×.
+  // Baevsky stress. Classic Index of Tension = AMo / (2·Mo·MxDMn) with 50 ms histogram bins, Mo/MxDMn in
+  // seconds (values ~50–300). The reference HRV app — and this app now — shows its SQUARE ROOT for a compressed
+  // scale (the athlete's readings 7.9/12.1/17.3 = √62/√146/√299). Reverse-engineered from those.
+  const BSI = 50;
+  const binsSI: Record<number, number> = {};
+  for (const v of rr) { const b = Math.round(v / BSI); binsSI[b] = (binsSI[b] ?? 0) + 1; }
   let modeBin = 0, modeCount = 0;
-  for (const [b, cnt] of Object.entries(binsHi)) if (cnt > modeCount) { modeCount = cnt; modeBin = Number(b); }
+  for (const [b, cnt] of Object.entries(binsSI)) if (cnt > modeCount) { modeCount = cnt; modeBin = Number(b); }
   const amo = (modeCount / n) * 100;
-  const mo = (modeBin * BIN) / 1000;
+  const mo = (modeBin * BSI) / 1000;
   const mxdmn = (Math.max(...rr) - Math.min(...rr)) / 1000;
-  const baevsky = (mo > 0 && mxdmn > 0) ? amo / (2 * mo * mxdmn) : 0;
+  const si = (mo > 0 && mxdmn > 0) ? amo / (2 * mo * mxdmn) : 0;
+  const baevsky = Math.sqrt(si);
   // HR
   const hrs = rr.map(v => 60000 / v);
   const r1 = (x: number) => Math.round(x * 10) / 10;
