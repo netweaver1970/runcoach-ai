@@ -7,7 +7,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
-import { fetchOurDailyComponents, scoreToLabel, scoreToColor } from '../src/services/healthkit';
+import { fetchOurDailyComponents, scoreToLabel, scoreToColor, fetchHRVReadings } from '../src/services/healthkit';
+import { HRVReading, setCachedReadings } from '../src/services/hrvDetail';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { KpiTabs } from '../src/components/KpiTabs';
 import { DayNav } from '../src/components/DayNav';
@@ -74,6 +75,17 @@ export default function RecoveryDetailScreen() {
   const target = comps[viewedDate] ?? {};
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
+
+  // The viewed day's individual HRV readings (each heartbeat-series sample) — listed with a green/red quality
+  // dot; tap one for the full metric breakdown. Overnight readings land in the early morning of the viewed day.
+  const [readings, setReadings] = useState<HRVReading[]>([]);
+  useEffect(() => {
+    const d = viewedDate || todayKey;
+    const from = new Date(d + 'T00:00:00');
+    const to = new Date(from.getTime() + 24 * 3600_000);
+    fetchHRVReadings(from, to).then(rs => { setReadings(rs); setCachedReadings(rs); }).catch(() => setReadings([]));
+  }, [viewedDate]);
+  const hhmm = (ms: number) => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
   // Score + colour/label: rec when viewing today, else the viewed day's stored components.
   const recoveryScore = useRec ? recovery!.recoveryScore : Math.round((target.recoveryScore as number) ?? 0);
@@ -260,6 +272,21 @@ export default function RecoveryDetailScreen() {
         )}
         </>)}
 
+        {readings.length > 0 && (
+          <Section title={`HRV readings · ${viewedDate || 'today'} (${readings.length})`}>
+            {readings.map(r => (
+              <TouchableOpacity key={r.startMs} onPress={() => router.push({ pathname: '/hrv-reading' as any, params: { ts: String(r.startMs) } })} style={s.hrvRow}>
+                <View style={[s.qDot, { backgroundColor: r.ok ? '#27ae60' : '#c0392b' }]} />
+                <Text style={s.hrvTime}>{hhmm(r.startMs)}</Text>
+                <Text style={s.hrvRmssd}>{r.metrics.rmssd}<Text style={s.hrvUnit}> ms rMSSD</Text></Text>
+                <Text style={s.hrvMeta}>{r.metrics.n} R-R · {r.ok ? 'good' : 'noisy'}</Text>
+                <Text style={s.hrvChev}>›</Text>
+              </TouchableOpacity>
+            ))}
+            <Text style={s.hrvHint}>Green = clean capture · red = gaps/artifacts make this reading unreliable (RMSSD becomes noise). Tap for the full breakdown.</Text>
+          </Section>
+        )}
+
       </ScrollView>
       </View>
     </SafeAreaView>
@@ -314,4 +341,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   rowLabel: { fontSize: 13, color: c.text, fontWeight: '500' },
   rowSub:   { fontSize: 11, color: c.textFaint, marginTop: 2 },
   rowValue: { fontSize: 13, fontWeight: '700', color: c.text },
+  hrvRow:   { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: c.border, gap: 8 },
+  qDot:     { width: 10, height: 10, borderRadius: 5 },
+  hrvTime:  { fontSize: 14, fontWeight: '700', color: c.text, width: 48 },
+  hrvRmssd: { fontSize: 14, fontWeight: '800', color: c.text, width: 92 },
+  hrvUnit:  { fontSize: 11, fontWeight: '600', color: c.textFaint },
+  hrvMeta:  { flex: 1, fontSize: 11, color: c.textFaint },
+  hrvChev:  { fontSize: 20, color: c.textFaint, fontWeight: '700' },
+  hrvHint:  { fontSize: 11, color: c.textFaint, lineHeight: 16, paddingHorizontal: 14, paddingVertical: 10 },
 });

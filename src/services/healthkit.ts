@@ -1,6 +1,7 @@
 import HealthKit, { subscribeToChanges } from '@kingstinct/react-native-healthkit';
 import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
+import { readingFromSeries, HRVReading } from './hrvDetail';
 
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
 // series-stored workout HR/power that the JS library's sample query returns only sparsely.
@@ -3976,6 +3977,15 @@ export async function fetchRestingHRHistory(months: number, toDate?: Date): Prom
  * Mirrors the main snapshot logic: groups sleep samples into sessions,
  * then applies computeWeightedRMSSD per session with heartbeat quality filtering.
  */
+// Individual HRV readings (each heartbeat-series sample) in [from,to] → full per-reading detail + quality.
+export async function fetchHRVReadings(from: Date, to: Date): Promise<HRVReading[]> {
+  const hbs = await safeQuery(
+    () => (HealthKit as any).queryHeartbeatSeriesSamples({ filter: { startDate: from, endDate: to }, limit: 100_000 }),
+    [] as any[]
+  );
+  return (hbs as any[]).map(readingFromSeries).filter(r => r.beats > 2).sort((a, b) => a.startMs - b.startMs);
+}
+
 export async function fetchHRVHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {
   const endDate = toDate ?? new Date();
   const since   = new Date(endDate.getTime() - months * 30 * 86_400_000);
