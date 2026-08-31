@@ -288,7 +288,9 @@ struct RouteView: View {
   @ViewBuilder private func mapScreen(_ r: RoutePayload) -> some View {
     ZStack(alignment: .bottom) {
       if mapOn {
-        Map(position: $cam) {
+        // interactionModes WITHOUT .pan → horizontal swipes fall through to the TabView pager (the map was
+        // eating them); the crown still zooms and the camera still follows you.
+        Map(position: $cam, interactionModes: [.zoom]) {
           MapPolyline(coordinates: store.coords)
             .stroke(store.offRoute ? Color.orange : Color.blue, lineWidth: 4)
           ForEach(directionArrows(store.coords)) { a in

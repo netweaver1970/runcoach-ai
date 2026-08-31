@@ -180,10 +180,10 @@ function ElevProfile({ elev, width, height, c }: { elev: number[]; width: number
 }
 
 // Map + overlays (zoom −/AUTO/+, fullscreen toggle, follow pill) + finger-pan. Used inline and in the modal.
-function MapPane({ coords, start, dest, here, center, zoom, width, height, c, moving, isFull, autoOn, picking, pickLabel, bearing, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickMap }: {
+function MapPane({ coords, start, dest, here, center, zoom, width, height, c, moving, isFull, autoOn, picking, pickLabel, bearing, headingUp, onToggleHeadingUp, onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onToggleFull, onGrab, onRelease, onPickMap }: {
   coords: [number, number][]; start: [number, number]; dest?: [number, number] | null; here: [number, number] | null;
   center?: [number, number]; zoom: number; width: number; height: number; c: Palette; moving: boolean;
-  isFull: boolean; autoOn: boolean; picking?: boolean; pickLabel?: string; bearing?: number;
+  isFull: boolean; autoOn: boolean; picking?: boolean; pickLabel?: string; bearing?: number; headingUp?: boolean; onToggleHeadingUp?: () => void;
   onPan: (c: [number, number]) => void; onZoomTo: (z: number) => void; onZoomIn: () => void; onZoomOut: () => void; onAuto: () => void; onToggleFull: () => void;
   onGrab?: () => void; onRelease?: () => void; onPickMap?: (c: [number, number]) => void;
 }) {
@@ -256,6 +256,9 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
         <TouchableOpacity style={s.zoomBtn} onPress={onZoomIn}><Text style={s.zoomT}>＋</Text></TouchableOpacity>
         <TouchableOpacity style={[s.zoomBtn, autoOn && s.zoomBtnOn]} onPress={onAuto}><Text style={[s.zoomTsm, autoOn && { color: '#fff' }]}>AUTO</Text></TouchableOpacity>
         <TouchableOpacity style={s.zoomBtn} onPress={onZoomOut}><Text style={s.zoomT}>－</Text></TouchableOpacity>
+        <TouchableOpacity style={[s.zoomBtn, headingUp && s.zoomBtnOn]} onPress={onToggleHeadingUp}>
+          <Text style={[s.zoomTsm, headingUp && { color: '#fff' }]}>{headingUp ? '⟟UP' : 'N↑'}</Text>
+        </TouchableOpacity>
       </View>
       <TouchableOpacity style={s.fullBtn} onPress={onToggleFull}>
         <Text style={s.fullT}>{isFull ? '✕ Close' : '⤢ Full'}</Text>
@@ -291,7 +294,8 @@ export default function WayfinderScreen() {
   const [mapW, setMapW] = useState(0);
   const [here, setHere] = useState<[number, number] | null>(null);   // live phone position, shown on the map
   const [moving, setMoving] = useState(false);                       // running → auto-follow tighter
-  const [courseDeg, setCourseDeg] = useState<number | null>(null);   // direction of travel → heading-up in follow mode
+  const [deviceHeading, setDeviceHeading] = useState<number | null>(null);   // phone compass → heading-up rotation
+  const [headingUp, setHeadingUp] = useState(true);                          // heading-up (follow) vs north-up (overview)
   const [zoomMode, setZoomMode] = useState<'auto' | number>('auto'); // 'auto' = fit loop / follow when running
   const [panCenter, setPanCenter] = useState<[number, number] | null>(null);  // finger-panned map centre
   const [fullscreen, setFullscreen] = useState(false);
@@ -456,7 +460,7 @@ export default function WayfinderScreen() {
   // isn't detailed enough. Foreground-only, high accuracy; the subscription stops when you leave the screen.
   useEffect(() => {
     if (!hasRoute) { setHere(null); return; }
-    let alive = true; let sub: any = null;
+    let alive = true; let sub: any = null; let hsub: any = null;
     (async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
@@ -466,13 +470,17 @@ export default function WayfinderScreen() {
           pos => {
             setHere([pos.coords.longitude, pos.coords.latitude]);
             setMoving((pos.coords.speed ?? 0) > 1);
-            const h = pos.coords.heading;   // course over ground; hold the last valid one (iOS gives -1 when unknown)
-            if (h != null && h >= 0) setCourseDeg(h);
           },
         );
+        // Device COMPASS heading (magnetometer) → heading-up rotates as you physically turn the phone, even
+        // standing still. trueHeading is -1 until calibrated → fall back to magHeading.
+        hsub = await Location.watchHeadingAsync(h => {
+          const deg = (h.trueHeading != null && h.trueHeading >= 0) ? h.trueHeading : h.magHeading;
+          if (deg != null && deg >= 0) setDeviceHeading(deg);
+        });
       } catch { /* ignore — map still shows the loop without a live dot */ }
     })();
-    return () => { alive = false; sub?.remove(); };
+    return () => { alive = false; sub?.remove(); hsub?.remove(); };
   }, [hasRoute]);
   const [watchMsg, setWatchMsg] = useState('');
   const sendToWatch = useCallback(async () => {
@@ -508,16 +516,18 @@ export default function WayfinderScreen() {
     setTimeout(() => setTestMsg(''), 3500);
   }, [cur, start]);
 
-  // Map zoom/centre. Auto = fit the whole loop, but tighten-and-follow once you're actually running; manual
-  // (±) forces a zoom, still following you when you move. A finger-pan sets panCenter and freezes the zoom.
+  // Follow-me vs overview. Heading-up (the ⟟ toggle, default on) = FOLLOW: centre on you, rotate to your phone's
+  // compass, and HOLD the zoom. North-up = overview (fit the whole loop). A finger-pan drops out of follow.
   const mapH = mapW > 0 ? Math.round(mapW * 0.92) : 0;
   const autoZ = cur && mapW > 0 ? fitZoom(cur.coords, mapW, mapH) : 15;
-  const effZoom = zoomMode === 'auto' ? ((moving && here) ? 16 : autoZ) : zoomMode;
-  const effCenter: [number, number] | undefined = panCenter ?? ((moving && here) ? here : undefined);
+  const following = headingUp && here != null && !panCenter;
+  // Zoom: a manual ± ALWAYS holds (never snaps back to overview); 'auto' uses a close follow zoom when
+  // following, else fits the loop.
+  const effZoom = zoomMode === 'auto' ? (following ? 16 : autoZ) : zoomMode;
+  const effCenter: [number, number] | undefined = panCenter ?? (following ? here! : undefined);
   const autoOn = zoomMode === 'auto' && !panCenter;
-  // Heading-up ONLY when actively following you (centred on your position, not panning) and a travel direction
-  // exists — rotates the whole map so your course points UP (easier to follow than north-up).
-  const followBearing = (effCenter === here && here != null && courseDeg != null) ? courseDeg : undefined;
+  // Rotate the whole map by the phone's compass heading while following → it turns as you turn the phone.
+  const followBearing = (following && deviceHeading != null) ? deviceHeading : undefined;
   const effZoomRef = useRef(effZoom); effZoomRef.current = effZoom;
 
   // Panning freezes the zoom (so auto-fit/follow stop fighting the drag); AUTO returns to automatic + recentres.
@@ -538,6 +548,7 @@ export default function WayfinderScreen() {
   }, [pickMode]);
   const paneProps = cur ? {
     coords: cur.coords, start, dest, here, center: effCenter, zoom: effZoom, c, moving, autoOn, bearing: followBearing,
+    headingUp, onToggleHeadingUp: () => setHeadingUp(v => !v),
     picking: !!pickMode, pickLabel: pickMode === 'to' ? 'Tap the map to set the destination' : 'Tap the map to set the start',
     onPan, onZoomTo, onZoomIn, onZoomOut, onAuto, onGrab, onRelease, onPickMap,
   } : null;
