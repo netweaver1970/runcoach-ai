@@ -13,7 +13,8 @@ import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, orsPointToPointOptions, geocodeSearch, GeoHit, RouteOption, RouteLoop } from '../src/services/routing';
-import { loadActiveRoute } from '../src/services/activeRoute';
+import { loadActiveRoute, clearActiveRoute } from '../src/services/activeRoute';
+import { requireNativeModule } from 'expo-modules-core';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot, ensureBlockPower } from '../src/services/coach';
@@ -363,16 +364,27 @@ export default function WayfinderScreen() {
   }, []);
 
   // If a run is in progress (a route was sent to the watch and hasn't ended), restore it so THIS screen backs
-  // up the tiny watch display — the loop + your live position — instead of opening blank. Runs once on mount.
+  // up the tiny watch display — the loop + your live position — instead of opening blank. Only within 4 h of the
+  // send (a stale flag shouldn't strand the screen in "following"). Also listen for the watch's run-END signal
+  // and drop out of follow the moment the run stops.
   useEffect(() => {
     (async () => {
       const ar = await loadActiveRoute();
-      if (ar?.active && (ar.loop?.coords?.length ?? 0) >= 2) {
+      const fresh = ar?.savedAt != null && (Date.now() - ar.savedAt) < 4 * 3600_000;
+      if (ar?.active && fresh && (ar.loop?.coords?.length ?? 0) >= 2) {
         setOpts([{ ...ar.loop, seed: 0, headingDeg: 0, heading: '▶ run' }]);
         setSel(0); setFollowingRun(true);
         setStart(ar.loop.coords[0]); setPlaced(ar.name || 'your run');
       }
     })();
+    let sub: any = null;
+    try {
+      const mod: any = requireNativeModule('RunCoachWatchSync');
+      sub = mod?.addListener?.('onRunState', (e: { state?: string }) => {
+        if (e?.state === 'end') { setFollowingRun(false); clearActiveRoute().catch(() => {}); }
+      });
+    } catch { /* module not in this build */ }
+    return () => { sub?.remove?.(); };
   }, []);
 
   const generate = useCallback(async () => {
@@ -644,9 +656,9 @@ export default function WayfinderScreen() {
             {busy && !opts.length && <ActivityIndicator style={{ marginTop: 20 }} color={c.accent} />}
 
             {followingRun && (
-              <View style={s.followBanner}>
-                <Text style={s.followBannerT}>● Following your run on the watch — the loop + your live position below. Tap “Generate” to plan a new one.</Text>
-              </View>
+              <TouchableOpacity style={s.followBanner} onPress={() => { setFollowingRun(false); clearActiveRoute().catch(() => {}); }}>
+                <Text style={s.followBannerT}>● Following your run on the watch — the loop + your live position below. Tap here to stop, or Generate to plan a new one.</Text>
+              </TouchableOpacity>
             )}
 
             {/* Heading chooser */}

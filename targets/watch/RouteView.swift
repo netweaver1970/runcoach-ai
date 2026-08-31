@@ -212,7 +212,7 @@ struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
   @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(followsHeading: true, fallback: .automatic)   // heading-up follow
-  @State private var page = 1                                                       // 0 = controls · 1 = map (centre) · 2 = media
+  @State private var page = 0                                                       // 0 = controls (start/stop, shown first) · 1 = map · 2 = media
   @State private var infoOn = true                                                  // map screen: show/hide the metrics strip (minimise)
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
@@ -344,16 +344,6 @@ struct RouteView: View {
           Image(systemName: store.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
             .font(.system(size: 14)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
         }.buttonStyle(.plain)
-        if mapOn {   // compass: heading-up ↔ north-up (between the speaker and eye)
-          Button {
-            headingUp.toggle()
-            cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
-                            : .userLocation(fallback: .automatic)
-          } label: {
-            Image(systemName: headingUp ? "location.north.line.fill" : "n.circle.fill")
-              .font(.system(size: 14)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
-          }.buttonStyle(.plain)
-        }
         Button { withAnimation { infoOn.toggle() } } label: {   // minimise/show the metrics strip
           Image(systemName: infoOn ? "eye.fill" : "eye.slash.fill")
             .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
@@ -365,6 +355,14 @@ struct RouteView: View {
         Image(systemName: mapOn ? "map.fill" : "map")
           .font(.system(size: 13)).frame(width: 36, height: 36).contentShape(Rectangle()).background(.ultraThinMaterial, in: Circle())
       }.buttonStyle(.plain).padding(4)
+    }
+    .overlay(alignment: .bottomTrailing) {
+      // Lap here too, so you can advance a segment without swiping to Controls (works even with the strip hidden).
+      if engine.running && engine.segCount > 0 {
+        Button { engine.lap() } label: {
+          Image(systemName: "forward.end.fill").font(.system(size: 16)).frame(width: 44, height: 44).contentShape(Circle()).background(.ultraThinMaterial, in: Circle())
+        }.buttonStyle(.plain).padding(.trailing, 6).padding(.bottom, 20)
+      }
     }
     .onChange(of: store.turnDistM) {
       guard mapOn, engine.running else { return }
