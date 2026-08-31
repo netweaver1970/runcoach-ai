@@ -8,7 +8,7 @@ import { DailyRecovery } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, scoreToLabel, scoreToColor, fetchHRVReadings } from '../src/services/healthkit';
-import { HRVReading, setCachedReadings } from '../src/services/hrvDetail';
+import { HRVReading, setCachedReadings, hrvGrade, gradeColor, gradeLabel } from '../src/services/hrvDetail';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { KpiTabs } from '../src/components/KpiTabs';
 import { DayNav } from '../src/components/DayNav';
@@ -283,16 +283,19 @@ export default function RecoveryDetailScreen() {
 
         {readings.length > 0 && (
           <Section title={`HRV readings · ${(nightBed && nightWake) ? 'this sleep night' : 'sleep night'} (${readings.length})`}>
-            {readings.map(r => (
-              <TouchableOpacity key={r.startMs} onPress={() => router.push({ pathname: '/hrv-reading' as any, params: { ts: String(r.startMs) } })} style={s.hrvRow}>
-                <View style={[s.qDot, { backgroundColor: r.ok ? '#27ae60' : '#c0392b' }]} />
-                <Text style={s.hrvTime}>{hhmm(r.startMs)}</Text>
-                <Text style={s.hrvRmssd}>{r.metrics.rmssd}<Text style={s.hrvUnit}> ms rMSSD</Text></Text>
-                <Text style={s.hrvMeta}>{r.metrics.n} R-R · {r.ok ? 'good' : 'noisy'}</Text>
-                <Text style={s.hrvChev}>›</Text>
-              </TouchableOpacity>
-            ))}
-            <Text style={s.hrvHint}>Green = clean capture · red = gaps/artifacts make this reading unreliable (RMSSD becomes noise). Tap for the full breakdown.</Text>
+            {readings.slice().reverse().map(r => {   // newest on top
+              const g = hrvGrade(r);
+              return (
+                <TouchableOpacity key={r.startMs} onPress={() => router.push({ pathname: '/hrv-reading' as any, params: { ts: String(r.startMs) } })} style={s.hrvRow}>
+                  <View style={[s.qDot, { backgroundColor: gradeColor(g) }]} />
+                  <Text style={s.hrvTime}>{hhmm(r.startMs)}</Text>
+                  <Text style={s.hrvRmssd}>{r.metrics.rmssd}<Text style={s.hrvUnit}> ms rMSSD</Text></Text>
+                  <Text style={s.hrvMeta}>{r.metrics.n} R-R · {gradeLabel(g)}</Text>
+                  <Text style={s.hrvChev}>›</Text>
+                </TouchableOpacity>
+              );
+            })}
+            <Text style={s.hrvHint}>Green = clean · amber = a little missing/noisy · red = gaps or artifacts make it unreliable (RMSSD becomes noise). Tap for the full breakdown.</Text>
           </Section>
         )}
 

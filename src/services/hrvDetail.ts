@@ -31,9 +31,24 @@ export interface HRVReading {
   quality: BeatQuality;
   ok: boolean;          // green when true, red when false
   rr: number[];         // NN intervals (ms) in order
-  hr: { t: number; bpm: number }[];   // instantaneous HR over the reading (t = sec from start)
+  hr: { t: number; bpm: number; seg: number }[];   // instantaneous HR (t = sec); `seg` bumps at each gap → don't connect across it
   metrics: HRVMetrics;
 }
+
+export type HRVGrade = 'good' | 'fair' | 'poor';
+// Display grade — STRICTER than the scoring `ok` flag (which the recovery score depends on, so we don't touch
+// it) and, unlike it, penalises how much WALL-CLOCK time is missing: 13 s of gaps in a 1-min reading is not
+// "good". good = near-complete + clean; fair = a little missing / minor artifacts; poor = fails the gate or a
+// meaningful chunk is missing.
+export function hrvGrade(r: { quality: BeatQuality; gapsDurSec: number; elapsedSec: number }): HRVGrade {
+  const q = r.quality;
+  const gapFrac = r.elapsedSec > 0 ? r.gapsDurSec / r.elapsedSec : 1;
+  if (!q.ok || q.coverage < 0.85 || gapFrac > 0.12 || q.artifactPct > 0.12) return 'poor';
+  if (q.coverage < 0.95 || gapFrac > 0.05 || q.artifactPct > 0.06) return 'fair';
+  return 'good';
+}
+export function gradeColor(g: HRVGrade): string { return g === 'good' ? '#27ae60' : g === 'fair' ? '#e0a020' : '#c0392b'; }
+export function gradeLabel(g: HRVGrade): string { return g === 'good' ? 'good' : g === 'fair' ? 'fair' : 'noisy'; }
 
 const mean = (a: number[]) => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
 const std = (a: number[]) => { const m = mean(a); return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / Math.max(1, a.length - 1)); };
@@ -88,13 +103,13 @@ export function readingFromSeries(s: RawSeries): HRVReading {
   const startMs = new Date(s.startDate as any).getTime();
   const endMs = s.endDate ? new Date(s.endDate as any).getTime() : startMs;
   const rr: number[] = [];
-  const hr: { t: number; bpm: number }[] = [];
-  let gaps = 0, gapsDurSec = 0;
+  const hr: { t: number; bpm: number; seg: number }[] = [];
+  let gaps = 0, gapsDurSec = 0, seg = 0;
   for (let i = 1; i < beats.length; i++) {
     const dt = beats[i].timeSinceSeriesStart - beats[i - 1].timeSinceSeriesStart;
-    if (beats[i].precededByGap) { gaps++; gapsDurSec += Math.max(0, dt); continue; }
+    if (beats[i].precededByGap) { gaps++; gapsDurSec += Math.max(0, dt); seg++; continue; }   // gap → break the HR line
     const ms = dt * 1000;
-    if (ms >= 300 && ms <= 2000) { rr.push(ms); hr.push({ t: beats[i].timeSinceSeriesStart, bpm: 60000 / ms }); }
+    if (ms >= 300 && ms <= 2000) { rr.push(ms); hr.push({ t: beats[i].timeSinceSeriesStart, bpm: 60000 / ms, seg }); }
   }
   const totalSec = beats.length > 1 ? beats[beats.length - 1].timeSinceSeriesStart - beats[0].timeSinceSeriesStart : 0;
   const quality = assessBeatQuality(s);
