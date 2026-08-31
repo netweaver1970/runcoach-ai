@@ -16,8 +16,10 @@ import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, orsPointToPointOpt
 import { loadActiveRoute } from '../src/services/activeRoute';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { loadSnapshotCache } from '../src/services/healthkit';
-import { deterministicCoachPlan, assembleCoachSnapshot } from '../src/services/coach';
+import { deterministicCoachPlan, assembleCoachSnapshot, ensureBlockPower } from '../src/services/coach';
 import type { WatchWorkout } from '../src/services/coach';
+import { getPowerZones } from '../src/services/claude';
+import { weekdaySlot } from '../src/services/watchWorkout';
 
 const MERELBEKE: [number, number] = [3.7436, 50.9767];   // fallback start if location is unavailable
 const TILE = 256;
@@ -480,6 +482,32 @@ export default function WayfinderScreen() {
     setTimeout(() => setWatchMsg(''), 2500);
   }, [cur, dayWorkout]);
 
+  // On-the-spot STRUCTURE test: push a realistic full workout (open warmup → drills → 3× work/recovery → open
+  // cooldown, with a real Z4 power band) but with WORK and DRILLS shortened to 1 min so you can step the whole
+  // thing in a few minutes on the couch. Warm-up/cool-down are OPEN (lap-to-advance) so you don't have to walk
+  // them; the current loop is sent as the route if you've generated one, else a tiny stub so the payload is valid.
+  const [testMsg, setTestMsg] = useState('');
+  const testStructure = useCallback(async () => {
+    setTestMsg('Sending…');
+    try {
+      const pz = await getPowerZones().catch(() => undefined);
+      const wk = ensureBlockPower({
+        name: `${weekdaySlot()} TEST`,
+        warmupMeters: 0,     // OPEN → lap to advance
+        drillsMinutes: 1,    // 1 min
+        cooldownMeters: 0,   // OPEN → lap to advance
+        blocks: [{ repeats: 3, workMinutes: 1, restMinutes: 1, hrZone: 'Z4', recoveryZone: 'Z1', label: 'intervals' }],
+      }, pz)!;
+      const route: RouteLoop = cur ?? {
+        distanceKm: 0.1, ascentM: 0, descentM: 0, trailPct: 0, elev: [],
+        coords: [start, [start[0] + 0.0006, start[1] + 0.0003]], steps: [],
+      };
+      const ok = await sendRouteToWatch(route, 'Structure test', 'running', wk);
+      setTestMsg(ok ? '✓ Sent — open RunCoach on the watch and press Start' : 'Watch not reachable — open the RunCoach watch app');
+    } catch { setTestMsg('Test send failed.'); }
+    setTimeout(() => setTestMsg(''), 3500);
+  }, [cur, start]);
+
   // Map zoom/centre. Auto = fit the whole loop, but tighten-and-follow once you're actually running; manual
   // (±) forces a zoom, still following you when you move. A finger-pan sets panCenter and freezes the zoom.
   const mapH = mapW > 0 ? Math.round(mapW * 0.92) : 0;
@@ -590,6 +618,15 @@ export default function WayfinderScreen() {
               <Text style={s.hint}>{dest
                 ? 'From → To, padded with a detour to match the distance (direct route is offered too). Leave To empty for a loop.'
                 : 'Default distance comes from today\'s session. Set a “To” above for a point-to-point run instead of a loop.'}</Text>
+              {watchRouteAvailable() && (
+                <>
+                  <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={testStructure}>
+                    <Text style={[s.btnT, { color: c.text }]}>⌚ Test structure on watch (1-min work + drills)</Text>
+                  </TouchableOpacity>
+                  <Text style={s.hint}>Pushes a full workout — open warm-up → 1-min drills → 3× 1-min work (Z4 power) / 1-min recovery → open cool-down — so you can step the whole thing on the spot. Open RunCoach on the watch and press Start.</Text>
+                  {testMsg ? <Text style={[s.hint, { textAlign: 'center', color: c.accent }]}>{testMsg}</Text> : null}
+                </>
+              )}
             </View>
 
             {err && <Text style={s.err}>{err}</Text>}
