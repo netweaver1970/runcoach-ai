@@ -296,6 +296,11 @@ export default function WayfinderScreen() {
   const [here, setHere] = useState<[number, number] | null>(null);   // live phone position, shown on the map
   const [moving, setMoving] = useState(false);                       // running → auto-follow tighter
   const [deviceHeading, setDeviceHeading] = useState<number | null>(null);   // phone compass → heading-up rotation
+  // Throttle the compass: iOS fires headings 10–100×/s while moving. Un-gated, each one re-rendered the whole
+  // screen + reprojected/rotated the map → JS thread pegged ~100% for a full run → iOS' 80%/60s CPU watchdog
+  // hard-killed the app (bug_type 206). Gate to a meaningful turn (≥3°) and ≤5 Hz so a straight-line run barely
+  // re-renders. deviceHeading only feeds the map's follow-bearing, so this is invisible to the eye.
+  const lastHeadingRef = useRef<{ deg: number; t: number }>({ deg: -999, t: 0 });
   const [headingUp, setHeadingUp] = useState(true);                          // heading-up (follow) vs north-up (overview)
   const [zoomMode, setZoomMode] = useState<'auto' | number>('auto'); // 'auto' = fit loop / follow when running
   const [panCenter, setPanCenter] = useState<[number, number] | null>(null);  // finger-panned map centre
@@ -488,7 +493,13 @@ export default function WayfinderScreen() {
         // standing still. trueHeading is -1 until calibrated → fall back to magHeading.
         hsub = await Location.watchHeadingAsync(h => {
           const deg = (h.trueHeading != null && h.trueHeading >= 0) ? h.trueHeading : h.magHeading;
-          if (deg != null && deg >= 0) setDeviceHeading(deg);
+          if (deg == null || deg < 0) return;
+          const now = Date.now();
+          const prev = lastHeadingRef.current;
+          let d = Math.abs(deg - prev.deg); if (d > 180) d = 360 - d;   // circular delta
+          if (d < 3 || now - prev.t < 200) return;                      // ignore <3° jitter and >5 Hz updates
+          lastHeadingRef.current = { deg, t: now };
+          setDeviceHeading(deg);
         });
       } catch { /* ignore — map still shows the loop without a live dot */ }
     })();
