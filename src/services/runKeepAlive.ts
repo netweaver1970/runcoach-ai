@@ -15,6 +15,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { requireNativeModule } from 'expo-modules-core';
 import { setRunActive } from './activeRoute';
+import { logRunBattery } from './runBatteryLog';
 
 const TASK = 'runcoach-run-keepalive';
 const MAX_MS = 3 * 3600 * 1000;   // hard stop after 3h if no run-end ever arrives
@@ -58,5 +59,15 @@ try {
   sync?.addListener?.('onRunState', (e: { state?: string }) => {
     if (e?.state === 'start') void startRunKeepAlive();
     else if (e?.state === 'end') { void stopRunKeepAlive(); void setRunActive(false); }   // run over → Wayfinder stops backing it up
+  });
+  // Watch battery profiling for the finished run → append to the local log (surfaced in the debug export).
+  sync?.addListener?.('onRunBattery', (e: any) => {
+    if (e && typeof e.perHr === 'number') {
+      void logRunBattery({
+        device: String(e.device ?? 'watch'),
+        perHr: e.perHr, drainPct: Number(e.drainPct ?? 0), durMin: Number(e.durMin ?? 0),
+        startPct: Number(e.startPct ?? 0), endPct: Number(e.endPct ?? 0),
+      });
+    }
   });
 } catch { /* module not in this build */ }

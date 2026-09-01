@@ -25,6 +25,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var energyKcal: Double = 0
   @Published var elapsed: TimeInterval = 0
   @Published var paceStr = "--:--"         // min/km, from moving-average distance/time
+  @Published var powerMin: Double = 0      // session min/max running power (W) → the hidden-strip readout
+  @Published var powerMax: Double = 0
+  @Published var batteryNote = ""          // set on end: e.g. "🔋 −4% in 32m · 7.5%/hr" (internal profiling)
 
   // Structured-interval state (Stage 2).
   @Published var segLabel = ""             // e.g. "Work" / "Recover" / "Warm-up"
@@ -43,6 +46,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
+  private var startBattery: Float = -1    // watch battery level (0…1) captured at run start → drain/hr on end
 
   func requestAuth() async -> Bool {
     guard HKHealthStore.isHealthDataAvailable() else { return false }
@@ -101,10 +105,14 @@ final class WorkoutEngine: NSObject, ObservableObject {
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { _, _ in }
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
+      // Internal battery profiling: snapshot the watch battery so we can report drain/hr when the run ends.
+      let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
+      let bat0 = dev.batteryLevel
       DispatchQueue.main.async {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
         self.lastMoveAt = Date(); self.autoPaused = false
+        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
       startTicker()
@@ -122,6 +130,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
   func end(save: Bool = true) {
     guard let s = session, let b = builder else { return }
+    reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
     s.end()
     if save {
@@ -135,6 +144,25 @@ final class WorkoutEngine: NSObject, ObservableObject {
     DispatchQueue.main.async {
       self.running = false; self.paused = false; self.power = 0
       self.segLabel = ""; self.segRemain = ""; self.segZone = ""; self.segIndex = 0; self.segCount = 0
+    }
+  }
+
+  // Internal battery profiling: compute watch drain since start → a %/hr figure. Shows on the wrist (batteryNote)
+  // and is forwarded to the phone so it lands in the debug export's perf log. Best-effort (needs both readings).
+  private func reportBattery() {
+    let end = WKInterfaceDevice.current().batteryLevel
+    guard startBattery >= 0, end >= 0, let sd = startDate else { return }
+    let dur = Date().timeIntervalSince(sd)
+    guard dur > 60 else { return }                       // too short to mean anything
+    let drainPct = Double(startBattery - end) * 100      // + = discharged (usually); may be <0 if it charged
+    let perHr = drainPct / (dur / 3600)
+    let note = String(format: "🔋 %@%.0f%% in %dm · %.1f%%/hr",
+                      drainPct >= 0 ? "−" : "+", abs(drainPct), Int(dur / 60), perHr)
+    DispatchQueue.main.async { self.batteryNote = note }
+    let s = WCSession.default
+    if s.activationState == .activated {
+      s.transferUserInfo(["watchBatteryPerHr": perHr, "watchDrainPct": drainPct, "watchDurMin": dur / 60,
+                          "watchStartPct": Double(startBattery) * 100, "watchEndPct": Double(end) * 100])
     }
   }
 
@@ -190,7 +218,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if now.timeIntervalSince(outSince!) > 8, lastTargetCue == nil || now.timeIntervalSince(lastTargetCue!) > 25 {
       lastTargetCue = now
       WKInterfaceDevice.current().play(st < 0 ? .directionUp : .directionDown)
-      speak(st < 0 ? "Under power, pick it up" : "Over power, ease off")
+      speak(st < 0 ? "Under power, \(Int(power)) watts, pick it up" : "Over power, \(Int(power)) watts, ease off")
     }
   }
 
@@ -216,6 +244,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
       phrase += ", \(Int(mm)) meters"
     }
     if let z = seg.zone, !z.isEmpty { phrase += ", \(z)" }
+    // State the prescribed POWER band on a work segment so you know the target before you're in it (the HR
+    // zone above already covers the HR case). e.g. "intervals, 1 minute, Z4, target 250 to 280 watts".
+    if seg.kind == "work", let lo = seg.pLo, let hi = seg.pHi, lo > 0, hi > 0 {
+      phrase += ", target \(Int(lo)) to \(Int(hi)) watts"
+    }
     speak(phrase)
     updateSegDisplay(seg, 0, 0)
   }
@@ -269,7 +302,13 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
         DispatchQueue.main.async { self.energyKcal = kcal }
       } else if qt == HKQuantityType(.runningPower) {
         let w = stat.mostRecentQuantity()?.doubleValue(for: .watt()) ?? self.power
-        DispatchQueue.main.async { self.power = w }
+        DispatchQueue.main.async {
+          self.power = w
+          if w > 5 {   // ignore the ~0 W readings while standing (see stationary-repair note) so min stays real
+            self.powerMax = max(self.powerMax, w)
+            self.powerMin = self.powerMin == 0 ? w : min(self.powerMin, w)
+          }
+        }
       }
     }
   }

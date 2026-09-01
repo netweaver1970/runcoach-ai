@@ -213,7 +213,8 @@ struct RouteView: View {
   @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(followsHeading: true, fallback: .automatic)   // heading-up follow
   @State private var page = 0                                                       // 0 = controls (start/stop, shown first) · 1 = map · 2 = media
-  @State private var infoOn = true                                                  // map screen: show/hide the metrics strip (minimise)
+  @State private var infoOn = false                                                 // map screen: metrics strip hidden by default (the min/now/max power strip shows instead)
+  @State private var zoomedForTurn = false                                          // camera is in the close turn-approach zoom (vs live follow)
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
   @State private var headingUp = true                                               // true = heading-up, false = north-up
@@ -274,6 +275,9 @@ struct RouteView: View {
         }.buttonStyle(.bordered).controlSize(.large).font(.title3)
       } else {
         Text(String(format: "%.1f km", r.distanceKm)).font(.caption).foregroundColor(.secondary)
+        if !engine.batteryNote.isEmpty {   // last run's watch-battery profiling
+          Text(engine.batteryNote).font(.caption2).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.7)
+        }
         Button { engine.startFromRoute(r) } label: { Label("Start", systemImage: "figure.run") }
           .buttonStyle(.borderedProminent).controlSize(.large).tint(.green)
         Button { autoPause.toggle() } label: {
@@ -336,6 +340,16 @@ struct RouteView: View {
         .padding(.horizontal, 12).padding(.vertical, 4)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .padding(.bottom, 18).padding(.horizontal, 6)   // sit just ABOVE the TabView page dots
+      } else if engine.running && engine.power > 0 {
+        // Strip hidden → a compact Min / Now / Max power readout, so the number that matters stays glanceable.
+        HStack(spacing: 14) {
+          powerStat("min", engine.powerMin)
+          powerStat("now", engine.power, powerColor, big: true)
+          powerStat("max", engine.powerMax)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 3)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.bottom, 18)
       }
     }
     .overlay(alignment: .topTrailing) {
@@ -367,11 +381,32 @@ struct RouteView: View {
     .onChange(of: store.turnDistM) {
       guard mapOn, engine.running else { return }
       if store.turnDistM < 80, let h = store.here {
+        // Approaching a turn → close, position-locked zoom (re-centres on you each update).
         cam = .camera(MapCamera(centerCoordinate: h, distance: 140, heading: headingUp ? store.heading : 0))
-      } else if store.turnDistM > 140 {
+        zoomedForTurn = true
+      } else if zoomedForTurn {
+        // Left the turn-approach band → hand the camera back to LIVE follow ONCE. Previously the 80–140 m band
+        // matched neither branch, so the camera stayed frozen on the last fixed position mid-run (the "cached
+        // segment" that only jumped later). Gating on zoomedForTurn also avoids re-arming follow every GPS tick.
+        cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
+                        : .userLocation(fallback: .automatic)
+        zoomedForTurn = false
+      }
+    }
+    .onChange(of: page) {
+      // Returning to the map re-arms live follow, clearing any stale region MapKit was still showing.
+      if page == 1 && !zoomedForTurn {
         cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
                         : .userLocation(fallback: .automatic)
       }
+    }
+  }
+
+  // Compact power readout used by the hidden-strip Min / Now / Max row.
+  @ViewBuilder private func powerStat(_ label: String, _ w: Double, _ color: Color = .primary, big: Bool = false) -> some View {
+    VStack(spacing: 0) {
+      Text("\(Int(w))").font(big ? .title3 : .body).bold().monospacedDigit().foregroundColor(color)
+      Text(label).font(.system(size: 9)).foregroundColor(.secondary)
     }
   }
 

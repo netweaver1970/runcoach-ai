@@ -22,6 +22,7 @@ import { getAccountingMode } from './accounting';
 import { getBiologyReport, compositionChange } from './biology';
 import { loadLabs, loadTemplates } from './labsStore';
 import { getCurrentUser } from './auth';
+import { getRunBatteryLog } from './runBatteryLog';
 
 // A key is a credential if — with separators/casing removed — it contains one of these tokens.
 // Matches anthropic_api_key, llm_apikey_*, accessToken, refresh_token, clientSecret, authorization…
@@ -85,6 +86,12 @@ export async function buildDebugExport(): Promise<DebugExport> {
     };
   });
   await add('trainingLoad', async () => JSON.parse(await buildTrainingLoadCalibration(4)));
+  await add('batteryProfiling', async () => {
+    const log = await getRunBatteryLog();
+    if (!log.length) return null;
+    const avg = log.reduce((s, e) => s + e.perHr, 0) / log.length;
+    return { avgPerHr: Math.round(avg * 10) / 10, runs: log };   // watch battery %/hr per run
+  });
   await add('coachSnapshot', async () => {
     const snap = await loadSnapshotCache();
     if (!snap) return null;
