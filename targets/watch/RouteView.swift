@@ -215,6 +215,7 @@ struct RouteView: View {
   @State private var page = 0                                                       // 0 = controls (start/stop, shown first) · 1 = map · 2 = media
   @State private var infoOn = false                                                 // map screen: metrics strip hidden by default (the min/now/max power strip shows instead)
   @State private var zoomedForTurn = false                                          // camera is in the close turn-approach zoom (vs live follow)
+  @State private var hideInfoTask: DispatchWorkItem?                                 // pending auto-hide of the flashed info strip
   @State private var showEndConfirm = false                                         // Save / Discard end sheet
   @State private var mapOn = true                                                   // false → metrics-only (no MapKit = battery)
   @State private var headingUp = true                                               // true = heading-up, false = north-up
@@ -247,7 +248,8 @@ struct RouteView: View {
           Button("Cancel", role: .cancel) { }
         }
         .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
-        .onChange(of: store.jumpToMap) { page = 1 }   // a turn/announcement surfaces the centre map screen
+        .onChange(of: store.jumpToMap) { page = 1; flashInfo() }        // a turn cue surfaces the map + flashes the strip
+        .onChange(of: engine.announceTick) { flashInfo() }             // any spoken announcement flashes the strip
       } else {
         VStack(spacing: 6) {
           Image(systemName: "map").font(.title2).foregroundColor(.secondary)
@@ -308,6 +310,7 @@ struct RouteView: View {
           }
           UserAnnotation()
         }
+        .mapControls { }   // remove MapKit's built-in compass (it appears when the heading-up camera rotates)
       } else {
         Color.black.ignoresSafeArea()   // metrics-only: no MapKit rendering → saves battery
       }
@@ -400,6 +403,17 @@ struct RouteView: View {
                         : .userLocation(fallback: .automatic)
       }
     }
+  }
+
+  // An announcement fired → briefly SHOW the info strip (so the turn/segment/power detail is readable), then
+  // auto-hide it after a few seconds so the map + Min/Now/Max power strip return. A manual eye tap still wins
+  // until the next announcement. Only flashes when the strip is currently minimised (don't yank a pinned-open one).
+  private func flashInfo() {
+    hideInfoTask?.cancel()
+    withAnimation { infoOn = true }
+    let task = DispatchWorkItem { withAnimation { infoOn = false } }
+    hideInfoTask = task
+    DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: task)
   }
 
   // Compact power readout used by the hidden-strip Min / Now / Max row.

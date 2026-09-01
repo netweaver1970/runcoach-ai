@@ -38,6 +38,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var segCount = 0
   @Published var segOpen = false           // no time/distance goal → advance with the lap button
   @Published var targetState = 0           // power vs the work target: 0 in-range/none, -1 under, +1 over
+  @Published var announceTick = 0          // bumped on each spoken announcement → the map info strip flashes then auto-hides
 
   private var segs: [RouteSeg] = []
   private var segStartElapsed: TimeInterval = 0
@@ -217,6 +218,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     let now = Date()
     if now.timeIntervalSince(outSince!) > 8, lastTargetCue == nil || now.timeIntervalSince(lastTargetCue!) > 25 {
       lastTargetCue = now
+      announceTick += 1                                // flash the info strip with the power cue too
       WKInterfaceDevice.current().play(st < 0 ? .directionUp : .directionDown)
       speak(st < 0 ? "Under power, \(Int(power)) watts, pick it up" : "Over power, \(Int(power)) watts, ease off")
     }
@@ -235,6 +237,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   }
 
   private func announceSegment(_ seg: RouteSeg) {
+    announceTick += 1                                 // flash the map info strip for this announcement
     WKInterfaceDevice.current().play(.notification)   // firm cue on each interval change
     var phrase = seg.label
     if let d = seg.dur {
