@@ -267,7 +267,7 @@ export default function OnboardingScreen() {
         <View style={s.dots}>
           {STEPS.map((_, i) => <View key={i} style={[s.dot, i === step && s.dotOn, i < step && s.dotDone]} />)}
         </View>
-        <TouchableOpacity onPress={finishAndGo} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Text style={s.exit}>✕</Text></TouchableOpacity>
+        <TouchableOpacity onPress={finishAndGo} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Text style={s.skipAll}>Skip all ✕</Text></TouchableOpacity>
       </View>
       <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
         {body()}
@@ -295,6 +295,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   dotOn: { backgroundColor: c.accent, width: 20 },
   dotDone: { backgroundColor: c.accent },
   exit: { fontSize: 20, color: c.textFaint, paddingLeft: 12, fontWeight: '600' as const },
+  skipAll: { fontSize: 14, color: c.accent, paddingLeft: 12, fontWeight: '700' as const },
   content: { padding: 24, paddingTop: 12, flexGrow: 1, justifyContent: 'center' as const },
   center: { alignItems: 'center' as const },
   emoji: { fontSize: 56, marginBottom: 16 },

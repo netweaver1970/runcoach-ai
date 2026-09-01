@@ -7,6 +7,7 @@ import * as Notifications from 'expo-notifications';
 import { cancelDailyRecoveryReminder } from '../src/services/notifications';
 import { initICloudAutoSave, maybeRestoreFromICloud, scheduleICloudSync } from '../src/services/icloudSync';
 import { loadHRVIgnore } from '../src/services/hrvIgnore';
+import { migrateSecureStoreAccessibility } from '../src/services/secureStoreMigrate';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import '../src/services/runKeepAlive';   // side effect: registers the background-location task + run-state listener at launch
@@ -39,6 +40,10 @@ function RootStack() {
 
   // Warm the user's ignored-HRV-readings list before any recovery computation runs (isHRVIgnored is sync).
   useEffect(() => { loadHRVIgnore().catch(() => {}); }, []);
+
+  // Make theme/onboarding/profile SecureStore items readable when the phone is locked (AFTER_FIRST_UNLOCK) —
+  // else a locked background relaunch (e.g. after a mid-run crash) reads them null → app looks factory-fresh.
+  useEffect(() => { migrateSecureStoreAccessibility().catch(() => {}); }, []);
 
   // iCloud auto-sync: on a FRESH install, pull the user's own iCloud backup (guarded — no-op if the app is
   // already set up, iCloud is off, or the native module isn't built in yet); then keep it saved whenever the

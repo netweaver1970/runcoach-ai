@@ -65,6 +65,10 @@ const DARK: Palette = {
 const STORE_KEY = 'theme_mode_v1';
 const FONT_KEY  = 'font_scale_v1';
 const ACCENT_KEY = 'accent_color_v1';
+// AFTER_FIRST_UNLOCK → these stay READABLE while the phone is locked (after the first post-boot unlock). The
+// default WHEN_UNLOCKED read as null on a locked background relaunch (e.g. after a mid-run crash) → the app
+// looked fresh (default theme + onboarding). Files survive that; SecureStore didn't until this.
+const KA = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK } as const;
 
 // User-selectable brand accent. All saturated + dark enough that white text on them (onAccent) stays
 // readable, and legible on both the light and dark structural palettes. First entry is the default.
@@ -119,17 +123,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const setMode = (m: ThemeMode) => {
     setModeState(m);
-    SecureStore.setItemAsync(STORE_KEY, m).catch(() => {});
+    SecureStore.setItemAsync(STORE_KEY, m, KA).catch(() => {});
   };
 
   const setFontStep = (s: FontSizeStep) => {
     setFontStepState(s);
-    SecureStore.setItemAsync(FONT_KEY, String(s)).catch(() => {});
+    SecureStore.setItemAsync(FONT_KEY, String(s), KA).catch(() => {});
   };
 
   const setAccent = (col: string) => {
     setAccentState(col);
-    SecureStore.setItemAsync(ACCENT_KEY, col).catch(() => {});
+    SecureStore.setItemAsync(ACCENT_KEY, col, KA).catch(() => {});
   };
 
   const resolved: 'light' | 'dark' =

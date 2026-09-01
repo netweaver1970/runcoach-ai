@@ -148,7 +148,8 @@ export async function getOnboardingDone(): Promise<boolean> {
   try { return (await SecureStore.getItemAsync(ONBOARDING_KEY)) === '1'; } catch { return false; }
 }
 export async function setOnboardingDone(done: boolean): Promise<void> {
-  try { await SecureStore.setItemAsync(ONBOARDING_KEY, done ? '1' : '0'); } catch { /* ignore */ }
+  // AFTER_FIRST_UNLOCK → readable on a locked background relaunch (else a mid-run crash re-showed onboarding).
+  try { await SecureStore.setItemAsync(ONBOARDING_KEY, done ? '1' : '0', { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }); } catch { /* ignore */ }
 }
 
 // Athlete profile (age + sex) — feeds the max-HR estimate + tailors defaults / the athlete-profile file.
