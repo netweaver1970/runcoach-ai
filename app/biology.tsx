@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, PanResponder, Modal } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
-import { requestPermissions } from '../src/services/healthkit';
+import { requestBiologyPermissions } from '../src/services/healthkit';
 import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
 import { ReorderList } from '../src/ReorderList';
 import { BioCard, BioCardId, BIO_CARD_TITLES, DEFAULT_BIO_LAYOUT, loadBioLayout, saveBioLayout } from '../src/services/bioLayout';
@@ -180,7 +180,7 @@ export default function BiologyMode() {
   const t1 = isAll ? now : now - offset * spanMs;
   const t0 = isAll ? (earliest ?? now - spanMs) : t1 - spanMs;
 
-  useEffect(() => { requestPermissions().catch(() => {}); }, []);
+  useEffect(() => { requestBiologyPermissions().catch(() => {}); }, []);
   useEffect(() => { setCursorTime(null); }, [range, offset]);
   // Load the FULL history once (metrics ~40y, fitness/CTL ~10y). range + offset are then a pure VIEWPORT
   // into the loaded data — so scrolling to any period (incl. >10 years back) shows its data instantly, no

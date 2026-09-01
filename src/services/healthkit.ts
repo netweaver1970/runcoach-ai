@@ -236,14 +236,6 @@ export async function requestPermissions(): Promise<boolean> {
       'HKQuantityTypeIdentifierActiveEnergyBurned',
       'HKQuantityTypeIdentifierBasalEnergyBurned',
       'HKQuantityTypeIdentifierAppleExerciseTime',
-      // Biology mode — body composition + blood pressure
-      'HKQuantityTypeIdentifierBloodPressureSystolic',
-      'HKQuantityTypeIdentifierBloodPressureDiastolic',
-      'HKQuantityTypeIdentifierBodyFatPercentage',
-      'HKQuantityTypeIdentifierLeanBodyMass',
-      'HKQuantityTypeIdentifierBodyMassIndex',
-      'HKQuantityTypeIdentifierWaistCircumference',
-      'HKQuantityTypeIdentifierBloodGlucose',   // read glucose the user logged straight into Health (union into Labs)
       // Category types
       'HKCategoryTypeIdentifierSleepAnalysis',
       // Heartbeat series — raw R-R intervals for HRV quality filtering
@@ -257,6 +249,29 @@ export async function requestPermissions(): Promise<boolean> {
     const msg = err?.message ?? err?.toString() ?? 'unknown error';
     console.error('HealthKit auth error:', err);
     throw new Error(`HealthKit auth failed: ${msg}`);
+  }
+}
+
+// Biology-mode types are requested ONLY when the user opens Biology — NOT in the hot requestPermissions() path
+// that load() runs on every startup/foreground/run-start. Keeping blood-pressure/body-composition/glucose out
+// of that path stops the "extra Health authorizations" sheet from popping at run start for a feature the runner
+// may never use. iOS only shows a sheet for still-undetermined types, so this is a no-op once granted.
+export async function requestBiologyPermissions(): Promise<boolean> {
+  try {
+    const bioTypes = [
+      'HKQuantityTypeIdentifierBloodPressureSystolic',
+      'HKQuantityTypeIdentifierBloodPressureDiastolic',
+      'HKQuantityTypeIdentifierBodyFatPercentage',
+      'HKQuantityTypeIdentifierLeanBodyMass',
+      'HKQuantityTypeIdentifierBodyMassIndex',
+      'HKQuantityTypeIdentifierWaistCircumference',
+      'HKQuantityTypeIdentifierBloodGlucose',   // glucose logged straight into Health → union into Labs
+    ] as any[];
+    await HealthKit.requestAuthorization([], bioTypes);
+    return true;
+  } catch (err: any) {
+    console.error('HealthKit biology auth error:', err);
+    return false;
   }
 }
 
