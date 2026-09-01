@@ -41,6 +41,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var announceTick = 0          // bumped on each spoken announcement → the map info strip flashes then auto-hides
 
   private var segs: [RouteSeg] = []
+  private var wcfg: HKWorkoutConfiguration?   // reused to open a new HKWorkoutActivity per phase
+  private var phaseActivityOpen = false       // an HK activity is currently open (so we close it before the next / on end)
   private var segStartElapsed: TimeInterval = 0
   private var segStartDist: Double = 0
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
@@ -76,7 +78,24 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // so the Start button reappeared but every press hit the `session == nil` guard and silently no-op'd.
   private func teardown() {
     stopTicker()
-    session = nil; builder = nil; segs = []
+    session = nil; builder = nil; segs = []; wcfg = nil; phaseActivityOpen = false
+  }
+
+  // Metadata written onto each phase's HKWorkoutActivity so the executed structure survives back to the phone.
+  // The phone's HealthKit patch surfaces these keys (stripped of any "HKMetadataKey" prefix) and derives the
+  // phase label from `title`; WOIntervalStepKeyPath keeps a legitimately-0 m phase (e.g. standing drills) from
+  // being dropped as a spurious no-data activity, and WorkoutStepType matches the phone's Warmup/Work/Recovery/
+  // Cooldown index map as a fallback label.
+  private func segMeta(_ seg: RouteSeg, _ index: Int) -> [String: Any] {
+    var m: [String: Any] = ["title": seg.label, "WOIntervalStepKeyPath": "\(index).0.0"]
+    switch seg.kind {
+    case "warmup":   m["WorkoutStepType"] = 0
+    case "work":     m["WorkoutStepType"] = 1
+    case "recovery": m["WorkoutStepType"] = 2
+    case "cooldown": m["WorkoutStepType"] = 3
+    default: break
+    }
+    return m
   }
 
   // Tell the phone a run began/ended so it can keep itself alive (background location) → stays reachable to
@@ -105,6 +124,13 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let now = Date(); startDate = now
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { _, _ in }
+      // Structured run → open a labelled HK activity for the FIRST phase. Each phase becomes an
+      // HKWorkoutActivity the phone reads back as Warmup/Work/Recovery/Cooldown (plain runs open none → 1 activity).
+      wcfg = cfg
+      if !segs.isEmpty {
+        s.beginNewActivity(configuration: cfg, date: now, metadata: segMeta(segs[0], 0))
+        phaseActivityOpen = true
+      }
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
       // Internal battery profiling: snapshot the watch battery so we can report drain/hr when the run ends.
       let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
@@ -131,6 +157,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
   func end(save: Bool = true) {
     guard let s = session, let b = builder else { return }
+    if phaseActivityOpen { s.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the final phase activity
     reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
     s.end()
@@ -225,6 +252,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   }
 
   private func advanceSegment() {
+    if phaseActivityOpen { session?.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the phase that just ended
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
     targetState = 0; outSince = nil; lastTargetCue = nil   // reset the power-target tracker for the new segment
@@ -232,6 +260,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")
       return
+    }
+    // Open a labelled HK activity for the phase we're entering.
+    if let s = session, let cfg = wcfg {
+      s.beginNewActivity(configuration: cfg, date: Date(), metadata: segMeta(segs[segIndex], segIndex))
+      phaseActivityOpen = true
     }
     announceSegment(segs[segIndex])
   }
