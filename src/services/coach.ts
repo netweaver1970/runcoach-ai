@@ -233,8 +233,9 @@ heatStrainFactor (and/or drop a notch in intensity). Make the cut explicit in th
 factor 1.20 → 25→21 min"). Prescribe a session whose total strain (run + drills × heatStrainFactor) lands within \
 the band, never more than 10% over the ceiling. In the rationale, ALWAYS state where \
 today's actual strain (strainReal) sits relative to the target band — BELOW / WITHIN / ABOVE — and why that \
-is appropriate for your call (e.g. "strain 7% is below the 23–47% band, which is right given low recovery — \
-rest"). Use the exact strainReal figure; never invent a different number. SpO₂ note: brief overnight dips to \
+is appropriate for your call (e.g. "strain 7% is below your target band, which is right given low recovery — \
+rest"). Use the exact strainReal figure; never invent a different number, and do NOT restate the band's \
+numeric bounds (the readiness card already shows them live — repeating a baked copy just drifts out of sync). \ SpO₂ note: brief overnight dips to \
 ~92–95% are normal and must NOT reduce load on their own — only treat SpO₂ as a concern if it is below ~92%. \
 VOLUME CAP: the progression cap is +loadCapPct% per rolling 7 days, measured on loadCapBasis \
 ("tof" = time-on-feet minutes, "distance" = real-work km); loadBudgetToday is what's left today in \
@@ -1224,7 +1225,9 @@ const STALE_CAUTION = "⚠️ Watch not worn overnight — recovery unknown; pla
 function bandPhrase(real: number | null | undefined, low: number, high: number, driver: string): string {
   if (real == null) return driver.charAt(0).toUpperCase() + driver.slice(1) + '.';
   const where = real < low ? 'below' : real > high ? 'above' : 'within';
-  return `Strain ${Math.round(real)}% is ${where} the ${low}–${high}% band — ${driver}.`;
+  // Don't restate the L–H numbers here — the readiness card shows the live "Target L–H% strain" and the two
+  // drift apart (the plan bakes its band at generation time). Quote just where strain sits vs. the target.
+  return `Strain ${Math.round(real)}% is ${where} your target band — ${driver}.`;
 }
 
 // The daily card's "next run" should match the 7-DAY PLAN the athlete actually sees — which, with
@@ -1686,10 +1689,16 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     const useLlmProse   = wellFormed && !overrodeLlm && !!o.headline;
     const useBasisProse = !easedOff && !overrodeLlm;
     const structureNow  = workout ? formatWorkoutStructure(workout) : '';
+    // When easing lands on rest / 0 min, EVERY text field must read as rest — otherwise the card shows a REST
+    // pill + "no run today" + "no watch workout" over a headline/session that still say "Recovery run — 0 min".
+    const isRestFinal   = intensity === 'rest' || runMinutes <= 0;
     const finalLabel    = intensity === 'hard' ? 'Intervals' : intensity === 'moderate' ? 'Tempo'
+                        : isRestFinal ? 'Rest'
                         : runMinutes <= 30 ? 'Recovery run' : 'Easy Z2';
-    const finalHeadline = `Eased — ${finalLabel.toLowerCase()} today`;
-    const finalSession  = `${finalLabel} — ${runMinutes} min${structureNow ? `, ${structureNow}` : ''}.`;
+    const finalHeadline = isRestFinal ? 'Eased — rest today' : `Eased — ${finalLabel.toLowerCase()} today`;
+    const finalSession  = isRestFinal
+                        ? 'Rest day — no run. Let recovery come back up.'
+                        : `${finalLabel} — ${runMinutes} min${structureNow ? `, ${structureNow}` : ''}.`;
 
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
@@ -1711,7 +1720,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       intensity, runMinutes, runKm, workout,
       prescribedLoad: workout ? prescribedTrimp(workout) : undefined,   // derived readout — from the FINAL workout (LLM's or fallback)
       rationale: (useLlmProse && o.rationale) ? String(o.rationale).slice(0, 400) : basis.rationale,
-      cautions:  basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined),
+      // On a rest override, drop the model's cautions — they were written for the run it proposed
+      // ("stop if legs feel heavy after 20 min" makes no sense at 0 min). Keep only a deterministic rest note.
+      cautions:  isRestFinal ? basis.cautions : (basis.cautions ?? (o.cautions ? String(o.cautions).slice(0, 200) : undefined)),
       sessionKind,
       // Keep Part 2 only if it's STILL a long run (the LLM designs Part 1 within the split ceiling); if it
       // eased the long to easy, the day is no longer a split.

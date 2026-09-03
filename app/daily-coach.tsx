@@ -488,7 +488,7 @@ export default function DailyCoachScreen() {
                   </Text>
                 </View>
                 <Text style={s.coachTarget}>
-                  {effRunMin > 0 ? `run ${effDose}` : 'no run today'} · within target
+                  {effRunMin > 0 ? `run ${effDose} · within target` : 'no run today'}
                 </Text>
               </View>
               <Text style={s.coachSession}>{plan.session}</Text>
