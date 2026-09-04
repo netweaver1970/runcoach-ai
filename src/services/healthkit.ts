@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
 import { isHRVIgnored } from './hrvIgnore';
+import { getExecStructure } from './runSegmentsLog';
 
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
 // series-stored workout HR/power that the JS library's sample query returns only sparsely.
@@ -2935,6 +2936,34 @@ export async function fetchWorkoutDetail(
 
   // ── Compute km splits ─────────────────────────────────────────────────────
   const workoutDistM = (workout as any)?.totalDistance?.quantity ?? 0;
+  // Our own watch app records the run as ONE activity, so HealthKit yields no phase structure. Rebuild it from
+  // the executed boundaries the watch forwarded at run end (matched to this workout by start time) → the phases
+  // show as bands with real per-phase HR/power. Only fires when there's essentially no HK structure AND the
+  // watch actually sent boundaries for this run, so plain (unstructured) runs are untouched.
+  if (activities.length <= 1) {
+    const exec = await getExecStructure(startMs).catch(() => null);
+    if (exec && exec.segs.length >= 2) {
+      const avgIn = (series: { t: number; v: number }[], s: number, e: number) => {
+        const pts = series.filter(p => p.t >= s && p.t < e && p.v > 0);
+        return pts.length ? Math.round(pts.reduce((a, p) => a + p.v, 0) / pts.length) : 0;
+      };
+      const labelOf = (kind: string, fallback: string) =>
+        kind === 'warmup' ? 'Warmup' : kind === 'recovery' ? 'Recovery' : kind === 'cooldown' ? 'Cooldown'
+        : kind === 'drills' ? 'Drills' : kind === 'work' ? 'Work' : (fallback || 'Work');
+      const rebuilt: WorkoutActivity[] = [];
+      for (const seg of exec.segs) {
+        const sMs = Math.round(seg.startSec * 1000), eMs = Math.round(seg.endSec * 1000);
+        if (eMs - sMs < 3_000) continue;
+        rebuilt.push({
+          startMs: sMs, endMs: eMs, activityType: 37, label: labelOf(seg.kind, seg.label),
+          netDurationSec: Math.round((eMs - sMs) / 1000), distanceM: 0,
+          avgHR: avgIn(hr, sMs, eMs), avgPower: avgIn(power, sMs, eMs), cadenceSPM: 0, stepActType: 37,
+        });
+      }
+      if (rebuilt.length >= 2) { activities.length = 0; activities.push(...rebuilt); }
+    }
+  }
+
   // Pass the DENSE (series-expanded) hr/power so per-km + segment averages aren't blank on
   // older runs — the sparse discrete hrRaw2 left most km's with no HR sample ("—").
   const kmSplits = computeKmSplitsDetail(

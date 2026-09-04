@@ -43,6 +43,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var segs: [RouteSeg] = []
   private var wcfg: HKWorkoutConfiguration?   // reused to open a new HKWorkoutActivity per phase
   private var phaseActivityOpen = false       // an HK activity is currently open (so we close it before the next / on end)
+  private var segLog: [[String: Any]] = []    // executed phases {label,kind,zone,startSec,endSec} → sent to the phone on end
+                                              // so it can reconstruct the structure even if HK activities don't read back
   private var segStartElapsed: TimeInterval = 0
   private var segStartDist: Double = 0
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
@@ -139,7 +141,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
         self.lastMoveAt = Date(); self.autoPaused = false
-        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0
+        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
       startTicker()
@@ -157,7 +159,12 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
   func end(save: Bool = true) {
     guard let s = session, let b = builder else { return }
+    if segIndex < segs.count {   // log the final in-progress phase (run stopped before it completed)
+      let seg = segs[segIndex]
+      segLog.append(["label": seg.label, "kind": seg.kind, "zone": seg.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
+    }
     if phaseActivityOpen { s.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the final phase activity
+    sendExecStructure()   // forward the executed phase boundaries so the phone can reconstruct the structure
     reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
     s.end()
@@ -192,6 +199,16 @@ final class WorkoutEngine: NSObject, ObservableObject {
       s.transferUserInfo(["watchBatteryPerHr": perHr, "watchDrainPct": drainPct, "watchDurMin": dur / 60,
                           "watchStartPct": Double(startBattery) * 100, "watchEndPct": Double(end) * 100])
     }
+  }
+
+  // Forward the executed phase boundaries to the phone (start ms + each phase's actual start/end seconds + label).
+  // The phone matches them to the HK workout by start time and rebuilds the Warmup/Work/Recovery/Cooldown bands
+  // + per-phase stats — a deterministic path that doesn't depend on HK reading our per-activity markers back.
+  private func sendExecStructure() {
+    guard !segLog.isEmpty, let sd = startDate else { return }
+    let s = WCSession.default
+    guard s.activationState == .activated else { return }
+    s.transferUserInfo(["execStart": sd.timeIntervalSince1970 * 1000, "execDur": elapsed, "execSegs": segLog])
   }
 
   private func startTicker() {
@@ -247,11 +264,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
       lastTargetCue = now
       announceTick += 1                                // flash the info strip with the power cue too
       WKInterfaceDevice.current().play(st < 0 ? .directionUp : .directionDown)
-      speak(st < 0 ? "Under power, \(Int(power)) watts, pick it up" : "Over power, \(Int(power)) watts, ease off")
+      speak(st < 0 ? "Under, \(Int(power)) watts" : "Over, \(Int(power)) watts")   // terse — number only, the haptic says up/down
     }
   }
 
   private func advanceSegment() {
+    if segIndex < segs.count {   // log the ACTUAL span of the phase that just finished → phone rebuilds the bands
+      let s = segs[segIndex]
+      segLog.append(["label": s.label, "kind": s.kind, "zone": s.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
+    }
     if phaseActivityOpen { session?.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the phase that just ended
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM

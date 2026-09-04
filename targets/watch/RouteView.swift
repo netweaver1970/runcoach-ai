@@ -71,7 +71,8 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   private let mgr = CLLocationManager()
   private var wasOff = false
   private var turns: [RouteTurn] = []
-  private var announced: Set<Int> = []     // turn indices already spoken for this route
+  private var announced: Set<Int> = []     // turn indices already spoken (or passed) for this route
+  private var turnMinDist: [Int: Double] = [:]   // closest approach seen per turn → detect a turn we walked past
 
   override init() {
     super.init()
@@ -83,7 +84,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   func setRoute(_ r: RoutePayload) {
     DispatchQueue.main.async {
       self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false
-      self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true; self.announced = []; self.nextTurnText = ""
+      self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true; self.announced = []; self.turnMinDist = [:]; self.nextTurnText = ""
       self.start()   // track from the moment a route lands, so turn cues fire on any screen (not just the map)
     }
   }
@@ -99,20 +100,26 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   // cue (when voice is on). `nextTurnText` tracks the upcoming maneuver for the on-screen readout.
   private func checkTurns(_ loc: CLLocation) {
     guard !turns.isEmpty else { return }
-    var bi = -1; var bd = Double.greatestFiniteMagnitude
-    for (i, t) in turns.enumerated() where !announced.contains(i) {
-      let d = loc.distance(from: CLLocation(latitude: t.lat, longitude: t.lon))
-      if d < bd { bd = d; bi = i }
-    }
+    // Announce turns STRICTLY in ROUTE ORDER — the earliest un-announced turn is always "next". The old code
+    // announced the nearest un-announced turn by straight-line distance, so two turns close together (or a loop
+    // doubling back) could fire the SECOND turn's cue at the FIRST turn — which also handed you that other
+    // turn's direction (the wrong left/right). If we've clearly walked past the current turn without triggering
+    // (got within 60 m then receded past 90 m), skip it silently so the pointer doesn't wedge.
+    var bi = -1
+    for i in 0..<turns.count where !announced.contains(i) { bi = i; break }
     guard bi >= 0 else { nextTurnText = ""; turnDistM = 9999; return }
     let t = turns[bi]
+    let d = loc.distance(from: CLLocation(latitude: t.lat, longitude: t.lon))
+    let newMin = min(turnMinDist[bi] ?? .greatestFiniteMagnitude, d)
+    turnMinDist[bi] = newMin
+    if newMin < 60 && d > 90 { announced.insert(bi); return }   // passed it → advance the pointer next tick
     nextTurnText = t.text
-    turnDistM = bd                 // distance to the next turn → the map zooms in as this shrinks
-    if bd < 40 {
+    turnDistM = d                  // distance to the next turn → the map zooms in as this shrinks
+    if d < 40 {
       announced.insert(bi)
       jumpToMap += 1   // a turn is happening → surface the map (ContentView watches this)
       WKInterfaceDevice.current().play(.notification)   // firm double-tap so it's felt mid-run
-      speak(bd > 18 ? "In \(Int((bd / 5).rounded()) * 5) meters, \(t.text)" : t.text)
+      speak(d > 18 ? "In \(Int((d / 5).rounded()) * 5) meters, \(t.text)" : t.text)
     }
   }
 

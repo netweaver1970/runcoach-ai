@@ -16,6 +16,7 @@ import * as TaskManager from 'expo-task-manager';
 import { requireNativeModule } from 'expo-modules-core';
 import { setRunActive } from './activeRoute';
 import { logRunBattery } from './runBatteryLog';
+import { logRunSegments } from './runSegmentsLog';
 
 const TASK = 'runcoach-run-keepalive';
 const MAX_MS = 3 * 3600 * 1000;   // hard stop after 3h if no run-end ever arrives
@@ -67,6 +68,18 @@ try {
         device: String(e.device ?? 'watch'),
         perHr: e.perHr, drainPct: Number(e.drainPct ?? 0), durMin: Number(e.durMin ?? 0),
         startPct: Number(e.startPct ?? 0), endPct: Number(e.endPct ?? 0),
+      });
+    }
+  });
+  // Executed run structure → store the phase boundaries so the phone can rebuild the run's bands/segments.
+  sync?.addListener?.('onRunSegments', (e: any) => {
+    if (e && typeof e.execStart === 'number' && Array.isArray(e.execSegs) && e.execSegs.length) {
+      void logRunSegments({
+        start: e.execStart, dur: Number(e.execDur ?? 0),
+        segs: e.execSegs.map((s: any) => ({
+          label: String(s.label ?? ''), kind: String(s.kind ?? ''), zone: String(s.zone ?? ''),
+          startSec: Number(s.startSec ?? 0), endSec: Number(s.endSec ?? 0),
+        })),
       });
     }
   });
