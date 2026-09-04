@@ -70,6 +70,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
 
   private let mgr = CLLocationManager()
   private var wasOff = false
+  private var offSpokenAt: Date?           // last spoken off-route alert → throttle the re-announce
   private var turns: [RouteTurn] = []
   private var announced: Set<Int> = []     // turn indices already spoken (or passed) for this route
   private var turnMinDist: [Int: Double] = [:]   // closest approach seen per turn → detect a turn we walked past
@@ -83,7 +84,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
 
   func setRoute(_ r: RoutePayload) {
     DispatchQueue.main.async {
-      self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false
+      self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false; self.offSpokenAt = nil
       self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true; self.announced = []; self.turnMinDist = [:]; self.nextTurnText = ""
       self.start()   // track from the moment a route lands, so turn cues fire on any screen (not just the map)
     }
@@ -147,7 +148,21 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       self.here = loc.coordinate
       self.remainingKm = rem / 1000
       self.offRoute = off
-      if off && !self.wasOff { WKInterfaceDevice.current().play(.notification) }  // buzz once on going off-route
+      // Off-route now SPEAKS (the lone haptic was too easy to miss). Announce on going off, re-announce every
+      // 40 s while still off, and confirm the return — all via speak() so it honours the mute toggle + routes
+      // to the earbuds like every other cue. Keep a firm .failure haptic alongside.
+      let now = Date()
+      if off {
+        if !self.wasOff {
+          WKInterfaceDevice.current().play(.failure)
+          self.speak("Off route"); self.offSpokenAt = now
+        } else if let last = self.offSpokenAt, now.timeIntervalSince(last) > 40 {
+          WKInterfaceDevice.current().play(.failure)
+          self.speak("Still off route"); self.offSpokenAt = now
+        }
+      } else if self.wasOff {
+        self.speak("Back on route"); self.offSpokenAt = nil
+      }
       self.wasOff = off
       self.checkTurns(loc)
     }

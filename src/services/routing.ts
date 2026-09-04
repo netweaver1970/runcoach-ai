@@ -57,6 +57,47 @@ function elevStats(ele: number[]): { ascentM: number; descentM: number; elev: nu
   return { ascentM: Math.round(asc), descentM: Math.round(desc), elev: out.map(v => Math.round(v)) };
 }
 
+// ── Turn-direction sanity check ────────────────────────────────────────────────
+// ORS occasionally reports the wrong turn WORD — a clear single turn where the path bends RIGHT but the
+// instruction reads "Turn left" (and vice-versa). Since the watch speaks the instruction verbatim, that hands
+// the runner a wrong left/right. Cross-check each clear turn against the GEOMETRY (bearing in vs bearing out at
+// the maneuver, sampled ~20 m either side) and flip the direction word only when they clearly disagree.
+function bearingDeg(a: number[], b: number[]): number {
+  const toR = Math.PI / 180;
+  const dLon = (b[0] - a[0]) * toR, la = a[1] * toR, lb = b[1] * toR;
+  const y = Math.sin(dLon) * Math.cos(lb);
+  const x = Math.cos(la) * Math.sin(lb) - Math.sin(la) * Math.cos(lb) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+// Walk ~wantM metres from index i in the given direction and return that point (for stable bearings on dense geometry).
+function ptAlong(coords: number[][], i: number, dir: 1 | -1, wantM: number): number[] {
+  let acc = 0, k = i;
+  while (k + dir >= 0 && k + dir < coords.length) { acc += distM(coords[k], coords[k + dir]); k += dir; if (acc >= wantM) break; }
+  return coords[k];
+}
+const TURN_TYPES = new Set([0, 1, 2, 3, 4, 5]);   // ORS maneuver types: turn / sharp / slight, left & right
+function swapLR(text: string, to: 'left' | 'right'): string {
+  const from = to === 'left' ? /\bright\b/gi : /\bleft\b/gi;
+  return text.replace(from, m => (m[0] === m[0].toUpperCase() ? to[0].toUpperCase() + to.slice(1) : to));
+}
+function correctTurnDirections(steps: RouteStep[], coords: number[][]): RouteStep[] {
+  if (coords.length < 3) return steps;
+  return steps.map(s => {
+    if (!TURN_TYPES.has(s.type)) return s;
+    const p = coords[s.i]; if (!p) return s;
+    const before = ptAlong(coords, s.i, -1, 20), after = ptAlong(coords, s.i, 1, 20);
+    if (before === p || after === p) return s;
+    let delta = bearingDeg(p, after) - bearingDeg(before, p);
+    while (delta > 180) delta -= 360; while (delta < -180) delta += 360;
+    if (Math.abs(delta) < 30) return s;                          // too gentle to be sure → trust ORS
+    const geomRight = delta > 0;                                 // clockwise bearing change = right turn
+    const hasLeft = /\bleft\b/i.test(s.text), hasRight = /\bright\b/i.test(s.text);
+    if (geomRight && hasLeft && !hasRight)  return { ...s, text: swapLR(s.text, 'right') };
+    if (!geomRight && hasRight && !hasLeft) return { ...s, text: swapLR(s.text, 'left') };
+    return s;                                                    // agrees, or ambiguous (both words) → leave it
+  });
+}
+
 // round_trip sometimes runs OUT to a dead-end waypoint and straight back over the same road — a short
 // out-and-back "appendix" hanging off the loop. Detect it as a point the path REVISITS within a short
 // excursion, and excise the excursion (keeping the route otherwise intact + step indices remapped). Bounded
@@ -78,11 +119,11 @@ function trimSpurs(coords: number[][], steps: RouteStep[]): { coords: number[][]
       }
     }
   }
-  if (cs.length === coords.length) return { coords, steps, trimmed: false };
+  if (cs.length === coords.length) return { coords, steps: correctTurnDirections(steps, coords), trimmed: false };
   const o2n = new Map<number, number>(); orig.forEach((o, n) => o2n.set(o, n));
   const newSteps = steps.map(s => { const ni = o2n.get(s.i); return ni == null ? null : { ...s, i: ni }; })
     .filter((s): s is RouteStep => s != null);
-  return { coords: cs, steps: newSteps, trimmed: true };
+  return { coords: cs, steps: correctTurnDirections(newSteps, cs), trimmed: true };
 }
 
 // ORS GeoJSON carries turn-by-turn under properties.segments[].steps[] (instructions are on by default). Each

@@ -43,6 +43,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var segs: [RouteSeg] = []
   private var wcfg: HKWorkoutConfiguration?   // reused to open a new HKWorkoutActivity per phase
   private var phaseActivityOpen = false       // an HK activity is currently open (so we close it before the next / on end)
+  private var pendingFirstPhase = false       // open the first phase's activity only once the session is RUNNING
   private var segLog: [[String: Any]] = []    // executed phases {label,kind,zone,startSec,endSec} → sent to the phone on end
                                               // so it can reconstruct the structure even if HK activities don't read back
   private var segStartElapsed: TimeInterval = 0
@@ -80,7 +81,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // so the Start button reappeared but every press hit the `session == nil` guard and silently no-op'd.
   private func teardown() {
     stopTicker()
-    session = nil; builder = nil; segs = []; wcfg = nil; phaseActivityOpen = false
+    session = nil; builder = nil; segs = []; wcfg = nil; phaseActivityOpen = false; pendingFirstPhase = false
   }
 
   // Metadata written onto each phase's HKWorkoutActivity so the executed structure survives back to the phone.
@@ -129,10 +130,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
       // Structured run → open a labelled HK activity for the FIRST phase. Each phase becomes an
       // HKWorkoutActivity the phone reads back as Warmup/Work/Recovery/Cooldown (plain runs open none → 1 activity).
       wcfg = cfg
-      if !segs.isEmpty {
-        s.beginNewActivity(configuration: cfg, date: now, metadata: segMeta(segs[0], 0))
-        phaseActivityOpen = true
-      }
+      // Open the FIRST phase's activity only once the session is actually .running (see the delegate). Calling
+      // beginNewActivity synchronously here — before the session left .notStarted — was silently ignored, which
+      // is the likely reason the per-phase HK activities never read back.
+      pendingFirstPhase = !segs.isEmpty
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
       // Internal battery profiling: snapshot the watch battery so we can report drain/hr when the run ends.
       let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
@@ -329,6 +330,12 @@ extension WorkoutEngine: HKWorkoutSessionDelegate {
                       from: HKWorkoutSessionState, date: Date) {
     DispatchQueue.main.async {
       self.paused = (toState == .paused)
+      // Session is now RUNNING → open the first phase's HK activity (deferred from start() so it isn't ignored).
+      if toState == .running, self.pendingFirstPhase, !self.phaseActivityOpen,
+         let s = self.session, let cfg = self.wcfg, !self.segs.isEmpty {
+        s.beginNewActivity(configuration: cfg, date: Date(), metadata: self.segMeta(self.segs[0], 0))
+        self.phaseActivityOpen = true; self.pendingFirstPhase = false
+      }
       if toState == .ended { self.running = false; self.teardown() }   // ended (incl. by the system) → allow a fresh Start
     }
   }
