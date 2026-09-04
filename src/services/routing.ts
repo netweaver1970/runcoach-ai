@@ -154,7 +154,7 @@ export async function orsRoundTrip(opts: {
   const profile = opts.profile ?? 'foot-hiking';   // trails matter → hike profile by default
   const body = {
     coordinates: [[opts.lon, opts.lat]],
-    options: { round_trip: { length: Math.round(opts.km * 1000), points: opts.points ?? 5, seed: opts.seed ?? 1 } },
+    options: { round_trip: { length: Math.round(opts.km * LOOP_UNDERSHOOT * 1000), points: opts.points ?? 5, seed: opts.seed ?? 1 } },
     elevation: true,
     extra_info: ['waytype'],
   };
@@ -185,6 +185,12 @@ export async function orsRoundTrip(opts: {
     };
   } catch { return null; }
 }
+
+// ORS round-trip / wedge loops OVERSHOOT the requested length (~15–25%), and the coach's target is already the
+// full session (warm-up + drills + work + cool-down). So aim the loop sizing a bit UNDER target — better to
+// land slightly short (finish with a lap near home) than to run long. Tunable; the ± control still lets the
+// runner nudge, and point-to-point is unaffected (its distance is fixed by the endpoints).
+const LOOP_UNDERSHOOT = 0.82;
 
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 export interface RouteOption extends RouteLoop { seed: number; headingDeg: number; heading: string; }
@@ -226,6 +232,7 @@ export async function orsHeadingOptions(opts: {
   // ORS has no "avoid hills" for foot profiles, so approximate it: for flat/hilly, try two wedge widths per
   // direction and keep the one with least / most ascent. 'any' does a single shape (half the calls).
   const spreads = hill === 'any' ? [86] : [86, 66];
+  const km = opts.km * LOOP_UNDERSHOOT;   // aim under target so the overshoot lands the loop at/just-under the prescribed distance
   const out: RouteOption[] = [];
   for (let b = 0; b < 8; b++) {
     const deg = b * 45;
@@ -233,9 +240,9 @@ export async function orsHeadingOptions(opts: {
     for (const sp of spreads) {
       const loop = await orsDirectionalLoop({
         lon: opts.lon, lat: opts.lat, headingDeg: deg,
-        reachKm: Math.max(1, opts.km * 0.24), spreadDeg: sp, profile: opts.profile,   // COMPACT lean, so Reach can push further
+        reachKm: Math.max(1, km * 0.24), spreadDeg: sp, profile: opts.profile,   // COMPACT lean, so Reach can push further
       });
-      if (!loop || loop.coords.length < 2 || loop.distanceKm < opts.km * 0.4) continue;
+      if (!loop || loop.coords.length < 2 || loop.distanceKm < km * 0.4) continue;
       if (!best || (hill === 'flat' && loop.ascentM < best.ascentM) || (hill === 'hilly' && loop.ascentM > best.ascentM)) best = loop;
     }
     if (best) out.push({ ...best, seed: deg, headingDeg: deg, heading: DIRS[b] });
