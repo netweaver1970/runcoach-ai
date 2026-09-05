@@ -52,6 +52,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
+  private var countdownSpoken: Set<Int> = []   // which of 3/2/1 we've already counted for the current interval
   private var startBattery: Float = -1    // watch battery level (0…1) captured at run start → drain/hr on end
 
   func requestAuth() async -> Bool {
@@ -142,7 +143,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
         self.lastMoveAt = Date(); self.autoPaused = false
-        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
+        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []; self.countdownSpoken = []
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
       startTicker()
@@ -250,7 +251,21 @@ final class WorkoutEngine: NSObject, ObservableObject {
     var done = false
     if let d = seg.dur { done = inTime >= d }
     else if let m = seg.dist { done = inDist >= m }
-    if done { advanceSegment() } else { updateSegDisplay(seg, inTime, inDist); checkTarget(seg) }
+    if done { advanceSegment() }
+    else { updateSegDisplay(seg, inTime, inDist); checkTarget(seg); countdownEnd(seg, inTime) }
+  }
+
+  // Spoken "3, 2, 1" in the final seconds of a WORK/RECOVERY interval so you can prepare for the change without
+  // watching the wrist. Each digit is spoken once (guarded), routes to the earbuds like every other cue (honours
+  // the mute toggle), and a light tick fires with it. Skipped on very short steps + on warm-up/drills/cool-down.
+  private func countdownEnd(_ seg: RouteSeg, _ inTime: TimeInterval) {
+    guard seg.kind == "work" || seg.kind == "recovery", let d = seg.dur, d >= 8 else { return }
+    let rem = d - inTime
+    for n in [3, 2, 1] where !countdownSpoken.contains(n) && rem > Double(n) - 0.5 && rem <= Double(n) + 0.5 {
+      countdownSpoken.insert(n)
+      WKInterfaceDevice.current().play(.click)
+      speak("\(n)")
+    }
   }
 
   // During a WORK segment with a power band, colour the power (targetState) and speak a throttled under/over cue.
@@ -277,7 +292,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if phaseActivityOpen { session?.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the phase that just ended
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
-    targetState = 0; outSince = nil; lastTargetCue = nil   // reset the power-target tracker for the new segment
+    targetState = 0; outSince = nil; lastTargetCue = nil; countdownSpoken = []   // reset per-segment trackers
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")
