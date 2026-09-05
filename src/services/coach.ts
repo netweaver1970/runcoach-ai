@@ -170,8 +170,11 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   // becomes "session done → recover" instead of re-offering the session you just did — the "2nd run ghost".
   // Skipped once the plan is already a rest (no re-loop).
   const doneToday = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
+  // Floor is 10, not 15: time-on-feet is WORK-accounting (warm-up/recovery/cool-down excluded), so a fully
+  // completed INTERVALS session counts only its work+drills minutes (~13 for a 14-min prescription) and a
+  // 15-min floor made a short quality session impossible to mark done — the coach kept re-offering it.
   if (plan.intensity !== 'rest' && !plan.secondSession
-      && doneToday >= Math.max(15, Math.round((plan.runMinutes ?? 0) * 0.7))) return true;
+      && doneToday >= Math.max(10, Math.round((plan.runMinutes ?? 0) * 0.7))) return true;
   // Readiness crossed the green (≥60) gate since the plan was written. The morning plan is often built on
   // STALE readiness — yesterday's recovery, because last night's HRV/sleep hasn't landed yet — so a scheduled
   // tempo/intervals day gets eased to "easy Z2" (green=false). Once today's recovery is in and readiness goes
@@ -1501,7 +1504,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   const cachedToday = await loadCachedPlan(snap.date);
   const plannedMorning = (cachedToday && cachedToday.intensity !== 'rest' && !cachedToday.optional2nd)
     ? (cachedToday.runMinutes ?? 0) : 0;
-  const primaryDone = todayDone >= Math.max(15, Math.round(plannedMorning * 0.7));
+  const primaryDone = todayDone >= Math.max(10, Math.round(plannedMorning * 0.7));   // 10, not 15 — intervals count few WORK minutes (see planNeedsRefresh)
   if (primaryDone && !secondSession && !honorDirect) {
     return {
       headline: 'Today’s session done ✓',
