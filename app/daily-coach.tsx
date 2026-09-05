@@ -3,7 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, SafeAreaView, ActivityIndicator, RefreshControl, Switch, Alert,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { DayStrain } from '../src/types';
 import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
@@ -150,10 +150,15 @@ export default function DailyCoachScreen() {
       .catch(() => {})
       .finally(() => { setLoadingH(false); setRefreshing(false); });
   }, []);
-  useEffect(() => {
+  // Re-fetch on every FOCUS, not just mount — otherwise a run finished since the screen was last viewed (or a
+  // screen kept mounted in the background) leaves today's time-on-feet stale, so completion isn't detected and
+  // the coach keeps prescribing the session you just did. Re-arm staleRegenRef so the fresh data can regenerate
+  // the plan (e.g. flip a done session to rest) once, in sync with the home.
+  useFocusEffect(useCallback(() => {
+    staleRegenRef.current = false;
     loadHistory(0.3);                                  // ~last 9 days — quick
     getLocalWeather().then(setWeather).catch(() => {});
-  }, [loadHistory]);
+  }, [loadHistory]));
   const onRefresh = useCallback(() => loadHistory(1, true), [loadHistory]); // full month
 
   const hist = useMemo(
