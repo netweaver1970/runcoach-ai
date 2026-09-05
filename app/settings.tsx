@@ -30,6 +30,7 @@ import { loadTranscriptionConfig, saveTranscriptionConfig, STT_PRESETS, matchPre
 import { getFlightApiKey, setFlightApiKey } from '../src/services/flightLookup';
 import { getOrsApiKey, setOrsApiKey, validateOrsKey } from '../src/services/routing';
 import { getVoiceNav, setVoiceNav as persistVoiceNav } from '../src/services/watchRoute';
+import { getWatchRecorder, setWatchRecorder } from '../src/services/watchWorkout';
 import { PowerZones } from '../src/types';
 import { recalibrateZonesFromLastRun, writeZonesFileFrom } from '../src/services/zones';
 import { WATCH_KPIS, getWatchKPI, setWatchKPI, watchSyncAvailable } from '../src/services/watchSync';
@@ -82,6 +83,8 @@ export default function SettingsScreen() {
   const [orsSaved,    setOrsSaved]    = useState(false);
   const [orsBusy,     setOrsBusy]     = useState(false);
   const [voiceNav,    setVoiceNav]    = useState(true);
+  const [runcoachRec, setRuncoachRec] = useState(false);   // false = Apple Workout app (default), true = RunCoach watch app
+  useEffect(() => { getWatchRecorder().then(r => setRuncoachRec(r === 'runcoach')).catch(() => {}); }, []);
   const [model,         setModel]         = useState('');
   const [apiKey,        setApiKey]        = useState('');
   const [baseUrl,       setBaseUrl]       = useState('');
@@ -889,6 +892,23 @@ export default function SettingsScreen() {
             <Switch
               value={voiceNav}
               onValueChange={async (v) => { setVoiceNav(v); await persistVoiceNav(v); }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
+              thumbColor="#fff"
+            />
+          </View>
+          <View style={[styles.switchRow, { marginTop: 6 }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Record runs in the RunCoach app (beta)</Text>
+              <Text style={styles.switchSub}>
+                Off (default): "Send to Watch" pushes to Apple's Workout app — stable, with the native visual
+                countdown for timed steps. On: it goes to the RunCoach watch app instead — spoken cues, the
+                interval 3-2-1 countdown, and off-route speech (no route needed; great for track intervals) —
+                while its own recording is still stabilising. A route sent from Wayfinder always uses the RunCoach app.
+              </Text>
+            </View>
+            <Switch
+              value={runcoachRec}
+              onValueChange={async (v) => { setRuncoachRec(v); await setWatchRecorder(v ? 'runcoach' : 'apple'); }}
               trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
               thumbColor="#fff"
             />

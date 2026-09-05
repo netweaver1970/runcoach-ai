@@ -52,7 +52,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
-  private var countdownSpoken: Set<Int> = []   // which of 3/2/1 we've already counted for the current interval
+  private var cueSpoken: Set<String> = []      // which countdown cues (half/20/10/3/2/1) fired for the current interval
+  private var isIntervalWorkout = false        // ≥2 work reps → an intervals session (countdown only fires for these)
   private var startBattery: Float = -1    // watch battery level (0…1) captured at run start → drain/hr on end
 
   func requestAuth() async -> Bool {
@@ -143,7 +144,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.running = true; self.paused = false; self.elapsed = 0
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
         self.lastMoveAt = Date(); self.autoPaused = false
-        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []; self.countdownSpoken = []
+        self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
+        self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
       startTicker()
@@ -255,17 +257,27 @@ final class WorkoutEngine: NSObject, ObservableObject {
     else { updateSegDisplay(seg, inTime, inDist); checkTarget(seg); countdownEnd(seg, inTime) }
   }
 
-  // Spoken "3, 2, 1" in the final seconds of a WORK/RECOVERY interval so you can prepare for the change without
-  // watching the wrist. Each digit is spoken once (guarded), routes to the earbuds like every other cue (honours
-  // the mute toggle), and a light tick fires with it. Skipped on very short steps + on warm-up/drills/cool-down.
+  // Spoken pacing cues through a WORK interval (intervals sessions only — done on the track, no route needed):
+  // one "Halfway", then "20 seconds", "10 seconds", and a final "3, 2, 1". Each fires once (guarded), routes to
+  // the earbuds like every other cue (honours the mute toggle), with a light tick. Longer intervals get the full
+  // set; short ones only the cues that fit (a 30 s rep skips halfway + 20 s). Recovery/warm-up/drills are silent.
   private func countdownEnd(_ seg: RouteSeg, _ inTime: TimeInterval) {
-    guard seg.kind == "work" || seg.kind == "recovery", let d = seg.dur, d >= 8 else { return }
+    guard isIntervalWorkout, seg.kind == "work", let d = seg.dur else { return }
     let rem = d - inTime
-    for n in [3, 2, 1] where !countdownSpoken.contains(n) && rem > Double(n) - 0.5 && rem <= Double(n) + 0.5 {
-      countdownSpoken.insert(n)
-      WKInterfaceDevice.current().play(.click)
-      speak("\(n)")
+    // Halfway — only for intervals long enough to be worth it, and clear of the 20 s cue.
+    if d >= 50, !cueSpoken.contains("half"), inTime >= d / 2, inTime < d / 2 + 1.2 {
+      cueSpoken.insert("half"); speak("Halfway")
     }
+    func fire(_ key: String, _ at: Double, _ phrase: String, _ minDur: Double) {
+      if d >= minDur, !cueSpoken.contains(key), rem > at - 0.5, rem <= at + 0.5 {
+        cueSpoken.insert(key); WKInterfaceDevice.current().play(.click); speak(phrase)
+      }
+    }
+    fire("20", 20, "20 seconds", 28)
+    fire("10", 10, "10 seconds", 16)
+    fire("3", 3, "3", 8)
+    fire("2", 2, "2", 8)
+    fire("1", 1, "1", 8)
   }
 
   // During a WORK segment with a power band, colour the power (targetState) and speak a throttled under/over cue.
@@ -292,7 +304,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if phaseActivityOpen { session?.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the phase that just ended
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
-    targetState = 0; outSince = nil; lastTargetCue = nil; countdownSpoken = []   // reset per-segment trackers
+    targetState = 0; outSince = nil; lastTargetCue = nil; cueSpoken = []   // reset per-segment trackers
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")

@@ -16,7 +16,8 @@ import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
-import { pushWorkoutToWatch, watchModuleAvailable } from '../src/services/watchWorkout';
+import { pushWorkoutToWatch, watchModuleAvailable, getWatchRecorder } from '../src/services/watchWorkout';
+import { sendWorkoutToWatch } from '../src/services/watchRoute';
 import { getPowerZones } from '../src/services/claude';
 
 const INTENSITY_COLOR: Record<string, string> = {
@@ -69,9 +70,17 @@ export default function DailyCoachScreen() {
     if (!watchWorkout) return;
     setWatchSending(true); setWatchMsg(null);
     try {
-      if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
-      const ok = await pushWorkoutToWatch(watchWorkout);
-      setWatchMsg(ok ? '✓ Sent — open the Workout app on your watch.' : 'Could not send (needs iOS 17+ and permission).');
+      const recorder = await getWatchRecorder();
+      let ok = false;
+      if (recorder === 'runcoach') {
+        // Our own watch app (no route needed — e.g. track intervals): voice cues + interval countdown.
+        ok = await sendWorkoutToWatch(watchWorkout, watchWorkout.name || 'Workout');
+        setWatchMsg(ok ? '✓ Sent — open RunCoach on your watch and press Start.' : 'Watch not reachable — open RunCoach on the watch.');
+      } else {
+        if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
+        ok = await pushWorkoutToWatch(watchWorkout);
+        setWatchMsg(ok ? '✓ Sent — open the Workout app on your watch.' : 'Could not send (needs iOS 17+ and permission).');
+      }
       // Record what was ACTUALLY pushed (incl. any ± edit) as the live prescription, so the post-run
       // analysis judges the run against the structure that went to the watch — not yesterday's plan or
       // a pre-edit version.

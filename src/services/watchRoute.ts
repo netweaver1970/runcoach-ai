@@ -78,3 +78,20 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
   saveActiveRoute(loop, name).catch(() => {});   // persist so Wayfinder can back up the run if reopened
   try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }
 }
+
+/**
+ * Send a structured workout to OUR RunCoach watch app WITHOUT a route — for track intervals, which need no map
+ * guidance. Same channel as a route, just empty pts/turns, so the watch shows Start + the interval engine (with
+ * the spoken 3-2-1 countdown) and simply skips the map/off-route tracking. Use this for interval sessions the
+ * runner does on a track; the Apple-Workout push (pushWorkoutToWatch) stays for the visual-countdown path.
+ */
+export async function sendWorkoutToWatch(workout: WatchWorkout, name = 'Intervals', sport: 'running' | 'walking' = 'running'): Promise<boolean> {
+  if (!WatchSync) return false;
+  const payload = {
+    type: 'route', name, distanceKm: 0, pts: [], turns: [],
+    voice: await getVoiceNav(), sport,
+    workout: flattenWorkout(workout),
+  };
+  startRunKeepAlive().catch(() => {});   // about to run → keep the phone reachable to speak cues on the earbuds
+  try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }
+}

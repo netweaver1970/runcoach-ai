@@ -4,7 +4,23 @@
  * native module isn't in the build or the OS is < iOS 17, the functions no-op.
  */
 import { requireNativeModule } from 'expo-modules-core';
+import * as SecureStore from 'expo-secure-store';
 import type { WatchWorkout } from './coach';
+
+// Which watch app RECORDS the run when you push a session from the Daily Coach:
+//   'apple'    — Apple's Workout app via WorkoutKit (DEFAULT; stable, native visual countdown for timed steps)
+//   'runcoach' — our own watch app (voice cues, interval 3-2-1 countdown, off-route speech; still stabilising)
+// A route sent from Wayfinder always uses our app (a route implies map guidance); this only governs the
+// Daily Coach's "Send to Watch" button.
+export type WatchRecorder = 'apple' | 'runcoach';
+const RECORDER_KEY = 'watch_recorder_v1';
+export async function getWatchRecorder(): Promise<WatchRecorder> {
+  try { return (await SecureStore.getItemAsync(RECORDER_KEY)) === 'runcoach' ? 'runcoach' : 'apple'; }
+  catch { return 'apple'; }
+}
+export async function setWatchRecorder(r: WatchRecorder): Promise<void> {
+  try { await SecureStore.setItemAsync(RECORDER_KEY, r, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }); } catch { /* ignore */ }
+}
 
 interface Native {
   isSupported(): Promise<boolean>;
