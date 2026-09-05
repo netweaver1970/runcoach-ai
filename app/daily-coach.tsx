@@ -66,11 +66,12 @@ export default function DailyCoachScreen() {
   // adjusted workout carries real watts even on the first launch after install.
   useEffect(() => { ensureZonesFile().then(() => getPowerZones()).then(setPowerZones).catch(() => {}); }, []);
 
-  const sendToWatch = async () => {
+  // `force` overrides the setting — used by the testing-only second button so both paths are one tap away.
+  const sendToWatch = async (force?: 'apple' | 'runcoach') => {
     if (!watchWorkout) return;
     setWatchSending(true); setWatchMsg(null);
     try {
-      const recorder = await getWatchRecorder();
+      const recorder = force ?? await getWatchRecorder();
       let ok = false;
       if (recorder === 'runcoach') {
         // Our own watch app (no route needed — e.g. track intervals): voice cues + interval countdown.
@@ -644,8 +645,13 @@ export default function DailyCoachScreen() {
                     </View>
                   )}
 
-                  <TouchableOpacity style={s.watchBtn} onPress={sendToWatch} disabled={watchSending}>
+                  <TouchableOpacity style={s.watchBtn} onPress={() => sendToWatch()} disabled={watchSending}>
                     <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
+                  </TouchableOpacity>
+                  {/* TESTING-ONLY second button — force the RunCoach watch app regardless of the setting, so both
+                      paths are one tap away while stabilising. Remove once RunCoach recording is the default. */}
+                  <TouchableOpacity style={[s.watchBtn, s.routeBtn]} onPress={() => sendToWatch('runcoach')} disabled={watchSending}>
+                    <Text style={[s.watchBtnText, s.routeBtnText]}>⌚ Send to RunCoach app (beta)</Text>
                   </TouchableOpacity>
                   {/* Plan a route sized to THIS session (warm-up/cool-down metres + work/rest/drills minutes ÷ pace),
                       then Wayfinder sends the route + the full structure (targets/limits) to the watch run screen. */}
