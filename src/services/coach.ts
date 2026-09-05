@@ -130,6 +130,7 @@ export interface CoachPlan {
     earliestAfterHrs?: number; // suggested gap before Part 2 (glycogen/partial recovery), e.g. 4
   } | null;
   optional2nd?: boolean;     // this run is an OPTIONAL post-completion top-up (not auto-pushed to the watch)
+  sessionComplete?: boolean; // today's prescribed session is DONE → this rest plan is final for the day (never re-prescribe a run)
 }
 
 // A cached plan goes stale when the day's conditions drift from when it was written:
@@ -142,6 +143,11 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   // power). Weather/readiness drift must NOT silently regenerate it away — that would undo a modification
   // made for an injury without the athlete noticing. Only an explicit ↻ Regenerate replaces it.
   if (plan.coachEdited) return false;
+  // Today's prescribed session is already DONE → this rest plan is FINAL for the day. Never regenerate it back
+  // into a run (that's the "home says rest, Daily Coach says do the intervals" split: one screen's fresh scan
+  // saw the completed run, the other's stale time-on-feet didn't and re-prescribed). Once ANY screen writes the
+  // completion rest, every screen loads it and holds it. The manual ↻ Regenerate still bypasses this.
+  if (plan.sessionComplete) return false;
   const nowTemp = snap.weather?.apparentC ?? snap.weather?.tempC;
   // A plan from before conditions-tracking has no genTempC — refresh it once so it
   // picks up the current weather (and gets stamped for future drift checks).
@@ -1502,7 +1508,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
       session: 'You’ve done today’s run — recover now. Optional easy mobility & strength; no more running today.',
       strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
       rationale: bandPhrase(strainReal, strainLow, strainHigh, 'today’s prescribed session is complete — recover (no 2nd run within today’s caps)'),
-      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, sessionKind: 'recovery', secondSession: null, ...stamp,
+      cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, sessionKind: 'recovery', secondSession: null, sessionComplete: true, ...stamp,
     };
   }
 
