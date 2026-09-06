@@ -27,6 +27,7 @@ import { computePowerMetrics, ftpFromZones, PowerMetrics } from '../../src/servi
 import { clearWorkoutCache } from '../../src/services/workoutClassifier';
 import { clearSnapshotCache, clearTrimpCache } from '../../src/services/healthkit';
 import { clearTodayPlanCache } from '../../src/services/coach';
+import { getRunWorkOverride, setRunWorkOverride } from '../../src/services/runWorkOverride';
 import { clearRunAnalysisCache } from '../../src/services/runAnalysis';
 import { clearBodyBatteryCache } from '../../src/services/bodyBattery';
 import { clearAccountingCache } from '../../src/services/accounting';
@@ -662,6 +663,8 @@ export default function WorkoutDetailScreen() {
   const [currentLabel, setCurrentLabel] = useState(params.label ?? '');
   const [hrUnreliable, setHrUnreliable] = useState(false);
   const [note,       setNote]       = useState('');
+  const [workOverride, setWorkOverrideState] = useState<number | null>(null);   // manual counted-work-minutes (null = auto)
+  useEffect(() => { getRunWorkOverride(params.id).then(v => setWorkOverrideState(v ?? null)).catch(() => {}); }, [params.id]);
   const [tempC,      setTempC]      = useState<number | null>(null);
   const [tempSource, setTempSource] = useState<TempSource | null>(null);
   const [ftp,        setFtp]        = useState(0);
@@ -1043,6 +1046,37 @@ export default function WorkoutDetailScreen() {
             <Text style={st.noteHint}>Tap away to save · used by the AI coach when analysing this run</Text>
           </View>
 
+          {/* Counted work time — hand-correct a badly-structured run so its time-on-feet doesn't skew cap/schedule */}
+          {(() => {
+            const EXCL = /warm|cool|recover|rest|walk|prep/i;
+            const acts = detail?.activities ?? [];
+            const autoMin = acts.length
+              ? Math.round(acts.filter(a => !EXCL.test(a.label)).reduce((s, a) => s + (a.netDurationSec || 0), 0) / 60)
+              : Math.round(duration / 60);
+            const shown = workOverride ?? autoMin;
+            const apply = (m: number | null) => {
+              setWorkOverrideState(m);
+              setRunWorkOverride(params.id, m).then(() => clearTodayPlanCache()).catch(() => {});
+            };
+            return (
+              <View style={st.notesCard}>
+                <Text style={st.notesTitle}>Counted work time</Text>
+                <View style={st.workRow}>
+                  <TouchableOpacity style={st.workStep} onPress={() => apply(Math.max(0, shown - 1))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={st.workStepT}>−</Text></TouchableOpacity>
+                  <View style={st.workVal}>
+                    <Text style={st.workValNum}>{shown} min</Text>
+                    <Text style={st.workValSub}>{workOverride == null ? 'auto' : `auto ${autoMin} · manual`}</Text>
+                  </View>
+                  <TouchableOpacity style={st.workStep} onPress={() => apply(shown + 1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={st.workStepT}>+</Text></TouchableOpacity>
+                  {workOverride != null && (
+                    <TouchableOpacity style={st.workAuto} onPress={() => apply(null)}><Text style={st.workAutoT}>Use auto</Text></TouchableOpacity>
+                  )}
+                </View>
+                <Text style={st.noteHint}>Work minutes counted toward your time-on-feet, rolling cap &amp; schedule — adjust if a badly-structured run mis-counted it.</Text>
+              </View>
+            );
+          })()}
+
           {/* Charts — HR, Power, Pace stacked */}
           {(() => {
             const pauses = detail!.pauseIntervals ?? [];
@@ -1331,6 +1365,14 @@ const makeSt = (c: Palette) => StyleSheet.create({
   noteInput:      { backgroundColor: c.surfaceAlt, borderRadius: 8, padding: 10, fontSize: 14, color: c.text,
                     minHeight: 44, maxHeight: 120, textAlignVertical: 'top' },
   noteHint:       { fontSize: 10, color: c.textFaint, marginTop: 5 },
+  workRow:        { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 },
+  workStep:       { width: 40, height: 40, borderRadius: 20, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
+  workStepT:      { fontSize: 22, fontWeight: '700', color: c.text, lineHeight: 24 },
+  workVal:        { flex: 1, alignItems: 'center' },
+  workValNum:     { fontSize: 20, fontWeight: '800', color: c.text, fontVariant: ['tabular-nums'] },
+  workValSub:     { fontSize: 10, color: c.textFaint, marginTop: 1 },
+  workAuto:       { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: c.surfaceAlt },
+  workAutoT:      { fontSize: 12, fontWeight: '700', color: c.accent },
   labelBadge:     { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, minWidth: 70, alignItems: 'center' },
   labelBadgeText: { fontSize: 12, fontWeight: '700' },
 

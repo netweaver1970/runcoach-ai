@@ -4,6 +4,7 @@ import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
 import { isHRVIgnored } from './hrvIgnore';
 import { getExecStructure } from './runSegmentsLog';
+import { loadRunWorkOverrides } from './runWorkOverride';
 
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
 // series-stored workout HR/power that the JS library's sample query returns only sparsely.
@@ -3880,6 +3881,7 @@ async function fetchDailyWorkHistory(
       meters:  keep.reduce((a, sg) => a + (sg.distanceM ?? 0), 0),
     });
   }
+  const overrides = await loadRunWorkOverrides();   // per-run manual work-MINUTES corrections (badly-structured runs)
   const byDay: Record<string, number> = {};
   (allWorkouts as any[])
     .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
@@ -3887,7 +3889,10 @@ async function fetchDailyWorkHistory(
       const day = toISOStr(w.startDate).slice(0, 10);
       const regime = regimeForDate(toISOStr(w.startDate), switches);
       const seg = regime === 'full' ? undefined : segByUuid.get(w.uuid);
-      byDay[day] = (byDay[day] ?? 0) + pick(seg ?? workDrillsTotals(w, regime));
+      let totals = seg ?? workDrillsTotals(w, regime);
+      const ov = overrides[w.uuid];
+      if (ov != null && ov >= 0) totals = { seconds: ov * 60, meters: totals.meters };   // override the TIME; keep distance
+      byDay[day] = (byDay[day] ?? 0) + pick(totals);
     });
   return Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, value }));
 }
