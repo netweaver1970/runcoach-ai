@@ -151,6 +151,11 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       self.here = loc.coordinate
       self.remainingKm = rem / 1000
       self.offRoute = off
+      // Spoken guidance (turns + off-route) ONLY while a run is actually in progress. RouteStore keeps tracking
+      // GPS as long as a route is loaded (for the map + pre-run position), so without this gate the turn and
+      // off-route cues kept firing AFTER the run ended (and before it started) as you moved — "voice after I
+      // stopped the run". Position/remaining still update; only the announcements are gated.
+      guard WorkoutEngine.shared.running else { self.wasOff = off; return }
       // Off-route now SPEAKS (the lone haptic was too easy to miss). Announce on going off, re-announce every
       // 40 s while still off, and confirm the return — all via speak() so it honours the mute toggle + routes
       // to the earbuds like every other cue. Keep a firm .failure haptic alongside.
