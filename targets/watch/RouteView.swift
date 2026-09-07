@@ -272,6 +272,12 @@ struct RouteView: View {
           // stats sub-screen if you deliberately parked there (midPage untouched); the spoken cue + haptic still fire.
           .onChange(of: store.jumpToMap) { page = 1; flashInfo() }
           .onChange(of: engine.announceTick) { flashInfo() }
+          // The map's bottom info/power strip lives HERE, on the OUTER pager, not inside the map page — the outer
+          // pager fills the screen so a bottom overlay lands just above the horizontal page dots (inside the map
+          // page it floated to mid-screen). Only shown while the map sub-screen is visible (centre page + map).
+          .overlay(alignment: .bottom) {
+            if page == 1 && midPage == 0 { mapBottomStrip(r) }
+          }
         )
       } else {
         VStack(spacing: 6) {
@@ -403,6 +409,54 @@ struct RouteView: View {
     }.padding(.horizontal, 6)
   }
 
+  // The map's bottom strip — rendered as a bottom overlay on the OUTER pager (see body), so it sits just above
+  // the page dots instead of floating in the vertically-inset map page. Full turn/segment/HR/power info when the
+  // strip is shown (infoOn), else the compact Min / Now / Max power readout.
+  @ViewBuilder private func mapBottomStrip(_ r: RoutePayload) -> some View {
+    if infoOn {
+      VStack(spacing: 2) {
+        if engine.running {
+          HStack(spacing: 10) {
+            Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
+            if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(powerColor) }
+          }.font(.title3).bold().monospacedDigit()
+          if store.offRoute {
+            Text("OFF ROUTE").font(.caption).bold().foregroundColor(.orange)
+          } else if !engine.segLabel.isEmpty {
+            Text(engine.segZone.isEmpty ? engine.segLabel.uppercased() : "\(engine.segLabel.uppercased()) \(engine.segZone)")
+              .font(.caption).bold().foregroundColor(segColor(engine.segKind)).lineLimit(1).minimumScaleFactor(0.6)
+          }
+          if !engine.segRemain.isEmpty {   // guard the empty string → no phantom line inflating the box height
+            Text(engine.segRemain).font(.title3).monospacedDigit().foregroundColor(segColor(engine.segKind))
+          }
+        } else {
+          if store.offRoute {
+            Text("OFF ROUTE").font(.caption).bold().foregroundColor(.orange)
+          } else if !store.nextTurnText.isEmpty {
+            Text(store.nextTurnText).font(.caption).bold().foregroundColor(.cyan).lineLimit(2).multilineTextAlignment(.center)
+          } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
+            Text(relStart(a.deg, store.heading)).font(.caption).bold().foregroundColor(.green)
+          }
+          Text(String(format: "%.1f km left", store.remainingKm)).font(.subheadline).monospacedDigit()
+          Text("swipe → controls").font(.caption2).foregroundColor(.secondary)
+        }
+      }
+      .padding(.horizontal, 12).padding(.vertical, 4)
+      .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+      .padding(.horizontal, 6).padding(.bottom, 2)
+    } else if engine.running && engine.power > 0 {
+      // Strip hidden → a compact Min / Now / Max power readout, so the number that matters stays glanceable.
+      HStack(spacing: 14) {
+        powerStat("min", engine.powerMin)
+        powerStat("now", engine.power, powerColor, big: true)
+        powerStat("max", engine.powerMax)
+      }
+      .padding(.horizontal, 12).padding(.vertical, 3)
+      .background(.ultraThinMaterial, in: Capsule())
+      .padding(.bottom, 2)
+    }
+  }
+
   // ── MAP screen (centre) — map + a minimisable metrics strip ─────────────────────────────────────────────
   @ViewBuilder private func mapScreen(_ r: RoutePayload) -> some View {
     ZStack(alignment: .bottom) {
@@ -424,53 +478,14 @@ struct RouteView: View {
           UserAnnotation()
         }
         .mapControls { }   // remove MapKit's built-in compass (it appears when the heading-up camera rotates)
-        .ignoresSafeArea()  // fill the full screen. Without this the Map only fills the SAFE AREA, whose bottom
-                            // sits well above the physical edge, so the bottom-anchored info strip has always
-                            // floated mid-screen instead of just above the page dots. Filling to the edge drops
-                            // the strip (its .padding(.bottom, 18)) down to just above the dots.
       } else {
         Color.black.ignoresSafeArea()   // metrics-only: no MapKit rendering → saves battery
       }
-      if infoOn {
-        VStack(spacing: 2) {
-          if engine.running {
-            HStack(spacing: 10) {
-              Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
-              if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(powerColor) }
-            }.font(.title3).bold().monospacedDigit()
-            if store.offRoute {
-              Text("OFF ROUTE").font(.caption).bold().foregroundColor(.orange)
-            } else if !engine.segLabel.isEmpty {
-              Text(engine.segZone.isEmpty ? engine.segLabel.uppercased() : "\(engine.segLabel.uppercased()) \(engine.segZone)")
-                .font(.caption).bold().foregroundColor(segColor(engine.segKind)).lineLimit(1).minimumScaleFactor(0.6)
-            }
-            Text(engine.segRemain).font(.title3).monospacedDigit().foregroundColor(segColor(engine.segKind))
-          } else {
-            if store.offRoute {
-              Text("OFF ROUTE").font(.caption).bold().foregroundColor(.orange)
-            } else if !store.nextTurnText.isEmpty {
-              Text(store.nextTurnText).font(.caption).bold().foregroundColor(.cyan).lineLimit(2).multilineTextAlignment(.center)
-            } else if let a = directionArrows(store.coords).first, store.remainingKm > r.distanceKm * 0.92 {
-              Text(relStart(a.deg, store.heading)).font(.caption).bold().foregroundColor(.green)
-            }
-            Text(String(format: "%.1f km left", store.remainingKm)).font(.subheadline).monospacedDigit()
-            Text("swipe → controls").font(.caption2).foregroundColor(.secondary)
-          }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 4)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.bottom, 18).padding(.horizontal, 6)   // sit just ABOVE the TabView page dots
-      } else if engine.running && engine.power > 0 {
-        // Strip hidden → a compact Min / Now / Max power readout, so the number that matters stays glanceable.
-        HStack(spacing: 14) {
-          powerStat("min", engine.powerMin)
-          powerStat("now", engine.power, powerColor, big: true)
-          powerStat("max", engine.powerMax)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 3)
-        .background(.ultraThinMaterial, in: Capsule())
-        .padding(.bottom, 18)
-      }
+      // NOTE: the bottom info/power strip is NOT here anymore. Anchored inside this (nested, vertically-inset)
+      // map page it floated to mid-screen — a bottom-aligned child only reaches the PAGE's bounds, not the
+      // physical screen, and ignoresSafeArea changes rendering, not that anchor. It now lives as a bottom
+      // overlay on the OUTER pager (see body → mapBottomStrip), which fills the screen, so it sits just above
+      // the horizontal page dots regardless of the map page's insets.
     }
     .overlay(alignment: .topTrailing) {
       VStack(spacing: 6) {
