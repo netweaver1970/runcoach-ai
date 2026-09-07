@@ -10,7 +10,7 @@ import WatchConnectivity
 struct RoutePoint: Codable, Hashable { let lat: Double; let lon: Double }
 struct RouteTurn: Codable, Hashable { let lat: Double; let lon: Double; let text: String; let dist: Double }
 // One structured-workout segment (Stage 2). dur (s) OR dist (m) → a goal; neither → OPEN (advance with the lap button).
-struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String?; let pLo: Double?; let pHi: Double? }
+struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String?; let pLo: Double?; let pHi: Double?; let paceLo: Double?; let paceHi: Double? }  // paceLo/Hi = sec/km work band (indoor/treadmill: FAST/SLOW bound)
 struct RoutePayload: Codable {
   let type: String            // "route"
   let name: String
@@ -19,6 +19,7 @@ struct RoutePayload: Codable {
   let turns: [RouteTurn]?     // turn-by-turn maneuvers (optional — old phone builds omit it)
   let voice: Bool?            // initial voice-on state from the phone setting
   let sport: String?          // "walking" → walk session; anything else → run
+  let indoor: Bool?           // true → treadmill/indoor: record .indoor (no GPS), speak PACE cues not power
   let workout: [RouteSeg]?    // structured intervals the run session steps through
 }
 

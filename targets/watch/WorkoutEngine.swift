@@ -63,6 +63,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
+  private var isIndoor = false            // treadmill/indoor run → speak PACE cues (from motion), not power
+  private var paceOutSince: Date?         // when pace went out of the target band
+  private var lastPaceCue: Date?          // throttle the under/over PACE cue
+  private var paceSamples: [(t: Double, d: Double)] = []   // ~last 22 s of (elapsed, distance) → rolling pace
   private var cueSpoken: Set<String> = []      // which countdown cues (half/20/10/321) fired for the current interval
   private var isIntervalWorkout = false        // ≥2 work reps → an intervals session (countdown only fires for these)
   private var prevWorkPaceSecPerKm: Double = 0 // previous completed work interval's avg pace (0 = none) → the stats-screen trend arrow
@@ -82,11 +86,12 @@ final class WorkoutEngine: NSObject, ObservableObject {
   func startFromRoute(_ r: RoutePayload) {
     segs = r.workout ?? []
     let activity: HKWorkoutActivityType = (r.sport == "walking") ? .walking : .running
+    let indoor = r.indoor ?? false   // treadmill → record .indoor (distance/pace from motion, no GPS) + pace cues
     // Only prompt when not already granted — avoids re-asking on every run within an install.
     if store.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized {
-      start(activity: activity)
+      start(activity: activity, indoor: indoor)
     } else {
-      Task { _ = await requestAuth(); await MainActor.run { self.start(activity: activity) } }
+      Task { _ = await requestAuth(); await MainActor.run { self.start(activity: activity, indoor: indoor) } }
     }
   }
 
@@ -136,12 +141,13 @@ final class WorkoutEngine: NSObject, ObservableObject {
     rb.insertRouteData(good) { _, _ in }
   }
 
-  func start(activity: HKWorkoutActivityType) {
+  func start(activity: HKWorkoutActivityType, indoor: Bool = false) {
     if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
     guard session == nil else { return }           // a genuinely running session → ignore a double-Start
+    isIndoor = indoor
     let cfg = HKWorkoutConfiguration()
     cfg.activityType = activity
-    cfg.locationType = .outdoor
+    cfg.locationType = indoor ? .indoor : .outdoor   // indoor/treadmill → distance/pace from motion, no GPS
     do {
       let s = try HKWorkoutSession(healthStore: store, configuration: cfg)
       let b = s.associatedWorkoutBuilder()
@@ -149,7 +155,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       s.delegate = self
       b.delegate = self
       session = s; builder = b
-      routeBuilder = HKWorkoutRouteBuilder(healthStore: store, device: .local())   // start accumulating the GPS track
+      routeBuilder = indoor ? nil : HKWorkoutRouteBuilder(healthStore: store, device: .local())   // outdoor only — no GPS track on a treadmill
       let now = Date(); startDate = now
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { _, _ in }
@@ -161,8 +167,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
       // is the likely reason the per-phase HK activities never read back.
       pendingFirstPhase = !segs.isEmpty
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
-      RouteStore.shared.resetGuidance()   // fresh turn/off-route state (so a 2nd run on the same route re-announces)
-      RouteStore.shared.start()           // GPS tracking is tied to the RUN (start→stop), not to the route being loaded
+      if !indoor {         // no GPS on a treadmill — don't burn battery hunting for a fix
+        RouteStore.shared.resetGuidance()   // fresh turn/off-route state (so a 2nd run on the same route re-announces)
+        RouteStore.shared.start()           // GPS tracking is tied to the RUN (start→stop), not to the route being loaded
+      }
       // Internal battery profiling: snapshot the watch battery so we can report drain/hr when the run ends.
       let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
       let bat0 = dev.batteryLevel
@@ -174,6 +182,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
         self.workCount = self.segs.filter { $0.kind == "work" }.count
         self.segDistM = 0; self.segPaceStr = "--:--"; self.prevWorkPaceStr = ""; self.prevWorkPaceSecPerKm = 0; self.paceTrend = 0
+        self.paceSamples = []; self.paceOutSince = nil; self.lastPaceCue = nil
         self.recomputeWorkIndex()
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
@@ -214,7 +223,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       b.discardWorkout()   // discarded run → drop the route too (rb is released)
     }
     stopTicker()
-    session = nil; builder = nil; routeBuilder = nil; segs = []
+    session = nil; builder = nil; routeBuilder = nil; segs = []; isIndoor = false; paceSamples = []
     try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     DispatchQueue.main.async {
       self.running = false; self.paused = false; self.power = 0
@@ -257,7 +266,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
     ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       guard let self, let sd = self.startDate, !self.paused else { return }
       DispatchQueue.main.async {
-        self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.updateSectionStats(); self.tickSegments()
+        self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.updateSectionStats()
+        self.paceSamples.append((self.elapsed, self.distanceM))                       // rolling-pace window for treadmill cues
+        self.paceSamples.removeAll { self.elapsed - $0.t > 22 }                       // keep ~last 22 s
+        self.tickSegments()
         // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
         // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
         if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15,
@@ -312,7 +324,36 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if let d = seg.dur { done = inTime >= d }
     else if let m = seg.dist { done = inDist >= m }
     if done { advanceSegment() }
-    else { updateSegDisplay(seg, inTime, inDist); checkTarget(seg); countdownEnd(seg, inTime) }
+    else { updateSegDisplay(seg, inTime, inDist); if isIndoor { checkPaceTarget(seg) } else { checkTarget(seg) }; countdownEnd(seg, inTime) }
+  }
+
+  // Rolling pace (sec/km) over the last ~20 s — reflects a treadmill-speed change within seconds, unlike the
+  // whole-section average. nil until there's a stable window (≥12 s spanned, ≥40 m covered).
+  private func rollingPaceSec() -> Double? {
+    guard let first = paceSamples.first, paceSamples.count >= 2 else { return nil }
+    let dt = elapsed - first.t, dd = distanceM - first.d
+    guard dt >= 12, dd >= 40 else { return nil }
+    return dt / (dd / 1000)
+  }
+
+  // INDOOR/treadmill analog of checkTarget: compare the rolling pace to the work block's pace band and speak a
+  // terse under/over-PACE cue (haptic says which way). Pace comes from the watch's motion sensor indoors.
+  private func checkPaceTarget(_ seg: RouteSeg) {
+    guard seg.kind == "work", let fast = seg.paceLo, let slow = seg.paceHi, let cur = rollingPaceSec() else {
+      targetState = 0; paceOutSince = nil; return
+    }
+    let st = cur < fast ? -1 : (cur > slow ? 1 : 0)   // -1 = too FAST (ahead), +1 = too SLOW (behind)
+    targetState = st == -1 ? 1 : (st == 1 ? -1 : 0)   // colour: fast→"over" tint, slow→"under" tint (reuse powerColor)
+    if st == 0 { paceOutSince = nil; return }
+    if paceOutSince == nil { paceOutSince = Date() }
+    let now = Date()
+    if now.timeIntervalSince(paceOutSince!) > 8, lastPaceCue == nil || now.timeIntervalSince(lastPaceCue!) > 25 {
+      lastPaceCue = now
+      announceTick += 1
+      WKInterfaceDevice.current().play(st < 0 ? .directionDown : .directionUp)   // too fast → ease (down); too slow → push (up)
+      let mmss = String(format: "%d:%02d", Int(cur) / 60, Int(cur) % 60)
+      speak(st < 0 ? "Ease, \(mmss)" : "Push, \(mmss)")   // terse — pace number; haptic says ease/push
+    }
   }
 
   // Spoken pacing cues through a WORK interval (intervals sessions only — done on the track, no route needed):
@@ -372,7 +413,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
     segDistM = 0; segPaceStr = "--:--"; paceTrend = 0; recomputeWorkIndex()   // reset section stats for the new phase
-    targetState = 0; outSince = nil; lastTargetCue = nil; cueSpoken = []   // reset per-segment trackers
+    targetState = 0; outSince = nil; lastTargetCue = nil; paceOutSince = nil; lastPaceCue = nil; cueSpoken = []   // reset per-segment trackers
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")
@@ -397,10 +438,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
       phrase += ", \(Int(mm)) meters"
     }
     if let z = seg.zone, !z.isEmpty { phrase += ", \(z)" }
-    // State the prescribed POWER band on a work segment so you know the target before you're in it (the HR
-    // zone above already covers the HR case). e.g. "intervals, 1 minute, Z4, target 250 to 280 watts".
-    if seg.kind == "work", let lo = seg.pLo, let hi = seg.pHi, lo > 0, hi > 0 {
-      phrase += ", target \(Int(lo)) to \(Int(hi)) watts"
+    // State the prescribed target band on a work segment so you know it before you're in it. Indoor/treadmill
+    // → PACE band (min/km); outdoor → POWER band (watts). e.g. "…, target 5:30 to 6:00 per km" / "…250 to 280 watts".
+    if seg.kind == "work" {
+      let mmss = { (s: Double) in String(format: "%d:%02d", Int(s) / 60, Int(s) % 60) }
+      if isIndoor, let fast = seg.paceLo, let slow = seg.paceHi, fast > 0, slow > 0 {
+        phrase += ", target \(mmss(fast)) to \(mmss(slow)) per kilometer"
+      } else if let lo = seg.pLo, let hi = seg.pHi, lo > 0, hi > 0 {
+        phrase += ", target \(Int(lo)) to \(Int(hi)) watts"
+      }
     }
     speak(phrase)
     updateSegDisplay(seg, 0, 0)

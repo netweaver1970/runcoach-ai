@@ -34,7 +34,7 @@ const r5 = (n: number) => Math.round(n * 1e5) / 1e5;
 // A flat, ordered list of segments the watch engine steps through (Stage 2). Mirrors how RunCoachWorkoutModule
 // builds the WorkoutKit intervals: warmup → drills → per block reps×(work[,recover]) with NO trailing recover →
 // cooldown. dur (s) OR dist (m) → a goal; neither → an OPEN segment advanced by the lap button.
-export interface WorkoutSeg { kind: string; dur?: number; dist?: number; label: string; zone?: string; pLo?: number; pHi?: number }
+export interface WorkoutSeg { kind: string; dur?: number; dist?: number; label: string; zone?: string; pLo?: number; pHi?: number; paceLo?: number; paceHi?: number }
 export function flattenWorkout(w: WatchWorkout): WorkoutSeg[] {
   const segs: WorkoutSeg[] = [];
   segs.push(w.warmupMeters > 0 ? { kind: 'warmup', dist: w.warmupMeters, label: 'Warm-up' } : { kind: 'warmup', label: 'Warm-up' });
@@ -42,7 +42,8 @@ export function flattenWorkout(w: WatchWorkout): WorkoutSeg[] {
   for (const b of w.blocks ?? []) {
     const reps = Math.max(1, b.repeats || 1);
     const work = (): WorkoutSeg => ({ kind: 'work', ...(b.workMinutes > 0 ? { dur: b.workMinutes * 60 } : {}), label: b.label || 'Work', zone: b.hrZone,
-      ...(b.powerLowWatts && b.powerHighWatts ? { pLo: b.powerLowWatts, pHi: b.powerHighWatts } : {}) });   // watch reports under/over
+      ...(b.powerLowWatts && b.powerHighWatts ? { pLo: b.powerLowWatts, pHi: b.powerHighWatts } : {}),         // watch reports under/over power (outdoor)
+      ...(b.paceLoSec && b.paceHiSec ? { paceLo: b.paceLoSec, paceHi: b.paceHiSec } : {}) });                 // …or under/over pace (indoor/treadmill)
     if (b.restMinutes > 0) {
       const rec = (): WorkoutSeg => ({ kind: 'recovery', dur: b.restMinutes * 60, label: 'Recover', zone: b.recoveryZone });
       for (let i = 0; i < reps - 1; i++) { segs.push(work()); segs.push(rec()); }
@@ -85,11 +86,11 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
  * the spoken 3-2-1 countdown) and simply skips the map/off-route tracking. Use this for interval sessions the
  * runner does on a track; the Apple-Workout push (pushWorkoutToWatch) stays for the visual-countdown path.
  */
-export async function sendWorkoutToWatch(workout: WatchWorkout, name = 'Intervals', sport: 'running' | 'walking' = 'running'): Promise<boolean> {
+export async function sendWorkoutToWatch(workout: WatchWorkout, name = 'Intervals', sport: 'running' | 'walking' = 'running', indoor = false): Promise<boolean> {
   if (!WatchSync) return false;
   const payload = {
     type: 'route', name, distanceKm: 0, pts: [], turns: [],
-    voice: await getVoiceNav(), sport,
+    voice: await getVoiceNav(), sport, indoor,   // indoor → watch records .indoor (no GPS) + speaks PACE cues
     workout: flattenWorkout(workout),
   };
   startRunKeepAlive().catch(() => {});   // about to run → keep the phone reachable to speak cues on the earbuds

@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp, estimateDayTrimp } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, ensureBlockPower, getPrescribedMinutes, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, ensureBlockPower, addBlockPace, getTrailingPaceMinPerKm, getPrescribedMinutes, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, WatchWorkout, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -66,17 +66,33 @@ export default function DailyCoachScreen() {
   // adjusted workout carries real watts even on the first launch after install.
   useEffect(() => { ensureZonesFile().then(() => getPowerZones()).then(setPowerZones).catch(() => {}); }, []);
 
+  // INDOOR / TREADMILL mode: session-only toggle (default off, so an outdoor run is never pushed indoors by
+  // accident). When on, runs push to the RunCoach app as an INDOOR workout (no GPS) with PACE targets derived
+  // from the athlete's trailing pace, and the watch speaks under/over-PACE cues instead of power.
+  const [indoorMode, setIndoorMode] = useState(false);
+  const [trailingPaceMin, setTrailingPaceMin] = useState(0);   // min/km, for the on-screen pace readout
+  useEffect(() => { if (indoorMode && trailingPaceMin === 0) getTrailingPaceMinPerKm().then(setTrailingPaceMin).catch(() => {}); }, [indoorMode, trailingPaceMin]);
+  const fmtPaceSec = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
+
+  // Send a workout to the RunCoach watch app; in indoor mode, layer on the treadmill pace band + the indoor flag.
+  const sendRunCoach = async (wk: WatchWorkout, name: string): Promise<boolean> => {
+    const finalWk = indoorMode ? (addBlockPace({ ...wk }, await getTrailingPaceMinPerKm()) ?? wk) : wk;
+    return sendWorkoutToWatch(finalWk, name, 'running', indoorMode);
+  };
+
   // `force` overrides the setting — used by the testing-only second button so both paths are one tap away.
   const sendToWatch = async (force?: 'apple' | 'runcoach') => {
     if (!watchWorkout) return;
     setWatchSending(true); setWatchMsg(null);
     try {
-      const recorder = force ?? await getWatchRecorder();
+      // Indoor/treadmill forces the RunCoach app (that's where the pace cues live — Apple-workout pace targets
+      // weren't chosen); otherwise honour the recorder setting.
+      const recorder = indoorMode ? 'runcoach' : (force ?? await getWatchRecorder());
       let ok = false;
       if (recorder === 'runcoach') {
-        // Our own watch app (no route needed — e.g. track intervals): voice cues + interval countdown.
-        ok = await sendWorkoutToWatch(watchWorkout, watchWorkout.name || 'Workout');
-        setWatchMsg(ok ? '✓ Sent — open RunCoach on your watch and press Start.' : 'Watch not reachable — open RunCoach on the watch.');
+        // Our own watch app (no route needed — e.g. track intervals / treadmill): voice cues + interval countdown.
+        ok = await sendRunCoach(watchWorkout, watchWorkout.name || 'Workout');
+        setWatchMsg(ok ? (indoorMode ? '✓ Treadmill run sent — open RunCoach on your watch and press Start.' : '✓ Sent — open RunCoach on your watch and press Start.') : 'Watch not reachable — open RunCoach on the watch.');
       } else {
         if (!watchModuleAvailable()) { setWatchMsg('Watch module not in this build.'); return; }
         ok = await pushWorkoutToWatch(watchWorkout);
@@ -324,7 +340,7 @@ export default function DailyCoachScreen() {
       const slot = weekdaySlot(new Date(targetDate + 'T00:00:00'));
       const wk = ensureBlockPower(synthesizeWorkout('easy', topUpMin, `${slot} top-up`, powerZones, 'easy'), powerZones);
       if (!wk) { setWatchMsg('Could not build the top-up.'); return; }
-      const ok = await sendWorkoutToWatch(wk, 'Top-up run');
+      const ok = await sendRunCoach(wk, indoorMode ? 'Top-up (treadmill)' : 'Top-up run');
       setWatchMsg(ok
         ? '✓ Top-up sent — open RunCoach on the watch and press Start.'
         : 'Watch not reachable — open RunCoach on the watch.');
@@ -340,8 +356,8 @@ export default function DailyCoachScreen() {
       const slot = weekdaySlot(new Date(targetDate + 'T00:00:00'));
       const wk = ensureBlockPower(synthesizeWorkout('easy', 20, `${slot} easy`, powerZones, 'easy'), powerZones);
       if (!wk) { setWatchMsg('Could not build the run.'); return; }
-      const ok = await sendWorkoutToWatch(wk, 'Easy run');
-      setWatchMsg(ok ? '✓ Sent — open RunCoach on the watch and press Start.' : 'Watch not reachable — open RunCoach on the watch.');
+      const ok = await sendRunCoach(wk, indoorMode ? 'Easy (treadmill)' : 'Easy run');
+      setWatchMsg(ok ? (indoorMode ? '✓ Treadmill run sent — open RunCoach on the watch and press Start.' : '✓ Sent — open RunCoach on the watch and press Start.') : 'Watch not reachable — open RunCoach on the watch.');
     } catch (e: any) { setWatchMsg(e?.message ?? 'Send failed.'); }
     finally { setQuickSending(false); }
   };
@@ -702,8 +718,25 @@ export default function DailyCoachScreen() {
                     </View>
                   )}
 
+                  {/* INDOOR / TREADMILL — pushes runs to the RunCoach app as an indoor (no-GPS) workout with spoken
+                      PACE targets instead of power. Session-only (default off) so an outdoor run is never sent
+                      indoors by accident. When on, all the send buttons below go out as treadmill runs. */}
+                  <View style={s.indoorRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.indoorLabel}>🏃 Indoor / treadmill</Text>
+                      {indoorMode && (
+                        <Text style={s.indoorHint}>
+                          {trailingPaceMin > 0
+                            ? `Easy ≈ ${fmtPaceSec(trailingPaceMin * 60 * 0.96)}–${fmtPaceSec(trailingPaceMin * 60 * 1.04)} /km · RunCoach app, no GPS, spoken pace`
+                            : 'Pace targets from your recent runs · RunCoach app, no GPS, spoken pace'}
+                        </Text>
+                      )}
+                    </View>
+                    <Switch value={indoorMode} onValueChange={setIndoorMode} />
+                  </View>
+
                   <TouchableOpacity style={s.watchBtn} onPress={() => sendToWatch()} disabled={watchSending}>
-                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
+                    <Text style={s.watchBtnText}>{watchSending ? 'Sending…' : indoorMode ? '⌚ Send treadmill run to Watch' : edited ? '⌚ Send edited to Watch' : '⌚ Send to Watch'}</Text>
                   </TouchableOpacity>
                   {/* TESTING-ONLY second button — force the RunCoach watch app regardless of the setting, so both
                       paths are one tap away while stabilising. Remove once RunCoach recording is the default. */}
@@ -960,6 +993,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  indoorRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, paddingVertical: 4 },
+  indoorLabel: { color: c.text, fontWeight: '700', fontSize: 13 },
+  indoorHint: { color: c.textSub, fontSize: 11, marginTop: 2 },
   quickBtn: { backgroundColor: c.surfaceAlt, borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 4 },
   quickBtnText: { color: c.text, fontWeight: '700', fontSize: 13 },
   step: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },

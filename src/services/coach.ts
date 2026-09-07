@@ -10,7 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import { callLLM, getLLMStatus, extractJsonObject, setUsageFeature } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
-import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory, fetchTrainingLoadHistory } from './healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory, fetchTrainingLoadHistory, loadSnapshotCache } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
@@ -90,6 +90,8 @@ export interface WatchWorkoutBlock {
   powerHighWatts?: number;      // upper bound, watts
   recoveryLowWatts?:  number;   // FLOAT only (Z2/Z3 recovery): its own, lower power window — the float goes to
   recoveryHighWatts?: number;   // the watch as a WORK step at these watts, so it counts as work, not rest
+  paceLoSec?:  number;          // INDOOR/treadmill: work pace band, sec/km. Lo = FAST bound, Hi = SLOW bound.
+  paceHiSec?:  number;          // Derived from trailing pace × zone factor (addBlockPace) — pace, not power/GPS.
   label?:      string;          // e.g. "tempo", "VO2"
 }
 export interface WatchWorkout {
@@ -395,6 +397,38 @@ function widenPower(lo?: number, hi?: number): [number | undefined, number | und
   let l = Math.min(lo, hi), h = Math.max(lo, hi);
   if (h - l < MIN_WATT_SPREAD) { const mid = (l + h) / 2; l = Math.max(1, Math.round(mid - MIN_WATT_SPREAD / 2)); h = l + MIN_WATT_SPREAD; }
   return [l, h];
+}
+
+// ── Indoor / treadmill pace targets ───────────────────────────────────────────────────────────────────────
+// Per-HR-zone pace multiplier RELATIVE to the athlete's trailing run pace (treated as the easy/Z2 anchor);
+// faster (smaller ×) for higher zones. Used ONLY for indoor/treadmill runs where PACE — not power/GPS — is the
+// dial. Derived, not calibrated: an estimate the runner fine-tunes on the belt.
+const ZONE_PACE_FACTOR: Record<string, number> = { Z1: 1.08, Z2: 1.0, Z3: 0.92, Z4: 0.86, Z5: 0.80 };
+
+/** Fill each block's pace band (sec/km; paceLoSec = FAST bound, paceHiSec = SLOW bound) = trailing pace ×
+ *  zone factor, ±4%. `paceMinPerKm` is the athlete's recent median run pace (min/km, the easy anchor). */
+export function addBlockPace(w: WatchWorkout | null, paceMinPerKm: number): WatchWorkout | null {
+  if (!w || !(paceMinPerKm > 0)) return w;
+  const baseSec = paceMinPerKm * 60;
+  w.blocks = w.blocks.map(b => {
+    const f = ZONE_PACE_FACTOR[b.hrZone ?? 'Z2'] ?? 1.0;
+    const target = baseSec * f;
+    return { ...b, paceLoSec: Math.round(target * 0.96), paceHiSec: Math.round(target * 1.04) };
+  });
+  return w;
+}
+
+/** Trailing median run pace (min/km) from recent real runs (≥8 min) — basis-independent, for treadmill pace
+ *  targets. Falls back to ~6:00/km when there's no run history. */
+export async function getTrailingPaceMinPerKm(): Promise<number> {
+  try {
+    const snap = await loadSnapshotCache();
+    const paces = (snap?.runs ?? [])
+      .filter(r => (r.pace ?? 0) > 0 && (r.duration ?? 0) >= 480)
+      .slice(0, 12).map(r => r.pace).sort((a, b) => a - b);
+    if (paces.length === 0) return 6;
+    return paces[Math.floor(paces.length / 2)] / 60;   // median sec/km → min/km
+  } catch { return 6; }
 }
 
 export function ensureBlockPower(w: WatchWorkout | null, pz?: CoachSnapshot['powerZones']): WatchWorkout | null {
