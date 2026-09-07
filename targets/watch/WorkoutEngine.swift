@@ -52,7 +52,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
-  private var cueSpoken: Set<String> = []      // which countdown cues (half/20/10/3/2/1) fired for the current interval
+  private var cueSpoken: Set<String> = []      // which countdown cues (half/20/10/321) fired for the current interval
   private var isIntervalWorkout = false        // ≥2 work reps → an intervals session (countdown only fires for these)
   private var startBattery: Float = -1    // watch battery level (0…1) captured at run start → drain/hr on end
 
@@ -275,9 +275,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
     }
     fire("20", 20, "20 seconds", 28)
     fire("10", 10, "10 seconds", 16)
-    fire("3", 3, "3", 8)
-    fire("2", 2, "2", 8)
-    fire("1", 1, "1", 8)
+    // One utterance, not three cues 1 s apart: the rapid separate cues collided on the phone's per-utterance
+    // audio activate/deactivate and dropped the 2/1 (and left the music paused). Spoken as "3, 2, 1" the commas
+    // give the countdown cadence in a single interruption.
+    fire("321", 3, "3, 2, 1", 8)
   }
 
   // During a WORK segment with a power band, colour the power (targetState) and speak a throttled under/over cue.

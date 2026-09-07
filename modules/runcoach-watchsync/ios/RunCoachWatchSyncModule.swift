@@ -47,6 +47,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   var onRunBattery: (([String: Any]) -> Void)?   // watch battery profiling from the run → JS debug log
   var onRunSegments: (([String: Any]) -> Void)?  // executed phase boundaries from the run → JS structure rebuild
   private var resumeWork: DispatchWorkItem?       // pending resume-retry, cancelled when a new cue takes the session
+  private var pendingUtterances = 0               // utterances requested but not yet finished — resume only when this hits 0
   private var phoneAudioTarget = false            // this run: is the PHONE the audible device (earbuds OR playing audio)?
 
   // ─── Audio diagnostics ──────────────────────────────────────────────────────────────────────────────────
@@ -107,12 +108,21 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   private func speakNow(_ text: String) {   // the cue handler has already activated the session
     guard !text.isEmpty else { return }
     let u = AVSpeechUtterance(string: text); u.rate = AVSpeechUtteranceDefaultSpeechRate
+    pendingUtterances += 1
     synth.speak(u)
   }
   func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart u: AVSpeechUtterance) { alog("synth START") }
-  func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
-    alog("synth FINISH → resume")
-    if !s.isSpeaking { resumeOthers() }   // cue done → resume the music, verifying it actually took
+  func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { utteranceDone("FINISH") }
+  func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { utteranceDone("CANCEL") }
+  // Resume the music only once EVERY queued utterance is done. isSpeaking briefly reads false in the gap
+  // between two queued utterances, so gating on it (the old bug) tore the session down mid-queue when cues
+  // landed close together — dropping the later utterances and wedging the synth so nothing spoke again and the
+  // music never resumed. The outstanding-utterance counter is immune to that gap; the deferred resume lets a
+  // closely-following cue cancel the teardown before it fires.
+  private func utteranceDone(_ why: String) {
+    pendingUtterances = max(0, pendingUtterances - 1)
+    alog("synth \(why) pending=\(pendingUtterances)")
+    if pendingUtterances == 0 { scheduleResume(after: 0.5) }
   }
 
   // Pause/resume whatever the phone is playing, driven from the watch's Media screen. Activating a non-mixing
@@ -126,7 +136,8 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
         try? sess.setCategory(.playback, mode: .default)
         try? sess.setActive(true)
       } else {
-        self.resumeOthers()   // deactivate + verify-and-retry that the other app actually resumed
+        self.pendingUtterances = 0
+        self.scheduleResume(after: 0)   // deactivate + verify-and-retry that the other app actually resumed
       }
     }
   }
@@ -136,7 +147,9 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   private func handleRun(_ dict: [String: Any]) {
     guard let run = dict["run"] as? String else { return }
     if run == "start" { DispatchQueue.main.async { self.primeAudio() } }   // warm the audio route → first cue isn't lost
-    if run == "end"   { phoneAudioTarget = false }
+    // Run over → force the music back regardless of counter state, so a stray un-finished utterance can never
+    // leave the session held (music paused) after the run.
+    if run == "end"   { phoneAudioTarget = false; DispatchQueue.main.async { self.pendingUtterances = 0; self.scheduleResume(after: 0.1) } }
     DispatchQueue.main.async { self.onRunState?(run) }
   }
 
@@ -147,6 +160,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   // earbuds we don't hold the phone session (the watch speaks the cues).
   private func primeAudio() {
     cancelResume()   // priming takes the session → don't let a stale retry deactivate under it
+    pendingUtterances = 0   // fresh run → clear any counter leaked by a previous run's interrupted utterance
     let sess = AVAudioSession.sharedInstance()
     // Decide the cue target for THIS run BEFORE touching the session — activating INTERRUPTS other audio, which
     // then makes isOtherAudioPlaying read false. The PHONE owns cues when it's audible: earbuds/BT connected OR
@@ -186,24 +200,22 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
 
   // Hand the interrupted app back its audio, then VERIFY it actually resumed. Deactivating with
   // notifyOthersOnDeactivation should let music/podcasts resume, but it doesn't always take (the user's "audio
-  // paused, never came back"). So after a beat we check isOtherAudioPlaying and retry a few times — unless a new
-  // cue is speaking (don't fight it) or there was simply nothing else to resume.
-  private func resumeOthers(_ attempt: Int = 0) {
-    // CRITICAL: only tear the session down when NO cue owns it. Without this guard the retry fired in the gap
-    // between the rapid 3-2-1 countdown cues — after a cue's setActive(true) but before its async speakNow ran —
-    // deactivating the session the cue just took, so the utterance was dropped (music cut, nothing heard) and,
-    // because it never played, didFinish never fired and the music never resumed. (Regression: retry loop +
-    // interval countdown cues.)
-    guard !synth.isSpeaking else { alog("resume skip (speaking)"); return }
-    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-    alog("resume deactivate attempt=\(attempt) other=\(AVAudioSession.sharedInstance().isOtherAudioPlaying)")
-    guard attempt < 4 else { return }
+  // paused, never came back"). So after a beat we check isOtherAudioPlaying and retry a few times.
+  // DEFERRED, never immediate: the teardown runs on a cancellable work item, so a cue that lands right behind
+  // the finishing one cancels it (cancelResume) and we never deactivate the session mid-queue — the wedge that
+  // dropped the 2/1 countdown cues and left the music paused for the rest of the run.
+  private func scheduleResume(after delay: TimeInterval, attempt: Int = 0) {
+    cancelResume()
     let work = DispatchWorkItem { [weak self] in
-      guard let self = self, !self.synth.isSpeaking else { return }
-      if !AVAudioSession.sharedInstance().isOtherAudioPlaying { self.resumeOthers(attempt + 1) }
+      guard let self = self else { return }
+      guard !self.synth.isSpeaking, self.pendingUtterances == 0 else { self.alog("resume skip (speaking)"); return }
+      try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+      self.alog("resume deactivate attempt=\(attempt) other=\(AVAudioSession.sharedInstance().isOtherAudioPlaying)")
+      guard attempt < 4 else { return }
+      if !AVAudioSession.sharedInstance().isOtherAudioPlaying { self.scheduleResume(after: 0.5, attempt: attempt + 1) }
     }
     resumeWork = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
   }
 
   // A new cue is taking the session → cancel any pending resume-retry so it can't deactivate underneath the cue.
