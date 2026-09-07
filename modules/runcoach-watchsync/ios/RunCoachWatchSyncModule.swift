@@ -47,6 +47,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   var onRunBattery: (([String: Any]) -> Void)?   // watch battery profiling from the run → JS debug log
   var onRunSegments: (([String: Any]) -> Void)?  // executed phase boundaries from the run → JS structure rebuild
   private var resumeWork: DispatchWorkItem?       // pending resume-retry, cancelled when a new cue takes the session
+  private var phoneAudioTarget = false            // this run: is the PHONE the audible device (earbuds OR playing audio)?
 
   // ─── Audio diagnostics ──────────────────────────────────────────────────────────────────────────────────
   // The cue path is all `try?` with no logging, so every audio bug has been guesswork. Append each event to a
@@ -135,6 +136,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   private func handleRun(_ dict: [String: Any]) {
     guard let run = dict["run"] as? String else { return }
     if run == "start" { DispatchQueue.main.async { self.primeAudio() } }   // warm the audio route → first cue isn't lost
+    if run == "end"   { phoneAudioTarget = false }
     DispatchQueue.main.async { self.onRunState?(run) }
   }
 
@@ -146,12 +148,21 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   private func primeAudio() {
     cancelResume()   // priming takes the session → don't let a stale retry deactivate under it
     let sess = AVAudioSession.sharedInstance()
-    try? sess.setCategory(.playback, mode: .voicePrompt)
-    try? sess.setActive(true)
+    // Decide the cue target for THIS run BEFORE touching the session — activating INTERRUPTS other audio, which
+    // then makes isOtherAudioPlaying read false. The PHONE owns cues when it's audible: earbuds/BT connected OR
+    // it's actively playing audio (music/YouTube, even on the built-in speaker). Otherwise (silent + no earbuds)
+    // the phone stays untouched and the watch speaks. (Before, we required an EXTERNAL output, so a Z2 run with
+    // YouTube on the phone speaker got the cue on the watch and YouTube untouched — the 2026-09-07 report.)
+    let otherBefore = sess.isOtherAudioPlaying
     let ext = hasExternalAudioOutput()
-    alog("prime ext=\(ext) route=\(routeDesc())")
-    if ext { speakNow("Starting run") }
-    else { try? sess.setActive(false, options: [.notifyOthersOnDeactivation]) }
+    phoneAudioTarget = ext || otherBefore
+    alog("prime ext=\(ext) other=\(otherBefore) → phoneTarget=\(phoneAudioTarget) route=\(routeDesc())")
+    if phoneAudioTarget {
+      try? sess.setCategory(.playback, mode: .voicePrompt)
+      try? sess.setActive(true)
+      speakNow("Starting run")
+    }
+    // else: leave the silent phone alone (don't interrupt nothing); cues will speak on the watch.
   }
 
   // Watch → phone battery profiling (drain %/hr for the run). Forward to JS so it lands in the debug export.
@@ -215,17 +226,20 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     // them. Checking BEFORE activation reported the built-in speaker while the buds sat idle, so the initial
     // cue wrongly fell back to the watch until music was already playing (the bug the user hit).
     let sess = AVAudioSession.sharedInstance()
-    alog("cue in '\(cue.prefix(24))' route[preAct]=\(routeDesc())")
-    try? sess.setCategory(.playback, mode: .voicePrompt)   // no duck → INTERRUPTS (pauses) other audio
-    try? sess.setActive(true)
+    // Decide BEFORE activating (activation would interrupt other audio and zero isOtherAudioPlaying). Phone owns
+    // the cue if it was chosen at run start (phoneAudioTarget), has earbuds now, or is playing audio right now.
     let ext = hasExternalAudioOutput()
-    alog("cue afterAct ext=\(ext) route=\(routeDesc()) other=\(sess.isOtherAudioPlaying)")
-    if ext {
+    let otherBefore = sess.isOtherAudioPlaying
+    let playOnPhone = phoneAudioTarget || ext || otherBefore
+    alog("cue in '\(cue.prefix(24))' ext=\(ext) other=\(otherBefore) phoneTarget=\(phoneAudioTarget) → phone=\(playOnPhone) route=\(routeDesc())")
+    if playOnPhone {
+      phoneAudioTarget = true   // stick with the phone for the rest of the run (later cues fire after we've interrupted the music, so isOtherAudioPlaying would read false)
+      try? sess.setCategory(.playback, mode: .voicePrompt)   // no duck → INTERRUPTS (pauses) other audio, then resumes
+      try? sess.setActive(true)
       DispatchQueue.main.async { self.alog("cue speak '\(cue.prefix(24))'"); self.speakNow(cue) }
       replyHandler(["handled": true])
     } else {
-      alog("cue DECLINED → watch (no phone external output)")
-      try? sess.setActive(false, options: [.notifyOthersOnDeactivation])   // no good phone output → let the watch speak
+      alog("cue DECLINED → watch (phone silent, no earbuds)")   // don't activate → don't interrupt a silent phone
       replyHandler(["handled": false])
     }
   }
