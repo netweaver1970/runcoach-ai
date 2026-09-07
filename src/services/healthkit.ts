@@ -3496,6 +3496,7 @@ function dailyNonWorkoutSteps(
  * muscular load from strength workouts, log-scaled. On-demand (can be slow for 1Y
  * since it integrates raw HR across the whole period).
  */
+const STRAIN_HR_CHUNK_DAYS = 45; // keep each 24/7-HR query under the native sample cap (see below)
 export async function fetchStrainHistory(
   months: number,
   toDate?: Date,
@@ -3504,26 +3505,41 @@ export async function fetchStrainHistory(
   const since = new Date(end.getTime() - months * 30 * 86_400_000);
   since.setHours(0, 0, 0, 0); // whole boundary day (else its morning workouts get sliced off)
 
-  const [hrRaw, restingRaw, workouts] = await Promise.all([
-    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
-      HKQuantityTypeIdentifier.heartRate,
-      // descending → the 200k cap drops the oldest days on 6M/1Y windows, not the newest; re-sorted ascending below
-      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: false, limit: 200_000 },
-    ), [] as any[]),
-    safeQuery(() => (HealthKit.queryQuantitySamples as any)(
-      HKQuantityTypeIdentifier.restingHeartRate,
-      { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 400 },
-    ), [] as any[]),
-    safeQuery(() => (HealthKit.queryWorkoutSamples as any)({
-      filter: { startDate: since, endDate: end }, limit: 1500, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
-    }), [] as any[]),
+  // HR is the only UNBOUNDED series here (24/7 samples). A single query over the padded window
+  // can exceed the native sample cap and THROW for a heavy 24/7 wearer — safeQuery then returns []
+  // and EVERY day's strain reads null (the "watch not worn overnight" bug). Fetch HR in ≤45-day
+  // chunks (identical to the cardio-TRIMP path) so each query stays well under the cap; resting HR
+  // and workouts are naturally bounded, so they stay single queries.
+  const [hrRaw, [restingRaw, workouts]] = await Promise.all([
+    (async () => {
+      const parts: any[] = [];
+      for (let cur = new Date(since); cur < end; ) {
+        const chunkEnd = new Date(Math.min(cur.getTime() + STRAIN_HR_CHUNK_DAYS * 86_400_000, end.getTime()));
+        const part = await safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+          HKQuantityTypeIdentifier.heartRate,
+          { filter: { startDate: cur, endDate: chunkEnd }, unit: 'count/min', ascending: true, limit: 200_000 },
+        ), [] as any[]);
+        for (const s of (part as any[])) parts.push(s);
+        cur = chunkEnd;
+      }
+      return parts;
+    })(),
+    Promise.all([
+      safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+        HKQuantityTypeIdentifier.restingHeartRate,
+        { filter: { startDate: since, endDate: end }, unit: 'count/min', ascending: true, limit: 400 },
+      ), [] as any[]),
+      safeQuery(() => (HealthKit.queryWorkoutSamples as any)({
+        filter: { startDate: since, endDate: end }, limit: 1500, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
+      }), [] as any[]),
+    ]),
   ]);
 
   const hr = (hrRaw as any[]).map((s: any) => ({
     t:  new Date(toISOStr(s.startDate)).getTime(),
     hr: s.quantity as number,
     day: trainingDayKey(toISOStr(s.startDate)),
-  })).sort((a, b) => a.t - b.t); // query ran descending (to keep newest on overflow) — restore ascending for per-day integration
+  })).sort((a, b) => a.t - b.t); // chunks are per-window ascending — merge-sort across chunk boundaries
   if (hr.length === 0) return [];
 
   // restHR = median resting HR; maxHR = the effective max (set value, else robust observed peak) —
@@ -4525,6 +4541,11 @@ async function computeDailyComponents(
     dailyCumulativeSum(HKQuantityTypeIdentifier.appleExerciseTime, 'min', from, end),
   ]);
 
+  // Diagnostic (temporary): confirm on-device which of the padded fetches actually return rows for the
+  // recent refresh — the "watch not worn overnight" bug was strain coming back empty. Pull via devicectl
+  // (appDataContainer Documents/daily-components-diag.txt). Remove once recovery/sleep/strain are confirmed.
+  dcDiag(`compute months=${months} eff=${effMonths} bio=${bio.length} sleep=${sessions.length} strain=${strain.length} recovery=${recovery.length}`);
+
   const out: Record<string, Record<string, number>> = {};
   const day = (d: string) => (out[d] ??= {});
 
@@ -4620,7 +4641,10 @@ interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string,
 // v5 (2026-07-20): strain aggregation changed from "log of the summed load" to "sum of per-activity
 // strains" (Bevel's own breakdown proved it additive: 14+29+10 = its exact 53). Every cached v4 strain
 // was computed the old, multi-activity-compressing way, so they must be discarded.
-const DC_FILE = FileSystem.documentDirectory + 'daily-components-v5.json';
+// v6: heals the strain/recovery/sleep-null band (Aug-2026 "watch not worn overnight" bug) — the old
+// store was corrupted by refreshRecent's whole-row replace + the un-chunked strain HR query throwing.
+// Bumping forces one clean full recompute with the merge + chunked-fetch fixes in place.
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v6.json';
 const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;
 let dcLoadP: Promise<DcStore> | null = null;
@@ -4645,6 +4669,18 @@ function dcPersist(): void {
   }, 600);
 }
 const dcKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// Temporary diagnostic ring (last ~40 lines) — records per-compute fetch counts so a device pull can
+// confirm the strain/recovery/sleep-null fix. Fire-and-forget; remove with the dcDiag() call above.
+const DC_DIAG_FILE = FileSystem.documentDirectory + 'daily-components-diag.txt';
+function dcDiag(line: string): void {
+  (async () => {
+    let prev = '';
+    try { prev = await FileSystem.readAsStringAsync(DC_DIAG_FILE); } catch {}
+    const lines = (prev ? prev.split('\n') : []).concat(`${new Date().toISOString()} ${line}`).slice(-40);
+    FileSystem.writeAsStringAsync(DC_DIAG_FILE, lines.join('\n')).catch(() => {});
+  })();
+}
 
 /** Cache-first per-day components: serve from the disk store, computing only a missing window or the recent
  *  days (once/day). Same signature + return shape as the raw compute, so every caller benefits unchanged. */
@@ -4672,7 +4708,12 @@ export async function fetchOurDailyComponents(
   const refreshRecent = async () => {
     const fresh = await computeDailyComponents(0.5, end);
     const s = dcMem!;
-    for (const d in fresh) s.days[d] = fresh[d];
+    // MERGE per-component, never whole-row REPLACE. computeDailyComponents only writes a metric key when
+    // its fetch produced a value, so a fetch that comes back empty (e.g. the strain HR query hitting the
+    // native cap) simply OMITS that key — a replace would then NULL a perfectly good stored strain/recovery/
+    // sleep for the trailing ~15 days (the "watch not worn overnight" bug). The spread keeps the old value
+    // when fresh lacks the key, and lets a real fresh value (incl. 0) overwrite it.
+    for (const d in fresh) s.days[d] = { ...s.days[d], ...fresh[d] };
     s.updatedAt = Date.now();
     dcPersist();
   };
@@ -4680,7 +4721,7 @@ export async function fetchOurDailyComponents(
     // Data is MISSING for the requested window → must compute it before slicing (blocks once per new,
     // larger timeframe). Computing the whole window fills the gap AND refreshes the recent days.
     const fresh = await computeDailyComponents(months, end);
-    for (const d in fresh) store.days[d] = fresh[d];
+    for (const d in fresh) store.days[d] = { ...store.days[d], ...fresh[d] };  // merge, don't clobber (see refreshRecent)
     if (fromKey < store.coveredFrom) store.coveredFrom = fromKey;
     store.updatedAt = nowMs;
     dcPersist();
