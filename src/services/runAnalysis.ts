@@ -121,6 +121,23 @@ export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: num
   return `ROLLING VOLUME BUDGET (the PURE budget, independent of readiness): the +${cap}% weekly cap is ~${weekly} run-min this week (vs last week's ${prev}).${withinNote} SEPARATELY: a low or 0 PRESCRIBED-minutes day is a READINESS call (e.g. a poor night), NOT the volume budget running out — never say "no budget"/"no room". Judging whether to run against a REST prescription on low readiness is fair game; the volume cap is not the reason.`;
 }
 
+/**
+ * If the athlete already ran EARLIER on the same day, THIS run is a 2nd/top-up session layered on that one.
+ * Returns a context line telling the coach to judge it as a supplement completing the day's volume — not the
+ * main prescribed session — and never to tell the athlete off for running twice or for a short/easy second
+ * run. '' when this is the day's first (or only) run. Shared by the auto-analysis and the Chat "analyse run".
+ */
+export function secondRunContext(allRuns: RunWorkout[], run: RunWorkout): string {
+  const day = run.date.slice(0, 10);
+  const start = new Date(run.date).getTime();
+  const earlier = (allRuns ?? []).filter(r =>
+    r.uuid !== run.uuid && r.date.slice(0, 10) === day && new Date(r.date).getTime() < start);
+  if (earlier.length === 0) return '';
+  const mins = earlier.reduce((s, r) => s + Math.round((r.duration ?? 0) / 60), 0);
+  const labels = Array.from(new Set(earlier.map(r => r.label ?? 'run'))).join(', ');
+  return `SECOND RUN OF THE DAY: the athlete ALREADY ran earlier today (${earlier.length} earlier run${earlier.length > 1 ? 's' : ''}: ${labels}, ~${mins} min total). THIS run is a deliberate TOP-UP layered on that earlier run to complete the day's time-on-feet — NOT the main prescribed session and NOT an unplanned extra. Judge it as a supplementary easy/top-up effort: the day's prescription applies to the COMBINED effort, so do NOT tell the athlete off for running twice, for "not following the plan", or for this run being short/easy. If the combined volume now meets the plan, say so approvingly.`;
+}
+
 function recoveryLoadContext(snap: HealthSnapshot): string {
   const rec = snap.todayRecovery;
   const recLine = rec && rec.weightedRMSSD > 0
@@ -140,6 +157,7 @@ Write a sharp, specific post-run review grounded in the numbers. Crucially:
 • The prescription already accounts for HRV/recovery/load/heat — respect it. wHR = work-only HR.
 • The APP MODEL block (in the data) is authoritative on how ToF / the cap / load / the athlete's settings work — use it, never guess at the app's accounting.
 • If an EFFICIENCY TRENDS line is provided, state the EC/EF/SE direction (improving / flat / declining) in "What stood out" — LEAD with EC (speed÷power, HR-independent, the truest economy signal); mention EF/SE only if they diverge from EC.
+• If a SECOND RUN OF THE DAY note is present, this run is a deliberate top-up completing the day's volume — NEVER criticise running twice or a short/easy second run; judge the COMBINED day against the prescription and, if the combined volume now meets it, approve.
 
 BREVITY IS REQUIRED — this is read on a phone, glanceable. Lead with the point; cut filler, hedging and throat-clearing. No "it's worth noting", no restating the data back. Every bullet carries a number and a consequence.
 
@@ -186,7 +204,8 @@ export async function analyzeRun(
     assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null),
   ]);
   const effTrend = efficiencyTrendContext([...(snap.runs ?? []), run]);
-  const userMsg = [appModel, recoveryLoadContext(snap), buildBudgetContext(cs), effTrend, prescription, runBlock].filter(Boolean).join('\n\n');
+  const secondRun = secondRunContext(snap.runs ?? [], run);
+  const userMsg = [appModel, recoveryLoadContext(snap), buildBudgetContext(cs), effTrend, secondRun, prescription, runBlock].filter(Boolean).join('\n\n');
 
   // Same shape as Chat, only the SYSTEM_PROMPT differs: run through agentComplete so agentic mode (when on)
   // can pull prior runs / metric series via tools to ground the analysis; else single-shot.

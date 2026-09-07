@@ -40,7 +40,7 @@ import {
 } from '../src/services/chatMemory';
 import { formatUsage, lastCallUsage } from '../src/services/tokenUsage';
 import { loadPrescriptionAt, assembleCoachSnapshot } from '../src/services/coach';
-import { buildPrescriptionContext, buildBudgetContext } from '../src/services/runAnalysis';
+import { buildPrescriptionContext, buildBudgetContext, secondRunContext, loadLatestRunAnalysis, RunAnalysis } from '../src/services/runAnalysis';
 import { loadSupplements, hrOffsetByDay } from '../src/services/supplements';
 import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
 import { startRecording, stopRecording, cancelRecording, ensureMicPermission } from '../src/services/voiceRecorder';
@@ -199,6 +199,26 @@ export default function ChatScreen() {
       // The PURE rolling ToF budget, so the analysis doesn't mistake a readiness-reduced day for "no budget".
       const budgetCtx = buildBudgetContext(await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null));
 
+      // REUSE the free cached run-analysis (produced when the run finished) instead of burning tokens on a
+      // fresh LLM call every time the chat opens. Shows it as the opening message + seeds history for
+      // follow-ups; no LLM call until the user actually asks something.
+      const cachedAnalysis = await loadLatestRunAnalysis().catch(() => null);
+      const showCachedAnalysis = (a: RunAnalysis) => {
+        historyRef.current = [{ role: 'assistant', content: a.full, ts: new Date().toISOString() }];
+        setMemoryNote(saved?.memoryNote ?? '');
+        setMessages([{ id: 'cached-analysis-' + a.runUUID, role: 'assistant', content: a.full }]);
+        setShowChips(true);
+        setIsLoaded(true);
+      };
+
+      // Explicit "Analyse this run" tap: if a fresh analysis for THIS run already exists, show it (free) rather
+      // than re-running the LLM. Only a cache MISS falls through to generate below.
+      if (focusRunUUID && cachedAnalysis?.runUUID === focusRunUUID && cachedAnalysis.full?.trim()) {
+        ephemeralRef.current = true;
+        showCachedAnalysis(cachedAnalysis);
+        return;
+      }
+
       // ── Run analysis (Analyze button): CLEAN, EPHEMERAL context ────────────
       // Start with NO coach-chat history (nothing to restore, nothing to display) — the run data + the
       // day's prescription are self-contained in systemContext. Nothing here is persisted back to the
@@ -213,7 +233,7 @@ export default function ChatScreen() {
           const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
           const systemContext = [
             buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail, yohOffsets),
-            buildPrescriptionContext(plan), budgetCtx,
+            buildPrescriptionContext(plan), budgetCtx, secondRunContext(snap.runs, focusRun),
           ].filter(Boolean).join('\n\n');
           const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
           ephemeralRef.current   = true;                 // don't persist into the shared coach chat
@@ -273,7 +293,7 @@ export default function ChatScreen() {
             const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
             const systemContext = [
               buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail, yohOffsets),
-              buildPrescriptionContext(plan), budgetCtx,
+              buildPrescriptionContext(plan), budgetCtx, secondRunContext(snap.runs, focusRun),
             ].filter(Boolean).join('\n\n');
             const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             setIsLoaded(true);
@@ -282,29 +302,22 @@ export default function ChatScreen() {
           }
         }
 
-        // ── Auto new-run analysis ──────────────────────────────────────────
-        // Trigger only when: we have a tracked lastSeenRunUUID AND the newest
-        // run is different (i.e., a new run completed since the last chat).
+        // ── New run since we last chatted ──────────────────────────────────
+        // DON'T auto-spend tokens on a fresh analysis on open (the old behaviour, "burns by default when most
+        // of the time not needed"). The run already got a FREE analysis when it finished — show THAT as the
+        // opening message and let the user ask follow-ups. No cached analysis → just leave the restored chat
+        // as-is. Either way: no LLM call until the user actually asks.
         if (
           latestRun &&
           ((saved.lastSeenRunUUID && latestRun.uuid !== saved.lastSeenRunUUID) || lastReplyBlank)
         ) {
-          const sameType = snap.runs
-            .filter(r => r.uuid !== latestRun.uuid && r.label === latestRun.label)
-            .slice(0, 5);
-          // Hide the raw run-data block in the system prompt (same as the "Analyse run" button) and show a
-          // short human message — not a wall of metrics. Passing systemContext also starts the analysis
-          // CLEAN (autoSend drops prior chat history when systemContext is present).
-          const plan = await loadPrescriptionAt(latestRun.date.slice(0, 10), new Date(latestRun.date).getTime()).catch(() => null);
-          const systemContext = [
-            buildNewRunUserMessage(latestRun, sameType, undefined, undefined, undefined, yohOffsets),
-            buildPrescriptionContext(plan), budgetCtx,
-          ].filter(Boolean).join('\n\n');
-          const shortMsg = `I just finished a ${latestRun.label ?? 'run'}. Analyze it and compare with my last ${sameType.length} ${latestRun.label ?? 'run'} runs.`;
           lastSeenRunRef.current = latestRun.uuid;
+          if (cachedAnalysis?.runUUID === latestRun.uuid && cachedAnalysis.full?.trim()) {
+            setMessages(prev => [...prev, { id: 'cached-analysis-' + cachedAnalysis.runUUID, role: 'assistant', content: cachedAnalysis.full }]);
+            historyRef.current = [...historyRef.current, { role: 'assistant', content: cachedAnalysis.full, ts: new Date().toISOString() }];
+            setShowChips(true);
+          }
           setIsLoaded(true);
-          // Auto-send after a short delay so the restored history renders first
-          setTimeout(() => autoSend(shortMsg, snap, systemContext), 400);
           return;
         }
       } else {
@@ -319,7 +332,7 @@ export default function ChatScreen() {
             const plan = await loadPrescriptionAt(focusRun.date.slice(0, 10), new Date(focusRun.date).getTime()).catch(() => null);
             const systemContext = [
               buildNewRunUserMessage(focusRun, sameType, focusRun.kmSplits, true, parsedDetail, yohOffsets),
-              buildPrescriptionContext(plan), budgetCtx,
+              buildPrescriptionContext(plan), budgetCtx, secondRunContext(snap.runs, focusRun),
             ].filter(Boolean).join('\n\n');
             const shortMsg = `Analyze my ${focusRun.label ?? 'run'} from ${new Date(focusRun.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} and compare with my last ${sameType.length} ${focusRun.label} runs.`;
             if (latestRun) lastSeenRunRef.current = latestRun.uuid;
