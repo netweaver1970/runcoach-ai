@@ -95,6 +95,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // so the Start button reappeared but every press hit the `session == nil` guard and silently no-op'd.
   private func teardown() {
     stopTicker()
+    RouteStore.shared.stop()   // backstop: any end path (save/discard/failure/system-ended) stops GPS tracking
     session = nil; builder = nil; routeBuilder = nil; segs = []; wcfg = nil; phaseActivityOpen = false; pendingFirstPhase = false
   }
 
@@ -160,6 +161,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
       // is the likely reason the per-phase HK activities never read back.
       pendingFirstPhase = !segs.isEmpty
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
+      RouteStore.shared.resetGuidance()   // fresh turn/off-route state (so a 2nd run on the same route re-announces)
+      RouteStore.shared.start()           // GPS tracking is tied to the RUN (start→stop), not to the route being loaded
       // Internal battery profiling: snapshot the watch battery so we can report drain/hr when the run ends.
       let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
       let bat0 = dev.batteryLevel
@@ -197,6 +200,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     sendExecStructure()   // forward the executed phase boundaries so the phone can reconstruct the structure
     reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
+    RouteStore.shared.stop()   // run over → stop GPS tracking (no more turn/off-route cues, saves battery)
     s.end()
     let rb = routeBuilder   // capture before clearing; finishRoute must run AFTER the workout is saved
     if save {

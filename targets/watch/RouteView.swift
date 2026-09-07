@@ -84,10 +84,20 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
 
   func setRoute(_ r: RoutePayload) {
     DispatchQueue.main.async {
-      self.route = r; self.remainingKm = r.distanceKm; self.offRoute = false; self.wasOff = false; self.offSpokenAt = nil
-      self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true; self.announced = []; self.turnMinDist = [:]; self.nextTurnText = ""
-      self.start()   // track from the moment a route lands, so turn cues fire on any screen (not just the map)
+      self.route = r; self.remainingKm = r.distanceKm
+      self.turns = r.turns ?? []; self.voiceOn = r.voice ?? true
+      self.resetGuidance()
+      // GPS tracking is NOT started here — it begins when the RUN starts (WorkoutEngine.start → RouteStore.start)
+      // and stops when the run ends. Loading a route no longer turns on the GPS (battery + no pre/post-run cues).
     }
+  }
+  // Reset the per-run turn/off-route trackers. Called on route load AND on RUN START (WorkoutEngine.start) — the
+  // latter so a 2nd run on the SAME already-loaded route re-announces its turns and starts off-route detection
+  // fresh (these were previously reset only in setRoute → a same-route restart skipped already-'announced' turns).
+  // Caller is on the main queue.
+  func resetGuidance() {
+    offRoute = false; wasOff = false; offSpokenAt = nil
+    announced = []; turnMinDist = [:]; nextTurnText = ""; turnDistM = 9999
   }
   func start() {
     mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation()
@@ -333,7 +343,7 @@ struct RouteView: View {
         Button("Discard", role: .destructive) { engine.end(save: false) }
         Button("Cancel", role: .cancel) { }
       }
-      .onAppear { store.start(); if engine.running { page = 1; midPage = defaultMid() } }   // tracking is app-wide; land on the centre default if already mid-run
+      .onAppear { if engine.running { store.start(); page = 1; midPage = defaultMid() } }   // reopened mid-run → resume GPS (idempotent) + land on the centre default; NO tracking pre-run
       .onChange(of: engine.running) { if engine.running { page = 1; midPage = defaultMid() } }
   }
 
