@@ -257,21 +257,30 @@ struct RouteView: View {
   var body: some View {
     Group {
       if let r = store.route {
-        TabView(selection: $page) {
-          controlsScreen(r).tag(0)     // ◂ start / pause / lap / stop
-          mapScreen(r).tag(1)          // centre: map + a minimisable metrics strip
-          mediaScreen().tag(2)         // ▸ pause / resume the audio you're listening to
+        // A route push carries map points; a track/interval push (sendWorkoutToWatch) sends none. Route runs get
+        // the horizontal controls/MAP/media pager (map is the point); routeless runs get a vertical controls/
+        // STATS/media pager (Apple-Workout style, swipe up/down) with the live stats screen as the default.
+        if r.pts.count > 1 {
+          runChrome(
+            TabView(selection: $page) {
+              controlsScreen(r, hasRoute: true).tag(0)   // ◂ start / pause / lap / stop
+              mapScreen(r).tag(1)                        // centre: map + a minimisable metrics strip
+              mediaScreen().tag(2)                       // ▸ pause / resume the audio you're listening to
+            }
+            .tabViewStyle(.page)
+            .onChange(of: store.jumpToMap) { page = 1; flashInfo() }   // a turn cue surfaces the map + flashes the strip
+            .onChange(of: engine.announceTick) { flashInfo() }         // any spoken announcement flashes the strip
+          )
+        } else {
+          runChrome(
+            TabView(selection: $page) {
+              controlsScreen(r, hasRoute: false).tag(0)  // ▴ start / pause / lap / stop
+              statsScreen().tag(1)                       // centre: live run stats (default)
+              mediaScreen().tag(2)                       // ▾ pause / resume the audio you're listening to
+            }
+            .tabViewStyle(.verticalPage)
+          )
         }
-        .tabViewStyle(.page)
-        .navigationTitle("")   // drop the run title → more room (back-swipe still works)
-        .confirmationDialog("End run?", isPresented: $showEndConfirm, titleVisibility: .visible) {
-          Button("Save & end") { engine.end(save: true) }
-          Button("Discard", role: .destructive) { engine.end(save: false) }
-          Button("Cancel", role: .cancel) { }
-        }
-        .onAppear { store.start() }   // tracking is kept running app-wide (see setRoute) so cues fire anywhere
-        .onChange(of: store.jumpToMap) { page = 1; flashInfo() }        // a turn cue surfaces the map + flashes the strip
-        .onChange(of: engine.announceTick) { flashInfo() }             // any spoken announcement flashes the strip
       } else {
         VStack(spacing: 6) {
           Image(systemName: "map").font(.title2).foregroundColor(.secondary)
@@ -283,8 +292,23 @@ struct RouteView: View {
     }
   }
 
+  // Modifiers common to both run pagers: title, the end-run sheet, keeping GPS tracking alive, and jumping to the
+  // CENTRE page (map for routes, stats for routeless) the moment the run starts — so you land on the screen that
+  // matters mid-run while Start still lives one swipe away on the controls page.
+  @ViewBuilder private func runChrome<V: View>(_ content: V) -> some View {
+    content
+      .navigationTitle("")   // drop the run title → more room (back-swipe still works)
+      .confirmationDialog("End run?", isPresented: $showEndConfirm, titleVisibility: .visible) {
+        Button("Save & end") { engine.end(save: true) }
+        Button("Discard", role: .destructive) { engine.end(save: false) }
+        Button("Cancel", role: .cancel) { }
+      }
+      .onAppear { store.start(); if engine.running { page = 1 } }   // tracking is app-wide (see setRoute); land on the centre page if already mid-run
+      .onChange(of: engine.running) { if engine.running { page = 1 } }
+  }
+
   // ── CONTROLS screen (swipe here for start / pause / lap / stop) ──────────────────────────────────────────
-  @ViewBuilder private func controlsScreen(_ r: RoutePayload) -> some View {
+  @ViewBuilder private func controlsScreen(_ r: RoutePayload, hasRoute: Bool) -> some View {
     VStack(spacing: 10) {
       if engine.running {
         if !engine.segLabel.isEmpty {
@@ -298,7 +322,8 @@ struct RouteView: View {
           Button(role: .destructive) { showEndConfirm = true } label: { Image(systemName: "stop.fill") }
         }.buttonStyle(.bordered).controlSize(.large).font(.title3)
       } else {
-        Text(String(format: "%.1f km", r.distanceKm)).font(.caption).foregroundColor(.secondary)
+        Text(r.distanceKm > 0 ? String(format: "%.1f km", r.distanceKm) : r.name)
+          .font(.caption).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.7)
         if !engine.batteryNote.isEmpty {   // last run's watch-battery profiling
           Text(engine.batteryNote).font(.caption2).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.7)
         }
@@ -308,8 +333,68 @@ struct RouteView: View {
           Label(autoPause ? "Auto-pause on" : "Auto-pause off", systemImage: autoPause ? "pause.circle.fill" : "pause.circle").font(.caption)
         }.buttonStyle(.plain).foregroundColor(autoPause ? .green : .secondary)
       }
-      Text("swipe → map").font(.caption2).foregroundColor(.secondary)
+      Text(hasRoute ? "swipe → map" : "swipe ↕ stats").font(.caption2).foregroundColor(.secondary)
     }.padding(.horizontal, 8)
+  }
+
+  // ── STATS screen (routeless runs, the default page) — runtime + pace/HR/power/distance, and for an intervals
+  //    run the current rep position, this-rep distance, and current pace vs the previous rep's average. ──────
+  private var trendColor: Color { engine.paceTrend < 0 ? .green : (engine.paceTrend > 0 ? .red : .primary) }
+
+  @ViewBuilder private func statCell(_ value: String, _ label: String, _ color: Color) -> some View {
+    VStack(spacing: 0) {
+      Text(value).font(.system(size: 22, weight: .bold)).monospacedDigit().foregroundColor(color).lineLimit(1).minimumScaleFactor(0.55)
+      Text(label).font(.system(size: 10)).foregroundColor(.secondary)
+    }.frame(maxWidth: .infinity)
+  }
+
+  @ViewBuilder private func statsScreen() -> some View {
+    VStack(spacing: 5) {
+      if engine.running {
+        Text(fmtClock(engine.elapsed)).font(.system(size: 32, weight: .bold)).monospacedDigit()
+          .foregroundColor(engine.paused ? .orange : .primary)
+        HStack(spacing: 0) {
+          statCell(engine.paceStr, "min/km", .cyan)
+          statCell("\(Int(engine.heartRate))", "bpm", .red)
+        }
+        HStack(spacing: 0) {
+          statCell(engine.power > 0 ? "\(Int(engine.power))" : "—", "watts", powerColor)
+          statCell(String(format: "%.2f", engine.distanceM / 1000), "km", .primary)
+        }
+        // Intervals only (≥2 work reps): rep position, this-rep pace vs the previous rep's average, this-rep distance.
+        if engine.workCount >= 2 {
+          Divider().padding(.vertical, 1)
+          if engine.workIndex > 0 {
+            Text("INTERVAL \(engine.workIndex) OF \(engine.workCount)")
+              .font(.system(size: 13, weight: .bold)).foregroundColor(.orange)
+            HStack(spacing: 6) {
+              HStack(spacing: 2) {
+                Text(engine.segPaceStr).font(.system(size: 17, weight: .bold)).monospacedDigit().foregroundColor(trendColor)
+                Image(systemName: engine.paceTrend < 0 ? "arrow.down" : (engine.paceTrend > 0 ? "arrow.up" : "minus"))
+                  .font(.system(size: 11, weight: .bold)).foregroundColor(trendColor)
+              }
+              if !engine.prevWorkPaceStr.isEmpty {
+                Text("vs \(engine.prevWorkPaceStr)").font(.system(size: 11)).foregroundColor(.secondary)
+              }
+            }
+            Text(String(format: "%.2f km this rep", engine.segDistM / 1000)).font(.system(size: 11)).foregroundColor(.secondary)
+          } else {
+            // Between reps (recovery / warm-up / drills) → show the phase and its countdown instead of a rep trend.
+            Text(engine.segLabel.uppercased()).font(.system(size: 13, weight: .bold))
+              .foregroundColor(segColor(engine.segKind)).lineLimit(1).minimumScaleFactor(0.6)
+            if !engine.segRemain.isEmpty {
+              Text(engine.segRemain).font(.system(size: 17, weight: .bold)).monospacedDigit().foregroundColor(segColor(engine.segKind))
+            }
+          }
+        }
+      } else {
+        Text(engine.batteryNote.isEmpty ? "Ready" : engine.batteryNote)
+          .font(engine.batteryNote.isEmpty ? .headline : .caption2)
+          .foregroundColor(engine.batteryNote.isEmpty ? .primary : .secondary)
+          .lineLimit(2).minimumScaleFactor(0.7).multilineTextAlignment(.center)
+        Text("swipe ↕ for controls").font(.caption2).foregroundColor(.secondary)
+      }
+    }.padding(.horizontal, 6)
   }
 
   // ── MAP screen (centre) — map + a minimisable metrics strip ─────────────────────────────────────────────

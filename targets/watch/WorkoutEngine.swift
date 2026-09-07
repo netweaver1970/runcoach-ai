@@ -40,6 +40,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var targetState = 0           // power vs the work target: 0 in-range/none, -1 under, +1 over
   @Published var announceTick = 0          // bumped on each spoken announcement → the map info strip flashes then auto-hides
 
+  // Live SECTION stats for the non-route stats screen. A "section" = the current structured phase, or the
+  // whole run when there's no structure (segStartElapsed/segStartDist stay 0 → these equal the run totals).
+  @Published var segDistM: Double = 0      // distance in the current section (m)
+  @Published var segPaceStr = "--:--"      // current-section pace (min/km)
+  @Published var workIndex = 0             // 1-based WORK-rep number of the current section (0 if it isn't a work rep)
+  @Published var workCount = 0             // total WORK reps in the session (≥2 ⇒ an intervals run)
+  @Published var prevWorkPaceStr = ""      // previous COMPLETED work interval's average pace ("" = none yet)
+  @Published var paceTrend = 0             // current section pace vs the previous work avg: -1 faster, +1 slower, 0 flat/none
+
   private var segs: [RouteSeg] = []
   private var wcfg: HKWorkoutConfiguration?   // reused to open a new HKWorkoutActivity per phase
   private var phaseActivityOpen = false       // an HK activity is currently open (so we close it before the next / on end)
@@ -54,6 +63,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
   private var cueSpoken: Set<String> = []      // which countdown cues (half/20/10/321) fired for the current interval
   private var isIntervalWorkout = false        // ≥2 work reps → an intervals session (countdown only fires for these)
+  private var prevWorkPaceSecPerKm: Double = 0 // previous completed work interval's avg pace (0 = none) → the stats-screen trend arrow
   private var startBattery: Float = -1    // watch battery level (0…1) captured at run start → drain/hr on end
 
   func requestAuth() async -> Bool {
@@ -146,6 +156,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.lastMoveAt = Date(); self.autoPaused = false
         self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
         self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
+        self.workCount = self.segs.filter { $0.kind == "work" }.count
+        self.segDistM = 0; self.segPaceStr = "--:--"; self.prevWorkPaceStr = ""; self.prevWorkPaceSecPerKm = 0; self.paceTrend = 0
+        self.recomputeWorkIndex()
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
       startTicker()
@@ -183,6 +196,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     DispatchQueue.main.async {
       self.running = false; self.paused = false; self.power = 0
       self.segLabel = ""; self.segRemain = ""; self.segZone = ""; self.segIndex = 0; self.segCount = 0
+      self.workIndex = 0; self.workCount = 0; self.segDistM = 0; self.segPaceStr = "--:--"; self.prevWorkPaceStr = ""; self.paceTrend = 0
     }
   }
 
@@ -220,7 +234,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       guard let self, let sd = self.startDate, !self.paused else { return }
       DispatchQueue.main.async {
-        self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.tickSegments()
+        self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.updateSectionStats(); self.tickSegments()
         // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
         // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
         if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15,
@@ -236,6 +250,27 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard distanceM > 20, elapsed > 5 else { return }
     let secPerKm = elapsed / (distanceM / 1000)
     paceStr = String(format: "%d:%02d", Int(secPerKm) / 60, Int(secPerKm) % 60)
+  }
+
+  // Distance + pace WITHIN the current section (or the whole run when unstructured), plus the trend arrow vs
+  // the previous work interval's average pace. Runs every tick from the ticker so a plain run updates too.
+  private func updateSectionStats() {
+    segDistM = max(0, distanceM - segStartDist)
+    let segTime = elapsed - segStartElapsed
+    guard segDistM > 20, segTime > 5 else { paceTrend = 0; return }
+    let spk = segTime / (segDistM / 1000)
+    segPaceStr = String(format: "%d:%02d", Int(spk) / 60, Int(spk) % 60)
+    // Trend only means something during a work rep with a previous work rep to compare against. >3 s/km either
+    // way to shrug off jitter (lower s/km = faster = ▼).
+    if workIndex > 0, prevWorkPaceSecPerKm > 0 {
+      paceTrend = spk < prevWorkPaceSecPerKm - 3 ? -1 : (spk > prevWorkPaceSecPerKm + 3 ? 1 : 0)
+    } else { paceTrend = 0 }
+  }
+
+  // 1-based WORK-rep number of the current section (0 when the current section isn't a work rep).
+  private func recomputeWorkIndex() {
+    guard segIndex < segs.count, segs[segIndex].kind == "work" else { workIndex = 0; return }
+    workIndex = segs[0...segIndex].filter { $0.kind == "work" }.count
   }
 
   // Interval voice cues; honours the same mute toggle as turn cues. Re-activate the audio session per utterance
@@ -301,10 +336,19 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if segIndex < segs.count {   // log the ACTUAL span of the phase that just finished → phone rebuilds the bands
       let s = segs[segIndex]
       segLog.append(["label": s.label, "kind": s.kind, "zone": s.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
+      // A work rep just finished → remember its average pace so the NEXT work rep can show a faster/slower arrow.
+      if s.kind == "work" {
+        let t = elapsed - segStartElapsed, d = distanceM - segStartDist
+        if d > 20, t > 5 {
+          prevWorkPaceSecPerKm = t / (d / 1000)
+          prevWorkPaceStr = String(format: "%d:%02d", Int(prevWorkPaceSecPerKm) / 60, Int(prevWorkPaceSecPerKm) % 60)
+        }
+      }
     }
     if phaseActivityOpen { session?.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the phase that just ended
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
+    segDistM = 0; segPaceStr = "--:--"; paceTrend = 0; recomputeWorkIndex()   // reset section stats for the new phase
     targetState = 0; outSince = nil; lastTargetCue = nil; cueSpoken = []   // reset per-segment trackers
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
