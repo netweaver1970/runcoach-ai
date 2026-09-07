@@ -424,6 +424,10 @@ struct RouteView: View {
           UserAnnotation()
         }
         .mapControls { }   // remove MapKit's built-in compass (it appears when the heading-up camera rotates)
+        .ignoresSafeArea()  // fill the full screen. Without this the Map only fills the SAFE AREA, whose bottom
+                            // sits well above the physical edge, so the bottom-anchored info strip has always
+                            // floated mid-screen instead of just above the page dots. Filling to the edge drops
+                            // the strip (its .padding(.bottom, 18)) down to just above the dots.
       } else {
         Color.black.ignoresSafeArea()   // metrics-only: no MapKit rendering → saves battery
       }
@@ -511,7 +515,15 @@ struct RouteView: View {
     }
     .onChange(of: page) {
       // Returning to the map re-arms live follow, clearing any stale region MapKit was still showing.
-      if page == 1 && !zoomedForTurn {
+      if page == 1 && midPage == 0 && !zoomedForTurn {
+        cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
+                        : .userLocation(fallback: .automatic)
+      }
+    }
+    .onChange(of: midPage) {
+      // Swiping UP from stats back to the map (inner pager, outer page unchanged) also re-arms live follow —
+      // else the map showed a stale region for a GPS tick because the page-only handler above never fired.
+      if page == 1 && midPage == 0 && !zoomedForTurn {
         cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
                         : .userLocation(fallback: .automatic)
       }
