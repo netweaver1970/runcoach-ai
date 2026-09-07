@@ -278,10 +278,18 @@ struct RouteView: View {
           // The map's bottom info/power strip lives HERE, on the OUTER pager, not inside the map page — the outer
           // pager fills the screen so a bottom overlay lands just above the horizontal page dots (inside the map
           // page it floated to mid-screen). Only shown while the map sub-screen is visible (centre page + map).
-          .overlay(alignment: .bottom) {
-            // Display-only → let taps fall through to the map's lap button underneath (the outer overlay
-            // composites ABOVE the map page, so a hit-testable strip would swallow the lap tap).
-            if page == 1 && midPage == 0 { mapBottomStrip(r).allowsHitTesting(false) }
+          .overlay {
+            // Pin the strip to the PHYSICAL bottom (just above the page dots): a full-height VStack that
+            // IGNORES the bottom safe area, with a Spacer pushing the strip down. Anchoring to the safe-area
+            // bottom (plain .overlay(alignment:.bottom)) left a gap above the dots ("not deep enough").
+            // Display-only + allowsHitTesting(false) → taps fall through to the map + its lap button.
+            VStack(spacing: 0) {
+              Spacer(minLength: 0)
+              if page == 1 && midPage == 0 { mapBottomStrip(r).padding(.bottom, 8) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
           }
         )
       } else {
@@ -448,7 +456,7 @@ struct RouteView: View {
       }
       .padding(.horizontal, 12).padding(.vertical, 4)
       .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-      .padding(.horizontal, 6).padding(.bottom, 2)
+      .padding(.horizontal, 6)
     } else if engine.running && engine.power > 0 {
       // Strip hidden → a compact Min / Now / Max power readout, so the number that matters stays glanceable.
       HStack(spacing: 14) {
@@ -458,7 +466,6 @@ struct RouteView: View {
       }
       .padding(.horizontal, 12).padding(.vertical, 3)
       .background(.ultraThinMaterial, in: Capsule())
-      .padding(.bottom, 2)
     }
   }
 
