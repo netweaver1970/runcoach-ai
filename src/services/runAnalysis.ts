@@ -128,10 +128,16 @@ export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: num
  * run. '' when this is the day's first (or only) run. Shared by the auto-analysis and the Chat "analyse run".
  */
 export function secondRunContext(allRuns: RunWorkout[], run: RunWorkout): string {
-  const day = run.date.slice(0, 10);
+  // LOCAL calendar day, not the UTC ISO slice — else a late-evening run (after ~22:00 in CEST) rolls to the
+  // next UTC date and its morning companion is missed, or an after-midnight run groups with the prior day.
+  const localDay = (iso: string) => {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const day = localDay(run.date);
   const start = new Date(run.date).getTime();
   const earlier = (allRuns ?? []).filter(r =>
-    r.uuid !== run.uuid && r.date.slice(0, 10) === day && new Date(r.date).getTime() < start);
+    r.uuid !== run.uuid && localDay(r.date) === day && new Date(r.date).getTime() < start);
   if (earlier.length === 0) return '';
   const mins = earlier.reduce((s, r) => s + Math.round((r.duration ?? 0) / 60), 0);
   const labels = Array.from(new Set(earlier.map(r => r.label ?? 'run'))).join(', ');
