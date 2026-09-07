@@ -13,6 +13,7 @@
  */
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { setRunActive } from './activeRoute';
 import { logRunBattery } from './runBatteryLog';
@@ -20,6 +21,20 @@ import { logRunSegments } from './runSegmentsLog';
 
 const TASK = 'runcoach-run-keepalive';
 const MAX_MS = 3 * 3600 * 1000;   // hard stop after 3h if no run-end ever arrives
+
+// Temporary diagnostic (2026-09-07): the phone suspended ~13 s into a watch-started run and cues went silent —
+// prime confirmed but no cues after. Log keep-alive start/permission/stop to a pullable file so the next run
+// tells us whether the background-location task actually kept the phone alive. Pull via devicectl appDataContainer
+// Documents/runcoach-keepalive-log.txt. Remove once the keep-alive is confirmed reliable.
+const KLOG = (FileSystem.documentDirectory ?? '') + 'runcoach-keepalive-log.txt';
+async function klog(line: string): Promise<void> {
+  try {
+    let prev = '';
+    try { prev = await FileSystem.readAsStringAsync(KLOG); } catch {}
+    const lines = (prev ? prev.split('\n') : []).concat(`${new Date().toISOString()} ${line}`).slice(-60);
+    await FileSystem.writeAsStringAsync(KLOG, lines.join('\n'));
+  } catch { /* best-effort */ }
+}
 
 // Registered at module load so iOS can resolve it on a background relaunch (a no-op body is intentional).
 try { TaskManager.defineTask(TASK, async () => { /* keep-alive only — nothing to consume */ }); } catch { /* already defined */ }
@@ -29,11 +44,12 @@ let stopTimer: ReturnType<typeof setTimeout> | null = null;
 export async function startRunKeepAlive(): Promise<void> {
   try {
     const fg = await Location.requestForegroundPermissionsAsync();
-    if (fg.status !== 'granted') return;
+    if (fg.status !== 'granted') { void klog(`start ABORT fg=${fg.status} (no location → phone will suspend, watch speaks)`); return; }
     // Always lets the watch's run-start also kick this off from a background wake; ignore if the user declines
     // (the foreground send-to-watch path still works).
-    await Location.requestBackgroundPermissionsAsync().catch(() => {});
-    if (!(await TaskManager.isTaskRegisteredAsync(TASK))) {
+    const bg = await Location.requestBackgroundPermissionsAsync().catch(() => ({ status: 'error' } as any));
+    const already = await TaskManager.isTaskRegisteredAsync(TASK);
+    if (!already) {
       await Location.startLocationUpdatesAsync(TASK, {
         accuracy: Location.Accuracy.Balanced,
         distanceInterval: 15,
@@ -44,13 +60,15 @@ export async function startRunKeepAlive(): Promise<void> {
     }
     if (stopTimer) clearTimeout(stopTimer);
     stopTimer = setTimeout(() => { void stopRunKeepAlive(); }, MAX_MS);
-  } catch { /* ignore — voice just falls back to the watch */ }
+    void klog(`start OK fg=${fg.status} bg=${bg?.status} taskWasRegistered=${already} → location updates running`);
+  } catch (e: any) { void klog(`start FAILED ${String(e?.message ?? e)}`); /* voice falls back to the watch */ }
 }
 
 export async function stopRunKeepAlive(): Promise<void> {
   try {
     if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
     if (await TaskManager.isTaskRegisteredAsync(TASK)) await Location.stopLocationUpdatesAsync(TASK);
+    void klog('stop → location updates stopped');
   } catch { /* ignore */ }
 }
 
