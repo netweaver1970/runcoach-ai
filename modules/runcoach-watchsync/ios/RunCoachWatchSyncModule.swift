@@ -119,9 +119,18 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   private func armSpeakWatchdog() {
     speakWatchdog?.cancel()
     let w = DispatchWorkItem { [weak self] in
-      guard let self = self, self.synth.isSpeaking else { return }
-      self.alog("synth STALL → force release")
-      self.forceReleaseSession()
+      guard let self = self else { return }
+      if self.synth.isSpeaking {
+        self.alog("synth STALL → force release")   // utterance never finished → force-stop + un-duck
+        self.forceReleaseSession()
+      } else {
+        // Nothing speaking but the watchdog was still armed → utteranceEnded took the re-arm branch on a
+        // transient isSpeaking=true and never called resumeOthers, so the session may be left DUCKED (music
+        // quiet). Un-duck now instead of waiting for the next cue or run-end.
+        self.speakWatchdog = nil
+        self.alog("watchdog idle → resume (un-duck)")
+        self.resumeOthers()
+      }
     }
     speakWatchdog = w
     DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: w)
