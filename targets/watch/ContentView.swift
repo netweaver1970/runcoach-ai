@@ -93,8 +93,10 @@ struct ContentView: View {
     .onChange(of: engine.running) { if engine.running { path = NavigationPath([RouteDest()]) } }
     .onChange(of: scenePhase) { if scenePhase == .active && engine.running { path = NavigationPath([RouteDest()]) } }
     .onAppear {
-      if routeStore.route != nil { routeStore.start() }
-      if engine.running { path = NavigationPath([RouteDest()]) }
+      // Only (re)arm GPS if a run is ACTUALLY in progress (reopened mid-run). Having a route loaded is NOT
+      // enough — tracking is tied to the run (WorkoutEngine.start/end), so opening the app with a route but
+      // no active run must NOT turn the GPS on (battery). Pre-commit this started tracking on route-load.
+      if engine.running { routeStore.start(); path = NavigationPath([RouteDest()]) }
     }
   }
 }
