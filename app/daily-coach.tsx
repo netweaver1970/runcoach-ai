@@ -195,6 +195,7 @@ export default function DailyCoachScreen() {
   const [prescribedMin, setPrescribedMin] = useState(0);
   const [topUpMin, setTopUpMin] = useState(0);          // adjustable top-up length (defaults to the shortfall)
   const [topUpSending, setTopUpSending] = useState(false);
+  const [quickSending, setQuickSending] = useState(false);   // "send an easy run now" (any day) → RunCoach watch app
   const strainObj = strain ?? snapStrain;
 
   // The coach plan is built for the VIEWED day (the `date` param), not just today.
@@ -331,6 +332,20 @@ export default function DailyCoachScreen() {
         : 'Could not send the top-up.');
     } catch (e: any) { setWatchMsg(e?.message ?? 'Top-up send failed.'); }
     finally { setTopUpSending(false); }
+  };
+
+  // Push a short easy run to the RunCoach watch app ANY day — a spontaneous run when the plan is rest / no
+  // workout is queued, and the reliable way to exercise the watch cues (always our app, so voice/audio runs).
+  const sendQuickRun = async () => {
+    setQuickSending(true); setWatchMsg(null);
+    try {
+      const slot = weekdaySlot(new Date(targetDate + 'T00:00:00'));
+      const wk = ensureBlockPower(synthesizeWorkout('easy', 20, `${slot} easy`, powerZones, 'easy'), powerZones);
+      if (!wk) { setWatchMsg('Could not build the run.'); return; }
+      const ok = await sendWorkoutToWatch(wk, 'Easy run');
+      setWatchMsg(ok ? '✓ Sent — open RunCoach on the watch and press Start.' : 'Watch not reachable — open RunCoach on the watch.');
+    } catch (e: any) { setWatchMsg(e?.message ?? 'Send failed.'); }
+    finally { setQuickSending(false); }
   };
 
   // Long-run style + this day's split opt-in (for the toggle shown on long-run days).
@@ -796,6 +811,17 @@ export default function DailyCoachScreen() {
                 </View>
               )}
 
+              {/* Always-available push: an easy run to the RunCoach watch app, any day (rest included). Covers a
+                  spontaneous run when nothing's queued, and is the reliable way to exercise the watch cues/audio. */}
+              {targetIsToday && (
+                <View style={s.testWrap}>
+                  <TouchableOpacity style={s.quickBtn} onPress={sendQuickRun} disabled={quickSending}>
+                    <Text style={s.quickBtnText}>{quickSending ? 'Sending…' : '⌚ Send an easy run to the RunCoach watch app'}</Text>
+                  </TouchableOpacity>
+                  <Text style={s.testHint}>A short easy Z2 run pushed to the RunCoach app on the watch — a spontaneous run any day, and the way to test the watch cues. Open RunCoach on the watch and press Start.</Text>
+                </View>
+              )}
+
               {/* Coach's notes are LLM prose — generated ONLY on request (the morning prep + regenerate are
                   deterministic). Tapping upgrades the headline/session/rationale to the model's narrative.
                   Hidden on rest days: there's no session to narrate (e.g. you've already run today). */}
@@ -936,6 +962,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  quickBtn: { backgroundColor: c.surfaceAlt, borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 4 },
+  quickBtnText: { color: c.text, fontWeight: '700', fontSize: 13 },
   step: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
   stepT: { fontSize: 22, fontWeight: '700', color: c.text, lineHeight: 24 },
   stepVal: { fontSize: 17, fontWeight: '800', color: c.text, minWidth: 120, textAlign: 'center', fontVariant: ['tabular-nums'] },
