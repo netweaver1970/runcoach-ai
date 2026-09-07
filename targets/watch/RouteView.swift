@@ -129,6 +129,9 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   }
 
   func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
+    // Feed the workout's GPS route FIRST (before the route-guidance guard), so a routeless track/interval run
+    // records its track too → the phone gets a run map. Reuses this one location manager (no 2nd one).
+    if WorkoutEngine.shared.running { WorkoutEngine.shared.addRouteLocations(locs) }
     guard let loc = locs.last, let r = route, r.pts.count > 1 else { return }
     // nearest route point, then remaining distance along the route from there to the finish
     var bestI = 0; var bestD = Double.greatestFiniteMagnitude
@@ -276,7 +279,9 @@ struct RouteView: View {
           // pager fills the screen so a bottom overlay lands just above the horizontal page dots (inside the map
           // page it floated to mid-screen). Only shown while the map sub-screen is visible (centre page + map).
           .overlay(alignment: .bottom) {
-            if page == 1 && midPage == 0 { mapBottomStrip(r) }
+            // Display-only → let taps fall through to the map's lap button underneath (the outer overlay
+            // composites ABOVE the map page, so a hit-testable strip would swallow the lap tap).
+            if page == 1 && midPage == 0 { mapBottomStrip(r).allowsHitTesting(false) }
           }
         )
       } else {

@@ -3,6 +3,7 @@ import HealthKit
 import AVFoundation
 import WatchKit
 import WatchConnectivity
+import CoreLocation
 
 // Owns the run on the watch: an HKWorkoutSession + live builder so OUR app (not Apple's Workout app) records
 // the run. That gives us three things the companion-only route screen couldn't have: the app stays alive in
@@ -14,6 +15,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private let store = HKHealthStore()
   private var session: HKWorkoutSession?
   private var builder: HKLiveWorkoutBuilder?
+  private var routeBuilder: HKWorkoutRouteBuilder?   // records the GPS track → an HKWorkoutRoute so the phone can draw the run map
   private var startDate: Date?
   private var ticker: Timer?
 
@@ -93,7 +95,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // so the Start button reappeared but every press hit the `session == nil` guard and silently no-op'd.
   private func teardown() {
     stopTicker()
-    session = nil; builder = nil; segs = []; wcfg = nil; phaseActivityOpen = false; pendingFirstPhase = false
+    session = nil; builder = nil; routeBuilder = nil; segs = []; wcfg = nil; phaseActivityOpen = false; pendingFirstPhase = false
   }
 
   // Metadata written onto each phase's HKWorkoutActivity so the executed structure survives back to the phone.
@@ -123,6 +125,16 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if s.isReachable { s.sendMessage(["run": state], replyHandler: nil, errorHandler: nil) }
   }
 
+  // GPS fixes for the workout ROUTE, forwarded from RouteStore's location manager (RouteView) so we don't run a
+  // second one. Only accurate fixes, only while recording. finishRoute() (in end()) ties them to the saved
+  // workout → the phone gets an HKWorkoutRoute and can draw the run map (previously our runs saved no route).
+  func addRouteLocations(_ locs: [CLLocation]) {
+    guard running, let rb = routeBuilder else { return }
+    let good = locs.filter { $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy < 50 }
+    guard !good.isEmpty else { return }
+    rb.insertRouteData(good) { _, _ in }
+  }
+
   func start(activity: HKWorkoutActivityType) {
     if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
     guard session == nil else { return }           // a genuinely running session → ignore a double-Start
@@ -136,6 +148,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       s.delegate = self
       b.delegate = self
       session = s; builder = b
+      routeBuilder = HKWorkoutRouteBuilder(healthStore: store, device: .local())   // start accumulating the GPS track
       let now = Date(); startDate = now
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { _, _ in }
@@ -185,13 +198,19 @@ final class WorkoutEngine: NSObject, ObservableObject {
     reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
     s.end()
+    let rb = routeBuilder   // capture before clearing; finishRoute must run AFTER the workout is saved
     if save {
-      b.endCollection(withEnd: Date()) { _, _ in b.finishWorkout { _, _ in } }
+      b.endCollection(withEnd: Date()) { _, _ in
+        b.finishWorkout { workout, _ in
+          // Tie the accumulated GPS track to the saved workout → the phone gets an HKWorkoutRoute (run map).
+          if let w = workout, let rb = rb { rb.finishRoute(with: w, metadata: nil) { _, _ in } }
+        }
+      }
     } else {
-      b.discardWorkout()
+      b.discardWorkout()   // discarded run → drop the route too (rb is released)
     }
     stopTicker()
-    session = nil; builder = nil; segs = []
+    session = nil; builder = nil; routeBuilder = nil; segs = []
     try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     DispatchQueue.main.async {
       self.running = false; self.paused = false; self.power = 0
