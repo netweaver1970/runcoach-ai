@@ -46,6 +46,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   var onRunState: ((String) -> Void)?   // "start"/"end" from the watch → JS keep-alive
   var onRunBattery: (([String: Any]) -> Void)?   // watch battery profiling from the run → JS debug log
   var onRunSegments: (([String: Any]) -> Void)?  // executed phase boundaries from the run → JS structure rebuild
+  private var resumeWork: DispatchWorkItem?       // pending resume-retry, cancelled when a new cue takes the session
 
   override init() {
     super.init()
@@ -122,6 +123,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   // throwaway line that absorbs that spin-up, so the segment cue that lands a moment later is clean. Without
   // earbuds we don't hold the phone session (the watch speaks the cues).
   private func primeAudio() {
+    cancelResume()   // priming takes the session → don't let a stale retry deactivate under it
     let sess = AVAudioSession.sharedInstance()
     try? sess.setCategory(.playback, mode: .voicePrompt)
     try? sess.setActive(true)
@@ -153,14 +155,24 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   // paused, never came back"). So after a beat we check isOtherAudioPlaying and retry a few times — unless a new
   // cue is speaking (don't fight it) or there was simply nothing else to resume.
   private func resumeOthers(_ attempt: Int = 0) {
-    let sess = AVAudioSession.sharedInstance()
-    try? sess.setActive(false, options: [.notifyOthersOnDeactivation])
+    // CRITICAL: only tear the session down when NO cue owns it. Without this guard the retry fired in the gap
+    // between the rapid 3-2-1 countdown cues — after a cue's setActive(true) but before its async speakNow ran —
+    // deactivating the session the cue just took, so the utterance was dropped (music cut, nothing heard) and,
+    // because it never played, didFinish never fired and the music never resumed. (Regression: retry loop +
+    // interval countdown cues.)
+    guard !synth.isSpeaking else { return }
+    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     guard attempt < 4 else { return }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      guard let self = self, !self.synth.isSpeaking else { return }   // a cue is speaking → leave the session be
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self, !self.synth.isSpeaking else { return }
       if !AVAudioSession.sharedInstance().isOtherAudioPlaying { self.resumeOthers(attempt + 1) }
     }
+    resumeWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
   }
+
+  // A new cue is taking the session → cancel any pending resume-retry so it can't deactivate underneath the cue.
+  private func cancelResume() { resumeWork?.cancel(); resumeWork = nil }
 
   // WCSessionDelegate (iOS requires these).
   func session(_ s: WCSession, activationDidCompleteWith st: WCSessionActivationState, error: Error?) {}
@@ -174,6 +186,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   func session(_ s: WCSession, didReceiveMessage m: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
     handleRun(m); handleMedia(m)
     guard let cue = m["cue"] as? String else { replyHandler(["handled": false]); return }
+    cancelResume()   // this cue now owns the session — kill any pending resume-retry before we activate
     // Activate our session FIRST — that routes audio to any CONNECTED earbuds, so currentRoute then reflects
     // them. Checking BEFORE activation reported the built-in speaker while the buds sat idle, so the initial
     // cue wrongly fell back to the watch until music was already playing (the bug the user hit).
