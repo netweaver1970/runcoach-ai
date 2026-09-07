@@ -532,18 +532,20 @@ export default function DailyCoachScreen() {
             </View>
           ) : plan ? (
             <>
-              <Text style={s.coachHeadline}>{plan.headline}</Text>
+              {/* When a top-up is offered (ran but short), don't show the contradictory 'session done / no more
+                  running today' text — the day is PARTIAL, so reframe the headline/session around the shortfall. */}
+              <Text style={s.coachHeadline}>{canTopUp ? 'Session incomplete — top-up available' : plan.headline}</Text>
               <View style={s.coachRow}>
-                <View style={[s.intensityPill, { backgroundColor: (INTENSITY_COLOR[plan.intensity] ?? '#888') + '22' }]}>
-                  <Text style={[s.intensityText, { color: INTENSITY_COLOR[plan.intensity] ?? '#888' }]}>
-                    {plan.intensity.toUpperCase()}
+                <View style={[s.intensityPill, { backgroundColor: (INTENSITY_COLOR[canTopUp ? 'easy' : plan.intensity] ?? '#888') + '22' }]}>
+                  <Text style={[s.intensityText, { color: INTENSITY_COLOR[canTopUp ? 'easy' : plan.intensity] ?? '#888' }]}>
+                    {canTopUp ? 'TOP-UP' : plan.intensity.toUpperCase()}
                   </Text>
                 </View>
                 <Text style={s.coachTarget}>
-                  {effRunMin > 0 ? `run ${effDose} · within target` : 'no run today'}
+                  {canTopUp ? `ran ${todayRunMin} of ${prescribedMin} min` : (effRunMin > 0 ? `run ${effDose} · within target` : 'no run today')}
                 </Text>
               </View>
-              <Text style={s.coachSession}>{plan.session}</Text>
+              <Text style={s.coachSession}>{canTopUp ? `You ran ${todayRunMin} of your ${prescribedMin}-min session. Add the shortfall below to finish it — or leave it and recover.` : plan.session}</Text>
               {plan.nextRunLabel && (plan.nextRunInDays ?? 0) > 0 && (
                 <Text style={s.coachNextRun}>
                   🏃 Next run <Text style={{ fontWeight: '800' }}>{plan.nextRunLabel}</Text>
@@ -556,8 +558,8 @@ export default function DailyCoachScreen() {
                   <Text style={s.strengthText}>{plan.strength}</Text>
                 </View>
               ) : null}
-              <Text style={s.coachRationale}>{plan.rationale}</Text>
-              {plan.cautions ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
+              {!canTopUp && <Text style={s.coachRationale}>{plan.rationale}</Text>}
+              {plan.cautions && !canTopUp ? <Text style={s.coachCaution}>⚠️ {plan.cautions}</Text> : null}
 
               {/* PROPOSED by the chat coach — awaits an explicit tap. Nothing reaches the watch unreviewed. */}
               {pending && targetIsToday && (
@@ -744,7 +746,7 @@ export default function DailyCoachScreen() {
                 </View>
               )}
 
-              {!watchWorkout && plan.intensity === 'rest' && (
+              {!watchWorkout && plan.intensity === 'rest' && !canTopUp && (
                 <Text style={s.workoutStep}>⌚ Rest day — no watch workout pushed.</Text>
               )}
 
