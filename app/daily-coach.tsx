@@ -314,8 +314,9 @@ export default function DailyCoachScreen() {
   }, [targetDate]);
 
   // Push a 2ND (top-up) run for the shortfall when today's prescribed runtime wasn't met — from the app, not
-  // manual, and WITHOUT deleting the earlier (badly-structured) run. An EASY Z2 top-up of the missing minutes;
-  // respects the watch-recorder setting (Apple Workout vs RunCoach app).
+  // manual, and WITHOUT deleting the earlier (badly-structured) run. An EASY Z2 top-up of the missing minutes.
+  // ALWAYS the RunCoach (no-route) app regardless of the recorder setting — the top-up is a short easy track/
+  // loop run with voice cues, not a mapped session (Geert's call 2026-09-07).
   const sendTopUp = async () => {
     if (topUpMin < 8) return;
     setTopUpSending(true); setWatchMsg(null);
@@ -323,13 +324,10 @@ export default function DailyCoachScreen() {
       const slot = weekdaySlot(new Date(targetDate + 'T00:00:00'));
       const wk = ensureBlockPower(synthesizeWorkout('easy', topUpMin, `${slot} top-up`, powerZones, 'easy'), powerZones);
       if (!wk) { setWatchMsg('Could not build the top-up.'); return; }
-      const recorder = await getWatchRecorder();
-      const ok = recorder === 'runcoach'
-        ? await sendWorkoutToWatch(wk, 'Top-up run')
-        : (watchModuleAvailable() ? await pushWorkoutToWatch(wk) : false);
+      const ok = await sendWorkoutToWatch(wk, 'Top-up run');
       setWatchMsg(ok
-        ? (recorder === 'runcoach' ? '✓ Top-up sent — open RunCoach on the watch.' : '✓ Top-up sent — open the Workout app on your watch.')
-        : 'Could not send the top-up.');
+        ? '✓ Top-up sent — open RunCoach on the watch and press Start.'
+        : 'Watch not reachable — open RunCoach on the watch.');
     } catch (e: any) { setWatchMsg(e?.message ?? 'Top-up send failed.'); }
     finally { setTopUpSending(false); }
   };
