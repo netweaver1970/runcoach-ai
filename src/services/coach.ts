@@ -2607,6 +2607,19 @@ async function readPlanLog(date: string): Promise<PlanLogEntry[]> {
   } catch { return []; }
 }
 
+// The FULLEST run the coach prescribed for a day (max runMinutes across the day's non-rest plan versions).
+// Survives the flip to a 'session done' rest — the top-up feature needs the ORIGINAL target to size the
+// shortfall, and the current cached plan may already be rest (runMinutes 0). Returns 0 if never a run day.
+export async function getPrescribedMinutes(date: string): Promise<number> {
+  const log = await readPlanLog(date);
+  let m = 0;
+  for (const e of log) {
+    const p = e.plan;
+    if (p && p.intensity !== 'rest' && !p.optional2nd) m = Math.max(m, p.runMinutes ?? 0);
+  }
+  return m;
+}
+
 // ── PENDING (PROPOSED) PRESCRIPTION — the chat coach PROPOSES, the athlete APPROVES ────────────────────
 // The chat coach used to be structurally READ-ONLY: it could diagnose (e.g. Achilles soreness) and design a
 // sensible modified session, but the insight died in the chat — the app kept the old prescription and had no

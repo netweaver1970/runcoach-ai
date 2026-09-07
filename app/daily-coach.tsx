@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp, estimateDayTrimp } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, ensureBlockPower, getPrescribedMinutes, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -182,8 +182,19 @@ export default function DailyCoachScreen() {
     loadSnapshotCache().then((sn: any) => {
       if (!str) setSnapStrain(sn?.strain ?? null);
       setTestTarget(thresholdTestTarget(sn?.runs ?? []));   // personal watt anchor for the threshold test
+      // Total run time ALREADY logged today (all sources) → drives the "prescribed runtime not met → top-up" card.
+      const todayKey = toDateKey(new Date());
+      const done = (sn?.runs ?? [])
+        .filter((r: any) => String(r.date ?? '').slice(0, 10) === todayKey)
+        .reduce((s: number, r: any) => s + (r.duration ?? 0), 0);
+      setTodayRunMin(Math.round(done / 60));
     }).catch(() => {});
   }, [str]);
+  // Fullest run prescribed for the VIEWED day (survives the flip to a 'session done' rest) → the top-up target.
+  const [todayRunMin, setTodayRunMin] = useState(0);
+  const [prescribedMin, setPrescribedMin] = useState(0);
+  const [topUpMin, setTopUpMin] = useState(0);          // adjustable top-up length (defaults to the shortfall)
+  const [topUpSending, setTopUpSending] = useState(false);
   const strainObj = strain ?? snapStrain;
 
   // The coach plan is built for the VIEWED day (the `date` param), not just today.
@@ -197,6 +208,11 @@ export default function DailyCoachScreen() {
                    : (dates.length ? dates[dates.length - 1] : realTodayKey);
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === realTodayKey;
+  // Top-up: the fullest prescribed run for the viewed day, and the shortfall vs what's actually been run.
+  useEffect(() => { getPrescribedMinutes(targetDate).then(setPrescribedMin).catch(() => setPrescribedMin(0)); }, [targetDate, plan]);
+  const shortfallMin = Math.max(0, prescribedMin - todayRunMin);
+  const canTopUp = targetIsToday && todayRunMin >= 8 && shortfallMin >= 8;   // ran today but fell short of the prescription
+  useEffect(() => { setTopUpMin(shortfallMin); }, [shortfallMin]);
 
   const real   = strainObj?.real ?? Math.round((target.strainScore as number) ?? 0);
   const status = strainObj ? strainStatus(strainObj) : { label: '—', color: '#888' };
@@ -295,6 +311,27 @@ export default function DailyCoachScreen() {
     // A chat-coach PROPOSAL waiting for approval (propose_prescription). Never auto-applied.
     loadPendingPrescription(targetDate).then(setPending).catch(() => setPending(null));
   }, [targetDate]);
+
+  // Push a 2ND (top-up) run for the shortfall when today's prescribed runtime wasn't met — from the app, not
+  // manual, and WITHOUT deleting the earlier (badly-structured) run. An EASY Z2 top-up of the missing minutes;
+  // respects the watch-recorder setting (Apple Workout vs RunCoach app).
+  const sendTopUp = async () => {
+    if (topUpMin < 8) return;
+    setTopUpSending(true); setWatchMsg(null);
+    try {
+      const slot = weekdaySlot(new Date(targetDate + 'T00:00:00'));
+      const wk = ensureBlockPower(synthesizeWorkout('easy', topUpMin, `${slot} top-up`, powerZones, 'easy'), powerZones);
+      if (!wk) { setWatchMsg('Could not build the top-up.'); return; }
+      const recorder = await getWatchRecorder();
+      const ok = recorder === 'runcoach'
+        ? await sendWorkoutToWatch(wk, 'Top-up run')
+        : (watchModuleAvailable() ? await pushWorkoutToWatch(wk) : false);
+      setWatchMsg(ok
+        ? (recorder === 'runcoach' ? '✓ Top-up sent — open RunCoach on the watch.' : '✓ Top-up sent — open the Workout app on your watch.')
+        : 'Could not send the top-up.');
+    } catch (e: any) { setWatchMsg(e?.message ?? 'Top-up send failed.'); }
+    finally { setTopUpSending(false); }
+  };
 
   // Long-run style + this day's split opt-in (for the toggle shown on long-run days).
   useEffect(() => {
@@ -711,6 +748,23 @@ export default function DailyCoachScreen() {
                 <Text style={s.workoutStep}>⌚ Rest day — no watch workout pushed.</Text>
               )}
 
+              {/* TOP-UP 2nd run — you ran today but fell short of the prescribed time (e.g. a badly-structured
+                  run). Layer an easy Z2 top-up for the shortfall, pushed from the app; the earlier run stays. */}
+              {canTopUp && (
+                <View style={[s.workoutBox, { borderColor: '#2ecc7155' }]}>
+                  <Text style={s.workoutTitle}>➕ Top up today · ran {todayRunMin} of {prescribedMin} min</Text>
+                  <Text style={s.coachSession}>Add an easy Z2 run for the shortfall — keeps your earlier run, no delete.</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, marginVertical: 8 }}>
+                    <TouchableOpacity style={s.step} onPress={() => setTopUpMin(m => Math.max(8, m - 5))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={s.stepT}>−</Text></TouchableOpacity>
+                    <Text style={s.stepVal}>{topUpMin} min easy</Text>
+                    <TouchableOpacity style={s.step} onPress={() => setTopUpMin(m => Math.min(120, m + 5))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={s.stepT}>＋</Text></TouchableOpacity>
+                  </View>
+                  <TouchableOpacity style={s.watchBtn} onPress={sendTopUp} disabled={topUpSending || topUpMin < 8}>
+                    <Text style={s.watchBtnText}>{topUpSending ? 'Sending…' : `⌚ Send ${topUpMin}-min top-up to watch`}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* THRESHOLD TEST — deliberately OUTSIDE the `watchWorkout &&` block above. It was inside it,
                   which meant a REST day (watchWorkout === null) hid the button entirely — including on the
                   very mornings you'd most want to choose between resting and testing, and it made the
@@ -880,6 +934,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   workoutStep: { fontSize: 13, color: c.text, lineHeight: 20 },
   watchBtn: { backgroundColor: c.accent, borderRadius: 8, paddingVertical: 9, alignItems: 'center', marginTop: 10 },
   watchBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  step: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.surfaceAlt, alignItems: 'center', justifyContent: 'center' },
+  stepT: { fontSize: 22, fontWeight: '700', color: c.text, lineHeight: 24 },
+  stepVal: { fontSize: 17, fontWeight: '800', color: c.text, minWidth: 120, textAlign: 'center', fontVariant: ['tabular-nums'] },
   routeBtn: { backgroundColor: c.surfaceAlt, marginTop: 8 },
   routeBtnText: { color: c.text },
   testBtn: { backgroundColor: 'transparent', borderRadius: 8, borderWidth: 1, borderColor: c.accent,
