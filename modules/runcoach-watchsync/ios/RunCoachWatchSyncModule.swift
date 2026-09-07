@@ -142,9 +142,16 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   // the rapid 3-2-1 countdown that once needed queue-counting is now a SINGLE "3, 2, 1" utterance (watch side),
   // so there's no rapid-cue race to defend against here.
   private func utteranceEnded(_ why: String, _ s: AVSpeechSynthesizer) {
-    speakWatchdog?.cancel(); speakWatchdog = nil
     alog("synth \(why)")
-    if !s.isSpeaking { resumeOthers() }
+    if s.isSpeaking {
+      // A second utterance was QUEUED behind this one (e.g. a power cue landing ~1 s after a phase cue) and is
+      // still going — re-arm the watchdog for IT, so a stall on the queued utterance is still recovered. Just
+      // nulling the watchdog here would leave that utterance unguarded (the narrow wedge the reviewer caught).
+      armSpeakWatchdog()
+    } else {
+      speakWatchdog?.cancel(); speakWatchdog = nil
+      resumeOthers()   // last cue done → hand the music back
+    }
   }
 
   // Pause/resume whatever the phone is playing, driven from the watch's Media screen. Activating a non-mixing
@@ -191,7 +198,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     // Activate FIRST so currentRoute reflects any connected-but-idle earbuds (checking before activation reported
     // the built-in speaker while the buds sat idle → wrong decline); if there are none, release immediately so we
     // don't hold a pointless session on a silent phone.
-    try? sess.setCategory(.playback, mode: .voicePrompt)
+    try? sess.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])   // DUCK (lower), don't interrupt
     try? sess.setActive(true)
     let ext = hasExternalAudioOutput()
     phoneAudioTarget = ext
@@ -268,7 +275,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
       DispatchQueue.main.async {
         self.cancelResume()   // this cue now owns the session — kill any pending resume-retry before we activate
         let sess = AVAudioSession.sharedInstance()
-        try? sess.setCategory(.playback, mode: .voicePrompt)   // no duck → INTERRUPTS (pauses) other audio, then resumes
+        try? sess.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])   // DUCK (lower) music during the cue, then un-duck — does NOT pause it, so there's no failed-resume
         try? sess.setActive(true)
         self.alog("cue speak '\(cue.prefix(24))'")
         self.speakNow(cue)
