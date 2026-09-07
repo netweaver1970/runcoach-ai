@@ -234,7 +234,8 @@ struct RouteView: View {
   @ObservedObject var store = RouteStore.shared
   @ObservedObject var engine = WorkoutEngine.shared
   @State private var cam: MapCameraPosition = .userLocation(followsHeading: true, fallback: .automatic)   // heading-up follow
-  @State private var page = 0                                                       // 0 = controls (start/stop, shown first) · 1 = map · 2 = media
+  @State private var page = 0                                                       // OUTER horizontal: 0 = controls (shown first) · 1 = centre (map⇅stats) · 2 = media
+  @State private var midPage = 0                                                    // CENTRE vertical: 0 = map · 1 = stats (default set per mode on run start; persists after)
   @State private var infoOn = false                                                 // map screen: metrics strip hidden by default (the min/now/max power strip shows instead)
   @State private var zoomedForTurn = false                                          // camera is in the close turn-approach zoom (vs live follow)
   @State private var hideInfoTask: DispatchWorkItem?                                 // pending auto-hide of the flashed info strip
@@ -257,30 +258,21 @@ struct RouteView: View {
   var body: some View {
     Group {
       if let r = store.route {
-        // A route push carries map points; a track/interval push (sendWorkoutToWatch) sends none. Route runs get
-        // the horizontal controls/MAP/media pager (map is the point); routeless runs get a vertical controls/
-        // STATS/media pager (Apple-Workout style, swipe up/down) with the live stats screen as the default.
-        if r.pts.count > 1 {
-          runChrome(
-            TabView(selection: $page) {
-              controlsScreen(r, hasRoute: true).tag(0)   // ◂ start / pause / lap / stop
-              mapScreen(r).tag(1)                        // centre: map + a minimisable metrics strip
-              mediaScreen().tag(2)                       // ▸ pause / resume the audio you're listening to
-            }
-            .tabViewStyle(.page)
-            .onChange(of: store.jumpToMap) { page = 1; flashInfo() }   // a turn cue surfaces the map + flashes the strip
-            .onChange(of: engine.announceTick) { flashInfo() }         // any spoken announcement flashes the strip
-          )
-        } else {
-          runChrome(
-            TabView(selection: $page) {
-              controlsScreen(r, hasRoute: false).tag(0)  // ▴ start / pause / lap / stop
-              statsScreen().tag(1)                       // centre: live run stats (default)
-              mediaScreen().tag(2)                       // ▾ pause / resume the audio you're listening to
-            }
-            .tabViewStyle(.verticalPage)
-          )
-        }
+        // SAME outer shape for both run modes: a horizontal controls / CENTRE / media pager. The CENTRE is a
+        // vertical map ⇅ stats pager (see middleScreen) — both screens exist in BOTH modes; you swipe up/down
+        // to switch and it STAYS where you leave it. Left/right always reach controls/media.
+        runChrome(
+          TabView(selection: $page) {
+            controlsScreen(r, hasRoute: r.pts.count > 1).tag(0)   // ◂ start / pause / lap / stop
+            middleScreen(r).tag(1)                                // centre: map ⇅ stats (swipe up/down)
+            mediaScreen().tag(2)                                  // ▸ pause / resume the audio you're listening to
+          }
+          .tabViewStyle(.page)
+          // A turn cue surfaces the run screen (centre) + flashes the map strip — but does NOT yank you off the
+          // stats sub-screen if you deliberately parked there (midPage untouched); the spoken cue + haptic still fire.
+          .onChange(of: store.jumpToMap) { page = 1; flashInfo() }
+          .onChange(of: engine.announceTick) { flashInfo() }
+        )
       } else {
         VStack(spacing: 6) {
           Image(systemName: "map").font(.title2).foregroundColor(.secondary)
@@ -292,9 +284,23 @@ struct RouteView: View {
     }
   }
 
-  // Modifiers common to both run pagers: title, the end-run sheet, keeping GPS tracking alive, and jumping to the
-  // CENTRE page (map for routes, stats for routeless) the moment the run starts — so you land on the screen that
-  // matters mid-run while Start still lives one swipe away on the controls page.
+  // CENTRE of the horizontal pager: a VERTICAL map ⇅ stats pager. Present in BOTH run modes; the DEFAULT
+  // sub-screen is the map for a route run and the live stats for a routeless run, but wherever you swipe it
+  // stays (midPage persists) until you move it again.
+  @ViewBuilder private func middleScreen(_ r: RoutePayload) -> some View {
+    TabView(selection: $midPage) {
+      mapScreen(r).tag(0)     // ▴ map
+      statsScreen().tag(1)    // ▾ live stats
+    }
+    .tabViewStyle(.verticalPage)
+  }
+
+  // Route runs land on the map, routeless runs on the stats — the CENTRE default shown after the controls page.
+  private func defaultMid() -> Int { (store.route?.pts.count ?? 0) > 1 ? 0 : 1 }
+
+  // Common run chrome: title, the end-run sheet, keeping GPS tracking alive, and — the moment the run starts —
+  // jumping to the CENTRE page at its mode default (map/stats) while Start still lives one swipe left on controls.
+  // midPage is set only here (run start / reopen mid-run), never on a turn cue, so a deliberate swipe to stats sticks.
   @ViewBuilder private func runChrome<V: View>(_ content: V) -> some View {
     content
       .navigationTitle("")   // drop the run title → more room (back-swipe still works)
@@ -303,8 +309,8 @@ struct RouteView: View {
         Button("Discard", role: .destructive) { engine.end(save: false) }
         Button("Cancel", role: .cancel) { }
       }
-      .onAppear { store.start(); if engine.running { page = 1 } }   // tracking is app-wide (see setRoute); land on the centre page if already mid-run
-      .onChange(of: engine.running) { if engine.running { page = 1 } }
+      .onAppear { store.start(); if engine.running { page = 1; midPage = defaultMid() } }   // tracking is app-wide; land on the centre default if already mid-run
+      .onChange(of: engine.running) { if engine.running { page = 1; midPage = defaultMid() } }
   }
 
   // ── CONTROLS screen (swipe here for start / pause / lap / stop) ──────────────────────────────────────────
@@ -333,7 +339,7 @@ struct RouteView: View {
           Label(autoPause ? "Auto-pause on" : "Auto-pause off", systemImage: autoPause ? "pause.circle.fill" : "pause.circle").font(.caption)
         }.buttonStyle(.plain).foregroundColor(autoPause ? .green : .secondary)
       }
-      Text(hasRoute ? "swipe → map" : "swipe ↕ stats").font(.caption2).foregroundColor(.secondary)
+      Text(hasRoute ? "swipe → map" : "swipe → stats").font(.caption2).foregroundColor(.secondary)
     }.padding(.horizontal, 8)
   }
 
@@ -392,7 +398,7 @@ struct RouteView: View {
           .font(engine.batteryNote.isEmpty ? .headline : .caption2)
           .foregroundColor(engine.batteryNote.isEmpty ? .primary : .secondary)
           .lineLimit(2).minimumScaleFactor(0.7).multilineTextAlignment(.center)
-        Text("swipe ↕ for controls").font(.caption2).foregroundColor(.secondary)
+        Text("swipe ↕ map · ← controls").font(.caption2).foregroundColor(.secondary)
       }
     }.padding(.horizontal, 6)
   }
