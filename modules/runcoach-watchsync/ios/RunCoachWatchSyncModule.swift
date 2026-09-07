@@ -48,6 +48,25 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   var onRunSegments: (([String: Any]) -> Void)?  // executed phase boundaries from the run → JS structure rebuild
   private var resumeWork: DispatchWorkItem?       // pending resume-retry, cancelled when a new cue takes the session
 
+  // ─── Audio diagnostics ──────────────────────────────────────────────────────────────────────────────────
+  // The cue path is all `try?` with no logging, so every audio bug has been guesswork. Append each event to a
+  // small pullable file (Documents/runcoach-audio-log.txt) so a single route run tells us exactly what happened:
+  // was the cue received, did the phone think it had an external output, did it speak or decline to the watch,
+  // and did the music resume. Ring-buffered to the last 250 lines. Pull with devicectl copy from.
+  private var alogBuf: [String] = []
+  private func alog(_ e: String) {
+    let ts = ISO8601DateFormatter().string(from: Date())
+    alogBuf.append("\(ts) \(e)")
+    if alogBuf.count > 250 { alogBuf.removeFirst(alogBuf.count - 250) }
+    let text = alogBuf.joined(separator: "\n")
+    if let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+      try? text.write(to: dir.appendingPathComponent("runcoach-audio-log.txt"), atomically: true, encoding: .utf8)
+    }
+  }
+  private func routeDesc() -> String {
+    AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+  }
+
   override init() {
     super.init()
     synth.delegate = self
@@ -89,7 +108,9 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     let u = AVSpeechUtterance(string: text); u.rate = AVSpeechUtteranceDefaultSpeechRate
     synth.speak(u)
   }
+  func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart u: AVSpeechUtterance) { alog("synth START") }
   func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) {
+    alog("synth FINISH → resume")
     if !s.isSpeaking { resumeOthers() }   // cue done → resume the music, verifying it actually took
   }
 
@@ -127,7 +148,9 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     let sess = AVAudioSession.sharedInstance()
     try? sess.setCategory(.playback, mode: .voicePrompt)
     try? sess.setActive(true)
-    if hasExternalAudioOutput() { speakNow("Starting run") }
+    let ext = hasExternalAudioOutput()
+    alog("prime ext=\(ext) route=\(routeDesc())")
+    if ext { speakNow("Starting run") }
     else { try? sess.setActive(false, options: [.notifyOthersOnDeactivation]) }
   }
 
@@ -160,8 +183,9 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     // deactivating the session the cue just took, so the utterance was dropped (music cut, nothing heard) and,
     // because it never played, didFinish never fired and the music never resumed. (Regression: retry loop +
     // interval countdown cues.)
-    guard !synth.isSpeaking else { return }
+    guard !synth.isSpeaking else { alog("resume skip (speaking)"); return }
     try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    alog("resume deactivate attempt=\(attempt) other=\(AVAudioSession.sharedInstance().isOtherAudioPlaying)")
     guard attempt < 4 else { return }
     let work = DispatchWorkItem { [weak self] in
       guard let self = self, !self.synth.isSpeaking else { return }
@@ -191,12 +215,16 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     // them. Checking BEFORE activation reported the built-in speaker while the buds sat idle, so the initial
     // cue wrongly fell back to the watch until music was already playing (the bug the user hit).
     let sess = AVAudioSession.sharedInstance()
+    alog("cue in '\(cue.prefix(24))' route[preAct]=\(routeDesc())")
     try? sess.setCategory(.playback, mode: .voicePrompt)   // no duck → INTERRUPTS (pauses) other audio
     try? sess.setActive(true)
-    if hasExternalAudioOutput() {
-      DispatchQueue.main.async { self.speakNow(cue) }
+    let ext = hasExternalAudioOutput()
+    alog("cue afterAct ext=\(ext) route=\(routeDesc()) other=\(sess.isOtherAudioPlaying)")
+    if ext {
+      DispatchQueue.main.async { self.alog("cue speak '\(cue.prefix(24))'"); self.speakNow(cue) }
       replyHandler(["handled": true])
     } else {
+      alog("cue DECLINED → watch (no phone external output)")
       try? sess.setActive(false, options: [.notifyOthersOnDeactivation])   // no good phone output → let the watch speak
       replyHandler(["handled": false])
     }
