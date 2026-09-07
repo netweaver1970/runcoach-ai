@@ -1682,10 +1682,21 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     // to the basis's Z4 259–265 W intervals — so the home showed "Z2 · 2× 4min @ 259–265W · Z4" under a
     // headline reading "Cap hit — rest today". Three sources, three different intensities.
     // When the intensity moved, SYNTHESIZE for the intensity we actually landed on.
-    const workout = intensity === 'rest' ? null
+    let workout = intensity === 'rest' ? null
       : wellFormed ? ensureBlockPower(parsed, snap.powerZones)
       : (basis.workout && !easedOff) ? basis.workout
-      : ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones), snap.powerZones);
+      : ensureBlockPower(synthesizeWorkout(intensity, runMinutes, wkName, snap.powerZones, effKind), snap.powerZones);
+    // A LONG run is aerobic Z2 BY DEFINITION — never a Z3/tempo block. Two ways it slipped to Z3 and pushed
+    // 267–288 W for a Z2 long run (2026-09-07): the LLM handed back a 'tempo' Z3 block that the intensity-based
+    // effort clamp (moderate → ≤Z3) let through, AND the fallback synth above used to drop effKind so a
+    // 'moderate' long run synthesized as a tempo. Clamp every work block to Z2 here and refill the watts, so the
+    // pushed power always matches the easy long-run effort regardless of the tier or what the model proposed.
+    if (workout && effKind === 'long') {
+      workout = ensureBlockPower(
+        { ...workout, blocks: workout.blocks.map(b => ({ ...b, hrZone: 'Z2', powerLowWatts: undefined, powerHighWatts: undefined })) },
+        snap.powerZones,
+      );
+    }
     // PROSE must describe the session we ACTUALLY prescribe. Three cases:
     //  • kept the model's structure AND its intensity  → its words are accurate.
     //  • rejected the structure but intensity is unchanged → the basis words match the basis workout.
