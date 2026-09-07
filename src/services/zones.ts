@@ -328,6 +328,11 @@ export async function analyzeLastRun(prefetched?: RunWindow): Promise<RunZoneAna
     const bpm = hr[hi]?.v ?? 0;
     if (bpm <= 0 || p.v <= 0 || (workOnly && !inWork(p.t))) continue; // real work only
     const zi = zoneOf(bpm);
+    // POWER-GATE: this athlete's HR lags power (256 W work reps at HR 134 = Z1), so high-power WORK samples fall
+    // into the LOW HR buckets and drag Z1/Z2 avg power up to threshold — the root of the inflated-Z2 push. Don't
+    // let a sample whose power blows well past the zone's current ceiling be counted as that (low) zone.
+    const ceil = rows[zi].pHigh;
+    if (ceil > 0 && p.v > ceil * 1.25) continue;
     acc[zi].pSum += p.v; acc[zi].n++; acc[zi].hrSum += bpm;
   }
   const intervalSec = pwr.length > 1 ? Math.max(1, (run.end - run.start) / 1000 / pwr.length) : 1;

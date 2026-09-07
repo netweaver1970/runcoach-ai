@@ -200,10 +200,31 @@ export function isPowerZonesConfigured(pz: PowerZones): boolean {
   return pz.z2Max > 0 || pz.tempoMin > 0 || pz.tempoMax > 0 || pz.intervalsMin > 0;
 }
 
+// Repair implausible power zones on READ. The HR-bucket calibration (zones.ts) buckets each power sample by the
+// INSTANTANEOUS HR zone; for a low-HR-for-power athlete (Geert: ~256 W at HR 134 = Z1) high-power WORK samples
+// land in the LOW HR buckets and inflate recoveryMax/z2Max until Z2 sits AT threshold — a Z2 long run pushed
+// 267–288 W (2026-09-07). The HIGH zones stay reliable (HR rarely reaches Z4/Z5), so when the low zones are
+// implausible relative to the threshold anchor (intervalsMin ≈ Z4 floor), re-derive them from it with standard
+// fractions (Z2 top ≈ 75%, recovery top ≈ 60% of threshold). Enforces ascending order either way.
+function sanitizePowerZones(z: PowerZones): PowerZones {
+  const out = { ...z };
+  const anchor = out.intervalsMin > 0 ? out.intervalsMin : (out.tempoMax > 0 ? out.tempoMax : 0);
+  if (anchor > 0) {
+    // Z2 must sit well under threshold; if it crept above ~85% of the Z4 floor or above tempoMin, it's inflated.
+    if (!(out.z2Max > 0) || out.z2Max > anchor * 0.85 || (out.tempoMin > 0 && out.z2Max >= out.tempoMin)) {
+      out.z2Max = Math.round(anchor * 0.75);
+    }
+    if (!(out.recoveryMax > 0) || out.recoveryMax >= out.z2Max) {
+      out.recoveryMax = Math.round(anchor * 0.60);
+    }
+  }
+  return out;
+}
+
 export async function getPowerZones(): Promise<PowerZones> {
   const raw = await SecureStore.getItemAsync(POWER_ZONES_KEY);
   if (!raw) return DEFAULT_POWER_ZONES;
-  try { return { ...DEFAULT_POWER_ZONES, ...JSON.parse(raw) }; }
+  try { return sanitizePowerZones({ ...DEFAULT_POWER_ZONES, ...JSON.parse(raw) }); }
   catch { return DEFAULT_POWER_ZONES; }
 }
 
