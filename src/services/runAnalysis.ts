@@ -17,6 +17,7 @@ import { buildAppModelPrompt } from './appModel';
 import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadSupplements, hrOffsetByDay } from './supplements';
 import { loadPrescriptionAt, CoachPlan, assembleCoachSnapshot } from './coach';
+import { dateKeyLocal } from './planLog';   // LOCAL Y-M-D — the key saveCachedPlan uses (NOT the UTC ISO slice)
 import { efficiencyTrend } from './runStats';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
 
@@ -128,16 +129,13 @@ export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: num
  * run. '' when this is the day's first (or only) run. Shared by the auto-analysis and the Chat "analyse run".
  */
 export function secondRunContext(allRuns: RunWorkout[], run: RunWorkout): string {
-  // LOCAL calendar day, not the UTC ISO slice — else a late-evening run (after ~22:00 in CEST) rolls to the
-  // next UTC date and its morning companion is missed, or an after-midnight run groups with the prior day.
-  const localDay = (iso: string) => {
-    const d = new Date(iso);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
-  const day = localDay(run.date);
+  // LOCAL calendar day (dateKeyLocal), not the UTC ISO slice — else a late-evening run (after ~22:00 in CEST)
+  // rolls to the next UTC date and its morning companion is missed, or an after-midnight run groups with the
+  // prior day.
+  const day = dateKeyLocal(new Date(run.date));
   const start = new Date(run.date).getTime();
   const earlier = (allRuns ?? []).filter(r =>
-    r.uuid !== run.uuid && localDay(r.date) === day && new Date(r.date).getTime() < start);
+    r.uuid !== run.uuid && dateKeyLocal(new Date(r.date)) === day && new Date(r.date).getTime() < start);
   if (earlier.length === 0) return '';
   const mins = earlier.reduce((s, r) => s + Math.round((r.duration ?? 0) / 60), 0);
   const labels = Array.from(new Set(earlier.map(r => r.label ?? 'run'))).join(', ');
@@ -301,7 +299,7 @@ export async function maybeAnalyzeLatestRun(opts: {
     if (existing.hadPlan) return existing;
     // The cached analysis was made before today's plan existed (run beat the plan) → it
     // judged off recovery alone. Re-analyse only once a prescription is actually available.
-    const planNow = await loadPrescriptionAt(run.date.slice(0, 10), new Date(run.date).getTime());
+    const planNow = await loadPrescriptionAt(dateKeyLocal(new Date(run.date)), new Date(run.date).getTime());
     if (!planNow) return existing;
     // else fall through and regenerate against the now-available prescription
   }
@@ -315,7 +313,7 @@ export async function maybeAnalyzeLatestRun(opts: {
   if (analyzing && !opts.force) return null;
   analyzing = true;
   try {
-    const plan = await loadPrescriptionAt(run.date.slice(0, 10), new Date(run.date).getTime()).catch(() => null);
+    const plan = await loadPrescriptionAt(dateKeyLocal(new Date(run.date)), new Date(run.date).getTime()).catch(() => null);
     const prevRuns = snap.runs.filter(r => r.uuid !== run.uuid && r.label === run.label).slice(0, 8);
     const analysis = await analyzeRun(snap, run, plan, prevRuns);
     await saveLatestRunAnalysis(analysis);

@@ -9,6 +9,7 @@ import { callLLM, callLLMTools, agenticSupported } from './llm';
 import { assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getWeekPlan, formatWorkoutStructure, loadPrescriptionAt,
          savePendingPrescription, buildProposedWorkout, ensureBlockPower } from './coach';
 import { addLifeEvent } from './timelineEvents';
+import { dateKeyLocal } from './planLog';   // LOCAL Y-M-D — the key saveCachedPlan uses (day() below is a UTC slice, wrong for plan lookup)
 import { getPowerZones } from './claude';
 import { computeBodyBattery } from './bodyBattery';
 import { buildKnowledgePrompt } from './coachFiles';
@@ -158,7 +159,7 @@ const TOOLS: AgentTool[] = [
       if (!run) return { error: 'No matching run found. Call query_runs to see available runs.' };
       // The prescription that was LIVE WHEN THIS RUN STARTED (from the plan-log), so a run is judged against
       // the morning's plan — not today's current plan, which may have flipped to "rest/recover" after it.
-      const rxPlan = await loadPrescriptionAt(day(run.date), new Date(run.date).getTime()).catch(() => null);
+      const rxPlan = await loadPrescriptionAt(dateKeyLocal(new Date(run.date)), new Date(run.date).getTime()).catch(() => null);
       const prescribed_at_start = rxPlan ? {
         session: rxPlan.session, intensity: rxPlan.intensity, prescribed_run_min: rxPlan.runMinutes,
         target_strain_pct: `${rxPlan.strainLow}-${rxPlan.strainHigh}`, rationale: rxPlan.rationale || null,
