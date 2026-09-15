@@ -85,6 +85,19 @@ ${MARKER}
   }
 }
 
+// Rotation while the app is active: RCTDeviceInfo pushes fresh Dimensions to JS (so useWindowDimensions()
+// updates) only when this notification fires — normally posted by RCTAppDelegate's own scene-delegate hook,
+// which the manifest now routes to us instead. Re-post it here to keep rotation-reactive layouts working.
+// The name is React/RCTConstants.h's RCTWindowFrameDidChangeNotification as a literal, so this appended file
+// needs no RN header import; NSNotificationCenter matches observers by string name.
+- (void)windowScene:(UIWindowScene *)windowScene
+    didUpdateCoordinateSpace:(id<UICoordinateSpace>)previousCoordinateSpace
+        interfaceOrientation:(UIInterfaceOrientation)previousInterfaceOrientation
+             traitCollection:(UITraitCollection *)previousTraitCollection
+{
+  [NSNotificationCenter.defaultCenter postNotificationName:@"RCTWindowFrameDidChangeNotification" object:self];
+}
+
 @end
 `;
 
@@ -98,19 +111,29 @@ module.exports = function withSceneDelegate(config) {
         projectName,
         'AppDelegate.mm'
       );
+      // FAIL LOUDLY on any error. The UIApplicationSceneManifest (which names UISceneDelegateClassName =
+      // "SceneDelegate") always ships from app.json, so if this injection silently fails the build still
+      // compiles but launches to a black screen (manifest points at a class that doesn't exist) with no
+      // crash log — invisible in green CI. A missing AppDelegate.mm (e.g. a future Swift-AppDelegate SDK
+      // bump) must therefore HALT the prebuild, not warn-and-continue.
+      let src;
       try {
-        let src = fs.readFileSync(appDelegatePath, 'utf8');
-        if (src.includes(MARKER)) {
-          console.log('[withSceneDelegate] SceneDelegate already present');
-          return cfg;
-        }
-        // The template's AppDelegate.mm ends at the AppDelegate @end; append the SceneDelegate after it.
-        src = src.replace(/\s*$/, '\n') + SCENE_DELEGATE;
-        fs.writeFileSync(appDelegatePath, src, 'utf8');
-        console.log('[withSceneDelegate] injected SceneDelegate into AppDelegate.mm ✓');
+        src = fs.readFileSync(appDelegatePath, 'utf8');
       } catch (e) {
-        console.warn('[withSceneDelegate] could not patch AppDelegate.mm:', e.message);
+        throw new Error(
+          `[withSceneDelegate] cannot read ${appDelegatePath} (${e.message}). The iOS 27 scene manifest ` +
+          `references a SceneDelegate class that this plugin injects into AppDelegate.mm — without it the app ` +
+          `launches to a black screen. If Expo now ships a Swift AppDelegate, port this injection to it.`
+        );
       }
+      if (src.includes(MARKER)) {
+        console.log('[withSceneDelegate] SceneDelegate already present');
+        return cfg;
+      }
+      // The template's AppDelegate.mm ends at the AppDelegate @end; append the SceneDelegate after it.
+      src = src.replace(/\s*$/, '\n') + SCENE_DELEGATE;
+      fs.writeFileSync(appDelegatePath, src, 'utf8');
+      console.log('[withSceneDelegate] injected SceneDelegate into AppDelegate.mm ✓');
       return cfg;
     },
   ]);
