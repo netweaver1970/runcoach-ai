@@ -15,6 +15,7 @@ import { getRunMeta } from './runMeta';
 import { loadSupplements, anyTakenOn } from './supplements';
 import { upsertKnowledge, knowledgeExists, readKnowledgeContent } from './coachFiles';
 import { getAppleHeartRateZones } from '../../modules/runcoach-workout';
+import { setZoneHrrAnchors } from './trainingLoad';
 
 // ── iOS 27 unified Apple HR zones ─────────────────────────────────────────────────────────────────────────
 // iOS 27+ lets the athlete configure ONE set of heart-rate zones in Health Settings that every app can read
@@ -36,7 +37,7 @@ export async function refreshAppleHrZones(): Promise<void> {
   try {
     const z = await getAppleHeartRateZones();
     const adopt = !!z && ['user', 'system', 'app'].includes(z.source) && Array.isArray(z.zones) && z.zones.length === 5;
-    if (!adopt) { cachedAppleZones = null; appleZonesSource = ''; return; }
+    if (!adopt) { cachedAppleZones = null; appleZonesSource = ''; setZoneHrrAnchors(null); return; }
     const sorted = z!.zones.slice().sort((a, b) => a.index - b.index).map(x => ({ min: x.min, max: x.max }));
     // SANITY GATE — resolve the bands exactly as zoneTable will (open floor min=0 → resting HR, open ceiling
     // max=0 → max HR) and require them strictly increasing, each hi>lo, and within [~30, maxHR]. A generic or
@@ -50,7 +51,18 @@ export async function refreshAppleHrZones(): Promise<void> {
     const sane = rows.every((r, i) => r.hi > r.lo && r.lo >= 30 && r.hi <= maxHR && (i === 0 || (r.lo > rows[i - 1].lo && r.hi > rows[i - 1].hi)));
     cachedAppleZones = sane ? sorted : null;
     appleZonesSource = sane ? z!.source : '';
-  } catch { cachedAppleZones = null; appleZonesSource = ''; }
+    // Re-anchor the PRESCRIBED-load zone→HRR map to the adopted bands (midpoint HR-reserve per zone) so a
+    // session prescribed by zone LABEL implies the load the athlete will actually accumulate in Apple's bands;
+    // else restore the computed Karvonen anchors. Measured TRIMP is continuous-HRR and unaffected either way.
+    if (sane) {
+      const labels = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5'];
+      const anchors: Record<string, number> = {};
+      rows.forEach((r, i) => { anchors[labels[i]] = Math.max(0, Math.min(1, ((r.lo + r.hi) / 2 - rest) / (maxHR - rest))); });
+      setZoneHrrAnchors(anchors);
+    } else {
+      setZoneHrrAnchors(null);
+    }
+  } catch { cachedAppleZones = null; appleZonesSource = ''; setZoneHrrAnchors(null); }
 }
 
 // Above this run-time temperature the auto loop skips calibration: heat elevates HR for a

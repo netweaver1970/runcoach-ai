@@ -695,7 +695,19 @@ export function estimateWorkoutLoad(w: {
 // Normalised in HR-reserve space, so a session's TRIMP is defined by its ZONE structure, independent of the
 // athlete's own rest/max HR (those only convert zones→bpm for the watch). Only sex enters, via Banister's
 // coefficients (men 0.64/1.92, women 0.86/1.67).
-const ZONE_HRR: Record<string, number> = { Z0: 0.35, Z1: 0.50, Z2: 0.62, Z3: 0.72, Z4: 0.85, Z5: 0.93 };
+// Representative HR-reserve per zone LABEL, for the PRESCRIBED-load estimate only. Default = the computed
+// Karvonen anchors (each just inside its zoneTable band). On iOS 27, when Apple's unified HR zones are
+// adopted, zones.ts re-anchors Z1–Z5 to the MIDPOINT HR-reserve of Apple's (possibly very different) bands
+// via setZoneHrrAnchors — so "prescribe Z4" implies the load the athlete will actually accumulate in Apple's
+// Z4. MEASURED TRIMP (singleHrTrimp / computeStrainTrimp) is continuous-HRR and stays invariant either way.
+const ZONE_HRR_DEFAULT: Record<string, number> = { Z0: 0.35, Z1: 0.50, Z2: 0.62, Z3: 0.72, Z4: 0.85, Z5: 0.93 };
+let ZONE_HRR: Record<string, number> = ZONE_HRR_DEFAULT;
+
+/** Re-anchor the prescribed-load zone→HRR map (iOS 27 Apple unified zones). Pass the derived Z1–Z5 anchors to
+ *  adopt them (Z0 always keeps its default sub-Z1 baseline); pass null to restore the computed Karvonen anchors. */
+export function setZoneHrrAnchors(anchors: Record<string, number> | null): void {
+  ZONE_HRR = anchors ? { ...ZONE_HRR_DEFAULT, ...anchors } : ZONE_HRR_DEFAULT;
+}
 
 /**
  * A between-rep recovery at Z2/Z3 is a FLOAT — genuine running work at a lower effort, not a rest.
