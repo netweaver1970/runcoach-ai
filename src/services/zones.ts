@@ -36,8 +36,20 @@ export async function refreshAppleHrZones(): Promise<void> {
   try {
     const z = await getAppleHeartRateZones();
     const adopt = !!z && ['user', 'system', 'app'].includes(z.source) && Array.isArray(z.zones) && z.zones.length === 5;
-    cachedAppleZones = adopt ? z!.zones.slice().sort((a, b) => a.index - b.index).map(x => ({ min: x.min, max: x.max })) : null;
-    appleZonesSource = adopt ? z!.source : '';
+    if (!adopt) { cachedAppleZones = null; appleZonesSource = ''; return; }
+    const sorted = z!.zones.slice().sort((a, b) => a.index - b.index).map(x => ({ min: x.min, max: x.max }));
+    // SANITY GATE — resolve the bands exactly as zoneTable will (open floor min=0 → resting HR, open ceiling
+    // max=0 → max HR) and require them strictly increasing, each hi>lo, and within [~30, maxHR]. A generic or
+    // wrong-basis Apple config (e.g. %-of-max zones whose top sits above the athlete's true max 188) would
+    // otherwise render an inverted band and skew zone bucketing (see zoneOf / analyzeLastRun). On any failure
+    // we drop the cache and fall back to the computed Karvonen bands. maxHR/restHR here are the athlete's
+    // resolved values; zoneTable is called with the same (±a couple bpm), so this is a faithful pre-check.
+    const [maxHR, restHR] = await Promise.all([getMaxHR(), getRestHR()]);
+    const rest = restHR > 0 && restHR < maxHR ? restHR : 50;
+    const rows = sorted.map(zn => ({ lo: zn.min > 0 ? Math.round(zn.min) : rest, hi: zn.max > 0 ? Math.round(zn.max) : maxHR }));
+    const sane = rows.every((r, i) => r.hi > r.lo && r.lo >= 30 && r.hi <= maxHR && (i === 0 || (r.lo > rows[i - 1].lo && r.hi > rows[i - 1].hi)));
+    cachedAppleZones = sane ? sorted : null;
+    appleZonesSource = sane ? z!.source : '';
   } catch { cachedAppleZones = null; appleZonesSource = ''; }
 }
 
@@ -110,7 +122,7 @@ export function zoneTable(maxHR: number, pz: PowerZones, restHR = 50): ZoneRow[]
   ];
 }
 
-export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string, restHR = 50): string {
+export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string, restHR = 50, calibratedLine?: string): string {
   const body = zoneTable(maxHR, pz, restHR)
     .map(r => `| ${r.z} | ${r.name} | ${r.hrLow}–${r.hrHigh} | ${r.pHigh > r.pLow ? `${r.pLow}–${r.pHigh}` : `≥ ${r.pLow}`} |`)
     .join('\n');
@@ -128,7 +140,7 @@ export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string, rest
     '|------|------|----------|-----------|',
     body,
     '',
-    `Last calibrated: ${new Date().toISOString().slice(0, 10)}${note ? ` · ${note}` : ''}.`,
+    calibratedLine ?? `Last calibrated: ${new Date().toISOString().slice(0, 10)}${note ? ` · ${note}` : ''}.`,
     'The coach refines the Power column from post-run power-vs-HR data so each HR zone maps to your true power.',
   ].join('\n');
 }
@@ -266,10 +278,14 @@ export async function ensureZonesFile(): Promise<void> {
         // bounds — or max/rest HR — changed). Rewrite from the file's own (calibrated) power column so the
         // stored bands stay coherent with what the app now displays, without disturbing the power targets.
         if (!hrColMatches(current, maxHR, parsed, restHR)) {
+          // Refresh ONLY the HR bands + source note; preserve the existing "Last calibrated" line (that date
+          // refers to POWER calibration, which hasn't changed here) so a sub-bpm resting-HR wobble or an Apple
+          // zone sync doesn't restamp today's date or drop the real calibration note.
+          const prevCal = (current.match(/^Last calibrated:.*$/m) ?? [])[0];
           await upsertKnowledge(
             ZONES_FILE_ID, 'Power & HR Zones',
             'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
-            zonesMarkdown(maxHR, parsed, cachedAppleZones ? 'HR bands synced to Apple Health unified zones' : 'HR bands refreshed', restHR),
+            zonesMarkdown(maxHR, parsed, undefined, restHR, prevCal),
           );
         }
         if (!isPowerZonesConfigured(await getPowerZones())) {
