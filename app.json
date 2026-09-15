@@ -46,6 +46,7 @@
       "@bacons/apple-targets",
       "./plugins/withDisableLldb",
       "./plugins/withHealthKitCapability",
+      "./plugins/withPodfileDeploymentTarget",
       "expo-router",
       "expo-secure-store",
       [
