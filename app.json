@@ -30,6 +30,17 @@
         ],
         "ITSAppUsesNonExemptEncryption": false,
         "UIDesignRequiresCompatibility": true,
+        "UIApplicationSceneManifest": {
+          "UIApplicationSupportsMultipleScenes": false,
+          "UISceneConfigurations": {
+            "UIWindowSceneSessionRoleApplication": [
+              {
+                "UISceneConfigurationName": "Default Configuration",
+                "UISceneDelegateClassName": "SceneDelegate"
+              }
+            ]
+          }
+        },
         "CFBundleURLTypes": [
           { "CFBundleURLSchemes": ["com.googleusercontent.apps.426250935929-7t0lbdluj8mb8cic52qpf8qc2filg8nh"] }
         ]
@@ -47,6 +58,7 @@
       "./plugins/withDisableLldb",
       "./plugins/withHealthKitCapability",
       "./plugins/withPodfileDeploymentTarget",
+      "./plugins/withSceneDelegate",
       "expo-router",
       "expo-secure-store",
       [
