@@ -43,6 +43,31 @@ public class RunCoachWorkoutModule: Module {
       return true
     }
 
+    // iOS 27+: the athlete's UNIFIED heart-rate zones (their Health-Settings zones, else the system-generated
+    // ones), so RunCoach can use the SAME zones Apple shows instead of computing its own. Returns a JSON string
+    // {"source":"user|system|app|none|unavailable","zones":[{"index":n,"min":bpm,"max":bpm}]} — min=0 on the
+    // first (unbounded-low) zone, max=0 on the last (unbounded-high) zone. Empty zones on iOS<27 / no config →
+    // JS falls back to the computed Karvonen zones. JSON string (not a dict) to stay Expo-return-type safe.
+    AsyncFunction("preferredHeartRateZones") { () async -> String in
+      if #available(iOS 27.0, *) {
+        if let cfg = try? await sharedHealthStore.preferredWorkoutZoneConfiguration(for: HKQuantityType(.heartRate)) {
+          let bpm = HKUnit.count().unitDivided(by: .minute())
+          let zones: [[String: Double]] = cfg.zones.map { z in
+            ["index": Double(z.index),
+             "min": z.minimum?.doubleValue(for: bpm) ?? 0,
+             "max": z.maximum?.doubleValue(for: bpm) ?? 0]
+          }
+          var src = "system"
+          switch cfg.source { case .user: src = "user"; case .app: src = "app"; default: src = "system" }
+          let payload: [String: Any] = ["source": src, "zones": zones]
+          if let data = try? JSONSerialization.data(withJSONObject: payload),
+             let s = String(data: data, encoding: .utf8) { return s }
+        }
+        return "{\"source\":\"none\",\"zones\":[]}"
+      }
+      return "{\"source\":\"unavailable\",\"zones\":[]}"
+    }
+
     // Expand a HKQuantitySeries into its individual measurements. Older Apple-Watch runs store
     // dense workout HR / running power as a series; the JS HealthKit library's plain sample query
     // returns only the sparse container samples (~10 stray points for a 42-min run). This uses

@@ -14,6 +14,32 @@ import { loadSnapshotCache, extractWeatherTempC } from './healthkit';
 import { getRunMeta } from './runMeta';
 import { loadSupplements, anyTakenOn } from './supplements';
 import { upsertKnowledge, knowledgeExists, readKnowledgeContent } from './coachFiles';
+import { getAppleHeartRateZones } from '../../modules/runcoach-workout';
+
+// ── iOS 27 unified Apple HR zones ─────────────────────────────────────────────────────────────────────────
+// iOS 27+ lets the athlete configure ONE set of heart-rate zones in Health Settings that every app can read
+// (HKHealthStore.preferredWorkoutZoneConfiguration). When present we use THOSE as the Z1–Z5 HR bands so RunCoach
+// matches Apple Fitness, instead of computing our own Karvonen bands. Cached so zoneTable stays SYNCHRONOUS (its
+// many callers don't await); null on iOS<27 / no native module / no config / a non-5-zone setup → fall back to
+// the computed Karvonen bands. The Banister TRIMP is a continuous function of %HR-reserve so the load model is
+// unaffected; only the zone BOUNDARIES (HR display, coach prescription, zone-bucketed stats) shift to Apple's.
+let cachedAppleZones: { min: number; max: number }[] | null = null;   // raw bpm bounds, 5 zones (min=0 open floor, max=0 open ceiling)
+let appleZonesSource = '';                                            // 'user'|'system'|'app' when adopted
+
+export function appleHrZonesActive(): boolean { return cachedAppleZones != null; }
+export function appleHrZonesSource(): string { return appleZonesSource; }
+
+/** Fetch + cache the athlete's iOS 27 unified HR zones. Adopted ONLY when the config exists and has exactly 5
+ *  zones (our model is Z1–Z5); otherwise the cache clears and zoneTable uses the computed Karvonen bands. Safe
+ *  no-op on iOS<27 (native returns "unavailable"). Call at startup and whenever zones are refreshed. */
+export async function refreshAppleHrZones(): Promise<void> {
+  try {
+    const z = await getAppleHeartRateZones();
+    const adopt = !!z && ['user', 'system', 'app'].includes(z.source) && Array.isArray(z.zones) && z.zones.length === 5;
+    cachedAppleZones = adopt ? z!.zones.slice().sort((a, b) => a.index - b.index).map(x => ({ min: x.min, max: x.max })) : null;
+    appleZonesSource = adopt ? z!.source : '';
+  } catch { cachedAppleZones = null; appleZonesSource = ''; }
+}
 
 // Above this run-time temperature the auto loop skips calibration: heat elevates HR for a
 // given power, so the observed power-at-HR reads artificially low and would bias zones down.
@@ -67,12 +93,20 @@ export function powerToHrrFrac(pz: PowerZones): (w: number) => number {
 export function zoneTable(maxHR: number, pz: PowerZones, restHR = 50): ZoneRow[] {
   const rest = restHR > 0 && restHR < maxHR ? restHR : 50;
   const hr = (p: number) => Math.round(rest + (maxHR - rest) * p);
+  // iOS 27 unified zones (when present) override the Karvonen HR bands so RunCoach's Z1–Z5 match Apple Fitness.
+  // Apple gives raw bpm bounds; min=0 = open floor (use rest), max=0 = open ceiling (use maxHR). Power columns
+  // stay from pz — the calibrated power↔HR mapping still buckets by the same 5 zones, now on Apple's edges.
+  const az = cachedAppleZones;
+  const aLo = (i: number) => (az![i].min > 0 ? Math.round(az![i].min) : rest);
+  const aHi = (i: number) => (az![i].max > 0 ? Math.round(az![i].max) : maxHR);
+  const lo = (i: number, karvonen: number) => (az ? aLo(i) : hr(karvonen));
+  const hi = (i: number, karvonen: number) => (az ? aHi(i) : (i === 4 ? maxHR : hr(karvonen)));
   return [
-    { z: 'Z1', name: 'Recovery',      hrLow: hr(0.50), hrHigh: hr(0.60), pLow: 0,               pHigh: pz.recoveryMax },
-    { z: 'Z2', name: 'Aerobic/Easy',  hrLow: hr(0.60), hrHigh: hr(0.70), pLow: pz.recoveryMax,  pHigh: pz.z2Max },
-    { z: 'Z3', name: 'Tempo',         hrLow: hr(0.70), hrHigh: hr(0.80), pLow: pz.tempoMin,     pHigh: pz.tempoMax },
-    { z: 'Z4', name: 'Threshold',     hrLow: hr(0.80), hrHigh: hr(0.90), pLow: pz.tempoMax,     pHigh: pz.intervalsMin },
-    { z: 'Z5', name: 'VO2/Intervals', hrLow: hr(0.90), hrHigh: maxHR,    pLow: pz.intervalsMin, pHigh: pz.intervalsMin + 60 },
+    { z: 'Z1', name: 'Recovery',      hrLow: lo(0, 0.50), hrHigh: hi(0, 0.60), pLow: 0,               pHigh: pz.recoveryMax },
+    { z: 'Z2', name: 'Aerobic/Easy',  hrLow: lo(1, 0.60), hrHigh: hi(1, 0.70), pLow: pz.recoveryMax,  pHigh: pz.z2Max },
+    { z: 'Z3', name: 'Tempo',         hrLow: lo(2, 0.70), hrHigh: hi(2, 0.80), pLow: pz.tempoMin,     pHigh: pz.tempoMax },
+    { z: 'Z4', name: 'Threshold',     hrLow: lo(3, 0.80), hrHigh: hi(3, 0.90), pLow: pz.tempoMax,     pHigh: pz.intervalsMin },
+    { z: 'Z5', name: 'VO2/Intervals', hrLow: lo(4, 0.90), hrHigh: hi(4, 1.00), pLow: pz.intervalsMin, pHigh: pz.intervalsMin + 60 },
   ];
 }
 
@@ -80,12 +114,15 @@ export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string, rest
   const body = zoneTable(maxHR, pz, restHR)
     .map(r => `| ${r.z} | ${r.name} | ${r.hrLow}–${r.hrHigh} | ${r.pHigh > r.pLow ? `${r.pLow}–${r.pHigh}` : `≥ ${r.pLow}`} |`)
     .join('\n');
+  const hrBandNote = cachedAppleZones
+    ? `HR bands come from your Apple Health unified heart-rate zones (${appleZonesSource || 'system'}), so RunCoach matches Apple Fitness.`
+    : 'HR bands are % of HR RESERVE (Karvonen), matching how training load is scored.';
   return [
     '# Power & HR Zones (calibrated)',
     '',
     'DRIVING FACTS for every workout. Prescribe sessions by HR ZONE (Z1–Z5) + duration + structure;',
     `the watch targets the matching POWER (watts) from this table. Max HR ≈ ${maxHR} bpm, resting ≈ ${restHR} bpm;`,
-    'HR bands are % of HR RESERVE (Karvonen), matching how training load is scored.',
+    hrBandNote,
     '',
     '| Zone | Name | HR (bpm) | Power (W) |',
     '|------|------|----------|-----------|',
@@ -125,6 +162,20 @@ export function parseZonesMarkdown(md: string): PowerZones | null {
   const ladder = [pz.recoveryMax, pz.z2Max, pz.tempoMin, pz.tempoMax, pz.intervalsMin];
   for (let i = 1; i < ladder.length; i++) if (ladder[i] < ladder[i - 1]) return null;
   return pz;
+}
+
+// Does the stored file's HR column already match the HR bands zoneTable now produces? Used to self-heal the
+// file when the HR source shifts (Apple unified zones turning on/off, or their bounds — or max/rest HR —
+// changing) WITHOUT disturbing the LLM-calibrated power column. Extracts each Z-row's HR text (3rd column).
+function hrColMatches(md: string, maxHR: number, pz: PowerZones, restHR: number): boolean {
+  const want: Record<string, string> = {};
+  for (const r of zoneTable(maxHR, pz, restHR)) want[r.z] = `${r.hrLow}–${r.hrHigh}`;
+  const got: Record<string, string> = {};
+  for (const line of md.split('\n')) {
+    const m = line.match(/^\s*\|\s*(Z[1-5])\b[^|]*\|[^|]*\|\s*([^|]+?)\s*\|[^|]*\|/);
+    if (m) got[m[1]] = m[2].replace(/\s+/g, '');
+  }
+  return (['Z1', 'Z2', 'Z3', 'Z4', 'Z5'] as const).every(z => got[z] === want[z].replace(/\s+/g, ''));
 }
 
 async function getMaxHR(): Promise<number> {
@@ -188,6 +239,7 @@ export async function writeZonesFileFrom(pz: PowerZones, note?: string): Promise
 }
 
 export async function ensureZonesFile(): Promise<void> {
+  await refreshAppleHrZones();   // populate the iOS 27 unified-zone cache before zoneTable/zonesMarkdown read it
   if (await knowledgeExists(ZONES_FILE_ID)) {
     // SELF-HEAL a corrupted file. recalibrateZonesFromLastRun used to write the LLM's raw reply
     // straight over this file, so one badly-formatted (or maxTokens-truncated) reply replaced the
@@ -208,11 +260,24 @@ export async function ensureZonesFile(): Promise<void> {
             zonesMarkdown(maxHR, pz, 'table rebuilt — previous file had no readable zone table', restHR),
           );
         }
-      } else if (!isPowerZonesConfigured(await getPowerZones())) {
-        // The file is the calibrated source of truth, but synthesized watch workouts read
-        // getPowerZones — mirror the file into it when still unconfigured (don't clobber a manual
-        // Settings edit), so a synthesized/adjusted session carries the same power targets.
-        await savePowerZones(parsed);
+      } else {
+        const [maxHR, restHR] = await Promise.all([getMaxHR(), getRestHR()]);
+        // Self-heal the HR column when the HR source shifted (iOS 27 unified zones turned on/off, or their
+        // bounds — or max/rest HR — changed). Rewrite from the file's own (calibrated) power column so the
+        // stored bands stay coherent with what the app now displays, without disturbing the power targets.
+        if (!hrColMatches(current, maxHR, parsed, restHR)) {
+          await upsertKnowledge(
+            ZONES_FILE_ID, 'Power & HR Zones',
+            'Z1–Z5 HR ranges mapped to running power (watts); refined from your runs',
+            zonesMarkdown(maxHR, parsed, cachedAppleZones ? 'HR bands synced to Apple Health unified zones' : 'HR bands refreshed', restHR),
+          );
+        }
+        if (!isPowerZonesConfigured(await getPowerZones())) {
+          // The file is the calibrated source of truth, but synthesized watch workouts read
+          // getPowerZones — mirror the file into it when still unconfigured (don't clobber a manual
+          // Settings edit), so a synthesized/adjusted session carries the same power targets.
+          await savePowerZones(parsed);
+        }
       }
     } catch { /* best-effort sync */ }
     return;
