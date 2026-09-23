@@ -11,6 +11,7 @@ struct RoutePoint: Codable, Hashable { let lat: Double; let lon: Double }
 struct RouteTurn: Codable, Hashable { let lat: Double; let lon: Double; let text: String; let dist: Double }
 // One structured-workout segment (Stage 2). dur (s) OR dist (m) → a goal; neither → OPEN (advance with the lap button).
 struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String?; let pLo: Double?; let pHi: Double?; let paceLo: Double?; let paceHi: Double? }  // paceLo/Hi = sec/km work band (indoor/treadmill: FAST/SLOW bound)
+struct HrZone: Codable, Hashable { let z: String; let lo: Double; let hi: Double }   // Z1–Z5 HR band, bpm (Apple-unified on iOS 27, else Karvonen)
 struct RoutePayload: Codable {
   let type: String            // "route"
   let name: String
@@ -21,6 +22,7 @@ struct RoutePayload: Codable {
   let sport: String?          // "walking" → walk session; anything else → run
   let indoor: Bool?           // true → treadmill/indoor: record .indoor (no GPS), speak PACE cues not power
   let workout: [RouteSeg]?    // structured intervals the run session steps through
+  let hrZones: [HrZone]?      // Z1–Z5 HR bpm bands → the on-wrist live zone (optional — old phone builds omit it)
 }
 
 // Shared speech. Prefer the PHONE: forward each cue's text over WatchConnectivity and let the phone speak it
@@ -262,6 +264,25 @@ private func compass16(_ deg: Double) -> String {
   let dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
   return dirs[Int((deg / 45).rounded()) % 8]
 }
+// Which Z1–Z5 zone the current bpm falls in, per the pushed (Apple-unified on iOS 27, else Karvonen) HR bands.
+// Bands are ascending + contiguous: the first band whose top ≥ hr wins; below Z1 clamps to Z1, above Z5 to Z5,
+// so a live HR always reads a zone. nil when no bands were pushed (old phone build) or HR isn't live yet.
+func hrZoneLabel(_ hr: Double, _ zones: [HrZone]) -> String? {
+  guard hr > 0, !zones.isEmpty else { return nil }
+  for z in zones where hr <= z.hi { return z.z }
+  return zones.last?.z
+}
+// Zone tint: Z1 easy (blue) → Z3 tempo (green) → Z4 threshold (orange) → Z5 VO2 (red).
+private func zoneTint(_ z: String) -> Color {
+  switch z {
+  case "Z1": return .blue
+  case "Z2": return .teal
+  case "Z3": return .green
+  case "Z4": return .orange
+  case "Z5": return .red
+  default:   return .primary
+  }
+}
 // Which way to set off, RELATIVE to the way you're facing (map is heading-up) — beats an absolute compass point.
 private func relStart(_ bearing: Double, _ heading: Double) -> String {
   var rel = (bearing - heading).truncatingRemainder(dividingBy: 360)
@@ -320,6 +341,8 @@ struct RouteView: View {
 
   // Power tinted by the work target: blue = under, red = over, orange = in-band / no target.
   private var powerColor: Color { engine.targetState < 0 ? .blue : (engine.targetState > 0 ? .red : .orange) }
+  // Live HR zone from the pushed unified bands (iOS 27 Apple zones / Karvonen). nil pre-27 old build or no live HR.
+  private var currentHrZone: String? { hrZoneLabel(engine.heartRate, store.route?.hrZones ?? []) }
 
   // Tell the phone to pause/resume whatever it's playing (music/podcast) — our own audio session interrupts it.
   private func sendMedia(_ action: String) {
@@ -451,7 +474,7 @@ struct RouteView: View {
           .foregroundColor(engine.paused ? .orange : .primary)
         HStack(spacing: 0) {
           statCell(engine.paceStr, "min/km", .cyan)
-          statCell("\(Int(engine.heartRate))", "bpm", .red)
+          statCell("\(Int(engine.heartRate))", currentHrZone.map { "bpm · \($0)" } ?? "bpm", currentHrZone.map(zoneTint) ?? .red)
         }
         HStack(spacing: 0) {
           statCell(engine.power > 0 ? "\(Int(engine.power))" : "—", "watts", powerColor)
@@ -501,7 +524,8 @@ struct RouteView: View {
       VStack(spacing: 2) {
         if engine.running {
           HStack(spacing: 10) {
-            Text("♥\(Int(engine.heartRate))").foregroundColor(.red)
+            Text("♥\(Int(engine.heartRate))").foregroundColor(currentHrZone.map(zoneTint) ?? .red)
+            if let zl = currentHrZone { Text(zl).font(.caption).bold().foregroundColor(zoneTint(zl)) }
             if engine.power > 0 { Text("\(Int(engine.power))w").foregroundColor(powerColor) }
           }.font(.title3).bold().monospacedDigit()
           if store.offRoute {

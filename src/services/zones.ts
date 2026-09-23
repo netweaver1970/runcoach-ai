@@ -134,6 +134,17 @@ export function zoneTable(maxHR: number, pz: PowerZones, restHR = 50): ZoneRow[]
   ];
 }
 
+/** The Z1–Z5 HR bands (bpm) to push to the watch for the on-wrist live-zone readout — Apple's unified zones
+ *  when adopted (iOS 27), else the computed Karvonen bands. Same source as the coaching zones file, so the
+ *  watch zone matches what the coach prescribes and (on iOS 27) Apple Fitness. */
+export async function watchHrZones(): Promise<{ z: string; lo: number; hi: number }[]> {
+  try {
+    await refreshAppleHrZones();   // load the iOS 27 unified-zone cache so zoneTable reflects it
+    const [pz, maxHR, restHR] = await Promise.all([getPowerZones(), getMaxHR(), getRestHR()]);
+    return zoneTable(maxHR, pz, restHR).map(r => ({ z: r.z, lo: r.hrLow, hi: r.hrHigh }));
+  } catch { return []; }
+}
+
 export function zonesMarkdown(maxHR: number, pz: PowerZones, note?: string, restHR = 50, calibratedLine?: string): string {
   const body = zoneTable(maxHR, pz, restHR)
     .map(r => `| ${r.z} | ${r.name} | ${r.hrLow}–${r.hrHigh} | ${r.pHigh > r.pLow ? `${r.pLow}–${r.pHigh}` : `≥ ${r.pLow}`} |`)

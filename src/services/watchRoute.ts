@@ -9,6 +9,7 @@ import { saveActiveRoute } from './activeRoute';
 import * as SecureStore from 'expo-secure-store';
 import { RouteLoop } from './routing';
 import type { WatchWorkout } from './coach';
+import { watchHrZones } from './zones';
 
 interface WatchSyncNative { isSupported(): Promise<boolean>; isPaired(): Promise<boolean>; sync(json: string): Promise<boolean>; }
 let WatchSync: WatchSyncNative | null = null;
@@ -72,6 +73,7 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
     type: 'route', name, distanceKm: Math.round(loop.distanceKm * 10) / 10, pts, turns,
     voice: await getVoiceNav(), sport,
     workout: workout ? flattenWorkout(workout) : [],       // Stage 2: structured intervals for the run session
+    hrZones: await watchHrZones(),                         // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
   };
   // Sending a route = the user is about to run → start the keep-alive NOW (foreground, so WhenInUse suffices)
   // and it continues in the background, keeping the phone reachable to speak cues on the earbuds.
@@ -92,6 +94,7 @@ export async function sendWorkoutToWatch(workout: WatchWorkout, name = 'Interval
     type: 'route', name, distanceKm: 0, pts: [], turns: [],
     voice: await getVoiceNav(), sport, indoor,   // indoor → watch records .indoor (no GPS) + speaks PACE cues
     workout: flattenWorkout(workout),
+    hrZones: await watchHrZones(),               // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
   };
   startRunKeepAlive().catch(() => {});   // about to run → keep the phone reachable to speak cues on the earbuds
   try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }
