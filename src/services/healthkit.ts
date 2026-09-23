@@ -1,4 +1,11 @@
 import HealthKit, { subscribeToChanges, isHealthDataAvailableAsync, getRequestStatusForAuthorization, AuthorizationRequestStatus } from '@kingstinct/react-native-healthkit';
+import { Platform } from 'react-native';
+
+// iOS 27 exposes RMSSD HRV directly (HKQuantityTypeIdentifierHeartRateVariabilityRMSSD); the identifier does
+// not exist on older OSes, so every use is gated on this. Apple's native RMSSD is used as a cross-check against
+// our own R-R-derived RMSSD, and as a last-resort recovery fallback on nights with neither a beat series nor SDNN.
+const IOS27_PLUS = Platform.OS === 'ios' && parseInt(String(Platform.Version), 10) >= 27;
+const APPLE_RMSSD_TYPE = 'HKQuantityTypeIdentifierHeartRateVariabilityRMSSD';
 import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
@@ -251,12 +258,16 @@ export async function requestPermissions(): Promise<boolean> {
       // Workout type — REQUIRED to read HKWorkout samples via queryWorkoutSamples
       'HKWorkoutTypeIdentifier',
     ] as any[];
+    if (IOS27_PLUS) allTypes.push(APPLE_RMSSD_TYPE);   // iOS 27 native RMSSD — cross-check + fallback (see below)
     // Only present the authorization sheet when the system says a type still needs asking. Blindly re-requesting
     // when everything is already determined is a no-op — but mid app-resume (e.g. foregrounding straight back from
     // a watch run) it can't present its UI and throws Code=5 (authorization-not-determined). Gating on
     // shouldRequest skips that entirely once the athlete has been through the sheet.
     const status = await getRequestStatusForAuthorization([] as any, allTypes);
-    if (status === AuthorizationRequestStatus.shouldRequest) {
+    // Present on shouldRequest, and also on `unknown` (Apple's indeterminate/transient status) — requesting an
+    // already-determined type is a harmless no-op, so erring toward requesting avoids ever missing the prompt;
+    // only the definite `unnecessary` skips it (which is what removes the resume-race re-request).
+    if (status !== AuthorizationRequestStatus.unnecessary) {
       await HealthKit.requestAuthorization([], allTypes);
     }
     return true;
@@ -695,6 +706,21 @@ function computeWeightedRMSSD(
     : 0;
 
   return { weightedRMSSD, annotatedSamples, excluded, total: totalInWindow };
+}
+
+// Mean of Apple's NATIVE RMSSD samples (iOS 27) within a night's sleep window — used as a cross-check against
+// our R-R-derived RMSSD and as a last-resort fallback. Simple window mean (Apple already de-noises its own
+// RMSSD, so no quality map is applied here). 0 when no samples land in the window.
+function appleRmssdForNight(session: SleepSession, samples: { startDate: string; quantity: number }[]): number {
+  if (!samples.length) return 0;
+  const start = new Date(session.bedtime).getTime() - 90 * 60_000;
+  const end = new Date(session.wakeTime).getTime() + 60 * 60_000;
+  const vals = samples
+    .filter((s) => { const t = new Date(s.startDate).getTime(); return t >= start && t <= end; })
+    .map((s) => s.quantity)
+    .filter((v) => v > 0);
+  if (!vals.length) return 0;
+  return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
 }
 
 // ─── Overnight resting HR ─────────────────────────────────────────────────────
@@ -1692,6 +1718,17 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const hrvSamplesForSleep = (allHRVSamples as any[])
     .map((s: any) => ({ startDate: toISOStr(s.startDate), quantity: s.quantity as number }))
     .filter((s) => new Date(s.startDate).getTime() >= winCutMs);
+  // iOS 27 native RMSSD (cross-check + last-resort fallback). A small extra query, gated on the OS — the type
+  // identifier doesn't exist before 27. Windowed to the recent range like the SDNN/heartbeat series above.
+  const appleRmssdForSleep: { startDate: string; quantity: number }[] = IOS27_PLUS
+    ? await (HealthKit.queryQuantitySamples as any)(
+        APPLE_RMSSD_TYPE,
+        { filter: { startDate: hrvSince, endDate: now }, unit: 'ms', ascending: false, limit: deepBackfill ? 60000 : 40000 }
+      ).then((xs: any[]) => (xs ?? [])
+        .map((s: any) => ({ startDate: toISOStr(s.startDate), quantity: s.quantity as number }))
+        .filter((s: { startDate: string }) => new Date(s.startDate).getTime() >= winCutMs))
+      .catch(() => [])
+    : [];
   const globalQualityMap = buildHeartbeatQualityMap(recentHeartbeat);
 
   const nightlyHRV: NightlyHRV[] = recentSessions.map((session) => {
@@ -1706,11 +1743,15 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // Recovery is fit to Bevel's TRUE RMSSD (R-R intervals), ~20% below Apple's SDNN. Prefer it;
     // fall back to the SDNN-weighted value on nights without a heartbeat series.
     const trueRMSSD = nightlyTrueRMSSD(session, recentHeartbeat);
-    const weightedRMSSD = trueRMSSD > 0 ? trueRMSSD : sdnnRMSSD;
+    // iOS 27 native RMSSD for this night — recorded for cross-check, and used as the LAST-resort fallback (it's
+    // real RMSSD, so a better stand-in than the SDNN proxy) ONLY on nights that would otherwise be 0. The
+    // primary weightedRMSSD priority (true → SDNN) is unchanged, so the Bevel-fit recovery calibration is intact.
+    const appleRmssd = appleRmssdForNight(session, appleRmssdForSleep);
+    const weightedRMSSD = trueRMSSD > 0 ? trueRMSSD : (sdnnRMSSD > 0 ? sdnnRMSSD : appleRmssd);
     // RHR = avg HR during sleep stages. (Apple's Resting HR ran LOWER + noisier here, not Bevel's
     // metric; sleep HR's SD matches Bevel's. The remaining baseline gap is under investigation.)
     const overnightHR = computeOvernightHR(session, sleepHRSamples);
-    return { date: session.date, samples: annotatedSamples, weightedRMSSD, overnightHR };
+    return { date: session.date, samples: annotatedSamples, weightedRMSSD, overnightHR, appleRmssd };
   });
   // Persist the complete nights for next launch's warm cache (samples stripped; version-marked).
   saveRecoveryCache(nightlyHRV, dateKeyLocal(new Date())).catch(() => {});

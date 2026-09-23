@@ -151,9 +151,29 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
   await add('recovery', async () => {
     const snap = await loadSnapshotCache();
     if (!snap) return null;
+    // iOS 27 cross-check: our R-R-derived weightedRMSSD vs Apple's native RMSSD, over nights where both exist.
+    // Agreement here validates the HRV pipeline (and would justify leaning on Apple's value more); a systematic
+    // gap flags a units/window/quality-filter difference. Null pre-27 / before any paired night.
+    const paired = (snap.recentNightlyHRV ?? []).filter(n => (n.appleRmssd ?? 0) > 0 && n.weightedRMSSD > 0);
+    const rmssdCrossCheck = paired.length >= 3 ? (() => {
+      const d = paired.map(n => (n.appleRmssd as number) - n.weightedRMSSD);
+      const meanOurs = paired.reduce((a, n) => a + n.weightedRMSSD, 0) / paired.length;
+      const meanApple = paired.reduce((a, n) => a + (n.appleRmssd as number), 0) / paired.length;
+      const meanDelta = d.reduce((a, b) => a + b, 0) / d.length;
+      const mad = d.reduce((a, b) => a + Math.abs(b - meanDelta), 0) / d.length;
+      return {
+        nights: paired.length,
+        meanOurs: Math.round(meanOurs * 10) / 10,
+        meanApple: Math.round(meanApple * 10) / 10,
+        meanDeltaMs: Math.round(meanDelta * 10) / 10,      // + = Apple reads higher than ours
+        meanAbsDevMs: Math.round(mad * 10) / 10,
+        perNight: paired.slice(-14).map(n => ({ date: n.date, ours: n.weightedRMSSD, apple: n.appleRmssd })),
+      };
+    })() : null;
     return {
       todayRecovery:     snap.todayRecovery,       // score + the transparent breakdown (z-terms)
-      recentNightlyHRV:  snap.recentNightlyHRV,    // per-night weightedRMSSD + overnightHR (the HRV baseline input)
+      recentNightlyHRV:  snap.recentNightlyHRV,    // per-night weightedRMSSD + overnightHR (+ appleRmssd on iOS 27)
+      rmssdCrossCheck,                             // our RMSSD vs Apple's native RMSSD (iOS 27) — validation summary
       nightlyLean:       snap.nightlyLean,         // lean nightly series (d/h/s)
       hrv:               snap.hrv,                 // daily HRV series
       restingHR:         snap.restingHR,           // daily Apple resting-HR series (the RHR baseline input)

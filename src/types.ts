@@ -216,6 +216,7 @@ export interface NightlyHRV {
   samples: { timestamp: string; rmssd: number; stage: SleepStageLabel }[];
   weightedRMSSD: number;
   overnightHR: number; // avg HR during actual sleep stages (excl awake/inBed); 0 if unavailable
+  appleRmssd?: number; // iOS 27 native RMSSD for this night (cross-check vs weightedRMSSD); 0/undefined pre-27 or no data
 }
 
 // Transparent breakdown of how the recovery score was built (for the detail screen).

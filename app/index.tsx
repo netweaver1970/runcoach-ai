@@ -192,8 +192,9 @@ export default function HomeScreen() {
   const { c } = useTheme();
   // First launch (or "Run setup again") → the welcome/onboarding wizard, before anything loads.
   const [onbChecked, setOnbChecked] = useState(false);
+  const onbDoneRef = useRef(false);   // mirror for load()'s closure — gate the empty-data hint on onboarding-done
   useEffect(() => {
-    getOnboardingDone().then(done => { if (!done) router.replace('/onboarding' as any); else setOnbChecked(true); }).catch(() => setOnbChecked(true));
+    getOnboardingDone().then(done => { if (!done) router.replace('/onboarding' as any); else { onbDoneRef.current = true; setOnbChecked(true); } }).catch(() => { onbDoneRef.current = true; setOnbChecked(true); });
   }, []);
   const [snapshot, setSnapshot]         = useState<HealthSnapshot | null>(null);
   const [loading, setLoading]           = useState(true);
@@ -368,7 +369,7 @@ export default function HomeScreen() {
       const hasHealthData = snap.runs.length > 0 || snap.activities.length > 0 || snap.hrv.length > 0
         || snap.restingHR.length > 0 || snap.recentSleep.length > 0 || snap.weeklyMileage.length > 0;
       if (hasHealthData) emptyHealthHintedRef.current = false;   // data flowing again → re-arm for a future regression
-      else if (!light && !silent && !emptyHealthHintedRef.current) {
+      else if (!light && !silent && onbDoneRef.current && !emptyHealthHintedRef.current) {   // not while onboarding is still resolving
         emptyHealthHintedRef.current = true;
         Alert.alert(
           'No Health data found',
