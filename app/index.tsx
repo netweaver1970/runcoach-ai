@@ -407,10 +407,13 @@ export default function HomeScreen() {
         if (on) maybeRunDayView({ months, snap, notify: false }).catch(() => {});
       });
     } catch (err: any) {
-      // "Protected health data is inaccessible" (HealthKit error 6) just means the device
-      // was locked mid-query — transient; the next refresh succeeds. Don't alarm the user.
+      // Transient HealthKit hiccups that self-heal on the next refresh — don't alarm the user with a modal:
+      //  • Code=6 "Protected health data is inaccessible" → device was locked mid-query.
+      //  • Code=5 authorization-not-determined → requestAuthorization couldn't present its sheet during the
+      //    resume transition (e.g. foregrounding straight back from a watch run). The next foreground, with the
+      //    app fully active, re-requests cleanly (and shows the grant sheet if auth really is undetermined).
       const msg = String(err?.message ?? '');
-      const transient = /Protected health data|Code=6|inaccessible/i.test(msg);
+      const transient = /Protected health data|Code=6|Code=5|inaccessible|not determined/i.test(msg);
       if (!silent && !transient) Alert.alert('Error loading health data', err.message);
     } finally {
       isLoadingRef.current = false;
