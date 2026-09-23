@@ -68,6 +68,38 @@ public class RunCoachWorkoutModule: Module {
       return "{\"source\":\"unavailable\",\"zones\":[]}"
     }
 
+    // iOS 27 native RMSSD (HKQuantityTypeIdentifierHeartRateVariabilityRMSSD) — read auth + query. It lives HERE,
+    // not in the JS HealthKit lib, because that lib validates identifiers against a pre-iOS-27 enum and throws
+    // on this one. RMSSD is its OWN HK type (distinct from SDNN) so it needs its own read grant. Used as a
+    // cross-check against our R-R-derived RMSSD and a last-resort recovery fallback. No-op (false / []) pre-27.
+    AsyncFunction("authorizeRmssd") { () async -> Bool in
+      if #available(iOS 27.0, *) {
+        do { try await sharedHealthStore.requestAuthorization(toShare: [], read: [HKQuantityType(.heartRateVariabilityRMSSD)]); return true }
+        catch { return false }
+      }
+      return false
+    }
+
+    // RMSSD samples in [startMs, endMs] → [{ t: epochMillis, v: ms }]. Plain sample query (RMSSD is discrete,
+    // not a series). Resolves [] on iOS < 27 or no data. Promise arg so the query isn't dropped when the closure returns.
+    AsyncFunction("queryRmssd") { (startMs: Double, endMs: Double, promise: Promise) in
+      guard #available(iOS 27.0, *) else { promise.resolve([[String: Double]]()); return }
+      let type = HKQuantityType(.heartRateVariabilityRMSSD)
+      let start = Date(timeIntervalSince1970: startMs / 1000.0)
+      let end   = Date(timeIntervalSince1970: endMs   / 1000.0)
+      let pred  = HKQuery.predicateForSamples(withStart: start, end: end, options: [])
+      let unit  = HKUnit.secondUnit(with: .milli)   // RMSSD is milliseconds
+      var settled = false
+      let query = HKSampleQuery(sampleType: type, predicate: pred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { (_, samples, _) in
+        var out: [[String: Double]] = []
+        for s in (samples as? [HKQuantitySample]) ?? [] {
+          out.append(["t": s.startDate.timeIntervalSince1970 * 1000.0, "v": s.quantity.doubleValue(for: unit)])
+        }
+        if !settled { settled = true; promise.resolve(out) }
+      }
+      sharedHealthStore.execute(query)
+    }
+
     // Expand a HKQuantitySeries into its individual measurements. Older Apple-Watch runs store
     // dense workout HR / running power as a series; the JS HealthKit library's plain sample query
     // returns only the sparse container samples (~10 stray points for a 42-min run). This uses

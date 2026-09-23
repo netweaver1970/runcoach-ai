@@ -1,11 +1,12 @@
 import HealthKit, { subscribeToChanges, isHealthDataAvailableAsync, getRequestStatusForAuthorization, AuthorizationRequestStatus } from '@kingstinct/react-native-healthkit';
 import { Platform } from 'react-native';
+import { authorizeAppleRmssd, queryAppleRmssd } from '../../modules/runcoach-workout';
 
 // iOS 27 exposes RMSSD HRV directly (HKQuantityTypeIdentifierHeartRateVariabilityRMSSD); the identifier does
-// not exist on older OSes, so every use is gated on this. Apple's native RMSSD is used as a cross-check against
-// our own R-R-derived RMSSD, and as a last-resort recovery fallback on nights with neither a beat series nor SDNN.
+// not exist on older OSes, so every use is gated on this. Read via our OWN native module (the @kingstinct lib
+// can't handle the iOS-27 identifier). Apple's native RMSSD is a cross-check against our R-R-derived RMSSD, and
+// a last-resort recovery fallback on nights with neither a beat series nor SDNN.
 const IOS27_PLUS = Platform.OS === 'ios' && parseInt(String(Platform.Version), 10) >= 27;
-const APPLE_RMSSD_TYPE = 'HKQuantityTypeIdentifierHeartRateVariabilityRMSSD';
 import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
@@ -275,6 +276,9 @@ export async function requestPermissions(): Promise<boolean> {
     if (status !== AuthorizationRequestStatus.unnecessary) {
       await HealthKit.requestAuthorization([], allTypes);
     }
+    // iOS 27 native RMSSD gets its OWN read grant, through our native module (the @kingstinct lib rejects the
+    // identifier). Best-effort — the wrapper never throws, so it can't affect the health load either way.
+    if (IOS27_PLUS) await authorizeAppleRmssd();
     return true;
   } catch (err: any) {
     const msg = err?.message ?? err?.toString() ?? 'unknown error';
@@ -1723,11 +1727,15 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const hrvSamplesForSleep = (allHRVSamples as any[])
     .map((s: any) => ({ startDate: toISOStr(s.startDate), quantity: s.quantity as number }))
     .filter((s) => new Date(s.startDate).getTime() >= winCutMs);
-  // iOS 27 native RMSSD (cross-check + last-resort fallback). Fetched via our OWN native module — the @kingstinct
+  // iOS 27 native RMSSD (cross-check + last-resort fallback). Read via our OWN native module — the @kingstinct
   // lib can't handle the iOS-27 RMSSD identifier (its ObjectTypeIdentifier enum predates 27 and throws on it).
-  // TODO(native RMSSD): wire modules/runcoach-workout queryRmssd() here; until then the cross-check is dormant
-  // (empty → appleRmssd 0 → recovery falls back to true/SDNN exactly as before the feature). Gated on the OS.
-  const appleRmssdForSleep: { startDate: string; quantity: number }[] = [];
+  // queryAppleRmssd never throws (returns [] on any error), so this can't break the load. Windowed like the
+  // SDNN/heartbeat series above. Empty → appleRmssd 0 → recovery falls back to true/SDNN, unchanged.
+  const appleRmssdForSleep: { startDate: string; quantity: number }[] = IOS27_PLUS
+    ? (await queryAppleRmssd(hrvSince.getTime(), now.getTime()))
+        .map((s) => ({ startDate: new Date(s.t).toISOString(), quantity: s.v }))
+        .filter((s) => new Date(s.startDate).getTime() >= winCutMs)
+    : [];
   const globalQualityMap = buildHeartbeatQualityMap(recentHeartbeat);
 
   const nightlyHRV: NightlyHRV[] = recentSessions.map((session) => {
