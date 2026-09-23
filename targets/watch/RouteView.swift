@@ -114,8 +114,12 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
 
   // Fire the nearest not-yet-announced turn once you're within ~40 m: a heads-up haptic (always) + a spoken
   // cue (when voice is on). `nextTurnText` tracks the upcoming maneuver for the on-screen readout.
-  private func checkTurns(_ loc: CLLocation) {
-    guard !turns.isEmpty else { return }
+  // `announce`: false while OFF-route — the pointer BOOKKEEPING (turnMinDist + the walked-past skip) still runs
+  // every tick so the pointer keeps advancing past turns you bypass (without it, rejoining past a turn wedges the
+  // pointer and silences the rest of the run), but the readout, haptic, voice and map-jump are suppressed so a
+  // route you've LEFT stops directing you. On rejoin the caller passes true and normal guidance resumes.
+  private func checkTurns(_ loc: CLLocation, announce: Bool) {
+    guard !turns.isEmpty else { if announce { nextTurnText = ""; turnDistM = 9999 }; return }
     // Announce turns STRICTLY in ROUTE ORDER — the earliest un-announced turn is always "next". The old code
     // announced the nearest un-announced turn by straight-line distance, so two turns close together (or a loop
     // doubling back) could fire the SECOND turn's cue at the FIRST turn — which also handed you that other
@@ -123,12 +127,13 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     // (got within 60 m then receded past 90 m), skip it silently so the pointer doesn't wedge.
     var bi = -1
     for i in 0..<turns.count where !announced.contains(i) { bi = i; break }
-    guard bi >= 0 else { nextTurnText = ""; turnDistM = 9999; return }
+    guard bi >= 0 else { if announce { nextTurnText = ""; turnDistM = 9999 }; return }
     let t = turns[bi]
     let d = loc.distance(from: CLLocation(latitude: t.lat, longitude: t.lon))
     let newMin = min(turnMinDist[bi] ?? .greatestFiniteMagnitude, d)
     turnMinDist[bi] = newMin
     if newMin < 60 && d > 90 { announced.insert(bi); return }   // passed it → advance the pointer next tick
+    guard announce else { return }   // off-route: bookkeeping above still ran; suppress the readout + cues
     nextTurnText = t.text
     turnDistM = d                  // distance to the next turn → the map zooms in as this shrinks
     if d < 40 {
@@ -208,13 +213,15 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
         self.speak("Back on route"); self.offSpokenAt = nil
       }
       self.wasOff = off
-      // While OFF-route, do NOT announce the route's next turn — that's guidance for a route you've left, which is
-      // what made off-route feel like it was still directing you on-route. Show a rejoin hint instead; checkTurns
-      // (turn haptics + voice + the map jump) resumes automatically the moment you're back on the line.
+      // While OFF-route, don't ANNOUNCE the route's next turn — that's guidance for a route you've left, which is
+      // what made off-route feel like it was still directing you on-route. Show a rejoin hint instead. checkTurns
+      // still runs (announce:false) so its pointer bookkeeping keeps advancing past bypassed turns; full guidance
+      // (haptics + voice + map jump + readout) resumes the moment you're back on the line.
       if off {
         self.nextTurnText = "Return to route"; self.turnDistM = 9999
+        self.checkTurns(loc, announce: false)
       } else {
-        self.checkTurns(loc)
+        self.checkTurns(loc, announce: true)
       }
     }
   }
