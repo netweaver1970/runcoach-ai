@@ -216,6 +216,7 @@ export default function HomeScreen() {
   const [commentText, setCommentText]   = useState('');
   const promptedRunRef = useRef<string | null>(null);   // don't re-prompt the same run across scans
   const awaitingCommentRef = useRef<string | null>(null); // a run whose comment modal is open → don't auto-analyse it
+  const emptyHealthHintedRef = useRef(false);           // showed the "no Health data (access?)" hint once this session
   // Save the comment (if any) onto the run's note, then fire the FIRST analysis with it already included.
   const submitRunComment = useCallback(async (save: boolean) => {
     Keyboard.dismiss();   // dismiss BEFORE the modal unmounts so its keyboard can't linger + freeze the app
@@ -334,9 +335,12 @@ export default function HomeScreen() {
     try {
       const granted = await requestPermissions();
       if (!granted) {
+        // requestPermissions returns false only when HealthKit itself is unavailable on the device (it can't
+        // report read-access denial — Apple hides that). A denied-but-available grant is caught by the empty-data
+        // hint below instead.
         if (!silent) Alert.alert(
-          'Health Access Required',
-          'RunCoach AI needs Apple Health access. Allow it in Settings → Privacy → Health.'
+          'Apple Health unavailable',
+          'RunCoach AI can’t reach Apple Health on this device, so it can’t load your training data.'
         );
         return;
       }
@@ -357,6 +361,20 @@ export default function HomeScreen() {
       saveScanTimings({ at: new Date().toISOString(), light, months, runs: snap.runs.length, totalMs: scanMs, steps: scanSteps }).catch(() => {});
       if (__DEV__) console.log(`[scan] ${light ? 'light' : 'full'} ${months}mo · ${snap.runs.length} runs · ${scanMs}ms`, scanSteps);
       setSnapshot(snap);
+      // Silent read-denial safety net: HealthKit never tells an app its READ access was denied — a denied grant
+      // just returns nothing, so the app would sit on empty data with no explanation (the "Health Access Required"
+      // path above can't detect it). If a FULL foreground scan comes back with zero of every health signal, point
+      // the athlete at Settings — once per session, and only when we'd expect data (not a light/silent top-up).
+      const hasHealthData = snap.runs.length > 0 || snap.activities.length > 0 || snap.hrv.length > 0
+        || snap.restingHR.length > 0 || snap.recentSleep.length > 0 || snap.weeklyMileage.length > 0;
+      if (hasHealthData) emptyHealthHintedRef.current = false;   // data flowing again → re-arm for a future regression
+      else if (!light && !silent && !emptyHealthHintedRef.current) {
+        emptyHealthHintedRef.current = true;
+        Alert.alert(
+          'No Health data found',
+          'RunCoach isn’t seeing any Apple Health data. If you haven’t granted access — or turned it off — enable it in Settings › Privacy & Security › Health › RunCoach.'
+        );
+      }
       saveSnapshotCache(snap).catch(() => {});
       // Fill the realised side of the forecast-accuracy log (only dates the plan already predicted).
       recordActuals((snap.trainingLoad ?? []).map(d => ({ date: d.date, ctl: d.ctl, atl: d.atl, tsb: d.tsb, load: d.load }))).catch(() => {});

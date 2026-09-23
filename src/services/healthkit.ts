@@ -1,4 +1,4 @@
-import HealthKit, { subscribeToChanges } from '@kingstinct/react-native-healthkit';
+import HealthKit, { subscribeToChanges, isHealthDataAvailableAsync, getRequestStatusForAuthorization, AuthorizationRequestStatus } from '@kingstinct/react-native-healthkit';
 import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
@@ -220,8 +220,14 @@ export async function subscribeToWorkoutChanges(
 
 // ─── Permissions ──────────────────────────────────────────────────────────────
 
+// NB: this returns whether we could REQUEST/were-granted at the SHARE level and whether HealthKit exists — it
+// canNOT report whether READ access was granted. Apple deliberately hides read authorization (a denied app looks
+// identical to a granted one that simply has no data), so `true` here does NOT guarantee reads will return data.
+// The "no Health data found" hint on the home screen is what actually catches a silent read-denial.
 export async function requestPermissions(): Promise<boolean> {
   try {
+    // No HealthKit on this device (e.g. not an iPhone) — nothing to request; the caller shows the right message.
+    if (!(await isHealthDataAvailableAsync())) return false;
     const allTypes = [
       // Quantity types
       'HKQuantityTypeIdentifierHeartRate',
@@ -245,7 +251,14 @@ export async function requestPermissions(): Promise<boolean> {
       // Workout type — REQUIRED to read HKWorkout samples via queryWorkoutSamples
       'HKWorkoutTypeIdentifier',
     ] as any[];
-    await HealthKit.requestAuthorization([], allTypes);
+    // Only present the authorization sheet when the system says a type still needs asking. Blindly re-requesting
+    // when everything is already determined is a no-op — but mid app-resume (e.g. foregrounding straight back from
+    // a watch run) it can't present its UI and throws Code=5 (authorization-not-determined). Gating on
+    // shouldRequest skips that entirely once the athlete has been through the sheet.
+    const status = await getRequestStatusForAuthorization([] as any, allTypes);
+    if (status === AuthorizationRequestStatus.shouldRequest) {
+      await HealthKit.requestAuthorization([], allTypes);
+    }
     return true;
   } catch (err: any) {
     const msg = err?.message ?? err?.toString() ?? 'unknown error';
