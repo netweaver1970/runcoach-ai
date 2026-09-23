@@ -78,6 +78,8 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   private let offThreshM = 35.0            // go off-route only beyond this CROSS-TRACK distance …
   private let onThreshM  = 20.0            // … rejoin once back inside this (hysteresis band, no boundary flapping) …
   private let offDebounceS = 8.0           // … and only after staying beyond offThreshM this long (eases a road-cross / GPS wobble)
+  private var preciseGps = true            // GPS power mode: precise (best accuracy / every fix / fine heading) vs economy
+  private let turnPreciseM = 150.0         // … flip back to precise within this many m of the next turn
   private var turns: [RouteTurn] = []
   private var announced: Set<Int> = []     // turn indices already spoken (or passed) for this route
   private var turnMinDist: [Int: Double] = [:]   // closest approach seen per turn → detect a turn we walked past
@@ -107,8 +109,27 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     announced = []; turnMinDist = [:]; nextTurnText = ""; turnDistM = 9999
   }
   func start() {
+    applyGpsPower(precise: true)   // begin each run precise → a solid initial fix + clean track start
     mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation()
     if CLLocationManager.headingAvailable() { mgr.startUpdatingHeading() }
+  }
+
+  // Power-adaptive GPS. On a steady on-route straight the map / off-route (35 m + debounce) / turn (150 m lead)
+  // logic doesn't need best-accuracy every-fix positioning or sub-degree heading, and those are the biggest watch-
+  // battery draws — so drop to 10 m accuracy, one fix per ~10 m, and a coarse compass. Restore full precision
+  // approaching a turn, off-route, or at run start. Idempotent (guards on the current mode → no per-fix churn).
+  private func applyGpsPower(precise: Bool) {
+    guard precise != preciseGps else { return }
+    preciseGps = precise
+    if precise {
+      mgr.desiredAccuracy = kCLLocationAccuracyBest
+      mgr.distanceFilter  = kCLDistanceFilterNone
+      mgr.headingFilter   = kCLHeadingFilterNone
+    } else {
+      mgr.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+      mgr.distanceFilter  = 10                  // one fix per ~10 m of travel
+      mgr.headingFilter   = 8                    // degrees — coarse compass on a straight
+    }
   }
   func stop() { mgr.stopUpdatingLocation(); mgr.stopUpdatingHeading() }
 
@@ -154,7 +175,13 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     // Feed the workout's GPS route FIRST (before the route-guidance guard), so a routeless track/interval run
     // records its track too → the phone gets a run map. Reuses this one location manager (no 2nd one).
     if WorkoutEngine.shared.running { WorkoutEngine.shared.addRouteLocations(locs) }
-    guard let loc = locs.last, let r = route, r.pts.count > 1 else { return }
+    guard let loc = locs.last else { return }
+    guard let r = route, r.pts.count > 1 else {
+      // Routeless run (track intervals / free run): no turns or off-route to watch → economise GPS while running
+      // (the track is still recorded above, just at 10 m granularity). Idempotent.
+      if WorkoutEngine.shared.running { applyGpsPower(precise: false) }
+      return
+    }
     // nearest route point, then remaining distance along the route from there to the finish
     var bestI = 0; var bestD = Double.greatestFiniteMagnitude
     for (i, p) in r.pts.enumerated() {
@@ -225,6 +252,10 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       } else {
         self.checkTurns(loc, announce: true)
       }
+      // Power-adaptive GPS: precise near the next turn (within turnPreciseM) or while off-route (need accuracy to
+      // fire the turn cue / detect the rejoin); economise on a steady on-route straight. checkTurns has just set
+      // turnDistM (or 9999 when off / no upcoming turn), so this reads the current state.
+      self.applyGpsPower(precise: off || self.turnDistM < self.turnPreciseM)
     }
   }
 
