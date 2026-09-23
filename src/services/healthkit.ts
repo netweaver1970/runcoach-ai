@@ -258,15 +258,20 @@ export async function requestPermissions(): Promise<boolean> {
       // Workout type — REQUIRED to read HKWorkout samples via queryWorkoutSamples
       'HKWorkoutTypeIdentifier',
     ] as any[];
-    if (IOS27_PLUS) allTypes.push(APPLE_RMSSD_TYPE);   // iOS 27 native RMSSD — cross-check + fallback (see below)
+    // NB: do NOT add the iOS 27 RMSSD type here. The @kingstinct lib validates every identifier against its own
+    // (pre-iOS-27) ObjectTypeIdentifier enum and THROWS "invalid value" for HKQuantityTypeIdentifierHeartRate-
+    // VariabilityRMSSD on both getRequestStatusForAuthorization and requestAuthorization — which aborted the whole
+    // health load on iOS 27. RMSSD auth + read must go through our OWN native module instead (see appleRmssdForSleep).
     // Only present the authorization sheet when the system says a type still needs asking. Blindly re-requesting
     // when everything is already determined is a no-op — but mid app-resume (e.g. foregrounding straight back from
     // a watch run) it can't present its UI and throws Code=5 (authorization-not-determined). Gating on
     // shouldRequest skips that entirely once the athlete has been through the sheet.
-    const status = await getRequestStatusForAuthorization([] as any, allTypes);
     // Present on shouldRequest, and also on `unknown` (Apple's indeterminate/transient status) — requesting an
     // already-determined type is a harmless no-op, so erring toward requesting avoids ever missing the prompt;
-    // only the definite `unnecessary` skips it (which is what removes the resume-race re-request).
+    // only the definite `unnecessary` skips it (which is what removes the resume-race re-request). The status
+    // check is best-effort: if it throws (e.g. a lib quirk), fall through to requesting rather than aborting load.
+    let status = AuthorizationRequestStatus.unknown;
+    try { status = await getRequestStatusForAuthorization([] as any, allTypes); } catch { /* request anyway */ }
     if (status !== AuthorizationRequestStatus.unnecessary) {
       await HealthKit.requestAuthorization([], allTypes);
     }
@@ -1718,17 +1723,11 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   const hrvSamplesForSleep = (allHRVSamples as any[])
     .map((s: any) => ({ startDate: toISOStr(s.startDate), quantity: s.quantity as number }))
     .filter((s) => new Date(s.startDate).getTime() >= winCutMs);
-  // iOS 27 native RMSSD (cross-check + last-resort fallback). A small extra query, gated on the OS — the type
-  // identifier doesn't exist before 27. Windowed to the recent range like the SDNN/heartbeat series above.
-  const appleRmssdForSleep: { startDate: string; quantity: number }[] = IOS27_PLUS
-    ? await (HealthKit.queryQuantitySamples as any)(
-        APPLE_RMSSD_TYPE,
-        { filter: { startDate: hrvSince, endDate: now }, unit: 'ms', ascending: false, limit: deepBackfill ? 60000 : 40000 }
-      ).then((xs: any[]) => (xs ?? [])
-        .map((s: any) => ({ startDate: toISOStr(s.startDate), quantity: s.quantity as number }))
-        .filter((s: { startDate: string }) => new Date(s.startDate).getTime() >= winCutMs))
-      .catch(() => [])
-    : [];
+  // iOS 27 native RMSSD (cross-check + last-resort fallback). Fetched via our OWN native module — the @kingstinct
+  // lib can't handle the iOS-27 RMSSD identifier (its ObjectTypeIdentifier enum predates 27 and throws on it).
+  // TODO(native RMSSD): wire modules/runcoach-workout queryRmssd() here; until then the cross-check is dormant
+  // (empty → appleRmssd 0 → recovery falls back to true/SDNN exactly as before the feature). Gated on the OS.
+  const appleRmssdForSleep: { startDate: string; quantity: number }[] = [];
   const globalQualityMap = buildHeartbeatQualityMap(recentHeartbeat);
 
   const nightlyHRV: NightlyHRV[] = recentSessions.map((session) => {
