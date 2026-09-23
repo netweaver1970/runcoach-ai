@@ -72,6 +72,10 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   private let mgr = CLLocationManager()
   private var wasOff = false
   private var offSpokenAt: Date?           // last spoken off-route alert → throttle the re-announce
+  private var offCandidateSince: Date?     // when the deviation first crossed offThreshM (while on-route) → debounce
+  private let offThreshM = 35.0            // go off-route only beyond this CROSS-TRACK distance …
+  private let onThreshM  = 20.0            // … rejoin once back inside this (hysteresis band, no boundary flapping) …
+  private let offDebounceS = 8.0           // … and only after staying beyond offThreshM this long (eases a road-cross / GPS wobble)
   private var turns: [RouteTurn] = []
   private var announced: Set<Int> = []     // turn indices already spoken (or passed) for this route
   private var turnMinDist: [Int: Double] = [:]   // closest approach seen per turn → detect a turn we walked past
@@ -97,7 +101,7 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   // fresh (these were previously reset only in setRoute → a same-route restart skipped already-'announced' turns).
   // Caller is on the main queue.
   func resetGuidance() {
-    offRoute = false; wasOff = false; offSpokenAt = nil
+    offRoute = false; wasOff = false; offSpokenAt = nil; offCandidateSince = nil
     announced = []; turnMinDist = [:]; nextTurnText = ""; turnDistM = 9999
   }
   func start() {
@@ -157,10 +161,32 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       let b = CLLocation(latitude: r.pts[i + 1].lat, longitude: r.pts[i + 1].lon)
       rem += a.distance(from: b); i += 1
     }
-    let off = bestD > 40   // >40 m from the nearest point on the line → off route
+    // Deviation = PERPENDICULAR (cross-track) distance to the nearest route SEGMENT, not to the nearest vertex.
+    // On a decimated polyline the nearest vertex can be tens of metres away even when you're dead on the line
+    // between two points, which made "off route" fire from just crossing to the other side of the road. Measuring
+    // to the segment removes that inflation.
+    var perpD = bestD
+    for j in 0..<(r.pts.count - 1) {
+      let a = CLLocationCoordinate2D(latitude: r.pts[j].lat, longitude: r.pts[j].lon)
+      let b = CLLocationCoordinate2D(latitude: r.pts[j + 1].lat, longitude: r.pts[j + 1].lon)
+      perpD = min(perpD, distToSegmentMeters(loc.coordinate, a, b))
+    }
     DispatchQueue.main.async {
       self.here = loc.coordinate
       self.remainingKm = rem / 1000
+      // EASE the on↔off transition (hysteresis + debounce): go off-route only after the deviation stays beyond
+      // offThreshM for offDebounceS (a road-cross or GPS wobble won't trip it), and rejoin once back inside the
+      // tighter onThreshM — so it doesn't flap at the boundary.
+      let now = Date()
+      var off = self.offRoute
+      if self.offRoute {
+        if perpD < self.onThreshM { off = false; self.offCandidateSince = nil }
+      } else if perpD > self.offThreshM {
+        if self.offCandidateSince == nil { self.offCandidateSince = now }
+        if now.timeIntervalSince(self.offCandidateSince ?? now) >= self.offDebounceS { off = true }
+      } else {
+        self.offCandidateSince = nil
+      }
       self.offRoute = off
       // Spoken guidance (turns + off-route) ONLY while a run is actually in progress. RouteStore keeps tracking
       // GPS as long as a route is loaded (for the map + pre-run position), so without this gate the turn and
@@ -170,7 +196,6 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       // Off-route now SPEAKS (the lone haptic was too easy to miss). Announce on going off, re-announce every
       // 40 s while still off, and confirm the return — all via speak() so it honours the mute toggle + routes
       // to the earbuds like every other cue. Keep a firm .failure haptic alongside.
-      let now = Date()
       if off {
         if !self.wasOff {
           WKInterfaceDevice.current().play(.failure)
@@ -183,7 +208,14 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
         self.speak("Back on route"); self.offSpokenAt = nil
       }
       self.wasOff = off
-      self.checkTurns(loc)
+      // While OFF-route, do NOT announce the route's next turn — that's guidance for a route you've left, which is
+      // what made off-route feel like it was still directing you on-route. Show a rejoin hint instead; checkTurns
+      // (turn haptics + voice + the map jump) resumes automatically the moment you're back on the line.
+      if off {
+        self.nextTurnText = "Return to route"; self.turnDistM = 9999
+      } else {
+        self.checkTurns(loc)
+      }
     }
   }
 
@@ -196,6 +228,22 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
 // Travel-direction arrows: the route coords are ordered start→…→start, so an arrow pointing from a point to
 // one a little further along shows which WAY to run the loop (clockwise vs counter-clockwise). One prominent
 // green arrow at the start + a few pink ones around the loop.
+// Perpendicular (cross-track) distance in metres from point p to the segment a–b, via a local equirectangular
+// projection (accurate at the tens-of-metres scale of a route segment). Used for off-route detection so a sparse
+// polyline's far-apart vertices don't overstate how far you are from the LINE itself.
+private func distToSegmentMeters(_ p: CLLocationCoordinate2D, _ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+  let mLat = 111_132.0
+  let mLon = 111_320.0 * cos(p.latitude * .pi / 180)
+  let ax = (a.longitude - p.longitude) * mLon, ay = (a.latitude - p.latitude) * mLat
+  let bx = (b.longitude - p.longitude) * mLon, by = (b.latitude - p.latitude) * mLat
+  let dx = bx - ax, dy = by - ay
+  let len2 = dx * dx + dy * dy
+  if len2 < 1e-9 { return (ax * ax + ay * ay).squareRoot() }   // degenerate segment → distance to the point
+  var t = -(ax * dx + ay * dy) / len2                          // project p (the local origin) onto the segment
+  t = max(0, min(1, t))
+  let cx = ax + t * dx, cy = ay + t * dy
+  return (cx * cx + cy * cy).squareRoot()
+}
 private func geoBearing(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
   let dLon = (b.longitude - a.longitude) * .pi / 180
   let la = a.latitude * .pi / 180, lb = b.latitude * .pi / 180
