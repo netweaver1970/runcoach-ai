@@ -81,6 +81,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var authCheckInFlight = false   // prepareAuth running (.task AND scenePhase .active both fire at launch)
   private var autoPrompted = false        // the AUTOMATIC Health sheet fires at most ONCE per app launch (see prepareAuth)
   private var authRefusedAt: Date?        // Start refused for missing access → a 2nd Start within 60 s runs anyway
+  private var authDiag = ""               // outcome of the last Health sheet (main only) → SHORT code in the banner tag
+  private var authDiagDetail = ""         // its error text — only in the app-open banner (the Start refusal must stay short)
   private enum IssueKind { case none, auth, hr, start, save, route }
   private var issueKind: IssueKind = .none
 
@@ -93,9 +95,31 @@ final class WorkoutEngine: NSObject, ObservableObject {
   ]
 
   func requestAuth() async -> Bool {
-    guard HKHealthStore.isHealthDataAvailable() else { return false }
-    do { try await store.requestAuthorization(toShare: Self.shareTypes, read: Self.readTypes) } catch { return false }
+    guard HKHealthStore.isHealthDataAvailable() else { await setAuthDiag("Health unavailable"); return false }
+    do {
+      try await store.requestAuthorization(toShare: Self.shareTypes, read: Self.readTypes)
+      // After a completed sheet HealthKit should consider the request ANSWERED. "answered" while Workouts still reads
+      // not-set = the grant exists but the status read is wrong; "ask" = the answer was never recorded (2026-09-25).
+      let after = (try? await store.statusForAuthorizationRequest(toShare: Self.shareTypes, read: Self.readTypes)) ?? .unknown
+      await setAuthDiag("sheet ok→\(Self.reqName(after))")
+    } catch {
+      // This error used to be swallowed — it's the one clue to why a grant doesn't stick.
+      let ns = error as NSError
+      await setAuthDiag("sheet err \(ns.code)", detail: String(ns.localizedDescription.prefix(40)))
+      return false
+    }
     return workoutAuthorized
+  }
+  private func setAuthDiag(_ d: String, detail: String = "") async {
+    await MainActor.run { self.authDiag = d; self.authDiagDetail = detail }
+  }
+  private static func reqName(_ r: HKAuthorizationRequestStatus) -> String {
+    switch r {
+    case .shouldRequest: return "ask"
+    case .unnecessary:   return "answered"
+    case .unknown:       return "unknown"
+    @unknown default:    return "?"
+    }
   }
 
   // Can we record + SAVE a workout? Only SHARE status is observable — HealthKit hides READ grants (heart rate,
@@ -105,10 +129,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // toggle, and "off" vs "not set" tells us if a grant isn't sticking (2026-09-25: the sheet kept reappearing).
   private func authTag() -> String {
     let route = store.authorizationStatus(for: HKSeriesType.workoutRoute()) == .sharingAuthorized ? "on" : "off"
+    let diag = authDiag.isEmpty ? "" : " · \(authDiag)"
     switch store.authorizationStatus(for: HKObjectType.workoutType()) {
-    case .sharingDenied: return "Workouts off · Routes \(route)"
-    case .notDetermined: return "Workouts not set · Routes \(route)"
-    default:             return "Routes \(route)"
+    case .sharingDenied: return "Workouts off · Routes \(route)\(diag)"
+    case .notDetermined: return "Workouts not set · Routes \(route)\(diag)"
+    default:             return "Routes \(route)\(diag)"
     }
   }
   private func authIssueText() -> String {
@@ -116,7 +141,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     case .sharingDenied:
       return "Can't save runs: 'Workouts' is OFF. iPhone: Health app › your profile › Apps › RunCoach › turn on Workouts (+ all). [\(authTag())]"
     case .notDetermined:
-      return "Health access not confirmed. Tap Start to see the Health sheet, then 'Turn On All'. [\(authTag())]"
+      return "Health access not confirmed. Tap Start to see the Health sheet, then 'Turn On All'. [\(authTag())]\(authDiagDetail.isEmpty ? "" : " (\(authDiagDetail))")"
     default:
       return "Health access needed. iPhone: Health app › your profile › Apps › RunCoach › turn all on. [\(authTag())]"
     }
