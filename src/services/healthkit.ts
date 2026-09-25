@@ -11,7 +11,7 @@ import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
 import { isHRVIgnored } from './hrvIgnore';
-import { getExecStructure } from './runSegmentsLog';
+import { getExecStructure, getAllExecStructures, matchExec, saveExecStats, ExecStructure } from './runSegmentsLog';
 import { loadRunWorkOverrides } from './runWorkOverride';
 
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
@@ -73,7 +73,7 @@ import {
   DailyLoad,
   DayStrain,
 } from '../types';
-import { activityName, activityFactor, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, assessHrReliability, powerTrimp, TrimpRepair, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp } from './trainingLoad';
+import { activityName, activityFactor, computeTrainingLoadSeries, computeDayStrain, computeStrainTrimp, assessHrReliability, powerTrimp, TrimpRepair, zoneStrainLoad, zoneStrainBreakdown, strainFromLoad, stepStrainLoad, computeSleepBankSeries, advisableStrainRange, heatStrainFactor, calibrateTrimpRates, trainingDayKey, activityFloorTrimp, isFloatZone } from './trainingLoad';
 import { powerToHrrFrac } from './zones';
 import { getForecastPairs } from './forecastLog';
 import { getLocalWeather } from './weather';
@@ -1055,6 +1055,71 @@ function toPerRunData(hr: any[], dist: any[], power: any[]): PerRunData {
   };
 }
 
+// ── Executed structure from OUR watch → run-list segments ─────────────────────
+// Our watch records a run as ONE HK activity (per-phase HKWorkoutActivity was removed 2026-09-25 — HealthKit could
+// fail the live session on it), so the phases are rebuilt from the boundaries the watch forwards at run end
+// (runSegmentsLog) — the same source the detail screen uses. Labels use relabelByPhases' vocabulary (a float-zone
+// recovery counts as Work) so work stats / time-on-feet match app-pushed runs.
+function execLabel(kind: string, zone: string, fallback: string): string {
+  switch (kind) {
+    case 'warmup':   return 'Warmup';
+    case 'drills':   return 'Drills';
+    case 'cooldown': return 'Cooldown';
+    case 'recovery': return isFloatZone(zone) ? 'Work' : 'Recovery';
+    case 'work':     return 'Work';
+    default:         return fallback || 'Work';
+  }
+}
+// On-demand sample fetches (a cached run whose stats weren't persisted yet) run ONE at a time — the first scan
+// after this change may need a handful and must not fan out dozens of dense HR queries at once.
+let execFetchQueue: Promise<void> = Promise.resolve();
+function serialFetch<T>(fn: () => Promise<T>): Promise<T> {
+  const p = execFetchQueue.then(fn);
+  execFetchQueue = p.then(() => undefined, () => undefined);
+  return p;
+}
+// Persist per-phase stats only once the watch's samples have had time to sync to the phone — stats computed
+// straight after the run could be missing its tail and would then stick forever.
+const EXEC_STATS_SETTLE_MS = 15 * 60_000;
+async function execSegmentsFor(w: any, prd?: PerRunData): Promise<WorkoutSegment[] | null> {
+  const exec = await getExecStructure(new Date(toISOStr(w.startDate)).getTime()).catch(() => null);
+  if (!exec || exec.segs.length < 2) return null;
+  let stats = exec.stats && exec.stats.length === exec.segs.length ? exec.stats : null;
+  if (!stats) {
+    let data: PerRunData | null = prd && (prd.hrValues.length > 0 || prd.distSegs.length > 0) ? prd : null;
+    if (!data) {
+      try { const r = await serialFetch(() => fetchWorkoutSamples(w)); data = toPerRunData(r.hr, r.dist, r.power); }
+      catch { return null; }
+    }
+    // fetchWorkoutSamples never throws (safeQuery) — an EMPTY result (locked-phone background scan, samples not synced
+    // yet) must not become all-zero phases; leave the HK-activity path in charge and retry on a later scan.
+    if (data.hrValues.length === 0 && data.distSegs.length === 0) return null;
+    const d = data;
+    const mean = (xs: number[]) => { const v = xs.filter(x => x > 0); return v.length ? v.reduce((a, x) => a + x, 0) / v.length : 0; };
+    stats = exec.segs.map(sg => {
+      const a = exec.start + sg.startSec * 1000, b = exec.start + sg.endSec * 1000;   // wall-clock offsets from start
+      const inWin = (t: number) => t >= a && t < b;
+      return {
+        d:  Math.round(d.distSegs.filter(x => inWin(x.t)).reduce((sum, x) => sum + x.m, 0)),
+        hr: Math.round(mean(d.hrValues.filter((_, i) => inWin(d.hrTimestampsMs[i])))),
+        p:  Math.round(mean(d.powerSegs.filter(x => inWin(x.t)).map(x => x.w))),
+      };
+    });
+    if (Date.now() - (exec.start + exec.dur * 1000) > EXEC_STATS_SETTLE_MS && stats.some(x => x.hr > 0 || x.d > 0)) {
+      void saveExecStats(exec.start, stats);   // never persist a run's stats as all zeros
+    }
+  }
+  const st = stats;
+  const out: WorkoutSegment[] = [];
+  exec.segs.forEach((sg, i) => {
+    const dur = Math.round(sg.endSec - sg.startSec);
+    if (dur < 5) return;   // same floor as the HK-activity path
+    out.push({ label: execLabel(sg.kind, sg.zone, sg.label), durationSec: dur,
+      distanceM: st[i].d, avgHR: st[i].hr, avgPower: st[i].p, cadenceSPM: 0 });
+  });
+  return out.length >= 2 ? out : null;
+}
+
 function computeKmSplits(
   distSegs:       { t: number; m: number }[],
   hrValues:       number[],
@@ -1311,7 +1376,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // These carry phase labels + per-segment KPIs via the WorkoutProxy.swift UUID suffix patch.
     const rawActs: any[] = w.activities ?? [];
     const wStartMs = new Date(toISOStr(w.startDate)).getTime();
-    const segments: WorkoutSegment[] = rawActs
+    // Our watch's runs carry ≤1 activity → phases from the executed structure it forwarded. Those labels are the
+    // watch's own phase kinds (authoritative), so the label heuristics + prescribed relabel below are skipped.
+    const execSegs = rawActs.length <= 1 ? await execSegmentsFor(w, data) : null;
+    const segments: WorkoutSegment[] = execSegs ?? rawActs
       .map((act: any) => {
         const uuidStr: string = act.uuid ?? '';
         const firstSep = uuidStr.indexOf('::');
@@ -1426,7 +1494,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // the first/last segment is a warmup/cooldown if it's clearly EASIER than the
     // median Work segment (lower HR, lower power, or slower pace). Conservative —
     // only acts on the edge segments and only when there are ≥2 other Work reps.
-    if (segments.length >= 3) {
+    if (!execSegs && segments.length >= 3) {
       const work = segments.filter(s => s.label === 'Work');
       if (work.length >= 3) {
         const med = (arr: number[]) => {
@@ -1459,7 +1527,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       const workDurs = segments.filter(s => s.label === 'Work').map(s => s.durationSec)
         .filter(d => d > 0).sort((a, b) => a - b);
       const medWorkDur = workDurs.length ? workDurs[Math.floor(workDurs.length / 2)] : 0;
-      if (medWorkDur > 0) {
+      if (!execSegs && medWorkDur > 0) {
         segments.forEach((s, i) => {
           if (s.label !== 'Work' || s.durationSec >= medWorkDur * 0.5) return;
           const afterWork = segments[i - 1]?.label === 'Work';
@@ -1475,7 +1543,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     // ran (phase sequence identical — only the per-segment DURATION may differ). Order-matched within
     // ±2; trailing free running → "Open". When no plan is found (a run the app didn't push), the HK +
     // heuristic labels above stand.
-    if (segments.length > 0) {
+    if (!execSegs && segments.length > 0) {
       const startISO = toISOStr(w.startDate);
       const phases = await prescribedPhasesAt(dateKeyLocal(new Date(startISO)), startISO);
       if (phases) relabelByPhases(segments, phases);
@@ -3931,6 +3999,26 @@ function workDrillsTotals(w: any, regime: AccountingMode = 'work'): { seconds: n
   return { seconds: workSec, meters: workM };
 }
 
+// Work+drills totals for one of OUR watch's runs (≤1 HK activity) from its forwarded executed structure — the
+// same phases the run list shows. Without persisted per-phase stats the metres are apportioned by time.
+function execWorkTotals(w: any, all: ExecStructure[]): { seconds: number; meters: number } | undefined {
+  if ((w.activities?.length ?? 0) > 1) return undefined;
+  const exec = matchExec(all, new Date(toISOStr(w.startDate)).getTime());
+  if (!exec || exec.segs.length < 2) return undefined;
+  const stats = exec.stats && exec.stats.length === exec.segs.length ? exec.stats : null;
+  let workSec = 0, workM = 0, allSec = 0;
+  exec.segs.forEach((sg, i) => {
+    const dur = Math.max(0, sg.endSec - sg.startSec);
+    if (dur < 5) return;
+    allSec += dur;
+    if (TOF_EXCLUDE_PHASE.test(execLabel(sg.kind, sg.zone, sg.label))) return;
+    workSec += dur; workM += stats ? stats[i].d : 0;
+  });
+  if (workSec === 0) return undefined;
+  if (!stats) workM = allSec > 0 ? ((w.totalDistance?.quantity as number) ?? 0) * (workSec / allSec) : 0;
+  return { seconds: workSec, meters: workM };
+}
+
 // Per-day running WORK+DRILLS totals (runs only). `pick` selects minutes or km.
 async function fetchDailyWorkHistory(
   pick: (t: { seconds: number; meters: number }) => number, toDate?: Date, days = 31,
@@ -3958,6 +4046,7 @@ async function fetchDailyWorkHistory(
       meters:  keep.reduce((a, sg) => a + (sg.distanceM ?? 0), 0),
     });
   }
+  const execAll = await getAllExecStructures().catch(() => [] as ExecStructure[]);   // our-watch runs not in the snapshot yet
   const overrides = await loadRunWorkOverrides();   // per-run manual work-MINUTES corrections (badly-structured runs)
   const byDay: Record<string, number> = {};
   (allWorkouts as any[])
@@ -3966,7 +4055,7 @@ async function fetchDailyWorkHistory(
       const day = toISOStr(w.startDate).slice(0, 10);
       const regime = regimeForDate(toISOStr(w.startDate), switches);
       const seg = regime === 'full' ? undefined : segByUuid.get(w.uuid);
-      let totals = seg ?? workDrillsTotals(w, regime);
+      let totals = seg ?? (regime === 'full' ? undefined : execWorkTotals(w, execAll)) ?? workDrillsTotals(w, regime);
       const ov = overrides[w.uuid];
       if (ov != null && ov >= 0) totals = { seconds: ov * 60, meters: totals.meters };   // override the TIME; keep distance
       byDay[day] = (byDay[day] ?? 0) + pick(totals);

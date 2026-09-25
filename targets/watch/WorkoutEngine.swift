@@ -64,6 +64,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var segStartDist: Double = 0
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
+  private var hkToggleAt: Date?            // pause()/resume() sent, HealthKit's state change not in yet (delegate clears it)
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
   private var isIndoor = false            // treadmill/indoor run → speak PACE cues (from motion), not power
@@ -314,6 +315,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     // previous run's HR/distance (a stale HR masks a no-HR session for 45 s; a stale distance instantly completed a
     // distance-based warm-up).
     issueKind = .none; healthIssue = ""; hrSeenAt = nil; hrWatchFrom = Date(); hrAlerted = false; hrDropoutSpoken = false
+    hkToggleAt = nil
     routeFailed = false; heartRate = 0; distanceM = 0; energyKcal = 0; power = 0; paceStr = "--:--"
     if !indoor && store.authorizationStatus(for: HKSeriesType.workoutRoute()) != .sharingAuthorized {
       flagIssue(.route, "Workout Routes not allowed — this run records, but its map won't be saved (iPhone Settings › Privacy › Health › RunCoach).",
@@ -372,10 +374,20 @@ final class WorkoutEngine: NSObject, ObservableObject {
     }
   }
 
+  // Pause/resume only from a state HealthKit accepts, and never while the previous request is still in flight:
+  // pause() before the session reached .running (Action Button right after Start) or a double press before .paused
+  // arrives can make HealthKit FAIL the session (didFailWithError → the run is torn down). Decided on HealthKit's
+  // REAL state, not our `paused` flag (which lags the delegate). A lost delegate unblocks after 3 s.
+  private func hkCanToggle(_ s: HKWorkoutSession) -> Bool {
+    if let t = hkToggleAt, Date().timeIntervalSince(t) < 3 { return false }
+    return s.state == .running || s.state == .paused
+  }
+
   func togglePause() {
-    guard let s = session else { return }
+    guard let s = session, hkCanToggle(s) else { return }
     autoPaused = false                     // a manual pause/resume overrides auto-pause bookkeeping
-    if paused { s.resume() } else { s.pause() }
+    hkToggleAt = Date()
+    if s.state == .paused { s.resume() } else { s.pause() }
   }
 
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
@@ -469,9 +481,10 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.checkHeartRateFlow()
         // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
         // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
-        if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15,
-           let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12 {
-          self.autoPaused = true; self.session?.pause()
+        if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15, !self.autoPaused,
+           let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12,
+           let s = self.session, s.state == .running, self.hkCanToggle(s) {   // once — not every tick until .paused lands
+          self.autoPaused = true; self.hkToggleAt = Date(); s.pause()
         }
       }
     }
@@ -665,6 +678,7 @@ extension WorkoutEngine: HKWorkoutSessionDelegate {
       // not tear down the live run). session == nil (already cleared by end()) still processes → idempotent cleanup.
       guard self.session == nil || ws === self.session else { return }
       self.paused = (toState == .paused)
+      self.hkToggleAt = nil   // HealthKit applied a state change → pause/resume may be sent again
       if toState == .running { self.hrWatchFrom = Date() }   // (re)started/resumed → fresh no-HR baseline (HR lapses while paused)
       if toState == .ended { self.running = false; self.teardown() }   // ended (incl. by the system) → allow a fresh Start
     }
@@ -698,7 +712,11 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
         DispatchQueue.main.async {
           if m > self.distanceM + 1 {                       // advanced ≥1 m → moving
             self.lastMoveAt = Date()
-            if self.autoPaused { self.autoPaused = false; self.session?.resume() }   // moving again → auto-resume
+            // moving again → auto-resume, but only once HealthKit is actually PAUSED (a pause still in flight would
+            // otherwise land after this resume and leave the run paused with auto-resume switched off)
+            if self.autoPaused, let s = self.session, s.state == .paused, self.hkCanToggle(s) {
+              self.autoPaused = false; self.hkToggleAt = Date(); s.resume()
+            }
           }
           self.distanceM = m; self.updatePace()
         }
