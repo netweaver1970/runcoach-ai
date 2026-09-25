@@ -271,10 +271,15 @@ export async function requestPermissions(): Promise<boolean> {
     // already-determined type is a harmless no-op, so erring toward requesting avoids ever missing the prompt;
     // only the definite `unnecessary` skips it (which is what removes the resume-race re-request). The status
     // check is best-effort: if it throws (e.g. a lib quirk), fall through to requesting rather than aborting load.
+    // WRITE access for OUR WATCH APP: it records runs through the Health entry it SHARES with this app, and its own
+    // sheet is broken on iOS 27 + watchOS 26 (never registers → reappeared every launch, switches OFF by default →
+    // saving it DENIED Workouts/Routes and undid every approval). The watch no longer shows a sheet; it's asked here.
+    // Its read types (heart rate, distance, active energy, running power) are already in allTypes.
+    const watchShareTypes = ['HKWorkoutTypeIdentifier', 'HKWorkoutRouteTypeIdentifier'] as any[];
     let status = AuthorizationRequestStatus.unknown;
-    try { status = await getRequestStatusForAuthorization([] as any, allTypes); } catch { /* request anyway */ }
+    try { status = await getRequestStatusForAuthorization(watchShareTypes, allTypes); } catch { /* request anyway */ }
     if (status !== AuthorizationRequestStatus.unnecessary) {
-      await HealthKit.requestAuthorization([], allTypes);
+      await HealthKit.requestAuthorization(watchShareTypes, allTypes);
     }
     // iOS 27 native RMSSD gets its OWN read grant, through our native module (the @kingstinct lib rejects the
     // identifier). Best-effort — the wrapper never throws, so it can't affect the health load either way.
