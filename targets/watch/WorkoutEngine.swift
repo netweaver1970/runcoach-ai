@@ -53,9 +53,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var paceTrend = 0             // current section pace vs the previous work avg: -1 faster, +1 slower, 0 flat/none
 
   private var segs: [RouteSeg] = []
-  private var wcfg: HKWorkoutConfiguration?   // reused to open a new HKWorkoutActivity per phase
-  private var phaseActivityOpen = false       // an HK activity is currently open (so we close it before the next / on end)
-  private var pendingFirstPhase = false       // open the first phase's activity only once the session is RUNNING
+  // NO per-phase HKWorkoutActivity (beginNewActivity/endCurrentActivity) — REMOVED 2026-09-25: HealthKit FAILED the whole
+  // session on it ("no active session to begin new activity" → didFailWithError → recording dead), i.e. a structure
+  // LABEL could kill the run's HR/power/save. The executed structure still reaches the phone via sendExecStructure
+  // (runSegmentsLog.ts), which healthkit.ts already uses when a workout has no per-phase activities. Don't re-add
+  // in-session activity calls; if the watch must carry structure itself, write it as workout METADATA at finish.
   private var segLog: [[String: Any]] = []    // executed phases {label,kind,zone,startSec,endSec} → sent to the phone on end
                                               // so it can reconstruct the structure even if HK activities don't read back
   private var segStartElapsed: TimeInterval = 0
@@ -280,24 +282,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private func teardown() {
     stopTicker()
     RouteStore.shared.stop()   // backstop: any end path (save/discard/failure/system-ended) stops GPS tracking
-    session = nil; builder = nil; routeBuilder = nil; segs = []; wcfg = nil; phaseActivityOpen = false; pendingFirstPhase = false
-  }
-
-  // Metadata written onto each phase's HKWorkoutActivity so the executed structure survives back to the phone.
-  // The phone's HealthKit patch surfaces these keys (stripped of any "HKMetadataKey" prefix) and derives the
-  // phase label from `title`; WOIntervalStepKeyPath keeps a legitimately-0 m phase (e.g. standing drills) from
-  // being dropped as a spurious no-data activity, and WorkoutStepType matches the phone's Warmup/Work/Recovery/
-  // Cooldown index map as a fallback label.
-  private func segMeta(_ seg: RouteSeg, _ index: Int) -> [String: Any] {
-    var m: [String: Any] = ["title": seg.label, "WOIntervalStepKeyPath": "\(index).0.0"]
-    switch seg.kind {
-    case "warmup":   m["WorkoutStepType"] = 0
-    case "work":     m["WorkoutStepType"] = 1
-    case "recovery": m["WorkoutStepType"] = 2
-    case "cooldown": m["WorkoutStepType"] = 3
-    default: break
-    }
-    return m
+    session = nil; builder = nil; routeBuilder = nil; segs = []
   }
 
   // Tell the phone a run began/ended so it can keep itself alive (background location) → stays reachable to
@@ -358,13 +343,6 @@ final class WorkoutEngine: NSObject, ObservableObject {
           self.session?.end()
         }
       }
-      // Structured run → open a labelled HK activity for the FIRST phase. Each phase becomes an
-      // HKWorkoutActivity the phone reads back as Warmup/Work/Recovery/Cooldown (plain runs open none → 1 activity).
-      wcfg = cfg
-      // Open the FIRST phase's activity only once the session is actually .running (see the delegate). Calling
-      // beginNewActivity synchronously here — before the session left .notStarted — was silently ignored, which
-      // is the likely reason the per-phase HK activities never read back.
-      pendingFirstPhase = !segs.isEmpty
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
       if !indoor {         // no GPS on a treadmill — don't burn battery hunting for a fix
         RouteStore.shared.resetGuidance()   // fresh turn/off-route state (so a 2nd run on the same route re-announces)
@@ -407,7 +385,6 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let seg = segs[segIndex]
       segLog.append(["label": seg.label, "kind": seg.kind, "zone": seg.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
     }
-    if phaseActivityOpen { s.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the final phase activity
     sendExecStructure()   // forward the executed phase boundaries so the phone can reconstruct the structure
     reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
@@ -629,7 +606,6 @@ final class WorkoutEngine: NSObject, ObservableObject {
         }
       }
     }
-    if phaseActivityOpen { session?.endCurrentActivity(on: Date()); phaseActivityOpen = false }   // close the phase that just ended
     segIndex += 1
     segStartElapsed = elapsed; segStartDist = distanceM
     segDistM = 0; segPaceStr = "--:--"; paceTrend = 0; recomputeWorkIndex()   // reset section stats for the new phase
@@ -638,11 +614,6 @@ final class WorkoutEngine: NSObject, ObservableObject {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")
       return
-    }
-    // Open a labelled HK activity for the phase we're entering.
-    if let s = session, let cfg = wcfg {
-      s.beginNewActivity(configuration: cfg, date: Date(), metadata: segMeta(segs[segIndex], segIndex))
-      phaseActivityOpen = true
     }
     announceSegment(segs[segIndex])
   }
@@ -694,12 +665,6 @@ extension WorkoutEngine: HKWorkoutSessionDelegate {
       // not tear down the live run). session == nil (already cleared by end()) still processes → idempotent cleanup.
       guard self.session == nil || ws === self.session else { return }
       self.paused = (toState == .paused)
-      // Session is now RUNNING → open the first phase's HK activity (deferred from start() so it isn't ignored).
-      if toState == .running, self.pendingFirstPhase, !self.phaseActivityOpen,
-         let s = self.session, let cfg = self.wcfg, !self.segs.isEmpty {
-        s.beginNewActivity(configuration: cfg, date: Date(), metadata: self.segMeta(self.segs[0], 0))
-        self.phaseActivityOpen = true; self.pendingFirstPhase = false
-      }
       if toState == .running { self.hrWatchFrom = Date() }   // (re)started/resumed → fresh no-HR baseline (HR lapses while paused)
       if toState == .ended { self.running = false; self.teardown() }   // ended (incl. by the system) → allow a fresh Start
     }
