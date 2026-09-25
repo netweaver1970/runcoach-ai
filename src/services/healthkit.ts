@@ -1081,10 +1081,47 @@ function serialFetch<T>(fn: () => Promise<T>): Promise<T> {
 // Persist per-phase stats only once the watch's samples have had time to sync to the phone — stats computed
 // straight after the run could be missing its tail and would then stick forever.
 const EXEC_STATS_SETTLE_MS = 15 * 60_000;
+// Paused intervals (absolute epoch ms) from the workout's HK events: pause=1 / motionPaused=5, closed by the
+// event's own endDate or by the next resume=2 / motionResumed=6 — same rules as the detail screen.
+function pauseIntervalsAbs(w: any): { s: number; e: number }[] {
+  const out: { s: number; e: number }[] = [];
+  let open: number | null = null;
+  for (const ev of (w?.events ?? []) as any[]) {
+    const type = typeof ev.type === 'number' ? ev.type : -1;
+    const sRaw = ev.startDate ?? ev.date, eRaw = ev.endDate;
+    const sMs = sRaw ? new Date(toISOStr(sRaw)).getTime() : NaN;
+    const eMs = eRaw ? new Date(toISOStr(eRaw)).getTime() : NaN;
+    if (isNaN(sMs)) continue;
+    if (type === 1 || type === 5) {
+      if (!isNaN(eMs) && eMs > sMs) out.push({ s: sMs, e: eMs }); else if (open === null) open = sMs;
+    } else if ((type === 2 || type === 6) && open !== null) { out.push({ s: open, e: sMs }); open = null; }
+  }
+  return out;
+}
+const overlapMs = (a: number, b: number, ivs: { s: number; e: number }[]) =>
+  ivs.reduce((acc, p) => acc + Math.max(0, Math.min(b, p.e) - Math.max(a, p.s)), 0);
+// Step-count samples for the run window (Watch-sourced preferred — the iPhone in a pocket/backpack under-counts).
+async function fetchStepSegs(w: any): Promise<{ t: number; tEnd: number; steps: number }[]> {
+  const from = new Date(new Date(w.startDate).getTime() - 30_000);
+  const to   = new Date(new Date(w.endDate).getTime()   + 30_000);
+  const raw = await safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+    'HKQuantityTypeIdentifierStepCount',
+    { filter: { startDate: from, endDate: to }, unit: 'count', ascending: true, limit: 5_000 }
+  ), [] as any[]);
+  const all = (raw as any[]).map((x: any) => ({
+    t: new Date(toISOStr(x.startDate)).getTime(), tEnd: new Date(toISOStr(x.endDate)).getTime(),
+    steps: x.quantity as number, watch: String(x.sourceRevision?.productType ?? '').startsWith('Watch'),
+  })).filter(x => x.steps > 0 && x.tEnd > x.t);
+  const watch = all.filter(x => x.watch);
+  return watch.length > 0 ? watch : all;
+}
 async function execSegmentsFor(w: any, prd?: PerRunData): Promise<WorkoutSegment[] | null> {
   const exec = await getExecStructure(new Date(toISOStr(w.startDate)).getTime()).catch(() => null);
   if (!exec || exec.segs.length < 2) return null;
-  let stats = exec.stats && exec.stats.length === exec.segs.length ? exec.stats : null;
+  const pauses = pauseIntervalsAbs(w);
+  // Stored stats from before cadence was added (no `c`) are recomputed once.
+  let stats = exec.stats && exec.stats.length === exec.segs.length && exec.stats.every(x => typeof x.c === 'number')
+    ? exec.stats : null;
   if (!stats) {
     let data: PerRunData | null = prd && (prd.hrValues.length > 0 || prd.distSegs.length > 0) ? prd : null;
     if (!data) {
@@ -1092,30 +1129,50 @@ async function execSegmentsFor(w: any, prd?: PerRunData): Promise<WorkoutSegment
       catch { return null; }
     }
     // fetchWorkoutSamples never throws (safeQuery) — an EMPTY result (locked-phone background scan, samples not synced
-    // yet) must not become all-zero phases; leave the HK-activity path in charge and retry on a later scan.
-    if (data.hrValues.length === 0 && data.distSegs.length === 0) return null;
-    const d = data;
-    const mean = (xs: number[]) => { const v = xs.filter(x => x > 0); return v.length ? v.reduce((a, x) => a + x, 0) / v.length : 0; };
-    stats = exec.segs.map(sg => {
-      const a = exec.start + sg.startSec * 1000, b = exec.start + sg.endSec * 1000;   // wall-clock offsets from start
-      const inWin = (t: number) => t >= a && t < b;
-      return {
-        d:  Math.round(d.distSegs.filter(x => inWin(x.t)).reduce((sum, x) => sum + x.m, 0)),
-        hr: Math.round(mean(d.hrValues.filter((_, i) => inWin(d.hrTimestampsMs[i])))),
-        p:  Math.round(mean(d.powerSegs.filter(x => inWin(x.t)).map(x => x.w))),
-      };
-    });
-    if (Date.now() - (exec.start + exec.dur * 1000) > EXEC_STATS_SETTLE_MS && stats.some(x => x.hr > 0 || x.d > 0)) {
-      void saveExecStats(exec.start, stats);   // never persist a run's stats as all zeros
+    // yet) must not become all-zero phases. Keep previously stored stats (pre-cadence) if there are any; otherwise
+    // leave the HK-activity path in charge and retry on a later scan.
+    if (data.hrValues.length === 0 && data.distSegs.length === 0) {
+      const old = exec.stats && exec.stats.length === exec.segs.length ? exec.stats : null;
+      if (!old) return null;
+      stats = old.map(x => ({ ...x, c: x.c ?? 0 }));
+    } else {
+      const d = data;
+      const stepSegs = await serialFetch(() => fetchStepSegs(w)).catch(() => [] as { t: number; tEnd: number; steps: number }[]);
+      const mean = (xs: number[]) => { const v = xs.filter(x => x > 0); return v.length ? v.reduce((a, x) => a + x, 0) / v.length : 0; };
+      stats = exec.segs.map(sg => {
+        const a = exec.start + sg.startSec * 1000, b = exec.start + sg.endSec * 1000;   // wall-clock offsets from start
+        const inWin = (t: number) => t >= a && t < b;
+        // Cadence: each step sample's steps prorated by its RUNNING (non-paused) overlap with the phase.
+        let steps = 0, runMs = 0;
+        for (const x of stepSegs) {
+          const s0 = Math.max(a, x.t), s1 = Math.min(b, x.tEnd);
+          if (s1 <= s0) continue;
+          const ov = (s1 - s0) - overlapMs(s0, s1, pauses);
+          const sampleRun = (x.tEnd - x.t) - overlapMs(x.t, x.tEnd, pauses);   // steps happen only while running
+          if (ov <= 0 || sampleRun <= 0) continue;
+          steps += x.steps * (ov / sampleRun); runMs += ov;
+        }
+        return {
+          d:  Math.round(d.distSegs.filter(x => inWin(x.t)).reduce((sum, x) => sum + x.m, 0)),
+          hr: Math.round(mean(d.hrValues.filter((_, i) => inWin(d.hrTimestampsMs[i])))),
+          p:  Math.round(mean(d.powerSegs.filter(x => inWin(x.t)).map(x => x.w))),
+          c:  runMs >= 30_000 ? Math.round(steps / (runMs / 60_000)) : 0,   // <30 s of step coverage → unknown
+        };
+      });
+      if (Date.now() - (exec.start + exec.dur * 1000) > EXEC_STATS_SETTLE_MS && stats.some(x => x.hr > 0 || x.d > 0)) {
+        void saveExecStats(exec.start, stats);   // never persist a run's stats as all zeros
+      }
     }
   }
   const st = stats;
   const out: WorkoutSegment[] = [];
   exec.segs.forEach((sg, i) => {
-    const dur = Math.round(sg.endSec - sg.startSec);
+    // NET duration: the phase's wall-clock window minus paused time (HK durations are net of pauses too).
+    const a = exec.start + sg.startSec * 1000, b = exec.start + sg.endSec * 1000;
+    const dur = Math.round(Math.max(0, (b - a) - overlapMs(a, b, pauses)) / 1000);
     if (dur < 5) return;   // same floor as the HK-activity path
     out.push({ label: execLabel(sg.kind, sg.zone, sg.label), durationSec: dur,
-      distanceM: st[i].d, avgHR: st[i].hr, avgPower: st[i].p, cadenceSPM: 0 });
+      distanceM: st[i].d, avgHR: st[i].hr, avgPower: st[i].p, cadenceSPM: st[i].c ?? 0 });
   });
   return out.length >= 2 ? out : null;
 }
@@ -4006,9 +4063,11 @@ function execWorkTotals(w: any, all: ExecStructure[]): { seconds: number; meters
   const exec = matchExec(all, new Date(toISOStr(w.startDate)).getTime());
   if (!exec || exec.segs.length < 2) return undefined;
   const stats = exec.stats && exec.stats.length === exec.segs.length ? exec.stats : null;
+  const pauses = pauseIntervalsAbs(w);
   let workSec = 0, workM = 0, allSec = 0;
   exec.segs.forEach((sg, i) => {
-    const dur = Math.max(0, sg.endSec - sg.startSec);
+    const a = exec.start + sg.startSec * 1000, b = exec.start + sg.endSec * 1000;
+    const dur = Math.max(0, (b - a) - overlapMs(a, b, pauses)) / 1000;   // net of pauses
     if (dur < 5) return;
     allSec += dur;
     if (TOF_EXCLUDE_PHASE.test(execLabel(sg.kind, sg.zone, sg.label))) return;

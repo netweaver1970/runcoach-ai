@@ -98,6 +98,9 @@ try {
           label: String(s.label ?? ''), kind: String(s.kind ?? ''), zone: String(s.zone ?? ''),
           startSec: Number(s.startSec ?? 0), endSec: Number(s.endSec ?? 0),
         })),
+        pauses: Array.isArray(e.execPauses)
+          ? e.execPauses.map((x: any) => ({ t: Number(x.t ?? 0), a: String(x.a ?? ''), src: String(x.src ?? '') }))
+          : [],
       });
     }
   });

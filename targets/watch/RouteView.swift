@@ -477,6 +477,9 @@ struct RouteView: View {
         if !engine.batteryNote.isEmpty {   // last run's watch-battery profiling
           Text(engine.batteryNote).font(.caption2).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.7)
         }
+        if !engine.pauseNote.isEmpty {     // last run's pauses by source (screen / Action / auto / system)
+          Text(engine.pauseNote).font(.caption2).foregroundColor(.orange).lineLimit(1).minimumScaleFactor(0.7)
+        }
         Button { engine.startFromRoute(r) } label: { Label("Start", systemImage: "figure.run") }
           .buttonStyle(.borderedProminent).controlSize(.large).tint(.green)
         Button { autoPause.toggle() } label: {
@@ -542,6 +545,9 @@ struct RouteView: View {
           .font(engine.batteryNote.isEmpty ? .headline : .caption2)
           .foregroundColor(engine.batteryNote.isEmpty ? .primary : .secondary)
           .lineLimit(2).minimumScaleFactor(0.7).multilineTextAlignment(.center)
+        if !engine.pauseNote.isEmpty {
+          Text(engine.pauseNote).font(.caption2).foregroundColor(.orange).lineLimit(1).minimumScaleFactor(0.7)
+        }
         Text("swipe ↕ map · ← controls").font(.caption2).foregroundColor(.secondary)
       }
     }.padding(.horizontal, 6)

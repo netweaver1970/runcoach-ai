@@ -30,6 +30,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var powerMin: Double = 0      // session min/max running power (W) → the hidden-strip readout
   @Published var powerMax: Double = 0
   @Published var batteryNote = ""          // set on end: e.g. "🔋 −4% in 32m · 7.5%/hr" (internal profiling)
+  @Published var pauseNote = ""            // set on end when the run was paused: "⏸ 2× · screen 1 · Action 1"
   @Published var healthIssue = ""          // non-empty → a RECORDING problem the runner must see NOW (auth / no HR / start or save failed)
 
   // Structured-interval state (Stage 2).
@@ -65,6 +66,13 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var hkToggleAt: Date?            // pause()/resume() sent, HealthKit's state change not in yet (delegate clears it)
+  // WHO paused (2026-09-25: real pauses kept appearing in runs with auto-pause OFF). The requester stamps its source
+  // here; the delegate logs each actual running⇄paused transition with it ("system" = no request of ours pending).
+  private var pauseSrc: String?
+  private var pauseSrcAt: Date?                // a source older than 3 s is stale (HK ignored the request) → "system"
+  private var pauseLog: [[String: Any]] = []   // {t: s since start, a: pause|resume|event, src} → wrist note + phone
+  private var pausedSince: Date?
+  private var pauseReminderAt: Date?
   private var outSince: Date?             // when power went out of the target band
   private var lastTargetCue: Date?        // throttle the under/over spoken cue
   private var isIndoor = false            // treadmill/indoor run → speak PACE cues (from motion), not power
@@ -315,7 +323,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     // previous run's HR/distance (a stale HR masks a no-HR session for 45 s; a stale distance instantly completed a
     // distance-based warm-up).
     issueKind = .none; healthIssue = ""; hrSeenAt = nil; hrWatchFrom = Date(); hrAlerted = false; hrDropoutSpoken = false
-    hkToggleAt = nil
+    hkToggleAt = nil; pauseSrc = nil; pauseSrcAt = nil; pauseLog = []; pausedSince = nil; pauseReminderAt = nil; pauseNote = ""
     routeFailed = false; heartRate = 0; distanceM = 0; energyKcal = 0; power = 0; paceStr = "--:--"
     if !indoor && store.authorizationStatus(for: HKSeriesType.workoutRoute()) != .sharingAuthorized {
       flagIssue(.route, "Workout Routes not allowed — this run records, but its map won't be saved (iPhone Settings › Privacy › Health › RunCoach).",
@@ -383,10 +391,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
     return s.state == .running || s.state == .paused
   }
 
-  func togglePause() {
+  // source: "screen" = the on-wrist button; "action" = TogglePauseIntent (Action Button / Siri / Shortcuts).
+  func togglePause(source: String = "screen") {
     guard let s = session, hkCanToggle(s) else { return }
     autoPaused = false                     // a manual pause/resume overrides auto-pause bookkeeping
-    hkToggleAt = Date()
+    hkToggleAt = Date(); pauseSrc = source; pauseSrcAt = Date()
     if s.state == .paused { s.resume() } else { s.pause() }
   }
 
@@ -397,6 +406,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let seg = segs[segIndex]
       segLog.append(["label": seg.label, "kind": seg.kind, "zone": seg.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
     }
+    let pn = pauseSummary(); DispatchQueue.main.async { self.pauseNote = pn }
     sendExecStructure()   // forward the executed phase boundaries so the phone can reconstruct the structure
     reportBattery()    // internal profiling: watch battery drain/hr → on-wrist note + phone debug log
     signalRun("end")   // let the phone stop the background keep-alive
@@ -466,13 +476,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard !segLog.isEmpty, let sd = startDate else { return }
     let s = WCSession.default
     guard s.activationState == .activated else { return }
-    s.transferUserInfo(["execStart": sd.timeIntervalSince1970 * 1000, "execDur": elapsed, "execSegs": segLog])
+    s.transferUserInfo(["execStart": sd.timeIntervalSince1970 * 1000, "execDur": elapsed, "execSegs": segLog,
+                        "execPauses": pauseLog])
   }
 
   private func startTicker() {
     ticker?.invalidate()
     ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-      guard let self, let sd = self.startDate, !self.paused else { return }
+      guard let self, let sd = self.startDate else { return }
+      if self.paused { self.remindIfPaused(); return }
       DispatchQueue.main.async {
         self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.updateSectionStats()
         self.paceSamples.append((self.elapsed, self.distanceM))                       // rolling-pace window for treadmill cues
@@ -484,12 +496,59 @@ final class WorkoutEngine: NSObject, ObservableObject {
         if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15, !self.autoPaused,
            let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12,
            let s = self.session, s.state == .running, self.hkCanToggle(s) {   // once — not every tick until .paused lands
-          self.autoPaused = true; self.hkToggleAt = Date(); s.pause()
+          self.autoPaused = true; self.hkToggleAt = Date(); self.pauseSrc = "auto"; self.pauseSrcAt = Date(); s.pause()
         }
       }
     }
   }
   private func stopTicker() { ticker?.invalidate(); ticker = nil }
+
+  // A pause stops RECORDING — an accidental one must not go unnoticed for the rest of the run. Remind after 2 min,
+  // then every 5 min, bypassing voice mute (like the other recording alerts).
+  private func remindIfPaused() {
+    guard running, let ps = pausedSince else { return }
+    let now = Date()
+    guard now.timeIntervalSince(ps) >= 120 else { return }
+    if let last = pauseReminderAt, now.timeIntervalSince(last) < 300 { return }
+    pauseReminderAt = now
+    WKInterfaceDevice.current().play(.retry)
+    SpeechCue.shared.say("Run still paused")
+  }
+
+  // Log an actual running⇄paused transition with who asked for it, and confirm it on the wrist/ears.
+  private func notePauseTransition(paused isPaused: Bool, at date: Date) {
+    let fresh = pauseSrcAt.map { date.timeIntervalSince($0) < 3 } ?? false
+    let src = fresh ? (pauseSrc ?? "system") : "system"
+    pauseSrc = nil; pauseSrcAt = nil
+    logPause(["t": date.timeIntervalSince(startDate ?? date), "a": isPaused ? "pause" : "resume", "src": src])
+    if isPaused {
+      pausedSince = date; pauseReminderAt = nil
+      WKInterfaceDevice.current().play(.stop)
+      SpeechCue.shared.say("Run paused")          // bypasses mute: recording has stopped
+    } else {
+      pausedSince = nil
+      WKInterfaceDevice.current().play(.start)
+      speak("Resumed")
+    }
+  }
+
+  private func logPause(_ e: [String: Any]) { if pauseLog.count < 100 { pauseLog.append(e) } }   // bounded payload
+
+  // e.g. "⏸ 2× · screen 1 · Action 1 · motion-stops 3". HealthKit's own motion-stop (hk5) and button-combo
+  // request (hk8) events are listed too: a "pause" the phone shows may be one of those, not a real session pause.
+  private func pauseSummary() -> String {
+    let pauses = pauseLog.filter { ($0["a"] as? String) == "pause" }
+    var bySrc: [String: Int] = [:]
+    for p in pauses { bySrc[(p["src"] as? String) ?? "?", default: 0] += 1 }
+    let names = ["screen": "screen", "action": "Action", "auto": "auto", "system": "system"]
+    var parts = bySrc.sorted { $0.value > $1.value }.map { "\(names[$0.key] ?? $0.key) \($0.value)" }
+    let evs = pauseLog.filter { ($0["a"] as? String) == "event" }.compactMap { $0["src"] as? String }
+    let motion = evs.filter { $0 == "hk5" }.count, combo = evs.filter { $0 == "hk8" }.count
+    if motion > 0 { parts.append("motion-stops \(motion)") }
+    if combo > 0 { parts.append("btn-combo \(combo)") }
+    guard !parts.isEmpty else { return "" }
+    return "⏸ \(pauses.count)× · " + parts.joined(separator: " · ")
+  }
 
   private func updatePace() {
     guard distanceM > 20, elapsed > 5 else { return }
@@ -679,8 +738,18 @@ extension WorkoutEngine: HKWorkoutSessionDelegate {
       guard self.session == nil || ws === self.session else { return }
       self.paused = (toState == .paused)
       self.hkToggleAt = nil   // HealthKit applied a state change → pause/resume may be sent again
+      if from == .running && toState == .paused { self.notePauseTransition(paused: true, at: date) }
+      else if from == .paused && toState == .running { self.notePauseTransition(paused: false, at: date) }
       if toState == .running { self.hrWatchFrom = Date() }   // (re)started/resumed → fresh no-HR baseline (HR lapses while paused)
       if toState == .ended { self.running = false; self.teardown() }   // ended (incl. by the system) → allow a fresh Start
+    }
+  }
+  // System-generated events (e.g. .pauseOrResumeRequest from a button combo, .motionPaused) — LOGGED only, so a
+  // pause we can't attribute can be traced. No behaviour change.
+  func workoutSession(_ ws: HKWorkoutSession, didGenerate event: HKWorkoutEvent) {
+    DispatchQueue.main.async {
+      guard ws === self.session, let sd = self.startDate else { return }
+      self.logPause(["t": event.dateInterval.start.timeIntervalSince(sd), "a": "event", "src": "hk\(event.type.rawValue)"])
     }
   }
   func workoutSession(_ ws: HKWorkoutSession, didFailWithError error: Error) {
@@ -715,7 +784,7 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
             // moving again → auto-resume, but only once HealthKit is actually PAUSED (a pause still in flight would
             // otherwise land after this resume and leave the run paused with auto-resume switched off)
             if self.autoPaused, let s = self.session, s.state == .paused, self.hkCanToggle(s) {
-              self.autoPaused = false; self.hkToggleAt = Date(); s.resume()
+              self.autoPaused = false; self.hkToggleAt = Date(); self.pauseSrc = "auto"; self.pauseSrcAt = Date(); s.resume()
             }
           }
           self.distanceM = m; self.updatePace()

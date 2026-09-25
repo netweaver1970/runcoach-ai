@@ -223,7 +223,8 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   // Executed phase boundaries → forward to JS (start ms, total dur, and the [{label,kind,zone,startSec,endSec}] list).
   private func handleExecSegments(_ dict: [String: Any]) {
     guard let start = dict["execStart"] as? Double, let segs = dict["execSegs"] as? [[String: Any]], !segs.isEmpty else { return }
-    onRunSegments?(["execStart": start, "execDur": dict["execDur"] as? Double ?? 0, "execSegs": segs])
+    onRunSegments?(["execStart": start, "execDur": dict["execDur"] as? Double ?? 0, "execSegs": segs,
+                    "execPauses": dict["execPauses"] as? [[String: Any]] ?? []])
   }
 
   private func handleWatchBattery(_ dict: [String: Any]) {

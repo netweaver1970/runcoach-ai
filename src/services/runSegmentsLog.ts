@@ -14,8 +14,11 @@ const MATCH_TOL_MS = 120_000;   // ±2 min: watch session start ≈ HK workout s
 export interface ExecPhase { label: string; kind: string; zone: string; startSec: number; endSec: number }
 /** Per-phase stats (d = metres, hr = avg bpm, p = avg W), aligned 1:1 with `segs`. Computed ONCE from the run's
  *  samples and persisted, because a later (cached) scan doesn't re-fetch samples and must rebuild identical segments. */
-export interface ExecPhaseStats { d: number; hr: number; p: number }
-export interface ExecStructure { start: number; dur: number; segs: ExecPhase[]; stats?: ExecPhaseStats[] }
+export interface ExecPhaseStats { d: number; hr: number; p: number; c?: number }   // c = cadence (steps/min, 0 = unknown)
+/** Pause/resume transitions as the watch saw them, with WHO asked (screen / action / auto / system; "event" = a
+ *  HealthKit-generated event, src "hk<type>"). t = seconds since run start. */
+export interface ExecPause { t: number; a: string; src: string }
+export interface ExecStructure { start: number; dur: number; segs: ExecPhase[]; stats?: ExecPhaseStats[]; pauses?: ExecPause[] }
 
 let cache: ExecStructure[] | null = null;
 let loading: Promise<ExecStructure[]> | null = null;

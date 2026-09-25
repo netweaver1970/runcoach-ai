@@ -18,7 +18,7 @@ struct TogglePauseIntent: AppIntent {
   static var description = IntentDescription("Pause or resume the current RunCoach run.")
   static var openAppWhenRun: Bool = false
   func perform() async throws -> some IntentResult {
-    await MainActor.run { WorkoutEngine.shared.togglePause() }
+    await MainActor.run { WorkoutEngine.shared.togglePause(source: "action") }   // Action Button / Siri / Shortcuts
     return .result()
   }
 }
