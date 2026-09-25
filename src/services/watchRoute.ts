@@ -11,6 +11,14 @@ import { RouteLoop } from './routing';
 import type { WatchWorkout } from './coach';
 import { watchHrZones } from './zones';
 
+// The zone lookup awaits a native HealthKit call; never let it delay or block sending the run to the watch —
+// a hang there would mean the route never arrives and the keep-alive never starts. Falls back to [] (watch shows
+// no zone readout; everything else unaffected).
+const hrZonesForWatch = () => Promise.race([
+  watchHrZones(),
+  new Promise<{ z: string; lo: number; hi: number }[]>(resolve => setTimeout(() => resolve([]), 2000)),
+]);
+
 interface WatchSyncNative { isSupported(): Promise<boolean>; isPaired(): Promise<boolean>; sync(json: string): Promise<boolean>; }
 let WatchSync: WatchSyncNative | null = null;
 try { WatchSync = requireNativeModule('RunCoachWatchSync'); } catch { WatchSync = null; }
@@ -73,7 +81,7 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
     type: 'route', name, distanceKm: Math.round(loop.distanceKm * 10) / 10, pts, turns,
     voice: await getVoiceNav(), sport,
     workout: workout ? flattenWorkout(workout) : [],       // Stage 2: structured intervals for the run session
-    hrZones: await watchHrZones(),                         // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
+    hrZones: await hrZonesForWatch(),                         // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
   };
   // Sending a route = the user is about to run → start the keep-alive NOW (foreground, so WhenInUse suffices)
   // and it continues in the background, keeping the phone reachable to speak cues on the earbuds.
@@ -94,7 +102,7 @@ export async function sendWorkoutToWatch(workout: WatchWorkout, name = 'Interval
     type: 'route', name, distanceKm: 0, pts: [], turns: [],
     voice: await getVoiceNav(), sport, indoor,   // indoor → watch records .indoor (no GPS) + speaks PACE cues
     workout: flattenWorkout(workout),
-    hrZones: await watchHrZones(),               // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
+    hrZones: await hrZonesForWatch(),               // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
   };
   startRunKeepAlive().catch(() => {});   // about to run → keep the phone reachable to speak cues on the earbuds
   try { return await WatchSync.sync(JSON.stringify(payload)); } catch { return false; }

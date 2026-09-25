@@ -91,13 +91,23 @@ struct ContentView: View {
     .onChange(of: routeStore.jumpToMap) { path = NavigationPath([RouteDest()]) }
     // A run started, or the app was reopened mid-run → auto-show the map + follow (the watch backup).
     .onChange(of: engine.running) { if engine.running { path = NavigationPath([RouteDest()]) } }
-    .onChange(of: scenePhase) { if scenePhase == .active && engine.running { path = NavigationPath([RouteDest()]) } }
+    .onChange(of: scenePhase) {
+      if scenePhase == .active && engine.running { path = NavigationPath([RouteDest()]) }
+      // Re-check Health access every time the app comes forward outside a run (.task only fires on first appear).
+      if scenePhase == .active && !engine.running { Task { await engine.prepareAuth() } }
+    }
     .onAppear {
       // Only (re)arm GPS if a run is ACTUALLY in progress (reopened mid-run). Having a route loaded is NOT
       // enough — tracking is tied to the run (WorkoutEngine.start/end), so opening the app with a route but
       // no active run must NOT turn the GPS on (battery). Pre-commit this started tracking on route-load.
       if engine.running { routeStore.start(); path = NavigationPath([RouteDest()]) }
     }
+    // Recording problems (Health access missing / no heart rate / start or save failed) → ONE banner over every
+    // screen, incl. the pushed run screen (RouteView lives inside this NavigationStack). Tap to acknowledge.
+    .overlay(alignment: .top) { HealthIssueBanner(engine: engine) }
+    // Ask for Health access as soon as the watch app opens — e.g. the first launch after a reinstall reset the
+    // grant — instead of only when Start is tapped (where the sheet got missed on 2026-09-25).
+    .task { await engine.prepareAuth() }
   }
 }
 
@@ -193,5 +203,22 @@ struct KPIDetailView: View {
       .padding(.horizontal, 4)
     }
     .navigationTitle(kpi.label)
+  }
+}
+
+// ─── Recording-problem banner (driven by WorkoutEngine.healthIssue) ───────────
+struct HealthIssueBanner: View {
+  @ObservedObject var engine: WorkoutEngine
+  var body: some View {
+    if !engine.healthIssue.isEmpty {
+      Text("⚠️ " + engine.healthIssue)
+        .font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
+        .multilineTextAlignment(.center).lineLimit(4).minimumScaleFactor(0.65)
+        .padding(6).frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.92)))
+        .padding(.horizontal, 4)
+        .onTapGesture { engine.dismissIssue() }
+        .accessibilityAddTraits(.isButton)
+    }
   }
 }

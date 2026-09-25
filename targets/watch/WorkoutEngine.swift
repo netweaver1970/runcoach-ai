@@ -30,6 +30,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   @Published var powerMin: Double = 0      // session min/max running power (W) → the hidden-strip readout
   @Published var powerMax: Double = 0
   @Published var batteryNote = ""          // set on end: e.g. "🔋 −4% in 32m · 7.5%/hr" (internal profiling)
+  @Published var healthIssue = ""          // non-empty → a RECORDING problem the runner must see NOW (auth / no HR / start or save failed)
 
   // Structured-interval state (Stage 2).
   @Published var segLabel = ""             // e.g. "Work" / "Recover" / "Warm-up"
@@ -71,27 +72,121 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var isIntervalWorkout = false        // ≥2 work reps → an intervals session (countdown only fires for these)
   private var prevWorkPaceSecPerKm: Double = 0 // previous completed work interval's avg pace (0 = none) → the stats-screen trend arrow
   private var startBattery: Float = -1    // watch battery level (0…1) captured at run start → drain/hr on end
+  private var hrSeenAt: Date?             // last time a real HR sample (>0 bpm) arrived → the no-HR watchdog
+  private var hrWatchFrom: Date?          // watchdog baseline: run start, reset on (re)start/resume (HR lapses while paused)
+  private var hrAlerted = false           // the no-HR alert already fired for this lapse (no nagging)
+  private var hrDropoutSpoken = false     // "heart rate lost" spoken once per run; later dropouts → banner + haptic only
+  private var routeFailed = false         // an insertRouteData batch failed this run → the map may have gaps
+  private var starting = false            // a Start is in flight (auth sheet / session creation) → ignore repeat taps
+  private var authCheckInFlight = false   // prepareAuth running (.task AND scenePhase .active both fire at launch)
+  private enum IssueKind { case none, auth, hr, start, save, route }
+  private var issueKind: IssueKind = .none
+
+  // Types the watch app records (share) and reads. workoutRoute share is REQUIRED for HKWorkoutRouteBuilder to save
+  // the GPS track (the phone's run map) — it was missing before 2026-09-25.
+  private static let shareTypes: Set<HKSampleType> = [HKObjectType.workoutType(), HKSeriesType.workoutRoute()]
+  private static let readTypes: Set<HKObjectType> = [
+    HKQuantityType(.heartRate), HKQuantityType(.distanceWalkingRunning), HKQuantityType(.activeEnergyBurned),
+    HKQuantityType(.runningPower),
+  ]
 
   func requestAuth() async -> Bool {
     guard HKHealthStore.isHealthDataAvailable() else { return false }
-    let share: Set<HKSampleType> = [HKObjectType.workoutType()]
-    let read: Set<HKObjectType> = [
-      HKQuantityType(.heartRate), HKQuantityType(.distanceWalkingRunning), HKQuantityType(.activeEnergyBurned),
-      HKQuantityType(.runningPower),
-    ]
-    do { try await store.requestAuthorization(toShare: share, read: read); return true } catch { return false }
+    do { try await store.requestAuthorization(toShare: Self.shareTypes, read: Self.readTypes) } catch { return false }
+    return workoutAuthorized
+  }
+
+  // Can we record + SAVE a workout? Only SHARE status is observable — HealthKit hides READ grants (heart rate,
+  // power), so a missing HR grant is caught at run time by the no-HR watchdog (checkHeartRateFlow) instead.
+  var workoutAuthorized: Bool { store.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized }
+  private static let authIssueText = "Health access needed. On iPhone: Settings › Privacy & Security › Health › RunCoach → turn all on."
+
+  // Ask for Health access when the watch app OPENS — a calm moment — instead of only at Start (mid-run-start the
+  // sheet got dismissed/missed), and keep a visible banner while it's still missing.
+  // statusForAuthorizationRequest covers the READ types too (HR/power/distance/energy — their grant itself stays
+  // private, but "never asked" is visible), so a type that's never been asked is asked HERE, at open — e.g. right
+  // after a watch-app reinstall reset the grant (the root cause of the 2026-09-25 hollow run).
+  func prepareAuth() async {
+    // One check at a time — launch fires both .task and scenePhase .active, and two concurrent requests could show
+    // the Health sheet twice right when the runner is granting access after an install.
+    let go = await MainActor.run { () -> Bool in
+      if self.authCheckInFlight { return false }
+      self.authCheckInFlight = true; return true
+    }
+    guard go else { return }
+    let req = (try? await store.statusForAuthorizationRequest(toShare: Self.shareTypes, read: Self.readTypes)) ?? .unknown
+    if req != .unnecessary { _ = await requestAuth() }
+    let ok = workoutAuthorized
+    await MainActor.run {
+      self.authCheckInFlight = false
+      // Haptic only the FIRST time the missing-access banner appears — not on every wrist raise while it's denied.
+      if ok { self.clearIssue(.auth) } else { self.flagIssue(.auth, Self.authIssueText, speak: nil, alert: self.issueKind != .auth) }
+    }
+  }
+
+  // Surface a recording problem on-wrist: banner (all run pages + home) + firm haptic + one spoken line. The speech
+  // deliberately bypasses the cue mute — a run that silently records nothing is exactly what must not be missed.
+  private func flagIssue(_ kind: IssueKind, _ text: String, speak line: String?, alert: Bool = true) {
+    issueKind = kind; healthIssue = text
+    if alert { WKInterfaceDevice.current().play(.failure) }
+    if let line { SpeechCue.shared.say(line) }
+    // Soft notes (map-only problems) auto-hide after 8 s so they don't sit over the map controls for a whole run.
+    // Recording problems (auth / no HR / start / save) stay until tapped or resolved.
+    if kind == .route {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 8) { if self.issueKind == .route && self.healthIssue == text { self.dismissIssue() } }
+    }
+  }
+  private func clearIssue(_ kind: IssueKind) { if issueKind == kind { issueKind = .none; healthIssue = "" } }
+  func dismissIssue() { issueKind = .none; healthIssue = "" }   // runner tapped the banner (acknowledged)
+
+  // No-HR safety net. The session can be "running" (timer, segments, cues all alive) while HealthKit delivers
+  // nothing — the watch's HR read grant was reset by a reinstall, or a loose strap. Tell the runner within ~45 s
+  // instead of letting a whole session record nothing (2026-09-25: 11 min of warm-up + drills with no HR/power).
+  private func checkHeartRateFlow() {
+    guard running, !paused, !hrAlerted, let from = hrWatchFrom else { return }
+    let since = max(hrSeenAt ?? from, from)
+    let limit: TimeInterval = hrSeenAt == nil ? 45 : 60          // first reading vs a later dropout
+    guard Date().timeIntervalSince(since) > limit else { return }
+    hrAlerted = true
+    if hrSeenAt == nil {
+      flagIssue(.hr, "No heart rate. Allow Health access for RunCoach (iPhone Settings › Privacy › Health) and check the watch fit.",
+                speak: "No heart rate detected. Check Health access for RunCoach.")
+    } else {
+      // A flaky optical sensor can drop out repeatedly: speak the first dropout of a run, then banner + haptic only.
+      flagIssue(.hr, "Heart rate lost — check the watch fit.", speak: hrDropoutSpoken ? nil : "Heart rate lost. Check the watch fit.")
+      hrDropoutSpoken = true
+    }
   }
 
   // Kick off from a route payload (keeps HealthKit types out of the SwiftUI view). Requests auth first.
   func startFromRoute(_ r: RoutePayload) {
+    // One Start at a time: a second tap while the Health sheet is up used to queue a SECOND start → the second
+    // tore down the first (orphaning a live HK session + wiping segs) and created another. Also ignore Start mid-run.
+    guard !starting, !running else { return }
+    starting = true
     segs = r.workout ?? []
     let activity: HKWorkoutActivityType = (r.sport == "walking") ? .walking : .running
     let indoor = r.indoor ?? false   // treadmill → record .indoor (distance/pace from motion, no GPS) + pace cues
-    // Only prompt when not already granted — avoids re-asking on every run within an install.
-    if store.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized {
-      start(activity: activity, indoor: indoor)
-    } else {
-      Task { _ = await requestAuth(); await MainActor.run { self.start(activity: activity, indoor: indoor) } }
+    // Auth FIRST, and RESPECT the result: the old code started even when auth failed or the sheet was dismissed,
+    // producing a hollow session (timer + cues, zero HR/power, nothing saved). At Start, prompt ONLY if the workout
+    // type itself is undetermined (everything else — routes, read types — is asked at app open via prepareAuth, so
+    // an unanswered route prompt can't make Start wait). If we still can't record, say so and stay on Start.
+    Task {
+      if self.store.authorizationStatus(for: HKObjectType.workoutType()) == .notDetermined { _ = await self.requestAuth() }
+      let ok = self.workoutAuthorized
+      await MainActor.run {
+        guard ok else {
+          self.starting = false
+          self.flagIssue(.auth, Self.authIssueText, speak: "Health access needed. Allow RunCoach in the Health settings on your iPhone.")
+          return
+        }
+        self.clearIssue(.auth)
+        self.start(activity: activity, indoor: indoor)
+        // Clear the in-flight flag only AFTER start()'s own main.async block has set running = true (the main queue is
+        // FIFO) — clearing it synchronously left a window where a tap saw session != nil && !running and tore the
+        // brand-new session down. Also runs when start() failed/returned early, so Start is never locked out.
+        DispatchQueue.main.async { self.starting = false }
+      }
     }
   }
 
@@ -138,13 +233,23 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard running, let rb = routeBuilder else { return }
     let good = locs.filter { $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy < 50 }
     guard !good.isEmpty else { return }
-    rb.insertRouteData(good) { _, _ in }
+    rb.insertRouteData(good) { ok, _ in if !ok { DispatchQueue.main.async { self.routeFailed = true } } }   // → "map may have gaps" at save
   }
 
   func start(activity: HKWorkoutActivityType, indoor: Bool = false) {
     if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
     guard session == nil else { return }           // a genuinely running session → ignore a double-Start
     isIndoor = indoor
+    // Fresh per-run state, set SYNCHRONOUSLY (start() only runs on main, via startFromRoute's MainActor.run): a fast
+    // beginCollection failure below can't have its banner wiped by a later async reset, and a retry never shows the
+    // previous run's HR/distance (a stale HR masks a no-HR session for 45 s; a stale distance instantly completed a
+    // distance-based warm-up).
+    issueKind = .none; healthIssue = ""; hrSeenAt = nil; hrWatchFrom = Date(); hrAlerted = false; hrDropoutSpoken = false
+    routeFailed = false; heartRate = 0; distanceM = 0; energyKcal = 0; power = 0; paceStr = "--:--"
+    if !indoor && store.authorizationStatus(for: HKSeriesType.workoutRoute()) != .sharingAuthorized {
+      flagIssue(.route, "Workout Routes not allowed — this run records, but its map won't be saved (iPhone Settings › Privacy › Health › RunCoach).",
+                speak: nil, alert: false)
+    }
     let cfg = HKWorkoutConfiguration()
     cfg.activityType = activity
     cfg.locationType = indoor ? .indoor : .outdoor   // indoor/treadmill → distance/pace from motion, no GPS
@@ -158,7 +263,17 @@ final class WorkoutEngine: NSObject, ObservableObject {
       routeBuilder = indoor ? nil : HKWorkoutRouteBuilder(healthStore: store, device: .local())   // outdoor only — no GPS track on a treadmill
       let now = Date(); startDate = now
       s.startActivity(with: now)
-      b.beginCollection(withStart: now) { _, _ in }
+      b.beginCollection(withStart: now) { [weak self] ok, err in
+        // Collection didn't start → nothing will record. Say so and END the session (→ .ended → teardown → the
+        // Start button works again) rather than leaving a hollow run ticking.
+        guard !ok, let self else { return }
+        DispatchQueue.main.async {
+          self.signalRun("end")   // stop the phone keep-alive — no run is happening
+          self.flagIssue(.start, "Recording didn't start\(err.map { " (\($0.localizedDescription))" } ?? "") — check Health access, then Start again.",
+                         speak: "Recording failed to start. Check Health access.")
+          self.session?.end()
+        }
+      }
       // Structured run → open a labelled HK activity for the FIRST phase. Each phase becomes an
       // HKWorkoutActivity the phone reads back as Warmup/Work/Recovery/Cooldown (plain runs open none → 1 activity).
       wcfg = cfg
@@ -189,6 +304,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
       startTicker()
     } catch {
       session = nil; builder = nil
+      DispatchQueue.main.async {
+        self.flagIssue(.start, "Couldn't start the workout (\(error.localizedDescription)).", speak: "Workout failed to start.")
+      }
     }
   }
 
@@ -214,9 +332,26 @@ final class WorkoutEngine: NSObject, ObservableObject {
     let rb = routeBuilder   // capture before clearing; finishRoute must run AFTER the workout is saved
     if save {
       b.endCollection(withEnd: Date()) { _, _ in
-        b.finishWorkout { workout, _ in
-          // Tie the accumulated GPS track to the saved workout → the phone gets an HKWorkoutRoute (run map).
-          if let w = workout, let rb = rb { rb.finishRoute(with: w, metadata: nil) { _, _ in } }
+        b.finishWorkout { workout, err in
+          // Tie the accumulated GPS track to the saved workout → the phone gets an HKWorkoutRoute (run map). Its
+          // result is surfaced softly (no speech/haptic): the run, HR and power are already saved at this point.
+          if let w = workout, let rb = rb {
+            rb.finishRoute(with: w, metadata: nil) { route, rerr in
+              DispatchQueue.main.async {
+                if route == nil {
+                  self.flagIssue(.route, "Run saved — map NOT saved\(rerr.map { " (\($0.localizedDescription))" } ?? "").", speak: nil, alert: false)
+                } else if self.routeFailed {
+                  self.flagIssue(.route, "Run saved — map may have gaps (some GPS points weren't stored).", speak: nil, alert: false)
+                }
+              }
+            }
+          }
+          if workout == nil {   // the run itself was NOT saved → the runner must know (was silent before)
+            DispatchQueue.main.async {
+              self.flagIssue(.save, "Run NOT saved to Health\(err.map { " (\($0.localizedDescription))" } ?? "") — check Health access.",
+                              speak: "This run was not saved. Check Health access.")
+            }
+          }
         }
       }
     } else {
@@ -270,6 +405,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.paceSamples.append((self.elapsed, self.distanceM))                       // rolling-pace window for treadmill cues
         self.paceSamples.removeAll { self.elapsed - $0.t > 22 }                       // keep ~last 22 s
         self.tickSegments()
+        self.checkHeartRateFlow()
         // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
         // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
         if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15,
@@ -470,6 +606,9 @@ extension WorkoutEngine: HKWorkoutSessionDelegate {
   func workoutSession(_ ws: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
                       from: HKWorkoutSessionState, date: Date) {
     DispatchQueue.main.async {
+      // Ignore a STALE session's events while a different one is current (a replaced/orphaned session ending must
+      // not tear down the live run). session == nil (already cleared by end()) still processes → idempotent cleanup.
+      guard self.session == nil || ws === self.session else { return }
       self.paused = (toState == .paused)
       // Session is now RUNNING → open the first phase's HK activity (deferred from start() so it isn't ignored).
       if toState == .running, self.pendingFirstPhase, !self.phaseActivityOpen,
@@ -477,11 +616,17 @@ extension WorkoutEngine: HKWorkoutSessionDelegate {
         s.beginNewActivity(configuration: cfg, date: Date(), metadata: self.segMeta(self.segs[0], 0))
         self.phaseActivityOpen = true; self.pendingFirstPhase = false
       }
+      if toState == .running { self.hrWatchFrom = Date() }   // (re)started/resumed → fresh no-HR baseline (HR lapses while paused)
       if toState == .ended { self.running = false; self.teardown() }   // ended (incl. by the system) → allow a fresh Start
     }
   }
   func workoutSession(_ ws: HKWorkoutSession, didFailWithError error: Error) {
-    DispatchQueue.main.async { self.running = false; self.paused = false; self.teardown() }
+    DispatchQueue.main.async {
+      guard self.session == nil || ws === self.session else { return }   // a stale session's failure isn't ours
+      self.running = false; self.paused = false; self.teardown()
+      self.signalRun("end")   // stop the phone keep-alive
+      self.flagIssue(.start, "Workout stopped by the system (\(error.localizedDescription)).", speak: "Workout stopped unexpectedly.")
+    }
   }
 }
 
@@ -492,7 +637,10 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
       guard let qt = t as? HKQuantityType, let stat = b.statistics(for: qt) else { continue }
       if qt == HKQuantityType(.heartRate) {
         let bpm = stat.mostRecentQuantity()?.doubleValue(for: .count().unitDivided(by: .minute())) ?? 0
-        DispatchQueue.main.async { self.heartRate = bpm }
+        DispatchQueue.main.async {
+          self.heartRate = bpm
+          if bpm > 0 { self.hrSeenAt = Date(); if self.hrAlerted { self.hrAlerted = false; self.clearIssue(.hr) } }   // HR flowing (again)
+        }
       } else if qt == HKQuantityType(.distanceWalkingRunning) {
         let m = stat.sumQuantity()?.doubleValue(for: .meter()) ?? self.distanceM
         DispatchQueue.main.async {
