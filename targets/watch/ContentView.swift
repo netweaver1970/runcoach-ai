@@ -213,7 +213,7 @@ struct HealthIssueBanner: View {
     if !engine.healthIssue.isEmpty {
       Text("⚠️ " + engine.healthIssue)
         .font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
-        .multilineTextAlignment(.center).lineLimit(4).minimumScaleFactor(0.65)
+        .multilineTextAlignment(.center).lineLimit(6).minimumScaleFactor(0.65)
         .padding(6).frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.92)))
         .padding(.horizontal, 4)

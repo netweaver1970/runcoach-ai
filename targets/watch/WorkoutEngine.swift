@@ -79,6 +79,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var routeFailed = false         // an insertRouteData batch failed this run → the map may have gaps
   private var starting = false            // a Start is in flight (auth sheet / session creation) → ignore repeat taps
   private var authCheckInFlight = false   // prepareAuth running (.task AND scenePhase .active both fire at launch)
+  private var autoPrompted = false        // the AUTOMATIC Health sheet fires at most ONCE per app launch (see prepareAuth)
+  private var authRefusedAt: Date?        // Start refused for missing access → a 2nd Start within 60 s runs anyway
   private enum IssueKind { case none, auth, hr, start, save, route }
   private var issueKind: IssueKind = .none
 
@@ -99,7 +101,26 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // Can we record + SAVE a workout? Only SHARE status is observable — HealthKit hides READ grants (heart rate,
   // power), so a missing HR grant is caught at run time by the no-HR watchdog (checkHeartRateFlow) instead.
   var workoutAuthorized: Bool { store.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized }
-  private static let authIssueText = "Health access needed. On iPhone: Settings › Privacy & Security › Health › RunCoach → turn all on."
+  // Say exactly WHAT is missing and WHETHER it was switched off or never answered — the runner can fix the right
+  // toggle, and "off" vs "not set" tells us if a grant isn't sticking (2026-09-25: the sheet kept reappearing).
+  private func authTag() -> String {
+    let route = store.authorizationStatus(for: HKSeriesType.workoutRoute()) == .sharingAuthorized ? "on" : "off"
+    switch store.authorizationStatus(for: HKObjectType.workoutType()) {
+    case .sharingDenied: return "Workouts off · Routes \(route)"
+    case .notDetermined: return "Workouts not set · Routes \(route)"
+    default:             return "Routes \(route)"
+    }
+  }
+  private func authIssueText() -> String {
+    switch store.authorizationStatus(for: HKObjectType.workoutType()) {
+    case .sharingDenied:
+      return "Can't save runs: 'Workouts' is OFF. iPhone: Health app › your profile › Apps › RunCoach › turn on Workouts (+ all). [\(authTag())]"
+    case .notDetermined:
+      return "Health access not confirmed. Tap Start to see the Health sheet, then 'Turn On All'. [\(authTag())]"
+    default:
+      return "Health access needed. iPhone: Health app › your profile › Apps › RunCoach › turn all on. [\(authTag())]"
+    }
+  }
 
   // Ask for Health access when the watch app OPENS — a calm moment — instead of only at Start (mid-run-start the
   // sheet got dismissed/missed), and keep a visible banner while it's still missing.
@@ -114,13 +135,27 @@ final class WorkoutEngine: NSObject, ObservableObject {
       self.authCheckInFlight = true; return true
     }
     guard go else { return }
-    let req = (try? await store.statusForAuthorizationRequest(toShare: Self.shareTypes, read: Self.readTypes)) ?? .unknown
-    if req != .unnecessary { _ = await requestAuth() }
+    // AUTOMATIC prompt at most ONCE per launch. Re-prompting on every re-appear/foreground LOOPED: save the sheet →
+    // (grant not complete) → red banner → the sheet's dismissal re-activates the app → prompt again → sheet covers the
+    // banner, forever. After the one automatic sheet, re-checks only refresh the banner; Start still asks if needed.
+    let prompt = await MainActor.run { () -> Bool in
+      let first = !self.autoPrompted; self.autoPrompted = true; return first
+    }
+    if prompt {
+      let req = (try? await store.statusForAuthorizationRequest(toShare: Self.shareTypes, read: Self.readTypes)) ?? .unknown
+      if req != .unnecessary {
+        _ = await requestAuth()
+        // A fresh grant can land a beat after the sheet closes — re-read once before calling it missing.
+        if !workoutAuthorized { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+      }
+    }
     let ok = workoutAuthorized
     await MainActor.run {
       self.authCheckInFlight = false
       // Haptic only the FIRST time the missing-access banner appears — not on every wrist raise while it's denied.
-      if ok { self.clearIssue(.auth) } else { self.flagIssue(.auth, Self.authIssueText, speak: nil, alert: self.issueKind != .auth) }
+      // Never cover a REAL failure (e.g. "Run NOT saved" after a run, then a wrist raise) with the access banner.
+      if ok { self.clearIssue(.auth) }
+      else if self.issueKind == .none || self.issueKind == .auth { self.flagIssue(.auth, self.authIssueText(), speak: nil, alert: self.issueKind != .auth) }
     }
   }
 
@@ -167,19 +202,43 @@ final class WorkoutEngine: NSObject, ObservableObject {
     segs = r.workout ?? []
     let activity: HKWorkoutActivityType = (r.sport == "walking") ? .walking : .running
     let indoor = r.indoor ?? false   // treadmill → record .indoor (distance/pace from motion, no GPS) + pace cues
+    // Decide "2nd tap after a refusal" at TAP time: that tap must start at once — no Health sheet, no 1.5 s wait,
+    // and no chance of the 60 s window expiring while the sheet is up.
+    let runAnyway = authRefusedAt.map { Date().timeIntervalSince($0) < 60 } ?? false
     // Auth FIRST, and RESPECT the result: the old code started even when auth failed or the sheet was dismissed,
     // producing a hollow session (timer + cues, zero HR/power, nothing saved). At Start, prompt ONLY if the workout
     // type itself is undetermined (everything else — routes, read types — is asked at app open via prepareAuth, so
     // an unanswered route prompt can't make Start wait). If we still can't record, say so and stay on Start.
     Task {
-      if self.store.authorizationStatus(for: HKObjectType.workoutType()) == .notDetermined { _ = await self.requestAuth() }
+      if !runAnyway, self.store.authorizationStatus(for: HKObjectType.workoutType()) == .notDetermined {
+        _ = await self.requestAuth()
+        // A fresh grant can land a beat after the sheet closes — re-read once before refusing.
+        if !self.workoutAuthorized { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+      }
       let ok = self.workoutAuthorized
       await MainActor.run {
         guard ok else {
+          // ESCAPE HATCH: on this watch the auth status can keep reading "not authorized" even after the runner allowed
+          // it (2026-09-25: Workouts turned on in iPhone Health AND in the watch sheet, still refused → a hard gate
+          // would lock him out of every run). A 2nd Start within 60 s of a refusal runs anyway — explicitly chosen and
+          // NOT silent: the 45 s no-HR watchdog, beginCollection failure and "Run NOT saved" banners still catch a
+          // run that isn't recording, and the warning below clears itself as soon as real HR arrives.
+          if runAnyway {
+            self.authRefusedAt = nil
+            self.start(activity: activity, indoor: indoor)   // resets issues synchronously → flag the warning AFTER
+            self.flagIssue(.auth, "Running without confirmed Health access. No HR within a minute → use Apple Workout.",
+                           speak: nil, alert: false)
+            DispatchQueue.main.async { self.starting = false }
+            return
+          }
+          self.authRefusedAt = Date()
           self.starting = false
-          self.flagIssue(.auth, Self.authIssueText, speak: "Health access needed. Allow RunCoach in the Health settings on your iPhone.")
+          // SHORT (a long banner covered the Start button on the 49 mm/41 mm layout → the 2nd tap just dismissed it).
+          self.flagIssue(.auth, "Health access not confirmed [\(self.authTag())]. Tap Start again to run anyway.",
+                         speak: "Health access needed. Tap Start again to run anyway.")
           return
         }
+        self.authRefusedAt = nil
         self.clearIssue(.auth)
         self.start(activity: activity, indoor: indoor)
         // Clear the in-flight flag only AFTER start()'s own main.async block has set running = true (the main queue is
@@ -639,7 +698,10 @@ extension WorkoutEngine: HKLiveWorkoutBuilderDelegate {
         let bpm = stat.mostRecentQuantity()?.doubleValue(for: .count().unitDivided(by: .minute())) ?? 0
         DispatchQueue.main.async {
           self.heartRate = bpm
-          if bpm > 0 { self.hrSeenAt = Date(); if self.hrAlerted { self.hrAlerted = false; self.clearIssue(.hr) } }   // HR flowing (again)
+          if bpm > 0 {   // HR flowing (again) → clear the no-HR alert, and any access warning (HR proves the read grant works)
+            self.hrSeenAt = Date(); if self.hrAlerted { self.hrAlerted = false; self.clearIssue(.hr) }
+            self.clearIssue(.auth)
+          }
         }
       } else if qt == HKQuantityType(.distanceWalkingRunning) {
         let m = stat.sumQuantity()?.doubleValue(for: .meter()) ?? self.distanceM
