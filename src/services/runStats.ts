@@ -78,6 +78,36 @@ function statsFor(r: RunWorkout, repairs?: Record<string, RepairedWorkLike | nul
 /** Shape of a repair (kept structural so runStats doesn't import the fetching module). */
 export interface RepairedWorkLike { wPower: number; wHR: number; wPaceSec: number; stationaryPct: number }
 
+export interface EffTrendItem {
+  key: 'ec' | 'ef' | 'se';
+  change: number;                           // OLS change across the runs (slope × (n−1)); higher = better
+  mean: number;
+  dir: 'improving' | 'flat' | 'declining';  // flat = |change| < 1% of the mean
+  fitStart: number; fitEnd: number;         // the fitted line's first → last value
+}
+/**
+ * The efficiency-trend summary the AI run review quotes ("OLS change across the window"): a least-squares line
+ * through EC / EF / SE of the last `n` steady AEROBIC runs. ONE implementation for the review prompt
+ * (runAnalysis.efficiencyTrendContext) and the Statistics "Efficiency Trends" card, so both show the same numbers.
+ */
+export function efficiencyTrendSummary(pts: EfPoint[], n = 12): { runs: number; items: EffTrendItem[] } {
+  const aer = pts.filter(p => p.aerobic).slice(-n);
+  const items: EffTrendItem[] = [];
+  if (aer.length < 3) return { runs: aer.length, items };
+  for (const key of ['ec', 'ef', 'se'] as const) {
+    const v = aer.map(p => p[key]).filter(x => x > 0);
+    if (v.length < 3) continue;
+    const m = v.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < m; i++) { sx += i; sy += v[i]; sxx += i * i; sxy += i * v[i]; }
+    const den = m * sxx - sx * sx; if (!den) continue;
+    const slope = (m * sxy - sx * sy) / den, mean = sy / m, intercept = (sy - slope * sx) / m;
+    const change = slope * (m - 1);
+    const dir = Math.abs(change) < mean * 0.01 ? 'flat' : change > 0 ? 'improving' : 'declining';
+    items.push({ key, change, mean, dir, fitStart: intercept, fitEnd: intercept + slope * (m - 1) });
+  }
+  return { runs: aer.length, items };
+}
+
 export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, RepairedWorkLike | null>): EfPoint[] {
   // The athlete's own normal running cadence (median over runs that have one) — a personal baseline, so
   // this works for any runner without a hard-coded threshold.
@@ -85,7 +115,10 @@ export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, Rep
   const normCad = cads.length ? cads[Math.floor(cads.length / 2)] : 0;
   const cadFloor = normCad > 0 ? normCad * 0.88 : 0;   // >12% below your normal ⇒ stationary time mixed in
 
-  const base = (runs ?? [])
+  // Chronological by FULL timestamp first: the final sort below is by calendar day only (stable), so without this
+  // two runs on one day keep whatever order the caller passed (Statistics: newest-first; run review: oldest-first)
+  // and the OLS trend summary fitted them in opposite order → different numbers on the card vs the review.
+  const base = [...(runs ?? [])].sort((a, b) => (Date.parse(a.date) || 0) - (Date.parse(b.date) || 0))
     // Genuine RUNNING efforts only — exclude walk-pace / very-low-power / estimated-power / mislabeled-tiny-work
     // runs whose work stats aren't a real run (they otherwise plot as huge false dips, e.g. a 26:51/km "recovery").
     // Judged on the REPAIRED stats when available, so a run that only looked bad because of stationary time

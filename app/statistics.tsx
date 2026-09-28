@@ -22,7 +22,7 @@ import { computePerformanceIndex, weightedGpi, WEIGHT_PRESETS, Emphasis, GpiResu
 import * as SecureStore from 'expo-secure-store';
 import {
   efficiencyTrend, zoneSummary, acwrSeries, decouplingTrend, decouplingBanded, zoneDistributionOverTime,
-  EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek, HEAT_C,
+  efficiencyTrendSummary, EfPoint, ZoneSummary, AcwrPoint, DecouplePoint, ZoneWeek, HEAT_C,
 } from '../src/services/runStats';
 import { computeCapHistory, computeRolling7d, CapWeek, Rolling7d } from '../src/services/coach';
 import type { PowerZones } from '../src/types';
@@ -619,6 +619,74 @@ function WeeklyTssBars({ runs, t0, t1, innerW }: { runs: any[]; t0: number; t1: 
   );
 }
 
+// ─── Efficiency Trends (the OLS the AI run review quotes) ─────────────────────────
+// Same function + same repaired points as runAnalysis.efficiencyTrendContext, so on the current page this card
+// shows exactly the EC / EF / SE numbers the review cites. It is a RUN-COUNT window (last 12 steady aerobic runs
+// up to the page's end), not the time window — paging back shows what the trend was at that point.
+const TREND_META = {
+  ec: { name: 'Economy (EC)', sub: 'speed ÷ power · HR-independent', dp: 3 },
+  ef: { name: 'Efficiency (EF)', sub: 'power ÷ HR', dp: 2 },
+  se: { name: 'Speed eff. (SE)', sub: 'speed ÷ HR', dp: 2 },
+} as const;
+const DIR_COLOR = { improving: '#16a34a', flat: '#94a3b8', declining: '#dc2626' } as const;
+
+function EffTrendsCard({ ef, t1 }: { ef: EfPoint[]; t1: number }) {
+  const { c } = useTheme();
+  const s = useThemedStyles(makeS);
+  const aer = useMemo(() => ef.filter(p => p.aerobic && tOf(p.date) <= t1).slice(-12), [ef, t1]);
+  const sum = useMemo(() => efficiencyTrendSummary(aer), [aer]);
+  return (
+    <View style={s.card}>
+      <CardHead title="Efficiency Trends">
+        The least-squares (OLS) trend the AI run review quotes after every run: a straight line fitted through your
+        last {aer.length || 12} steady aerobic runs, read as start → end of that line. Higher = better for all three.
+        {' '}“Flat” = the line moved less than 1% of the average. EC (speed ÷ power) is HR-independent, so heat, caffeine
+        and poor sleep don't bend it — trust it most for the true economy trend; EF and SE carry HR and dip in the heat.
+        {' '}Uses the last 12 aerobic runs up to the end of the page, not the time window — page back to see the trend at that point.
+      </CardHead>
+      {!sum.items.length ? (
+        <Text style={s.errorText}>Needs at least 3 steady aerobic runs with power.</Text>
+      ) : (
+        <View style={{ marginTop: 6 }}>
+          {sum.items.map(it => {
+            const m = TREND_META[it.key];
+            const col = DIR_COLOR[it.dir];
+            const vals = aer.map(p => p[it.key]).filter(x => x > 0);
+            const lo = Math.min(...vals), hi = Math.max(...vals), rng = hi - lo || 1;
+            const pct = it.mean ? (it.change / it.mean) * 100 : 0;
+            return (
+              <View key={it.key} style={s.etRow}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={s.etName} numberOfLines={1}>{m.name}</Text>
+                  <Text style={s.etSub} numberOfLines={1}>{m.sub}</Text>
+                </View>
+                {/* the runs the line is fitted through, oldest → newest */}
+                <View style={s.etSpark}>
+                  {vals.map((v, i) => (
+                    <View key={i} style={{ width: 4, height: 4 + ((v - lo) / rng) * 18, borderRadius: 1.5,
+                      backgroundColor: i === vals.length - 1 ? col : c.textFaint + '88' }} />
+                  ))}
+                </View>
+                <View style={{ alignItems: 'flex-end', minWidth: 104 }}>
+                  <Text style={s.etVal}>{it.fitStart.toFixed(m.dp)} → {it.fitEnd.toFixed(m.dp)}</Text>
+                  <View style={[s.etChip, { backgroundColor: col + '22', borderColor: col }]}>
+                    <Text style={[s.etChipTxt, { color: col }]}>
+                      {it.dir === 'improving' ? '▲' : it.dir === 'declining' ? '▼' : '■'} {signed(it.change, m.dp)} · {signed(pct, 1)}%
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+          <Text style={s.winNote}>
+            {sum.runs} aerobic runs · {shortDmy(tOf(aer[0].date))} – {shortDmy(tOf(aer[aer.length - 1].date))}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 // ─── Race predictor (CP + economy + Riegel) ──────────────────────────────────────
 function RacePredictorCard({ curve, runs }: { curve: PowerCurve | null; runs: any[] }) {
   const { c } = useTheme();
@@ -1024,6 +1092,7 @@ export default function StatisticsScreen() {
           pts2={tempTrace(p)} color2={HEAT_ORANGE} y2fmt={(v) => `${Math.round(v)}°`} y2label="°C" />
       </View>
     ); })() : null,
+    efftrend: ef.some(p => p.aerobic) ? <EffTrendsCard ef={ef} t1={t1} /> : null,
     intensity: allRuns.length ? (
       <View style={s.card}>
         <CardHead title="Intensity Distribution">
@@ -1205,6 +1274,14 @@ const makeS = (c: Palette) => StyleSheet.create({
   cpLineVal: { fontSize: 14, fontWeight: '800', color: CTL_BLUE },
   // Small faint scope label ("which period does this number cover") under a card's chart/bar.
   winNote:   { marginTop: 6, fontSize: 11, color: c.textFaint },
+  // Efficiency Trends rows
+  etRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border },
+  etName:    { fontSize: 13.5, fontWeight: '700', color: c.text },
+  etSub:     { fontSize: 11, color: c.textFaint, marginTop: 1 },
+  etSpark:   { flexDirection: 'row', alignItems: 'flex-end', gap: 2, height: 22 },
+  etVal:     { fontSize: 13, fontWeight: '700', color: c.text, fontVariant: ['tabular-nums'] },
+  etChip:    { marginTop: 3, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
+  etChipTxt: { fontSize: 11, fontWeight: '800', fontVariant: ['tabular-nums'] },
   // Compact Performance (GPI) headline
   perfHead:    { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
   perfNum:     { fontSize: 34, fontWeight: '800', lineHeight: 38, minWidth: 52 },

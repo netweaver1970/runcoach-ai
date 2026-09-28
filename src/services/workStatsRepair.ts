@@ -101,21 +101,34 @@ export function repairFromDetail(detail: {
 export async function repairWorkStats(
   runs: RunWorkout[],
   onProgress?: (done: number, total: number) => void,
+  opts?: { maxFetch?: number },
 ): Promise<Record<string, RepairedWork | null>> {
   const cache = await read();
-  const todo = (runs ?? []).filter(r => r.uuid && !(r.uuid in cache) && (r.duration ?? 0) >= 600);
-  let done = 0;
+  let todo = (runs ?? []).filter(r => r.uuid && !(r.uuid in cache) && (r.duration ?? 0) >= 600);
+  // Callers on a time budget (the post-run review, possibly in a background wake) cap the detail fetches to the
+  // NEWEST uncached runs; the rest stay un-keyed and are filled the next time Statistics opens.
+  if (opts?.maxFetch != null && todo.length > opts.maxFetch) {
+    todo = [...todo].sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0)).slice(0, opts.maxFetch);
+  }
+  const out: Record<string, RepairedWork | null> = { ...cache };
+  let done = 0, dirty = false;
   onProgress?.(0, todo.length);
   for (const r of todo) {
+    let rep: RepairedWork | null;
     try {
       const d = await fetchWorkoutDetail(r.date, r.duration);
-      const rep = repairFromDetail(d);
-      cache[r.uuid] = rep && rep.stationaryPct >= MIN_STATIONARY_PCT ? rep : null;
-    } catch { cache[r.uuid] = null; }
+      const x = repairFromDetail(d);
+      rep = x && x.stationaryPct >= MIN_STATIONARY_PCT ? x : null;
+    } catch { rep = null; }
+    out[r.uuid] = rep;
+    // Don't PERSIST a run that ended < 1 h ago: its power/distance samples may still be syncing from the watch,
+    // and this cache is never invalidated — a partial-data repair (or null) would stick until the next Rebuild.
+    const endMs = (Date.parse(r.date) || 0) + (r.duration ?? 0) * 1000;
+    if (Date.now() - endMs >= 3600_000) { cache[r.uuid] = rep; dirty = true; }
     onProgress?.(++done, todo.length);
   }
-  if (todo.length) await write(cache);
-  return cache;
+  if (dirty) await write(cache);
+  return out;
 }
 
 export async function clearWorkStatsRepairCache(): Promise<void> {

@@ -18,7 +18,9 @@ import { getApiKey, buildNewRunUserMessage } from './claude';
 import { loadSupplements, hrOffsetByDay } from './supplements';
 import { loadPrescriptionAt, CoachPlan, assembleCoachSnapshot } from './coach';
 import { dateKeyLocal } from './planLog';   // LOCAL Y-M-D — the key saveCachedPlan uses (NOT the UTC ISO slice)
-import { efficiencyTrend } from './runStats';
+import { efficiencyTrend, efficiencyTrendSummary } from './runStats';
+import { repairWorkStats, RepairedWork } from './workStatsRepair';
+import { loadStatsRuns, mergeRuns } from './statsRunsCache';
 import { fetchHealthSnapshot, loadSnapshotCache, saveSnapshotCache } from './healthkit';
 
 export interface RunAnalysis {
@@ -173,23 +175,25 @@ Return ONLY minified JSON — no markdown fences — with EXACTLY these keys:
 /** Generate the analysis for one run. Throws on LLM/auth errors. */
 // EC/EF/SE trend DIRECTION over recent aerobic runs (OLS slope × window). Same maths as the Statistics
 // trendlines, handed to the analysis so its efficiency-trend verdict states the real direction, not a guess.
-function efficiencyTrendContext(runs: RunWorkout[]): string {
-  const pts = efficiencyTrend(runs).filter(p => p.aerobic).slice(-12);
-  if (pts.length < 3) return '';
-  const dir = (key: 'ec' | 'ef' | 'se', dp: number): string | null => {
-    const v = pts.map(p => p[key]).filter(x => x > 0);
-    if (v.length < 3) return null;
-    const n = v.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (let i = 0; i < n; i++) { sx += i; sy += v[i]; sxx += i * i; sxy += i * v[i]; }
-    const den = n * sxx - sx * sx; if (!den) return null;
-    const change = ((n * sxy - sx * sy) / den) * (n - 1), mean = sy / n;
-    const d = Math.abs(change) < mean * 0.01 ? 'flat' : change > 0 ? 'improving' : 'declining';
-    return `${key.toUpperCase()} ${change >= 0 ? '+' : ''}${change.toFixed(dp)} (${d})`;
-  };
-  const parts = [dir('ec', 3), dir('ef', 2), dir('se', 2)].filter(Boolean);
-  if (!parts.length) return '';
-  return `EFFICIENCY TRENDS over the last ${pts.length} aerobic runs (OLS change across the window; higher = better): ${parts.join(' · ')}. `
-    + `EC = speed÷power is HR-INDEPENDENT — trust it most for the true economy trend; EF & SE are HR-based.`;
+// Uses the SAME stationary-time-repaired points and the SAME summary as the Statistics "Efficiency Trends" card
+// (runStats.efficiencyTrendSummary), so the numbers the review quotes are the ones Geert can look up.
+// Same run set too (snapshot ∪ durable stats-runs history, snapshot wins per uuid): efficiencyTrend's cadence
+// baseline is a median over ALL runs, so a different set could flip a borderline run in/out of the fit.
+async function efficiencyTrendContext(runs: RunWorkout[]): Promise<string> {
+  const byUuid = new Map<string, RunWorkout>();
+  for (const r of runs) byUuid.set(r.uuid || r.date, r);   // the new run is often ALREADY in snap.runs — count it once
+  const all = mergeRuns([...byUuid.values()], await loadStatsRuns().catch(() => [] as RunWorkout[]))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  // ≤3 detail fetches: warm cache ⇒ just the new run; cold cache (Statistics never opened / after Rebuild) must not
+  // turn a background post-run wake into 30 heavy HealthKit reads (CPU watchdog). Unfetched runs use raw stats.
+  const rep = await repairWorkStats(all.slice(-30), undefined, { maxFetch: 3 }).catch(() => ({} as Record<string, RepairedWork | null>));
+  const sum = efficiencyTrendSummary(efficiencyTrend(all, rep));
+  if (!sum.items.length) return '';
+  const dp = { ec: 3, ef: 2, se: 2 } as const;
+  const parts = sum.items.map(it => `${it.key.toUpperCase()} ${it.change >= 0 ? '+' : ''}${it.change.toFixed(dp[it.key])} (${it.dir})`);
+  return `EFFICIENCY TRENDS over the last ${sum.runs} aerobic runs (OLS change across the window; higher = better): ${parts.join(' · ')}. `
+    + `EC = speed÷power is HR-INDEPENDENT — trust it most for the true economy trend; EF & SE are HR-based. `
+    + `(The athlete sees these exact numbers on the Statistics "Efficiency Trends" card.)`;
 }
 
 export async function analyzeRun(
@@ -203,11 +207,11 @@ export async function analyzeRun(
     : `NO SESSION WAS PRESCRIBED before this run — today's plan had not been generated when the run started, so there is no prescription to judge against. Do NOT assume it was a rest day or that the athlete should not have run, and do NOT produce a "ran on a rest day / should have rested" verdict. Analyse the run purely on its own merits and recent trends.`;
   const yohOffsets = await loadSupplements().then(d => hrOffsetByDay(d)).catch(() => ({} as Record<string, number>));
   const runBlock = buildNewRunUserMessage(run, prevRuns, run.kmSplits, true, undefined, yohOffsets);
-  const [appModel, cs] = await Promise.all([
+  const [appModel, cs, effTrend] = await Promise.all([
     buildAppModelPrompt().catch(() => ''),
     assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs).catch(() => null),
+    efficiencyTrendContext([...(snap.runs ?? []), run]).catch(() => ''),
   ]);
-  const effTrend = efficiencyTrendContext([...(snap.runs ?? []), run]);
   const secondRun = secondRunContext(snap.runs ?? [], run);
   const userMsg = [appModel, recoveryLoadContext(snap), buildBudgetContext(cs), effTrend, secondRun, prescription, runBlock].filter(Boolean).join('\n\n');
 
