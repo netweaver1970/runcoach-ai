@@ -18,6 +18,7 @@ import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { pushWorkoutToWatch, watchModuleAvailable, getWatchRecorder } from '../src/services/watchWorkout';
 import { sendWorkoutToWatch } from '../src/services/watchRoute';
+import { handOffRouteWorkout } from '../src/services/routeWorkoutHandoff';
 import { getPowerZones } from '../src/services/claude';
 
 const INTENSITY_COLOR: Record<string, string> = {
@@ -749,7 +750,9 @@ export default function DailyCoachScreen() {
                     const w = watchWorkout; let min = w?.drillsMinutes || 0;
                     for (const b of (w?.blocks ?? [])) min += ((b.workMinutes || 0) + (b.restMinutes || 0)) * Math.max(1, b.repeats || 1);
                     const km = Math.round(((((w?.warmupMeters || 0) + (w?.cooldownMeters || 0)) / 1000 + min / 5.7)) * 2) / 2;
-                    router.push({ pathname: '/wayfinder' as any, params: km >= 2 ? { km: String(km) } : {} });
+                    // Hand over THIS (possibly ±-edited) session so the watch gets the structure the route was sized for.
+                    handOffRouteWorkout(w ?? null);
+                    router.push({ pathname: '/wayfinder' as any, params: { ...(km >= 2 ? { km: String(km) } : {}), ...(w ? { wk: '1' } : {}) } });
                   }}>
                     <Text style={[s.watchBtnText, s.routeBtnText]}>🧭 Plan a route for this</Text>
                   </TouchableOpacity>

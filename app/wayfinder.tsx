@@ -16,6 +16,7 @@ import { getOrsApiKey, orsHeadingOptions, orsDirectionalLoop, orsPointToPointOpt
 import { loadActiveRoute, clearActiveRoute } from '../src/services/activeRoute';
 import { requireNativeModule } from 'expo-modules-core';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
+import { getHandedRouteWorkout } from '../src/services/routeWorkoutHandoff';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot, ensureBlockPower } from '../src/services/coach';
 import type { WatchWorkout } from '../src/services/coach';
@@ -272,7 +273,7 @@ function MapPane({ coords, start, dest, here, center, zoom, width, height, c, mo
 
 export default function WayfinderScreen() {
   const router = useRouter();
-  const { km: kmParam } = useLocalSearchParams<{ km?: string }>();   // distance passed from Daily Coach's session
+  const { km: kmParam, wk: wkParam } = useLocalSearchParams<{ km?: string; wk?: string }>();   // distance (+ exact session) from Daily Coach
   useEffect(() => { const k = Number(kmParam); if (k >= 2 && k <= 30) setTargetKm(Math.round(k * 2) / 2); }, [kmParam]);
   const s = useThemedStyles(makeStyles);
   const { c } = useTheme();
@@ -353,6 +354,10 @@ export default function WayfinderScreen() {
           }
         }
       } catch { /* keep default */ }
+      // From the Daily Coach, use the EXACT session it handed over (incl. ± edits) — re-deriving it below from the
+      // cached plan sent the old, shorter structure with a route sized for the longer one.
+      const handed = wkParam === '1' ? getHandedRouteWorkout() : null;
+      if (handed) setDayWorkout(handed);
       try {
         const snap = await loadSnapshotCache();
         if (snap) {
@@ -362,7 +367,7 @@ export default function WayfinderScreen() {
             const km = Math.round(((plan.runMinutes ?? 0) / (PACE[plan.intensity] ?? 6)) * 2) / 2;
             if (!kmParam && km >= 2 && km <= 30) setTargetKm(km);   // Daily-Coach km wins over the generic plan seed
           }
-          if (plan?.workout) setDayWorkout(plan.workout);   // today's intervals → sent with the route to the watch
+          if (!handed && plan?.workout) setDayWorkout(plan.workout);   // today's intervals → sent with the route to the watch
         }
       } catch { /* keep default 8 */ }
     })();

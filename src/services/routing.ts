@@ -26,7 +26,8 @@ export interface RouteStep {
   i: number;      // index into `coords` where the maneuver happens (way_points[0])
   text: string;   // ORS instruction, e.g. "Turn left onto Main Street"
   dist: number;   // metres this step covers (≈ distance to the next maneuver)
-  type: number;   // ORS maneuver code (0 left, 1 right, 6 continue, 10 arrive, …)
+  type: number;   // ORS maneuver code (0 left, 1 right, 6 continue, 10 arrive, 12/13 keep left/right, …)
+  wt?: number;    // ORS waytype at the maneuver (internal, for cue post-processing — not sent to the watch)
 }
 export interface RouteLoop {
   distanceKm: number;
@@ -98,14 +99,105 @@ function correctTurnDirections(steps: RouteStep[], coords: number[][]): RouteSte
   });
 }
 
+// ── Spoken-cue post-processing (2026-09-28, Geert's run feedback) ──────────────────────────────────────────────
+// The watch speaks every step verbatim from 40 m out, so (1) a ROAD CROSSING — ORS: "turn left" onto the road,
+// then 15 m later "turn right" off it — came out as two rapid-fire turns, and (2) at a FORK between unnamed paths
+// ORS often emits NO step at all (same-name continuation), leaving "straight on while the main track bends left"
+// unguided. ORS waytype (1 state road, 2 road, 3 street, 4 path, 5 track, 6 cycleway, 7 footway, 8 steps)
+// marks where the route moves onto a different kind of way — a fork/junction when no step is already there.
+const WT_NAME: Record<number, string> = { 1: 'road', 2: 'road', 3: 'street', 4: 'path', 5: 'track', 6: 'cycle path', 7: 'footpath', 8: 'steps' };
+const ROADISH = new Set([1, 2, 3]);
+const SIDE_TYPES = new Set([0, 1, 2, 3, 4, 5, 12, 13]);   // maneuvers that carry a left/right
+function cumDist(coords: number[][]): number[] {
+  const c = [0]; for (let k = 1; k < coords.length; k++) c.push(c[k - 1] + distM(coords[k - 1], coords[k])); return c;
+}
+function turnDelta(coords: number[][], iIn: number, iOut: number): number | null {
+  const before = ptAlong(coords, iIn, -1, 20), after = ptAlong(coords, iOut, 1, 20);
+  if (before === coords[iIn] || after === coords[iOut]) return null;
+  let d = bearingDeg(coords[iOut], after) - bearingDeg(before, coords[iIn]);
+  while (d > 180) d -= 360; while (d < -180) d += 360;
+  return d;                                                     // + = clockwise = right
+}
+function wtAt(i: number, wt: number[][]): number | undefined {
+  for (const [a, b, v] of wt) if (i >= a && i < b) return v;
+  return undefined;
+}
+/** Tag each step with the waytype it leads onto, and add Keep/Continue cues at unguided waytype changes. */
+function addForkCues(steps: RouteStep[], coords: number[][], wt: number[][]): RouteStep[] {
+  const out = steps.map(s => ({ ...s, wt: wtAt(s.i, wt) }));
+  if (coords.length < 3 || wt.length < 2) return out;
+  const cum = cumDist(coords), total = cum[cum.length - 1];
+  const added: RouteStep[] = [];
+  for (let k = 0; k + 1 < wt.length; k++) {
+    const from = wt[k][2], to = wt[k + 1][2], i = wt[k + 1][0];
+    if (from === to || !WT_NAME[from] || !WT_NAME[to]) continue;
+    if (ROADISH.has(from) && ROADISH.has(to)) continue;        // road re-classification, not a fork
+    if (i <= 0 || i >= coords.length - 1 || cum[i] < 30 || total - cum[i] < 30) continue;
+    const near = (x: RouteStep) => Math.abs(cum[Math.min(x.i, cum.length - 1)] - cum[i]) < 30;
+    if (out.some(near) || added.some(x => Math.abs(cum[x.i] - cum[i]) < 60)) continue;   // ORS already guides it
+    const d = turnDelta(coords, i, i);
+    if (d == null) continue;
+    const onto = ` onto the ${WT_NAME[to]}`;
+    const [text, type] = Math.abs(d) < 20 ? [`Continue straight${onto}`, 6]
+      : Math.abs(d) < 60 ? [`Keep ${d > 0 ? 'right' : 'left'}${onto}`, d > 0 ? 13 : 12]
+      : [`Turn ${d > 0 ? 'right' : 'left'}${onto}`, d > 0 ? 1 : 0];
+    added.push({ i, text, dist: 0, type, wt: to });
+  }
+  return [...out, ...added].sort((a, b) => a.i - b.i);
+}
+/** Merge two maneuvers ≤40 m apart into ONE cue: a road crossing (net heading ≈ unchanged) or one net turn. */
+function mergeCloseTurns(steps: RouteStep[], coords: number[][]): RouteStep[] {
+  if (coords.length < 3) return steps;
+  const cum = cumDist(coords);
+  const out: RouteStep[] = [];
+  for (let k = 0; k < steps.length; k++) {
+    const a = steps[k], b = steps[k + 1];
+    if (!b || !SIDE_TYPES.has(a.type) || !SIDE_TYPES.has(b.type) || Math.abs(cum[b.i] - cum[a.i]) > 40) { out.push(a); continue; }
+    const net = turnDelta(coords, a.i, b.i);
+    if (net == null) { out.push(a); continue; }
+    const sideOf = (t: string) => /\bleft\b/i.test(t) ? 'left' : /\bright\b/i.test(t) ? 'right' : null;
+    const aSide = sideOf(a.text), bSide = sideOf(b.text);
+    const bKeep = b.type === 12 || b.type === 13;               // b is a FORK decision — never fold it away
+    const onto = (/\bonto (.+)$/i.exec(b.text)?.[1]) ?? '';
+    // Both decisions in one utterance: "Turn right, then keep left onto Bospad".
+    const compound = () => `${a.text.replace(/\s+onto\s.+$/i, '')}, then ${b.text.charAt(0).toLowerCase()}${b.text.slice(1)}`;
+    let text: string, type: number;
+    if (aSide && bSide && aSide !== bSide) {
+      if (Math.abs(net) < 35 && !bKeep) {                       // off one way and straight onto the next: a crossing
+        const road = a.wt == null || ROADISH.has(a.wt);         // what you walk along between the two turns
+        text = road ? `Cross the road slightly to the ${aSide}` : `Jog ${aSide}, then continue straight`;
+        type = 6;
+      } else { text = compound(); type = b.type; }              // opposite sides + a real change / a fork: say both
+    } else if (Math.abs(net) >= 35) {                           // same side (or one unsided): ONE net turn
+      const side = net > 0 ? 'right' : 'left';
+      text = `${Math.abs(net) > 120 ? 'Turn sharp' : 'Turn'} ${side}${onto ? ` onto ${onto}` : ''}`;
+      type = net > 0 ? (Math.abs(net) > 120 ? 3 : 1) : (Math.abs(net) > 120 ? 2 : 0);
+    } else { text = compound(); type = b.type; }
+    out.push({ ...a, text, type, dist: a.dist + b.dist, wt: b.wt });
+    k++;                                                        // b is folded into a
+  }
+  return out;
+}
+
+// Metres from point p to segment a→b (local equirectangular — fine at these few-hundred-metre scales).
+function segDistM(p: number[], a: number[], b: number[]): number {
+  const k = 111320, cl = Math.cos(a[1] * Math.PI / 180);
+  const bx = (b[0] - a[0]) * cl * k, by = (b[1] - a[1]) * k, px = (p[0] - a[0]) * cl * k, py = (p[1] - a[1]) * k;
+  const L = bx * bx + by * by;
+  const t = L > 0 ? Math.max(0, Math.min(1, (px * bx + py * by) / L)) : 0;
+  return Math.hypot(px - t * bx, py - t * by);
+}
+
 // round_trip sometimes runs OUT to a dead-end waypoint and straight back over the same road — a short
 // out-and-back "appendix" hanging off the loop. Detect it as a point the path REVISITS within a short
 // excursion, and excise the excursion (keeping the route otherwise intact + step indices remapped). Bounded
 // so it only removes small artifacts (<~350 m), never a genuine there-and-back leg you'd actually run.
-function trimSpurs(coords: number[][], steps: RouteStep[]): { coords: number[][]; steps: RouteStep[]; trimmed: boolean } {
+function trimSpurs(coords: number[][], stepsIn: RouteStep[], wt: number[][] = []): { coords: number[][]; steps: RouteStep[]; trimmed: boolean } {
   const TOL = 18, MAX_SPUR = 900, WINDOW = 160;   // excise out-and-backs up to ~900 m of path (≈450 m out)
+  const steps = addForkCues(stepsIn, coords, wt);   // on the ORIGINAL indices (waytype runs index these)
   const cs = coords.slice();
   const orig = coords.map((_, i) => i);          // original index living at each current position
+  const spurs: { entry: number; exit: number }[] = [];   // ORIGINAL indices of each excised excursion's ends
   let changed = true;
   while (changed) {
     changed = false;
@@ -113,17 +205,60 @@ function trimSpurs(coords: number[][], steps: RouteStep[]): { coords: number[][]
       const jmax = Math.min(cs.length - 1, i + WINDOW);
       for (let j = i + 2; j <= jmax; j++) {
         if (distM(cs[i], cs[j]) < TOL) {                     // path returned to ~the same point
-          let len = 0; for (let k = i; k < j; k++) len += distM(cs[k], cs[k + 1]);
-          if (len < MAX_SPUR) { cs.splice(i + 1, j - i); orig.splice(i + 1, j - i); changed = true; break; }
+          let len = 0, out = 0, tip = i;
+          for (let k = i; k < j; k++) {
+            len += distM(cs[k], cs[k + 1]);
+            const o = distM(cs[i], cs[k + 1]); if (o > out) { out = o; tip = k + 1; }
+          }
+          // A real spur goes OUT (≥30 m) and comes BACK THE SAME WAY. Without the first test, DENSE geometry
+          // (vertices a few metres apart, at junctions and road crossings) passed the 18 m check and got cut —
+          // dropping the turn steps on it. Without the second, an out-and-back that returns on a PARALLEL path
+          // (the other canal bank, a cycle path beside the road) was cut out of the route entirely.
+          let retraced = 0;
+          for (let k = tip; k <= j; k++) {
+            for (let q = i; q < tip; q++) if (segDistM(cs[k], cs[q], cs[q + 1]) < 8) { retraced++; break; }
+          }
+          if (len < MAX_SPUR && out >= 30 && retraced >= 0.7 * (j - tip + 1)) {
+            spurs.push({ entry: orig[i], exit: orig[j] });
+            cs.splice(i + 1, j - i); orig.splice(i + 1, j - i); changed = true; break;
+          }
         }
       }
     }
   }
-  if (cs.length === coords.length) return { coords, steps: correctTurnDirections(steps, coords), trimmed: false };
+  if (cs.length === coords.length) return { coords, steps: mergeCloseTurns(correctTurnDirections(steps, coords), coords), trimmed: false };
   const o2n = new Map<number, number>(); orig.forEach((o, n) => o2n.set(o, n));
-  const newSteps = steps.map(s => { const ni = o2n.get(s.i); return ni == null ? null : { ...s, i: ni }; })
+  // A step at a spur's EXIT (removed) lands on its entry; follow chains of nested spurs.
+  const exitTo = new Map(spurs.map(x => [x.exit, x.entry]));
+  const resolve = (o: number): number | undefined => {
+    let x = o; for (let g = 0; g < 50 && !o2n.has(x) && exitTo.has(x); g++) x = exitTo.get(x)!;
+    return o2n.get(x);
+  };
+  const entryIdx = new Set(spurs.map(x => resolve(x.entry)).filter((n): n is number => n != null));
+  const remapped = steps.map(s => { const ni = resolve(s.i); return ni == null ? null : { ...s, i: ni }; })
     .filter((s): s is RouteStep => s != null);
-  return { coords: cs, steps: correctTurnDirections(newSteps, cs), trimmed: true };
+  // Around a spur's entry the old steps described turning INTO the dead end / back out of it — both wrong once it's
+  // cut (the exit vertex can survive a few metres on). Rebuild ONE cue per entry from the trimmed geometry
+  // (keeping the exit step's "onto …"), or none if the route now runs straight through.
+  const cumT = cumDist(cs);
+  const entryOf = (st: RouteStep): number | undefined => {
+    if (st.type === 11 || st.type === 10) return undefined;                             // depart / arrive stay
+    for (const e of entryIdx) if (Math.abs(cumT[st.i] - cumT[e]) <= 25) return e;
+    return undefined;
+  };
+  const newSteps: RouteStep[] = remapped.filter(st => entryOf(st) === undefined);
+  for (const e of entryIdx) {
+    const group = remapped.filter(st => entryOf(st) === e);
+    if (!group.length) continue;
+    const d = turnDelta(cs, e, e);
+    if (d == null || Math.abs(d) < 30) continue;                                        // straight through → no cue
+    const last = group[group.length - 1];
+    const onto = /\bonto (.+)$/i.exec(last.text)?.[1];
+    newSteps.push({ ...last, i: e, text: `Turn ${d > 0 ? 'right' : 'left'}${onto ? ` onto ${onto}` : ''}`, type: d > 0 ? 1 : 0,
+      dist: group.reduce((a, x) => a + x.dist, 0) });
+  }
+  newSteps.sort((a, b) => a.i - b.i);
+  return { coords: cs, steps: mergeCloseTurns(correctTurnDirections(newSteps, cs), cs), trimmed: true };
 }
 
 // ORS GeoJSON carries turn-by-turn under properties.segments[].steps[] (instructions are on by default). Each
@@ -172,7 +307,7 @@ export async function orsRoundTrip(opts: {
     const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
     let trail = 0, tot = 0;
     for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; } // path/track/footway
-    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f));   // [lon,lat,ele]
+    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f), f.properties?.extras?.waytype?.values ?? []);   // [lon,lat,ele]
     const es = elevStats(t.coords.map(c => c[2] ?? 0));
     return {
       distanceKm: t.trimmed ? pathKm(t.coords) : (sm.distance ?? 0) / 1000,
@@ -284,7 +419,7 @@ export async function orsDirectionalLoop(opts: {
     const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
     let trail = 0, tot = 0;
     for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; }
-    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f));   // [lon,lat,ele]
+    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f), f.properties?.extras?.waytype?.values ?? []);   // [lon,lat,ele]
     const coords = t.coords.map(c => [c[0], c[1]] as [number, number]);
     const es = elevStats(t.coords.map(c => c[2] ?? 0));
     let maxD = 0;
@@ -330,7 +465,7 @@ export async function orsRouteVia(opts: {
     const wt: any[] = f.properties?.extras?.waytype?.summary ?? [];
     let trail = 0, tot = 0;
     for (const x of wt) { tot += x.distance; if (x.value === 4 || x.value === 5 || x.value === 7) trail += x.distance; }
-    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f));
+    const t = trimSpurs((f.geometry?.coordinates ?? []) as number[][], stepsFromFeature(f), f.properties?.extras?.waytype?.values ?? []);
     const es = elevStats(t.coords.map(c => c[2] ?? 0));
     return {
       distanceKm: t.trimmed ? pathKm(t.coords) : (sm.distance ?? 0) / 1000,
