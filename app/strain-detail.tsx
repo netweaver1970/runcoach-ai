@@ -98,37 +98,48 @@ export default function StrainDetailScreen() {
     } finally { setWatchSending(false); }
   };
 
-  // Fast by default: load only ~the last week of daily components. Pull down for the
-  // full month (longer history sparklines).
+  // Load a window that COVERS the viewed day: 3 months by default (same `comps:3` key as Recovery detail, pre-warmed
+  // by the home), widened a month at a time when DayNav pages further back. The old fixed 0.3-month (~9 day) load
+  // left an older day missing from `comps`, and the screen then silently showed TODAY's numbers under that date.
+  const histMonths = useMemo(() => {
+    if (!date) return 3;
+    const daysBack = Math.ceil((Date.now() - new Date(date + 'T00:00:00').getTime()) / 86_400_000);
+    // Round UP to 3/6/12/24 months: stepping per 30 days recomputed the whole window (and cached one more big
+    // `comps:N` entry) at every month boundary while paging back.
+    return [3, 6, 12, 24].find(m => m * 30 >= daysBack + 1) ?? Math.ceil((daysBack + 1) / 30);
+  }, [date]);
+  const loadSeq = useRef(0);   // only the LATEST load may update state (a faster earlier one flashed "no data")
   const loadHistory = useCallback((months: number, isRefresh = false) => {
+    const seq = ++loadSeq.current;
     if (isRefresh) setRefreshing(true); else setLoadingH(true);
-    // Cache the fast (default) load so tab-switches don't re-query HealthKit; pull-to-refresh bypasses it.
-    const compsP = isRefresh ? fetchOurDailyComponents(months, undefined, true) : cached(`comps:${months}`, () => fetchOurDailyComponents(months));
+    // Cached so tab-switches don't re-query HealthKit; pull-to-refresh forces a recompute (ttl 0 → re-cached).
+    const compsP = cached(`comps:${months}`, () => fetchOurDailyComponents(months, undefined, isRefresh), isRefresh ? 0 : undefined);
     const durP   = isRefresh ? fetchDailyDurationHistory()      : cached('dur', () => fetchDailyDurationHistory());
     Promise.all([compsP, durP])
-      .then(([c, d]) => { setComps(c); setDur(d); })
+      .then(([c, d]) => { if (seq !== loadSeq.current) return; setComps(c); setDur(d); })
       .catch(() => {})
-      .finally(() => { setLoadingH(false); setRefreshing(false); });
+      .finally(() => { if (seq !== loadSeq.current) return; setLoadingH(false); setRefreshing(false); });
   }, []);
-  useEffect(() => {
-    loadHistory(0.3);                                  // ~last 9 days — quick
-    getLocalWeather().then(setWeather).catch(() => {});
-  }, [loadHistory]);
-  const onRefresh = useCallback(() => loadHistory(1, true), [loadHistory]); // full month
+  useEffect(() => { loadHistory(histMonths); }, [loadHistory, histMonths]);
+  useEffect(() => { getLocalWeather().then(setWeather).catch(() => {}); }, []);
+  const onRefresh = useCallback(() => loadHistory(histMonths, true), [loadHistory, histMonths]);
 
-  const hist = useMemo(
-    () => buildHistories(comps, ['strainScore', 'exerciseDuration', 'daytimeHR', 'totalEnergy', 'stepCount', 'cardioLoad']),
-    [comps],
-  );
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
   // Sub-KPI values for the VIEWED day (target is defined below; this closure runs in render).
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
-  // The coach plan is built for the VIEWED day (the `date` param), not just today.
+  // The screen renders the VIEWED day (the `date` param; none = today). NEVER fall back to another day when that
+  // day has no row: the old fallback (last day with data ≈ today) put today's numbers under a past date. A
+  // missing day renders the explicit "no data for this day" state below instead.
   const dates      = Object.keys(comps).sort();
-  const targetDate = (date && comps[date]) ? date : (dates.length ? dates[dates.length - 1] : toDateKey(new Date()));
+  const targetDate = date || toDateKey(new Date());
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === toDateKey(new Date());
+  // Histories END at the viewed day, so a past day's sparklines + badges aren't today's.
+  const hist = useMemo(
+    () => buildHistories(comps, ['strainScore', 'exerciseDuration', 'daytimeHR', 'totalEnergy', 'stepCount', 'cardioLoad'], targetDate),
+    [comps, targetDate],
+  );
 
   // Strain value + status: today's DayStrain (str, with the readiness band) applies ONLY when the viewed
   // day IS today — the day-swipe keeps rec/str params, so without this gate a past day rendered TODAY's
@@ -317,6 +328,30 @@ export default function StrainDetailScreen() {
     })();
   }, [plan, weather, targetIsToday, planLoading, real, capCtx]);
 
+  // A PAST day with no stored row (outside the loaded window, or genuinely no data): say so explicitly rather
+  // than render zeros/another day's numbers. Today keeps the main layout (its hero handles "no strain yet").
+  if (!targetIsToday && Object.keys(target).length === 0) {
+    return (
+      <SafeAreaView style={s.container}>
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 14, bottom: 14, left: 16, right: 16 }} style={{ paddingHorizontal: 4 }}>
+            <Text style={s.backText}>‹ Back</Text>
+          </TouchableOpacity>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={s.title}>Strain Detail</Text>
+            <Text style={s.headerDate}>{dayLabel}</Text>
+          </View>
+          <View style={{ width: 60 }} />
+        </View>
+        <KpiTabs current="strain" params={{ rec, str, date }} />
+        <DayNav date={date} />
+        <View style={s.center} {...swipe}>
+          <Text style={s.emptyText}>{loadingH ? 'Loading…' : 'No strain data for this day.'}</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
@@ -351,7 +386,7 @@ export default function StrainDetailScreen() {
             <Text style={s.scoreAdvice}>
               {strainToday
                 ? `Today's strain ${real}% — Target ${strainToday.safeLow}–${strainToday.safeHigh}% given your recovery & form.`
-                : 'No strain data yet today.'}
+                : targetIsToday ? 'No strain data yet today.' : 'Stored strain for this day.'}
             </Text>
           </View>
         </View>
@@ -517,7 +552,7 @@ export default function StrainDetailScreen() {
         {loadingH && (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 4 }}>
             <ActivityIndicator size="small" color={status.color} />
-            <Text style={s.rowSub}>Loading 30-day history…</Text>
+            <Text style={s.rowSub}>Loading {Math.round(histMonths * 30)}-day history…</Text>
           </View>
         )}
 
@@ -551,12 +586,13 @@ export default function StrainDetailScreen() {
         {!loadingH && (<>
         <Text style={s.sectionTitle}>STRAIN METRICS</Text>
         <View style={s.card}>
-          <SubKPICard label="Strain Score"      value={last('strainScore') !== null ? `${last('strainScore')}` : `${real}`} unit="%" history={hist.strainScore ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('strain')} />
-          <SubKPICard label="Cardio Load"        value={last('cardioLoad') !== null ? `${last('cardioLoad')}` : '—'} unit="ATL" history={hist.cardioLoad ?? []} higherIsBetter color="#F97316" onPress={() => navTo('cardio-load')} />
-          <SubKPICard label="Exercise Duration"  value={last('exerciseDuration') !== null ? `${last('exerciseDuration')}` : '—'} unit="min" history={hist.exerciseDuration ?? []} higherIsBetter color="#2980b9" onPress={() => navTo('exercise-duration')} />
-          <SubKPICard label="Daytime HR"         value={last('daytimeHR') !== null ? `${last('daytimeHR')}` : '—'} unit="bpm" history={hist.daytimeHR ?? []} higherIsBetter={false} color="#e74c3c" onPress={() => navTo('daytime-hr')} />
-          <SubKPICard label="Total Energy"       value={last('totalEnergy') !== null ? `${last('totalEnergy')}` : '—'} unit="kcal" history={hist.totalEnergy ?? []} higherIsBetter color="#e67e22" onPress={() => navTo('total-energy')} />
-          <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
+          {/* `current` = the viewed day's value → the badge judges what's shown, not today's last point. */}
+          <SubKPICard label="Strain Score"      value={last('strainScore') !== null ? `${last('strainScore')}` : `${real}`} unit="%" history={hist.strainScore ?? []} current={last('strainScore') ?? real} higherIsBetter color="#e67e22" onPress={() => navTo('strain')} />
+          <SubKPICard label="Cardio Load"        value={last('cardioLoad') !== null ? `${last('cardioLoad')}` : '—'} unit="ATL" history={hist.cardioLoad ?? []} current={last('cardioLoad')} higherIsBetter color="#F97316" onPress={() => navTo('cardio-load')} />
+          <SubKPICard label="Exercise Duration"  value={last('exerciseDuration') !== null ? `${last('exerciseDuration')}` : '—'} unit="min" history={hist.exerciseDuration ?? []} current={last('exerciseDuration')} higherIsBetter color="#2980b9" onPress={() => navTo('exercise-duration')} />
+          <SubKPICard label="Daytime HR"         value={last('daytimeHR') !== null ? `${last('daytimeHR')}` : '—'} unit="bpm" history={hist.daytimeHR ?? []} current={last('daytimeHR')} higherIsBetter={false} color="#e74c3c" onPress={() => navTo('daytime-hr')} />
+          <SubKPICard label="Total Energy"       value={last('totalEnergy') !== null ? `${last('totalEnergy')}` : '—'} unit="kcal" history={hist.totalEnergy ?? []} current={last('totalEnergy')} higherIsBetter color="#e67e22" onPress={() => navTo('total-energy')} />
+          <SubKPICard label="Step Count"         value={last('stepCount') !== null ? `${last('stepCount')}` : '—'} unit="steps" history={hist.stepCount ?? []} current={last('stepCount')} higherIsBetter color="#16a085" onPress={() => navTo('step-count')} />
         </View>
         </>)}
 
@@ -578,6 +614,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   historyLink: { fontSize: 15, color: c.accent, fontWeight: '600' },
   headerDate: { fontSize: 11, color: c.textFaint, marginTop: 1 },
   metricsDate: { fontSize: 13, fontWeight: '800', color: c.accent, textAlign: 'center', paddingVertical: 8 },
+  center:   { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText:{ fontSize: 15, color: c.textFaint },
   scroll:   { padding: 12, paddingBottom: 40 },
 
   hero: {

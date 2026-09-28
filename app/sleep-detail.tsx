@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DailyRecovery, SleepSession } from '../src/types';
-import { fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory, computeSleepScore } from '../src/services/healthkit';
+import { fetchSleepHistory, fetchOurDailyComponents, fetchStrainHistory, computeSleepScore } from '../src/services/healthkit';
 import { computeSleepBankSeries, computeSleepNeeded } from '../src/services/trainingLoad';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
@@ -140,32 +140,36 @@ function Sparkline({
 // ─── Sub-KPI Card ─────────────────────────────────────────────────────────────
 
 function SubKPICard({
-  label, value, unit, history, higherIsBetter = true, color, onPress,
+  label, value, unit, history, current, higherIsBetter = true, color, onPress,
 }: {
   label: string;
   value: string;
   unit: string;
   history: number[];
+  /** Same as the shared SubKPICard: null = the viewed night has no value → no badge (don't judge another night). */
+  current?: number | null;
   higherIsBetter?: boolean;
   color: string;
   onPress?: () => void;
 }) {
   const kpi = useThemedStyles(makeKpi);
   const { mean, sd } = stats(history);
-  const current = history.length > 0 ? history[history.length - 1] : 0;
-  const status  = history.length > 5
-    ? getStatus(current, mean, sd, higherIsBetter)
+  const judged = current !== undefined ? current : (history.length > 0 ? history[history.length - 1] : 0);
+  const status: StatusTag | null = judged == null ? null
+    : history.length > 5 ? getStatus(judged, mean, sd, higherIsBetter)
     : 'Normal range';
-  const statusColor = STATUS_COLOR[status];
+  const statusColor = status ? STATUS_COLOR[status] : '';
 
   const content = (
     <View style={kpi.card}>
       {/* Left: label + status */}
       <View style={kpi.left}>
         <Text style={kpi.label}>{label}</Text>
-        <View style={[kpi.badge, { backgroundColor: statusColor + '22' }]}>
-          <Text style={[kpi.badgeText, { color: statusColor }]}>{status}</Text>
-        </View>
+        {status && (
+          <View style={[kpi.badge, { backgroundColor: statusColor + '22' }]}>
+            <Text style={[kpi.badgeText, { color: statusColor }]}>{status}</Text>
+          </View>
+        )}
       </View>
 
       {/* Middle: sparkline */}
@@ -207,7 +211,8 @@ export default function SleepDetailScreen() {
   const recovery = rec ? JSON.parse(rec) as DailyRecovery : null;
 
   const [history, setHistory]       = useState<SleepSession[]>([]);
-  const [hrDipHistory, setHrDipH]   = useState<number[]>([]);
+  // Per-day components store (same `comps:3` key as Recovery detail) — the source of the HR-dip PERCENT series.
+  const [comps, setComps]           = useState<Record<string, Record<string, number>>>({});
   const [strainByDate, setStrainByDate] = useState<Map<string, number>>(new Map());
   const [sleepGoalMin, setSleepGoalMin] = useState(FALLBACK_SLEEP_GOAL);
   const [loadingH, setLoadingH]     = useState(true);
@@ -218,12 +223,14 @@ export default function SleepDetailScreen() {
     const ttl = force ? 0 : undefined;
     return Promise.all([
       cached('sleep:3', () => fetchSleepHistory(3), ttl),
-      cached('dip:3', () => fetchOvernightHRHistory(3), ttl),
+      // HR dip is a % — the old source (fetchOvernightHRHistory) was overnight HR in BPM, so the sparkline/badge
+      // compared the % value against a bpm series. The components store's heartRateDip is the same % metric.
+      cached('comps:3', () => fetchOurDailyComponents(3, undefined, force), ttl),
       loadPersonalSleepGoal(),
       cached('strain:3', () => fetchStrainHistory(3), ttl),
-    ]).then(([sessions, dipData, savedGoal, strainHist]) => {
+    ]).then(([sessions, compsData, savedGoal, strainHist]) => {
       setHistory(sessions);
-      setHrDipH(dipData.map(d => d.value));
+      setComps(compsData);
       setStrainByDate(new Map(strainHist.map(x => [x.date, x.value])));
       const goal = savedGoal ?? computePersonalSleepGoal(sessions);
       setSleepGoalMin(goal > 0 ? goal : FALLBACK_SLEEP_GOAL);
@@ -255,6 +262,13 @@ export default function SleepDetailScreen() {
     });
     return computeSleepBankSeries(nights, sleepGoalMin);
   }, [historyUpTo, strainByDate, sleepGoalMin]);
+  // HR-dip % per night from the components store, ending at the viewed night (store rows are keyed by the
+  // sleep session's date, like `history`). The store omits a 0 dip (no data), so null = no reading.
+  const dipHistory = useMemo(
+    () => Object.keys(comps).sort().filter(d => d <= viewedDate)
+      .map(d => comps[d].heartRateDip).filter((v): v is number => v != null),
+    [comps, viewedDate],
+  );
 
   if (!sleep) {
     return (
@@ -270,6 +284,7 @@ export default function SleepDetailScreen() {
           <View style={{ width: 60 }} />
         </View>
         <KpiTabs current="sleep" params={{ rec, str, date }} />
+        <DayNav date={date} />{/* keep the stepper so paging onto an empty day isn't a dead end */}
         <View style={s.center} {...swipe}>
           <Text style={s.emptyText}>{loadingH ? 'Loading…' : 'No sleep data for this day.'}</Text>
         </View>
@@ -290,6 +305,15 @@ export default function SleepDetailScreen() {
     : computeSleepScore(sleep, 0, 0, historyUpTo).score;
 
   const todayKPIs = getSubKPIs(sleep, hrDipPct);
+
+  // HR dip shown: today's live value (rec) when present, else the viewed night's stored %. The sparkline ends
+  // ON that value (replacing the night's stored point, never appending after it), so the badge judges it.
+  const storedDip = comps[viewedDate]?.heartRateDip ?? null;
+  // A live 0 means "no daytime-HR baseline" (baseline fell back to the overnight HR), not a real 0 % dip → use the
+  // stored value then (the components store omits 0 for the same reason).
+  const dipShown  = overnightHR > 0 && overnightHRBaseline > 0 && hrDipPct !== 0 ? hrDipPct : storedDip;
+  const dipSpark  = dipShown == null ? dipHistory
+    : [...(storedDip != null ? dipHistory.slice(0, -1) : dipHistory), dipShown];
 
   // Per-KPI history arrays END at the viewed day so sparklines/mean/sd reflect "up to this date".
   const totalHistory    = historyUpTo.map(s => s.totalMinutes);
@@ -462,19 +486,20 @@ export default function SleepDetailScreen() {
           {/* Heart Rate Dip */}
           <SubKPICard
             label="HR Dip"
-            value={overnightHR > 0 && overnightHRBaseline > 0 ? hrDipPct.toFixed(1) : '—'}
+            value={dipShown != null ? dipShown.toFixed(1) : '—'}
             unit="% vs daytime"
-            history={hrDipHistory}
+            history={dipSpark}
+            current={dipShown}
             higherIsBetter
             color="#e74c3c"
             onPress={() => navTo('sleep-hrdip')}
           />
 
-          {/* Sleep Bank */}
+          {/* Sleep Bank — measured against your personal MEDIAN nightly sleep (computeSleepBankSeries), not the goal. */}
           <SubKPICard
             label="Sleep Bank"
             value={(sleepBankMin >= 0 ? '+' : '') + Math.round(sleepBankMin)}
-            unit={`min  (7d vs ${Math.round(sleepGoalMin / 60)}h${sleepGoalMin % 60 > 0 ? `${sleepGoalMin % 60}m` : ''} goal)`}
+            unit="min  (7 nights vs your usual need)"
             history={bankHistory}
             higherIsBetter
             color={sleepBankMin >= 0 ? '#27ae60' : '#e74c3c'}

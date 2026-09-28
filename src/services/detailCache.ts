@@ -9,7 +9,7 @@
  */
 import * as FileSystem from 'expo-file-system';
 import {
-  fetchSleepHistory, fetchOvernightHRHistory, fetchStrainHistory,
+  fetchSleepHistory, fetchStrainHistory,
   fetchOurDailyComponents, fetchDailyDurationHistory,
 } from './healthkit';
 
@@ -70,7 +70,6 @@ export function clearDetailCache(): void {
 export async function warmDetailCache(): Promise<void> {
   await Promise.allSettled([
     cached('sleep:3',   () => fetchSleepHistory(3)),
-    cached('dip:3',     () => fetchOvernightHRHistory(3)),
     cached('strain:3',  () => fetchStrainHistory(3)),
     cached('comps:3',   () => fetchOurDailyComponents(3)),
     cached('comps:0.3', () => fetchOurDailyComponents(0.3)),

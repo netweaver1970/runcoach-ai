@@ -71,14 +71,15 @@ export default function RecoveryDetailScreen() {
       .then(setComps).catch(() => {}), []);
   useEffect(() => { loadComps().finally(() => setLoadingH(false)); }, [loadComps]);
   const onRefresh = useCallback(() => { setRefreshing(true); loadComps(true).finally(() => setRefreshing(false)); }, [loadComps]);
-  const hist = useMemo(
-    () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'hrvCv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
-    [comps],
-  );
   // Sub-KPI values for the VIEWED day (the `date` param), not just today.
   const dates = Object.keys(comps).sort();
   const viewedDate = (date && comps[date]) ? date : (date || (dates.length ? dates[dates.length - 1] : ''));
   const target = comps[viewedDate] ?? {};
+  // Histories END at the viewed day, so a past day's sparklines + badges aren't today's.
+  const hist = useMemo(
+    () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'hrvCv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip'], viewedDate),
+    [comps, viewedDate],
+  );
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
 
@@ -123,6 +124,14 @@ export default function RecoveryDetailScreen() {
 
   // Score + colour/label: rec when viewing today, else the viewed day's stored components.
   const recoveryScore = useRec ? recovery!.recoveryScore : Math.round((target.recoveryScore as number) ?? 0);
+  // Sparkline ends on the score shown. Today: the live snapshot score REPLACES today's stored point (which can
+  // lag it) instead of being appended after it (that duplicated today). Past day: the cut history already ends
+  // on that day's stored score.
+  const recHist = hist.recoveryScore ?? [];
+  const recoverySpark = useRec
+    ? [...(comps[todayKey]?.recoveryScore != null ? recHist.slice(0, -1) : recHist), recoveryScore]
+    : recHist;
+  const hasRecScore = useRec || target.recoveryScore != null;
   const { color, label } = useRec
     ? { color: recovery!.color, label: recovery!.label }
     : { color: scoreToColor(recoveryScore), label: scoreToLabel(recoveryScore) }; // same canonical mapping as home
@@ -148,6 +157,7 @@ export default function RecoveryDetailScreen() {
           <View style={{ width: 60 }} />
         </View>
         <KpiTabs current="recovery" params={{ rec, str, date }} />
+        <DayNav date={date} />{/* keep the stepper so paging onto an empty day isn't a dead end */}
         <View style={s.center} {...swipe}>
           <Text style={s.emptyText}>{loadingH ? 'Loading…' : 'No recovery data for this day.'}</Text>
         </View>
@@ -184,7 +194,7 @@ export default function RecoveryDetailScreen() {
         {/* Score hero */}
         <View style={[s.hero, { borderColor: color }]}>
           <View style={[s.scoreCircle, { borderColor: color + '55' }]}>
-            <Text style={[s.scoreNumber, { color }]}>{recoveryScore}</Text>
+            <Text style={[s.scoreNumber, { color }]}>{hasRecScore ? recoveryScore : '—'}</Text>
             <Text style={s.scoreUnit}>/100</Text>
           </View>
           <View style={{ flex: 1 }}>
@@ -202,19 +212,20 @@ export default function RecoveryDetailScreen() {
         {loadingH && (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 4 }}>
             <ActivityIndicator size="small" color={color} />
-            <Text style={s.rowSub}>Loading 30-day history…</Text>
+            <Text style={s.rowSub}>Loading 90-day history…</Text>
           </View>
         )}
         {!loadingH && (<>
         <Text style={s.sectionTitle}>RECOVERY METRICS</Text>
         <View style={s.card}>
-          <SubKPICard label="Recovery Score" value={`${recoveryScore}`} unit="/100" history={[...(hist.recoveryScore ?? []), recoveryScore]} higherIsBetter color={color} onPress={() => navTo('recovery')} />
-          <SubKPICard label="Resting HRV"   value={last('restingHrv') !== null ? `${last('restingHrv')}` : '—'} unit="ms"  history={hist.restingHrv ?? []}       higherIsBetter        color="#8e44ad" onPress={() => navTo('hrv')} />
-          <SubKPICard label="HRV Stability (CV)" value={last('hrvCv') !== null ? `${last('hrvCv')}` : '—'} unit="%" history={hist.hrvCv ?? []} higherIsBetter={false} color="#6c5ce7" onPress={() => navTo('hrv-cv')} />
-          <SubKPICard label="Resting HR"    value={last('restingHr') !== null ? `${last('restingHr')}` : '—'}   unit="bpm" history={hist.restingHr ?? []}        higherIsBetter={false} color="#e74c3c" onPress={() => navTo('rhr')} />
-          <SubKPICard label="Respiratory Rate" value={last('respiratoryRate') !== null ? `${last('respiratoryRate')}` : '—'} unit="rpm" history={hist.respiratoryRate ?? []} higherIsBetter={false} color="#2980b9" onPress={() => navTo('resp-rate')} />
-          <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
-          <SubKPICard label="Heart Rate Dip" value={last('heartRateDip') !== null ? `${last('heartRateDip')}` : '—'} unit="%" history={hist.heartRateDip ?? []} higherIsBetter color="#16a085" onPress={() => navTo('sleep-hrdip')} />
+          {/* `current` = the viewed day's value → the badge judges what's shown, not today's last point. */}
+          <SubKPICard label="Recovery Score" value={hasRecScore ? `${recoveryScore}` : '—'} unit="/100" history={recoverySpark} current={hasRecScore ? recoveryScore : null} higherIsBetter color={color} onPress={() => navTo('recovery')} />
+          <SubKPICard label="Resting HRV"   value={last('restingHrv') !== null ? `${last('restingHrv')}` : '—'} unit="ms"  history={hist.restingHrv ?? []} current={last('restingHrv')}       higherIsBetter        color="#8e44ad" onPress={() => navTo('hrv')} />
+          <SubKPICard label="HRV Stability (CV)" value={last('hrvCv') !== null ? `${last('hrvCv')}` : '—'} unit="%" history={hist.hrvCv ?? []} current={last('hrvCv')} higherIsBetter={false} color="#6c5ce7" onPress={() => navTo('hrv-cv')} />
+          <SubKPICard label="Resting HR"    value={last('restingHr') !== null ? `${last('restingHr')}` : '—'}   unit="bpm" history={hist.restingHr ?? []} current={last('restingHr')}        higherIsBetter={false} color="#e74c3c" onPress={() => navTo('rhr')} />
+          <SubKPICard label="Respiratory Rate" value={last('respiratoryRate') !== null ? `${last('respiratoryRate')}` : '—'} unit="rpm" history={hist.respiratoryRate ?? []} current={last('respiratoryRate')} higherIsBetter={false} color="#2980b9" onPress={() => navTo('resp-rate')} />
+          <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} current={last('oxygenSaturation')} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
+          <SubKPICard label="Heart Rate Dip" value={last('heartRateDip') !== null ? `${last('heartRateDip')}` : '—'} unit="%" history={hist.heartRateDip ?? []} current={last('heartRateDip')} higherIsBetter color="#16a085" onPress={() => navTo('sleep-hrdip')} />
         </View>
         </>)}
         <View style={{ height: 14 }} />
@@ -304,10 +315,10 @@ export default function RecoveryDetailScreen() {
                 sub={bd.rrBaseline > 0 ? `−3.9 × max(0, RR ${bd.rr} − base ${bd.rrBaseline})` : 'no RR data'}
                 valueColor={bd.rrPenalty < 0 ? '#c0392b' : '#888'}
               />
-              <Row label="Final score" value={`${recoveryScore} / 100`} valueColor={color} />
+              <Row label="Final score" value={hasRecScore ? `${recoveryScore} / 100` : '—'} valueColor={color} />
             </>
           ) : (
-            <Row label="Final score" value={`${recoveryScore} / 100`} valueColor={color} />
+            <Row label="Final score" value={hasRecScore ? `${recoveryScore} / 100` : '—'} valueColor={color} />
           )}
         </Section>
 

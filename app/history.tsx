@@ -6,9 +6,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { getFullBoundary } from '../src/services/accounting';
 import {
-  fetchWeeklyMileageHistory,
-  fetchDailyMileageHistory,
-  fetchWeeklyDurationHistory,
+  fetchDailyWorkDistanceHistory,
   fetchDailyDurationHistory,
   fetchVO2MaxHistory,
   fetchRestingHRHistory,
@@ -53,18 +51,21 @@ const CARD_PADDING = 12;
 /**
  * Max bars shown per period.
  * 1M: show ALL daily readings — no aggregation.
- * 3M: weekly bars (~13).
- * 6M: show all weekly bars — no aggregation (up to ~26).
- * 1Y: use groupByMonth() instead of aggregateBuckets().
+ * 3M: show all weekly bars — no aggregation. A 90-day window touches 14 Monday-weeks, so the old cap of 13
+ *     merged two weeks into one bar (and "weeks" read 13).
+ * 6M: show all weekly bars — no aggregation (up to ~27).
+ * 1Y: summed km/time are bucketed per month by fillSumBuckets(); the rest stay weekly.
  */
 const PERIOD_BUCKETS: Record<Period, number> = {
   '1M': 999,   // never aggregate for 1-month view (daily)
-  '3M': 13,
+  '3M': 999,   // never aggregate — show every week
   '6M': 999,   // never aggregate — show every week
-  '1Y': 999,   // not used directly; groupByMonth() handles 1Y
+  '1Y': 999,   // never aggregate — monthly km/time come from fillSumBuckets()
 };
 
-interface DataPoint { label: string; value: number; fullDate: string; missing?: boolean; }
+// `partial`: a summed (km/time) bucket only partly inside the window — the window's first one, or the
+// in-progress/cut-off last one. Drawn, but kept out of the averages and Δ (see fillSumBuckets).
+interface DataPoint { label: string; value: number; fullDate: string; missing?: boolean; partial?: boolean; }
 
 const SLEEP_TYPES = new Set(['sleep-total', 'sleep-deep', 'sleep-rem', 'sleep-score', 'sleep-efficiency', 'sleep-hrdip', 'sleep-bank', 'sleep-awake']);
 
@@ -131,7 +132,9 @@ function groupByWeek(data: DataPoint[], mode: 'sum' | 'avg' | 'last'): DataPoint
   const map = new Map<string, DataPoint[]>();
   for (const d of data) {
     const mon = getMondayOf(d.fullDate);
-    const key = mon.toISOString().slice(0, 10);
+    // LOCAL key: toISOString() is UTC, and local Monday 00:00 in Belgium is still Sunday in UTC — the key
+    // became that Sunday, which getMondayOf() then mapped to the PREVIOUS Monday (labels a week early).
+    const key = localYMD(mon);
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(d);
   }
@@ -161,9 +164,30 @@ function fmtMin(min: number): string {
   return String(m);
 }
 
+/** LOCAL calendar-date key YYYY-MM-DD. Never toISOString() for a date key: that's the UTC date. */
+function localYMD(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** Parse a date key as LOCAL time. JS reads a bare 'YYYY-MM-DD' as UTC midnight, which is the previous day
+ *  west of Greenwich and skews week/month maths; full timestamps are parsed as-is. */
+function parseLocalDate(s: string): Date {
+  return s.length === 10 ? new Date(s + 'T00:00:00') : new Date(s);
+}
+
+/** LOCAL day key of a key or a full timestamp (slice(0, 10) of a UTC timestamp gives the UTC day). */
+function localKeyOf(s: string): string { return localYMD(parseLocalDate(s)); }
+
+function addDays(d: Date, n: number): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
 /** Get the Monday of the week containing the given ISO date */
 function getMondayOf(iso: string): Date {
-  const d = new Date(iso);
+  const d = parseLocalDate(iso);
   const diff = (d.getDay() + 6) % 7;
   const mon = new Date(d);
   mon.setDate(d.getDate() - diff);
@@ -223,26 +247,82 @@ function aggregateBuckets(
   return result;
 }
 
+type Grain = 'day' | 'week' | 'month';
+
+/** Start (local midnight) of the day / Monday-week / calendar month containing `d`. */
+function bucketStart(d: Date, grain: Grain): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), grain === 'month' ? 1 : d.getDate());
+  if (grain === 'week') x.setDate(x.getDate() - (x.getDay() + 6) % 7);
+  return x;
+}
+
+function nextBucket(d: Date, grain: Grain): Date {
+  return grain === 'month' ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, grain === 'week' ? 7 : 1);
+}
+
 /**
- * Aggregate data points by calendar month.
- * Used for the 1Y km view so each bar = one calendar month.
+ * Zero-fill a SUMMED series (km / minutes) with EVERY day / week / month bucket of the window [from, to),
+ * summing rows into their local bucket. The fetchers only return buckets that HAVE runs, so "avg/wk"
+ * skipped rest weeks and the x-axis collapsed over them. A bucket only partly inside the window is flagged
+ * `partial` (drawn, but left out of the averages and Δ).
+ * Month grain (1Y): the rows are WEEKS keyed by their Monday, so a month holds the weeks whose Monday falls
+ * in it. The grid starts at the month of from's Monday, and completeness is judged on that Monday-span.
  */
-function groupByMonth(data: DataPoint[], mode: 'sum' | 'avg'): DataPoint[] {
-  const map = new Map<string, number[]>(); // 'YYYY-MM' → values
+function fillSumBuckets(data: DataPoint[], grain: Grain, from: Date, to: Date): DataPoint[] {
+  const sums = new Map<string, number>();
   for (const d of data) {
-    const dt  = new Date(d.fullDate);
-    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(d.value);
+    const k = localYMD(bucketStart(parseLocalDate(d.fullDate), grain));
+    sums.set(k, (sums.get(k) ?? 0) + d.value);
   }
-  return Array.from(map.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, vals]) => {
-      const value = mode === 'sum'
-        ? vals.reduce((s, v) => s + v, 0)
-        : vals.reduce((s, v) => s + v, 0) / vals.length;
-      return { label: key, value, fullDate: key + '-01' };
-    });
+  const mondayOnOrAfter = (d: Date) => { const m = bucketStart(d, 'week'); return m < d ? addDays(m, 7) : m; };
+  const out: DataPoint[] = [];
+  let cur = bucketStart(grain === 'month' ? bucketStart(from, 'week') : from, grain);
+  while (cur < to) {
+    const next = nextBucket(cur, grain);
+    const key  = localYMD(cur);
+    const [s, e] = grain === 'month' ? [mondayOnOrAfter(cur), mondayOnOrAfter(next)] : [cur, next];
+    out.push({ label: key, fullDate: key, value: sums.get(key) ?? 0, missing: !sums.has(key), partial: s < from || e > to });
+    cur = next;
+  }
+  return out;
+}
+
+/**
+ * OLS least-squares line, x = slot index. `skip` drops points without a real value: by default the `missing`
+ * gap days (including them would drag the fit toward zero). Negative values are REAL readings (Sleep Bank
+ * debt, a negative HR dip) and stay in; the old `v > 0` filter dropped them. Null under 3 points.
+ * Shared by the chart's trend line and the "trend Δ" summary, so both agree.
+ */
+function olsFit(data: DataPoint[], skip: (d: DataPoint) => boolean = d => !!d.missing) {
+  const pts = data.map((d, i) => ({ i, v: d.value })).filter((_, i) => !skip(data[i]));
+  if (pts.length < 3) return null;
+  const n = pts.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of pts) { sx += p.i; sy += p.v; sxx += p.i * p.i; sxy += p.i * p.v; }
+  const den = n * sxx - sx * sx;
+  if (!den) return null;
+  const m = (n * sxy - sx * sy) / den;
+  return { m, b0: (sy - m * sx) / n, i0: pts[0].i, i1: pts[n - 1].i };
+}
+
+const BANK_LOOKBACK_DAYS = 90;
+
+/**
+ * Sleep Bank per night from a FIXED trailing context: each night's "need" (median asleep) and 7-night sum
+ * come only from the nights in the 90 days up to and including it (the ~3-month history the Sleep detail
+ * screen uses). It used to take the median over the SELECTED window and restart the 7-night sum at the
+ * window start, so the same night read differently at 1M / 3M / 1Y. `sessions` (ascending) must reach
+ * 90 days before the first night shown. Returns one bank value per session, index-aligned.
+ */
+function trailingSleepBank(sessions: { date: string; totalMinutes: number }[]): number[] {
+  const nights = sessions.map(s => ({ date: s.date, asleepMin: s.totalMinutes, dayStrain: 0, efficiency: 1 }));
+  let lo = 0;
+  return nights.map((n, i) => {
+    const floorKey = localYMD(addDays(parseLocalDate(n.date), -BANK_LOOKBACK_DAYS));
+    while (nights[lo].date < floorKey) lo++;
+    const series = computeSleepBankSeries(nights.slice(lo, i + 1), 420);
+    return series[series.length - 1].bank;
+  });
 }
 
 /** Running total of data points — used for cumulative mode. */
@@ -283,8 +363,9 @@ type XMode = 'daily' | 'weekly' | 'monthly';
 function Chart({
   data, color, innerW, xMode = 'weekly', showAllValues = false, prevData,
   cumulative = false, isTime = false, valueLabelStep = 1, fmtFn, zeroBase = true,
-  hideValueLabels = false, lineMode = false, trendLine = false, bandData, pointColors, boundaryDate,
+  hideValueLabels = false, lineMode = false, trendLine = false, bandData, pointColors, boundaryDate, sumMetric = false,
 }: {
+  sumMetric?:      boolean;     // summed (km/time): a zero-filled "missing" bucket is a real 0, not "no reading"
   data:            DataPoint[];
   color:           string;
   innerW:          number;
@@ -389,13 +470,13 @@ function Chart({
   // X-axis label formatter
   const fmtXLabel = (d: DataPoint): { line1: string; line2: string } => {
     if (xMode === 'monthly') {
-      const dt = new Date(d.fullDate);
+      const dt = parseLocalDate(d.fullDate);
       return {
         line1: dt.toLocaleString('en-GB', { month: 'short' }),
         line2: `'${String(dt.getFullYear()).slice(2)}`,
       };
     }
-    const mon = xMode === 'daily' ? new Date(d.fullDate) : getMondayOf(d.fullDate);
+    const mon = xMode === 'daily' ? parseLocalDate(d.fullDate) : getMondayOf(d.fullDate);
     return { line1: formatDM(mon), line2: formatYY(mon) };
   };
 
@@ -405,7 +486,7 @@ function Chart({
   const dodgeW   = hasPrev ? Math.max(3, barW * 0.72) : barW;   // sub-bar width when both periods are shown
   const fmtRange = (pts: DataPoint[]) => {
     if (!pts.length) return '';
-    const f = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    const f = (iso: string) => parseLocalDate(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
     return `${f(pts[0].fullDate)} – ${f(pts[pts.length - 1].fullDate)}`;
   };
   const xAxisH = hasPrev ? 50 : 34;
@@ -429,7 +510,7 @@ function Chart({
     {/* READOUT LINE — under-cursor (or latest) value shown here instead of a bubble over the graph. */}
     <View style={ch.readout}>
       <Text style={ch.readoutDate}>{cur ? cur.fullDate.slice(0, 10) : ''}{cursorIdx < 0 ? ' · latest' : ''}</Text>
-      <Text style={[ch.readoutVal, { color }]}>{cur ? (cur.missing ? '—' : fmt(cur.value)) : ''}</Text>
+      <Text style={[ch.readoutVal, { color }]}>{cur ? (cur.missing && !sumMetric ? '—' : fmt(cur.value)) : ''}</Text>
     </View>
     <View style={{ flexDirection: 'row' }}>
       {/* Y-axis */}
@@ -470,17 +551,11 @@ function Chart({
           // ── LINE CHART (cumulative mode, cardio-load with band, or any measured metric) ──────────
           <>
             {/* OLS least-squares trend across the SHOWN range — drawn under the series. Gap days carry no
-                reading, so they're excluded: including them would drag the fit toward zero. */}
+                reading, so they're excluded (olsFit); negative readings stay in. */}
             {trendLine && (() => {
-              const pts = data.map((d, i) => ({ i, v: d.value })).filter((p, i) => !data[i].missing && p.v > 0);
-              if (pts.length < 3) return null;
-              const n = pts.length;
-              let sx = 0, sy = 0, sxx = 0, sxy = 0;
-              for (const p of pts) { sx += p.i; sy += p.v; sxx += p.i * p.i; sxy += p.i * p.v; }
-              const den = n * sxx - sx * sx;
-              if (!den) return null;
-              const m = (n * sxy - sx * sy) / den, b0 = (sy - m * sx) / n;
-              const i0 = pts[0].i, i1 = pts[n - 1].i;
+              const fit = olsFit(data);
+              if (!fit) return null;
+              const { m, b0, i0, i1 } = fit;
               const x1 = cxOf(i0), y1 = toY(b0 + m * i0), x2 = cxOf(i1), y2 = toY(b0 + m * i1);
               const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy);
               if (!len) return null;
@@ -605,6 +680,7 @@ function Chart({
           <>
             {/* Previous-period grey bars — LEFT-dodged so both heights read */}
             {prevData && prevData.map((d, i) => {
+              if (d.missing) return null; // zero-filled no-run bucket: no stub, same as the current bars
               const x    = i * (barW + barGap);
               const barH = Math.max(2, CHART_H - toY(d.value));
               return (
@@ -740,24 +816,49 @@ export default function HistoryScreen() {
     try {
       const months    = PERIOD_MONTHS[period];
       const endDate   = new Date(Date.now() - pageOffset * periodMs);
-      const prevEnd   = new Date(endDate.getTime() - months * 30 * 86_400_000); // start of current = end of previous
+      const curStart  = new Date(endDate.getTime() - months * 30 * 86_400_000);
+      // 1M works in WHOLE local days: the current window starts at the local midnight of its first day (the
+      // daily fetchers look back 31 days, so that day is complete) and the previous window is the 31 days
+      // before it, ending AT that midnight. It used to end at curStart itself, so a run on that boundary day
+      // counted in both "this period" and "prev period". 3M+ windows meet at the curStart instant.
+      const dayStart  = bucketStart(curStart, 'day');
+      const prevEnd   = period === '1M' ? dayStart : curStart;
+      const prevStart = period === '1M' ? addDays(dayStart, -31) : new Date(curStart.getTime() - months * 30 * 86_400_000);
 
+      // Like time: km COUNTED under the volume-accounting regime in force on each run's date (work + drills, or
+      // the whole run after a switch to 'full') — the same numbers the coach uses. Flipping the setting only
+      // changes runs from that day on; older weeks keep their counted km.
       const fetchKm = async (toDate: Date): Promise<DataPoint[]> => {
         if (period === '1M') {
-          const dm = await fetchDailyMileageHistory(toDate);
+          const dm = await fetchDailyWorkDistanceHistory(toDate);
           return dm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
         }
-        const wm = await fetchWeeklyMileageHistory(months, toDate);
-        return wm.map(w => ({ label: w.week, fullDate: w.week, value: w.km }));
+        const dm = await fetchDailyWorkDistanceHistory(toDate, Math.round(months * 30) + 1);
+        const byWeek = new Map<string, number>();   // LOCAL Monday → km
+        for (const d of dm) {
+          const mon = localYMD(getMondayOf(d.date));
+          byWeek.set(mon, (byWeek.get(mon) ?? 0) + d.value);
+        }
+        return [...byWeek.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([mon, v]) => ({ label: mon, fullDate: mon, value: Math.round(v * 10) / 10 }));
       };
 
+      // ONE basis for every period: time on feet = work + drills minutes under the accounting regime in force on
+      // each day (the same numbers the coach's ToF budget uses). 3M+ used to sum FULL workout durations
+      // (fetchWeeklyDurationHistory, warm-up/cool-down included), so switching 1M → 3M changed what was measured.
       const fetchTime = async (toDate: Date): Promise<DataPoint[]> => {
         if (period === '1M') {
           const dm = await fetchDailyDurationHistory(toDate);
           return dm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
         }
-        const wm = await fetchWeeklyDurationHistory(months, toDate);
-        return wm.map(d => ({ label: d.date, fullDate: d.date, value: d.value }));
+        const dm = await fetchDailyDurationHistory(toDate, Math.round(months * 30) + 1);
+        const byWeek = new Map<string, number>();   // LOCAL Monday → minutes
+        for (const d of dm) {
+          const mon = localYMD(getMondayOf(d.date));
+          byWeek.set(mon, (byWeek.get(mon) ?? 0) + d.value);
+        }
+        return [...byWeek.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([mon, v]) => ({ label: mon, fullDate: mon, value: Math.round(v) }));
       };
 
       let raw: DataPoint[] = [];
@@ -769,7 +870,8 @@ export default function HistoryScreen() {
         [raw, prevRaw] = await Promise.all([fetchTime(endDate), fetchTime(prevEnd)]);
       } else if (histType === 'vo2') {
         const v = await fetchVO2MaxHistory(months, endDate);
-        const daily = v.map(s => ({ label: s.date, fullDate: s.date, value: s.value }));
+        // s.date is a full UTC timestamp → key by the LOCAL day (list, readout and 1M gap-fill use the key).
+        const daily = v.map(s => ({ label: s.date, fullDate: localKeyOf(s.date), value: s.value }));
         // 1M: show daily readings; 3M/6M/1Y: aggregate to one data point per week (latest)
         raw = period === '1M' ? daily : groupByWeek(daily, 'last');
       } else if (histType === 'rhr') {
@@ -784,7 +886,7 @@ export default function HistoryScreen() {
           if (typeof hr === 'number' && hr > 0) byDate.set(d, Math.round(hr));
         }
         for (const s of await fetchRestingHRHistory(months, endDate).catch(() => [])) {
-          const d = s.date.slice(0, 10);
+          const d = localKeyOf(s.date); // UTC timestamp — slice(0, 10) gave the UTC day
           if (!byDate.has(d) && s.value > 0) byDate.set(d, s.value);
         }
         const daily = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0]))
@@ -871,14 +973,14 @@ export default function HistoryScreen() {
           .map(([d, v]) => ({ label: d, fullDate: d, value: v }));
         raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
       } else if (SLEEP_TYPES.has(histType)) {
-        const sessions = await fetchSleepHistory(months, endDate);
+        // Sleep Bank reads 90 extra days (+3 months) so every shown night has its full trailing context.
+        const isBank   = histType === 'sleep-bank';
+        const sessions = await fetchSleepHistory(isBank ? months + 3 : months, endDate);
         // Sleep Score + Sleep Bank use the SAME calibrated engine the coach + recovery use
         // (computeSleepScore / computeSleepBankSeries), so every surface agrees. The score history is
         // HR-neutral (dip component neutral) — exactly like the sleep-detail sparkline; per-night overnight
         // HR isn't loaded here, and today's detail card shows the HR-aware score.
-        const bankSeries = histType === 'sleep-bank'
-          ? computeSleepBankSeries(sessions.map(s => ({ date: s.date, asleepMin: s.totalMinutes, dayStrain: 0, efficiency: 1 })), 420)
-          : null;
+        const bankSeries = isBank ? trailingSleepBank(sessions) : null;
         const daily = sessions.map((s, i, arr) => {
           let value = 0;
           if (histType === 'sleep-total') value = s.totalMinutes;
@@ -891,21 +993,28 @@ export default function HistoryScreen() {
           } else if (histType === 'sleep-score') {
             value = computeSleepScore(s, 0, 0, arr.slice(0, i + 1)).score;
           } else if (histType === 'sleep-bank') {
-            value = bankSeries![i].bank;
+            value = bankSeries![i];
           }
           return { label: s.date, fullDate: s.date, value };
         });
+        // Sleep Bank: the lookback nights are context only — show the window's own nights.
+        const firstKey = localYMD(curStart);
+        const shown = isBank ? daily.filter(d => d.fullDate >= firstKey) : daily;
         // sleep-bank: keep daily for 1M, weekly avg otherwise
-        raw = period === '1M' ? daily : groupByWeek(daily, 'avg');
+        raw = period === '1M' ? shown : groupByWeek(shown, 'avg');
       }
 
-      // 1-MONTH view: show every calendar day, not just days with data → pad the daily series across
-      // the window. (3M/6M/1Y aggregate to continuous weeks/months already.)
-      if (period === '1M') {
-        const winMs    = months * 30 * 86_400_000;
-        const curStart = new Date(endDate.getTime() - winMs);
+      if (histType === 'km' || histType === 'time') {
+        // Summed km/time: zero-fill EVERY day/week/month of the window (the fetchers return only buckets
+        // with runs) and flag the partial first/last buckets. 1Y → monthly buckets. A 3M+ window with no runs
+        // at all stays empty → keeps the "No data for this period" state, as before (1M always padded).
+        const grain: Grain = period === '1M' ? 'day' : period === '1Y' ? 'month' : 'week';
+        if (raw.length || period === '1M') raw = fillSumBuckets(raw, grain, period === '1M' ? dayStart : curStart, endDate);
+        if (prevRaw.length) prevRaw = fillSumBuckets(prevRaw, grain, prevStart, prevEnd);
+      } else if (period === '1M') {
+        // 1-MONTH view: show every calendar day, not just days with data → pad the daily series across
+        // the window. (3M/6M/1Y aggregate to weeks already.)
         raw = fillDailyGaps(raw, curStart, endDate);
-        if (prevRaw.length) prevRaw = fillDailyGaps(prevRaw, new Date(curStart.getTime() - winMs), curStart);
       }
 
       setRawData(raw);
@@ -935,14 +1044,9 @@ export default function HistoryScreen() {
   // Sleep Bank chart also uses isTime-style formatting (signed minutes)
   const isSleepBank = histType === 'sleep-bank';
 
-  // Aggregate current + previous period
-  const aggData = (isSummable && period === '1Y')
-    ? groupByMonth(rawData, 'sum')
-    : aggregateBuckets(rawData, PERIOD_BUCKETS[period], cfg.aggregate);
-
-  const prevAggData = (isSummable && period === '1Y')
-    ? groupByMonth(prevRawData, 'sum')
-    : aggregateBuckets(prevRawData, PERIOD_BUCKETS[period], cfg.aggregate);
+  // Aggregate current + previous period (summed km/time arrive already bucketed per day/week/month by load())
+  const aggData     = aggregateBuckets(rawData, PERIOD_BUCKETS[period], cfg.aggregate);
+  const prevAggData = aggregateBuckets(prevRawData, PERIOD_BUCKETS[period], cfg.aggregate);
 
   // Apply cumulative transform when mode is active (only for km / time)
   const chartData     = (cumulativeMode && isSummable) ? toCumulative(aggData) : aggData;
@@ -955,9 +1059,10 @@ export default function HistoryScreen() {
     ? (cumulativeMode ? toCumulative(prevAggData) : prevAggData)
     : undefined;
 
-  // Previous period date range (start of previous = start of current - periodMs)
-  const prevToDate   = fromDate;
-  const prevFromDate = new Date(fromDate.getTime() - periodMs);
+  // Previous period date range. 1M: the 31 whole days BEFORE the current window's first day (see load());
+  // otherwise start of previous = start of current - periodMs.
+  const prevToDate   = period === '1M' ? addDays(fromDate, -1) : fromDate;
+  const prevFromDate = period === '1M' ? addDays(fromDate, -31) : new Date(fromDate.getTime() - periodMs);
 
   // Stat formatter
   const fmtStat = (v: number) => {
@@ -977,17 +1082,19 @@ export default function HistoryScreen() {
       ? (period === '1M' ? 'Daily time' : period === '1Y' ? 'Monthly time' : 'Weekly time')
       : cfg.title;
 
-  // Dynamic avg / count labels (absolute mode)
+  // Dynamic avg / count labels. Summed km/time average over COMPLETE buckets only, and the count says so
+  // (in cumulative mode it counts every bucket shown). Sleep values are per night even when plotted as weekly
+  // means, so the label stays "avg/night"; 3M+ plots one point per WEEK, so the count is in weeks.
   const avgLabel = isSummable
     ? (period === '1M' ? `avg/day` : period === '1Y' ? `avg/mo` : `avg/wk`)
-    : isSleepType
-      ? (period === '1M' ? `avg/night` : `avg/wk`)
-      : 'avg';
+    : isSleepType ? 'avg/night' : 'avg';
   const countLabel = isSummable
-    ? (period === '1M' ? 'days' : period === '1Y' ? 'months' : 'weeks')
-    : isSleepType
-      ? (period === '1M' ? 'nights' : 'weeks')
-      : (histType === 'hrv' ? 'nights' : 'readings');
+    ? (cumulativeMode
+        ? (period === '1M' ? 'days' : period === '1Y' ? 'months' : 'weeks')
+        : (period === '1M' ? 'complete days' : period === '1Y' ? 'complete mos' : 'complete wks'))
+    : period !== '1M'
+      ? 'weeks'
+      : (isSleepType || histType === 'hrv') ? 'nights' : 'readings';
 
   // Chart x-axis mode
   const xMode: XMode = period === '1M' ? 'daily' : (period === '1Y' && isSummable) ? 'monthly' : 'weekly';
@@ -1006,13 +1113,22 @@ export default function HistoryScreen() {
   // 1M pads the window with gap days (value 0, missing: true) so every calendar day has a bar. For an
   // AVERAGED metric 0 is not a reading — it's "no data" — so counting those days wrecks the stats: a day
   // with no RHR yet showed latest 0, period Δ −55 and dragged avg from ~58 down to 54. For a SUMMED metric
-  // (km, minutes) a gap day genuinely IS zero — you ran nothing — so those must keep counting.
-  const statPts        = cfg.aggregate === 'sum' ? aggData : aggData.filter(d => !d.missing);
+  // (km, minutes) a gap day genuinely IS zero — you ran nothing — so those must keep counting, but only over
+  // COMPLETE buckets: the window's partial first bucket and the in-progress last one would drag the average down.
+  const statPts        = cfg.aggregate === 'sum' ? aggData.filter(d => !d.partial) : aggData.filter(d => !d.missing);
   const absVals        = statPts.map(d => d.value);
   const avg    = absVals.length > 0 ? absVals.reduce((a, b) => a + b, 0) / absVals.length : 0;
-  const trend  = absVals.length >= 2 ? absVals[absVals.length - 1] - absVals[0] : 0;
-  const latest = absVals.length > 0 ? absVals[absVals.length - 1] : 0;
-  const countValue = statPts.length;
+  // Δ = fit(last) − fit(first) of the SAME OLS as the drawn trend line (summed km/time: an OLS over the complete
+  // buckets), not last reading − first reading, which swung with a single noisy value. <3 points → plain Δ.
+  const showTrend = !isSummable && !cumulativeMode;
+  const fit    = isSummable ? olsFit(aggData, d => !!d.partial) : showTrend ? olsFit(chartData) : null;
+  const trend  = fit ? fit.m * (fit.i1 - fit.i0)
+    : absVals.length >= 2 ? absVals[absVals.length - 1] - absVals[0] : 0;
+  const deltaLabel = fit ? 'trend Δ' : 'period Δ';
+  // "latest" = the newest bucket, including the in-progress one for summed km/time (this week so far).
+  const latestPts = cfg.aggregate === 'sum' ? aggData : statPts;
+  const latest = latestPts.length > 0 ? latestPts[latestPts.length - 1].value : 0;
+  const countValue = (isSummable && cumulativeMode) ? aggData.length : statPts.length;
 
   // onLayout fires on chartWrap (which has padding: 12).
   // Subtract padding*2 to get the usable inner width for the chart.
@@ -1125,7 +1241,7 @@ export default function HistoryScreen() {
                   }]}>
                     {trend >= 0 ? '+' : ''}{fmtStat(trend)}
                   </Text>
-                  <Text style={s.summaryLbl}>period Δ</Text>
+                  <Text style={s.summaryLbl}>{deltaLabel}</Text>
                 </View>
                 <View style={s.summaryBox}>
                   <Text style={[s.summaryVal, { color: cfg.color }]}>{countValue}</Text>
@@ -1164,6 +1280,7 @@ export default function HistoryScreen() {
 
             <Chart
               data={chartData}
+              sumMetric={cfg.aggregate === 'sum'}
               color={cfg.color}
               innerW={innerW}
               xMode={xMode}
@@ -1183,7 +1300,7 @@ export default function HistoryScreen() {
               // Measured metrics (recovery + sleep sub-metrics, RHR, HRV, scores) read as a TRACE, not as
               // stacked quantities — bars imply an amount accumulated. Summed metrics (km, minutes) keep bars.
               lineMode={isCardio || !isSummable}
-              trendLine={!isSummable && !cumulativeMode}
+              trendLine={showTrend}
               bandData={cardioBand}
               pointColors={cardioColors}
               boundaryDate={histType === 'exercise-duration' ? (fullBoundary ?? undefined) : undefined}

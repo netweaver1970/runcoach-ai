@@ -12,11 +12,12 @@ import { useThemedStyles, Palette } from '../theme';
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-/** Per-metric history arrays (oldest→newest) from fetchOurDailyComponents output. */
+/** Per-metric history arrays (oldest→newest) from fetchOurDailyComponents output. `upTo` (a YYYY-MM-DD key)
+ *  cuts the history at the viewed day, so a past day's sparkline + normal band end THERE, not at today. */
 export function buildHistories(
-  comps: Record<string, Record<string, number>>, keys: string[],
+  comps: Record<string, Record<string, number>>, keys: string[], upTo?: string,
 ): Record<string, number[]> {
-  const dates = Object.keys(comps).sort();
+  const dates = Object.keys(comps).sort().filter(d => !upTo || d <= upTo);
   const out: Record<string, number[]> = {};
   for (const k of keys) out[k] = dates.map(d => comps[d][k]).filter((v): v is number => v !== undefined);
   return out;
@@ -94,29 +95,36 @@ function Sparkline({ values, mean, sd, color }: { values: number[]; mean: number
 }
 
 export function SubKPICard({
-  label, value, unit, history, higherIsBetter = true, color, onPress,
+  label, value, unit, history, current, higherIsBetter = true, color, onPress,
 }: {
   label: string;
   value: string;
   unit: string;
   history: number[];
+  /** The numeric value actually displayed (the VIEWED day's), which the badge judges. Omitted → the last
+   *  history point (legacy). null → the viewed day has no value, so no badge (judging the last point would
+   *  label a different day). */
+  current?: number | null;
   higherIsBetter?: boolean;
   color: string;
   onPress?: () => void;
 }) {
   const kpi = useThemedStyles(makeKpi);
   const { mean, sd } = stats(history);
-  const current = history.length > 0 ? history[history.length - 1] : 0;
-  const status  = history.length > 5 ? getStatus(current, mean, sd, higherIsBetter) : 'Normal range';
-  const statusColor = STATUS_COLOR[status];
+  const judged = current !== undefined ? current : (history.length > 0 ? history[history.length - 1] : 0);
+  const status: StatusTag | null = judged == null ? null
+    : history.length > 5 ? getStatus(judged, mean, sd, higherIsBetter) : 'Normal range';
+  const statusColor = status ? STATUS_COLOR[status] : '';
 
   const content = (
     <View style={kpi.card}>
       <View style={kpi.left}>
         <Text style={kpi.label}>{label}</Text>
-        <View style={[kpi.badge, { backgroundColor: statusColor + '22' }]}>
-          <Text style={[kpi.badgeText, { color: statusColor }]}>{status}</Text>
-        </View>
+        {status && (
+          <View style={[kpi.badge, { backgroundColor: statusColor + '22' }]}>
+            <Text style={[kpi.badgeText, { color: statusColor }]}>{status}</Text>
+          </View>
+        )}
       </View>
       {history.length > 1
         ? <Sparkline values={history} mean={mean} sd={sd} color={color} />

@@ -152,9 +152,6 @@ export default function LabsScreen() {
       .map((e: any) => ({ t: tOf(e.date), label: e.title || e.category, category: e.category })))).catch(() => {}); }, []);
   useEffect(() => { setOffset(0); }, [range]);
 
-  const latestOf = (a: LabAnalyte) => a.series[a.series.length - 1];
-  const oobNow = (a: LabAnalyte) => { const l = latestOf(a); return l ? statusOf(l.value, a.refLow, a.refHigh) : 'na'; };
-
   const [gMin, gMax] = useMemo(() => {
     const ts = (store?.analytes ?? []).flatMap(a => a.series.map(p => tOf(p.date)));
     return ts.length ? [Math.min(...ts), Math.max(...ts)] : [Date.now() - 365 * 86400000, Date.now()];
@@ -164,13 +161,25 @@ export default function LabsScreen() {
   const t1 = years ? gMax - offset * spanMs : gMax;
   const t0 = years ? t1 - spanMs : gMin;
 
+  // A card's latest value + status (and the ⚠︎ filter) are AS OF the window end, and its reading count is within
+  // the window — they were over all history, so paging back showed the newest reading. 'All' = everything.
+  const winEnd = years ? t1 : Infinity;
+  const inWin = (d: string) => { if (!years) return true; const t = tOf(d); return t >= t0 && t <= t1; };
+  const lastAsOf = <T extends { date: string }>(arr: T[] | undefined): T | undefined => {
+    let best: T | undefined;
+    for (const p of arr ?? []) if (tOf(p.date) <= winEnd && (!best || tOf(p.date) >= tOf(best.date))) best = p;
+    return best;
+  };
+  const latestOf = (a: LabAnalyte) => lastAsOf(a.series);
+  const oobNow = (a: LabAnalyte) => { const l = latestOf(a); return l ? statusOf(l.value, a.refLow, a.refHigh) : 'na'; };
+
   // markers passing search + out-of-range filter (BEFORE the "selected only" view filter)
   const baseVisible = useMemo(() => {
     const ql = q.trim().toLowerCase();
     return (store?.analytes ?? []).filter(a =>
       (!ql || a.label.toLowerCase().includes(ql) || a.category.toLowerCase().includes(ql)) &&
       (!oobOnly || oobNow(a) === 'low' || oobNow(a) === 'high'));
-  }, [store, q, oobOnly]);
+  }, [store, q, oobOnly, winEnd]);
 
   const groups = useMemo(() => {
     const m = new Map<string, LabAnalyte[]>();
@@ -290,7 +299,8 @@ export default function LabsScreen() {
                   </View>
                   {items.map(a => {
                     const isOpen = open === a.key; const sel = selected.has(a.key);
-                    const last = latestOf(a); const lastText = a.textSeries?.[a.textSeries.length - 1];
+                    const last = latestOf(a); const lastText = lastAsOf(a.textSeries);
+                    const nReadings = a.series.filter(p => inWin(p.date)).length + (a.textSeries?.filter(p => inWin(p.date)).length ?? 0);
                     const st = last ? statusOf(last.value, a.refLow, a.refHigh) : 'na';
                     const an = analysis[a.key];
                     return (
@@ -300,7 +310,7 @@ export default function LabsScreen() {
                           <TouchableOpacity style={s.cardMain} onPress={() => setOpen(isOpen ? null : a.key)}>
                             <View style={{ flex: 1 }}>
                               <Text style={s.aLabel} numberOfLines={1}>{a.label}</Text>
-                              <Text style={s.aMeta}>{a.series.length + (a.textSeries?.length ?? 0)} readings{a.refLow != null || a.refHigh != null ? ` · ref ${a.refLow != null ? sig4(a.refLow) : '—'}–${a.refHigh != null ? sig4(a.refHigh) : '—'}` : ''}</Text>
+                              <Text style={s.aMeta}>{nReadings} readings{a.refLow != null || a.refHigh != null ? ` · ref ${a.refLow != null ? sig4(a.refLow) : '—'}–${a.refHigh != null ? sig4(a.refHigh) : '—'}` : ''}</Text>
                             </View>
                             {last && <View style={s.lastWrap}>
                               <Text style={[s.lastVal, { color: STATUS_COLOR[st] }]}>{sig4(last.value)}<Text style={s.lastUnit}> {a.unit}</Text></Text>

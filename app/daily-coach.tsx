@@ -171,12 +171,20 @@ export default function DailyCoachScreen() {
   // screen kept mounted in the background) leaves today's time-on-feet stale, so completion isn't detected and
   // the coach keeps prescribing the session you just did. Re-arm staleRegenRef so the fresh data can regenerate
   // the plan (e.g. flip a done session to rest) once, in sync with the home.
+  // Quick ~9-day load for recent days; a day paged further back widens the window so it's actually COVERED
+  // (it used to load 9 days and silently show the last day with data under an older date).
+  const monthsFor = useCallback((d?: string) => {
+    if (!d) return 0.3;
+    const daysAgo = (Date.now() - new Date(d + 'T12:00:00').getTime()) / 86_400_000;
+    // Round UP to 3/6/12/24 months (a per-30-day step recomputed + cached a new big window at every boundary).
+    return daysAgo > 8 ? ([3, 6, 12, 24].find(m => m * 30 >= daysAgo + 2) ?? Math.ceil((daysAgo + 2) / 30)) : 0.3;
+  }, []);
   useFocusEffect(useCallback(() => {
     staleRegenRef.current = false;
-    loadHistory(0.3);                                  // ~last 9 days — quick
+    loadHistory(monthsFor(date));                      // ~last 9 days — quick (wider for an older viewed day)
     getLocalWeather().then(setWeather).catch(() => {});
-  }, [loadHistory]));
-  const onRefresh = useCallback(() => loadHistory(1, true), [loadHistory]); // full month
+  }, [loadHistory, monthsFor, date]));
+  const onRefresh = useCallback(() => loadHistory(Math.max(1, monthsFor(date)), true), [loadHistory, monthsFor, date]); // full month
 
   const hist = useMemo(
     () => buildHistories(comps, ['strainScore', 'exerciseDuration', 'daytimeHR', 'totalEnergy', 'stepCount', 'cardioLoad']),
@@ -213,7 +221,6 @@ export default function DailyCoachScreen() {
   const [topUpMin, setTopUpMin] = useState(0);          // adjustable top-up length (defaults to the shortfall)
   const [topUpSending, setTopUpSending] = useState(false);
   const [quickSending, setQuickSending] = useState(false);   // "send an easy run now" (any day) → RunCoach watch app
-  const strainObj = strain ?? snapStrain;
 
   // The coach plan is built for the VIEWED day (the `date` param), not just today.
   const dates        = Object.keys(comps).sort();
@@ -221,11 +228,15 @@ export default function DailyCoachScreen() {
   // Viewing TODAY must resolve to today's plan even before today's components are computed — otherwise it
   // silently falls back to the last day WITH data (yesterday), showing a stale "yesterday" plan while the
   // strain hero + title (from the snapshot/params) show today. Only a specific PAST day with data targets it.
+  // A specific past day stays THAT day even without stored data (empty values) — never another day's numbers.
   const targetDate = (date && comps[date]) ? date
                    : (!date || date === realTodayKey) ? realTodayKey
-                   : (dates.length ? dates[dates.length - 1] : realTodayKey);
+                   : date;
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === realTodayKey;
+  // Today's live strain/readiness object — ONLY for today. For a past day it used to show TODAY's strain and
+  // readiness under that date; a past day now reads its stored strain (target.strainScore) and no readiness.
+  const strainObj = targetIsToday ? (strain ?? snapStrain) : null;
   // Top-up: the fullest prescribed run for the viewed day, and the shortfall vs what's actually been run.
   useEffect(() => { getPrescribedMinutes(targetDate).then(setPrescribedMin).catch(() => setPrescribedMin(0)); }, [targetDate, plan]);
   const shortfallMin = Math.max(0, prescribedMin - todayRunMin);
@@ -525,7 +536,7 @@ export default function DailyCoachScreen() {
         {!loadingH && dates.length > 0 && (
           <View style={s.readyCard}>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-              <Text style={s.readyNum}>{recoveryStale ? '≈' : ''}{readiness.readiness}</Text>
+              <Text style={s.readyNum}>{strainObj ? `${recoveryStale ? '≈' : ''}${readiness.readiness}` : '—'}</Text>
               <Text style={s.readyUnit}>/100 readiness{recoveryStale ? ' · est.' : ''}</Text>
               {readiness.acwr > 0 && <Text style={s.readyAcwr}>ACWR {readiness.acwr.toFixed(2)}</Text>}
             </View>

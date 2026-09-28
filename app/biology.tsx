@@ -196,6 +196,14 @@ export default function BiologyMode() {
   useEffect(() => load(), [load]);
 
   const byKey = (k: string): BioMetric | undefined => rep?.metrics.find(m => m.key === k);
+  // Card-header value = the last reading AS OF the window end (t1), not m.latest (newest overall) — otherwise
+  // paging back showed today's weight above an old chart.
+  const tMs = (iso: string) => new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso).getTime();
+  const valueAsOf = (m: BioMetric, t: number): number | null => {
+    let best: BioPoint | null = null;
+    for (const p of m.points) if (tMs(p.date) <= t && (!best || tMs(p.date) >= tMs(best.date))) best = p;
+    return best ? best.value : null;
+  };
   // One metric-chart card (returns null when no data in the loaded history, so the card just hides).
   const renderChartCard = (id: BioCardId, keys: string[]): React.ReactNode => {
     if (!keys.some(k => (byKey(k)?.points.length ?? 0) > 0)) return null;
@@ -205,9 +213,9 @@ export default function BiologyMode() {
       <View style={s.card}>
         <View style={s.cardHead}>
           <Text style={s.cardTitle}>{BIO_CARD_TITLES[id]}</Text>
-          {metrics.map(m => m.latest != null && (
-            <Text key={m.key} style={[s.latest, { color: SERIES[m.key] }]}>{m.latest}{m.unit === '%' ? '%' : ` ${m.unit}`}</Text>
-          ))}
+          {metrics.map(m => { const v = valueAsOf(m, t1); return v != null && (
+            <Text key={m.key} style={[s.latest, { color: SERIES[m.key] }]}>{v}{m.unit === '%' ? '%' : ` ${m.unit}`}</Text>
+          ); })}
         </View>
         <BioChart lines={lines} t0={t0} t1={t1} ctl={showEvents ? rep!.ctl : []} events={showEvents ? rep!.events : []} innerW={innerW} c={c} months={months} styles={s} cursorTime={cursorTime} onCursor={setCursorTime} />
       </View>

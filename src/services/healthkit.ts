@@ -79,7 +79,8 @@ import { getForecastPairs } from './forecastLog';
 import { getLocalWeather } from './weather';
 import { computePersonalSleepGoal, computeAdjustedGoal } from './bevelCalibration';
 import { prescribedPhasesAt, relabelByPhases, dateKeyLocal } from './planLog';
-import { getSwitchList, regimeForDate, AccountingMode } from './accounting';
+import { getSwitchList, regimeForDate, AccountingMode, SwitchPoint } from './accounting';
+import { loadStatsRuns, mergeRuns } from './statsRunsCache';
 
 // Base sleep goal (minutes) for the Sleep Bank / Sleep Needed model — matches the
 // sleep-detail screen's default (6h15m) and Bevel's base. Tunable / calibratable.
@@ -2340,7 +2341,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
       date:  toISOStr(s.startDate),
       value: Math.round(s.quantity),
     })),
-    weeklyMileage:    computeWeeklyMileage(runs),
+    weeklyMileage:    computeWeeklyMileage(runs, await getSwitchList()),   // follows the volume-accounting setting per date
     todayRecovery,
     recentNightlyHRV: nightlyHRV.slice(-14),
     // Lean FULL nightly series (every night with HRV) — for the Bevel recovery re-fit over 60-90 days
@@ -3958,99 +3959,6 @@ export async function fetchActivityHistory(months: number, toDate?: Date): Promi
   return mapWorkoutsToActivities(raw).sort((a, b) => b.date.localeCompare(a.date));
 }
 
-export async function fetchWeeklyMileageHistory(months: number, toDate?: Date): Promise<WeeklyMileage[]> {
-  const endDate = toDate ?? new Date();
-  const since   = new Date(endDate.getTime() - months * 30 * 86_400_000);
-  const sinceMs = since.getTime();
-  const endMs   = endDate.getTime();
-  const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
-    filter: { startDate: since, endDate: endDate },
-    limit: 1000,
-    ascending: false,
-    energyUnit: 'kcal',
-    distanceUnit: 'm',
-  });
-  const runs = allWorkouts
-    .filter((w: any) => {
-      const t = new Date(toISOStr(w.startDate)).getTime();
-      return w.workoutActivityType === HK_WORKOUT_RUNNING && t >= sinceMs && t <= endMs;
-    })
-    .map((w: any) => ({
-      uuid:     w.uuid,
-      date:     toISOStr(w.startDate),
-      distance: (w.totalDistance?.quantity ?? 0) as number,
-      duration: 0, pace: 0, calories: 0,
-    })) as RunWorkout[];
-  return computeWeeklyMileage(runs);
-}
-
-/**
- * Daily running distance for the 1M view — one entry per day that has a run.
- */
-export async function fetchDailyMileageHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
-  const endDate = toDate ?? new Date();
-  const since   = new Date(endDate.getTime() - 31 * 86_400_000);
-  const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
-    filter: { startDate: since, endDate: endDate },
-    limit: 1000,
-    ascending: true,
-    energyUnit: 'kcal',
-    distanceUnit: 'm',
-  });
-  // Sum distance per calendar day
-  const byDay: Record<string, number> = {};
-  allWorkouts
-    .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING)
-    .forEach((w: any) => {
-      const day = toISOStr(w.startDate).slice(0, 10);
-      byDay[day] = (byDay[day] ?? 0) + ((w.totalDistance?.quantity ?? 0) as number);
-    });
-  return Object.entries(byDay)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, metres]) => ({ date, value: Math.round(metres / 10) / 100 })); // km, 2dp
-}
-
-/**
- * Weekly total time-on-feet (minutes) for N months.
- * Mirrors fetchWeeklyMileageHistory but sums workout duration instead of distance.
- */
-export async function fetchWeeklyDurationHistory(months: number, toDate?: Date): Promise<{ date: string; value: number }[]> {
-  const endDate = toDate ?? new Date();
-  const since   = new Date(endDate.getTime() - months * 30 * 86_400_000);
-  const sinceMs = since.getTime();
-  const endMs   = endDate.getTime();
-  const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
-    filter: { startDate: since, endDate: endDate },
-    limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
-  });
-  const runs = (allWorkouts as any[]).filter((w: any) => {
-    const t = new Date(toISOStr(w.startDate)).getTime();
-    return w.workoutActivityType === HK_WORKOUT_RUNNING && t >= sinceMs && t <= endMs;
-  });
-  // Group by Monday of week
-  const byWeek: Record<string, number> = {};
-  runs.forEach((w: any) => {
-    const d    = new Date(toISOStr(w.startDate));
-    const diff = (d.getDay() + 6) % 7;
-    const mon  = new Date(d);
-    mon.setDate(d.getDate() - diff);
-    mon.setHours(0, 0, 0, 0);
-    // Use local date components to avoid UTC midnight shift (toISOString is always UTC)
-    const padW = (n: number) => String(n).padStart(2, '0');
-    const key  = `${mon.getFullYear()}-${padW(mon.getMonth() + 1)}-${padW(mon.getDate())}`;
-    const dur = typeof w.duration === 'object' && w.duration !== null
-      ? (w.duration.quantity as number) ?? 0 : (w.duration as number) ?? 0;
-    byWeek[key] = (byWeek[key] ?? 0) + dur;
-  });
-  return Object.entries(byWeek)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, secs]) => ({ date, value: Math.round(secs / 60) })); // → minutes
-}
-
-/**
- * Daily time-on-feet (minutes) for the last ~31 days.
- * Mirrors fetchDailyMileageHistory but returns duration.
- */
 // Phases that DON'T count toward time-on-feet: warmup, cooldown, recovery, and any walk segment.
 const TOF_EXCLUDE_PHASE = /warm|cool|recover|rest|walk|prep/i;
 
@@ -4181,7 +4089,9 @@ async function fetchDailyWorkHistory(
   const since   = new Date(endDate.getTime() - days * 86_400_000);
   const allWorkouts: any[] = await (HealthKit.queryWorkoutSamples as any)({
     filter: { startDate: since, endDate: endDate },
-    limit: 1000, ascending: true, energyUnit: 'kcal', distanceUnit: 'm',
+    // NEWEST first + a generous cap: the query returns ALL workout types (walks, dance, …); ascending order let a
+    // long (1Y) window that hit the cap silently drop the MOST RECENT runs. Order doesn't matter below.
+    limit: 3000, ascending: false, energyUnit: 'kcal', distanceUnit: 'm',
   });
   const switches = await getSwitchList(); // each run counts under the regime in force on its date
   // The cached runs carry SEGMENTS computed by the detail path. Prefer those: workDrillsTotals decodes
@@ -4189,7 +4099,10 @@ async function fetchDailyWorkHistory(
   // yields nothing, so in 'work' accounting a run whose metadata didn't decode counted its warm-up and
   // cool-down (17 Aug: 90min counted against a 54min work block; 13 Aug: 44 vs a 28.6min ToF), while runs
   // that did decode were correct — an inconsistent series that then inflates the rolling ceiling.
-  const cachedRuns: RunWorkout[] = await loadSnapshotCache().then(sn => (sn as any)?.runs ?? []).catch(() => []);
+  // Snapshot runs (~3 months) MERGED with the durable stats-runs cache (~24 months): a 6M/1Y chart otherwise had no
+  // phase data for older runs and fell back to their FULL duration — a fake volume drop ~3 months back.
+  const snapRuns: RunWorkout[] = await loadSnapshotCache().then(sn => (sn as any)?.runs ?? []).catch(() => []);
+  const cachedRuns: RunWorkout[] = mergeRuns(snapRuns, await loadStatsRuns().catch(() => [] as RunWorkout[]));
   const segByUuid = new Map<string, { seconds: number; meters: number }>();
   for (const r of cachedRuns) {
     if (!r.uuid || !r.segments?.length) continue;
@@ -4206,8 +4119,10 @@ async function fetchDailyWorkHistory(
   (allWorkouts as any[])
     .filter((w: any) => w.workoutActivityType === HK_WORKOUT_RUNNING) // runs only — never walk workouts
     .forEach((w: any) => {
-      const day = toISOStr(w.startDate).slice(0, 10);
-      const regime = regimeForDate(toISOStr(w.startDate), switches);
+      // LOCAL calendar day (the UTC slice put a 00:00–02:00 run on the previous day — and in the previous WEEK on a
+      // Monday), and the regime looked up for that same day.
+      const day = dateKeyLocal(new Date(toISOStr(w.startDate)));
+      const regime = regimeForDate(day, switches);
       const seg = regime === 'full' ? undefined : segByUuid.get(w.uuid);
       let totals = seg ?? (regime === 'full' ? undefined : execWorkTotals(w, execAll)) ?? workDrillsTotals(w, regime);
       const ov = overrides[w.uuid];
@@ -4224,8 +4139,8 @@ export function fetchDailyDurationHistory(toDate?: Date, days = 31): Promise<{ d
 }
 
 // Distance basis: work+drills KM per day (one decimal).
-export function fetchDailyWorkDistanceHistory(toDate?: Date): Promise<{ date: string; value: number }[]> {
-  return fetchDailyWorkHistory((t) => t.meters, toDate).then((rows) =>
+export function fetchDailyWorkDistanceHistory(toDate?: Date, days = 31): Promise<{ date: string; value: number }[]> {
+  return fetchDailyWorkHistory((t) => t.meters, toDate, days).then((rows) =>
     rows.map((r) => ({ date: r.date, value: Math.round(r.value / 100) / 10 })));
 }
 
@@ -5273,14 +5188,27 @@ export async function fetchSleepBiometrics(
   return results.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function computeWeeklyMileage(runs: RunWorkout[]): WeeklyMileage[] {
+// Km a run COUNTS under the volume-accounting regime in force on its date (Settings › volume accounting): 'full' =
+// the whole run; 'work' = its work + drills segments (warm-up/cool-down/recovery excluded), falling back to the
+// whole run when it has no usable segments — the same rule as the time-on-feet series (fetchDailyWorkHistory).
+// Regime is per DATE, so flipping the setting never rewrites older weeks.
+function countedKm(run: RunWorkout, switches?: SwitchPoint[]): number {
+  const full = run.distance / METERS_PER_KM;
+  if (!switches || regimeForDate(run.date, switches) === 'full' || !run.segments?.length) return full;
+  const keep = run.segments.filter(sg => !TOF_EXCLUDE_PHASE.test(sg.label ?? ''));
+  const m = keep.reduce((a, sg) => a + (sg.distanceM ?? 0), 0);
+  return keep.length && m > 0 ? m / METERS_PER_KM : full;
+}
+function computeWeeklyMileage(runs: RunWorkout[], switches?: SwitchPoint[]): WeeklyMileage[] {
   const weeks: Record<string, number> = {};
+  const p2 = (n: number) => String(n).padStart(2, '0');
   runs.forEach((run) => {
     const date   = new Date(run.date);
     const monday = new Date(date);
     monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
-    const key = monday.toISOString().split('T')[0];
-    weeks[key] = (weeks[key] ?? 0) + run.distance / METERS_PER_KM;
+    // LOCAL Monday (toISOString gave the UTC day → the Sunday before, for local-midnight Mondays in Belgium).
+    const key = `${monday.getFullYear()}-${p2(monday.getMonth() + 1)}-${p2(monday.getDate())}`;
+    weeks[key] = (weeks[key] ?? 0) + countedKm(run, switches);
   });
   return Object.entries(weeks)
     .sort(([a], [b]) => a.localeCompare(b))

@@ -7,7 +7,7 @@ import {
 } from '../src/services/statsLayout';
 import { ReorderList } from '../src/ReorderList';
 import { loadEvents } from '../src/services/timelineEvents';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache, fetchTrainingLoadHistory, fetchBodyMassHistory } from '../src/services/healthkit';
 import { loadStatsRuns, saveStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
@@ -63,6 +63,7 @@ interface Ev { t: number; label: string; category: string }
 const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
 const dLabel = (t: number, yearly: boolean) =>
   new Date(t).toLocaleDateString('en-GB', yearly ? { month: 'short', year: '2-digit' } : { day: 'numeric', month: 'short' });
+const shortDmy = (t: number) => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
 
 // ─── Power-Duration chart ───────────────────────────────────────────────────────
 function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz?: PowerZones }) {
@@ -240,6 +241,27 @@ function CardHead({ title, children }: { title: string; children?: React.ReactNo
 // ─── Time-windowed series chart: cursor + events + date x-axis + optional band/refs/trend ─────────
 const TX_H = 20;
 interface TPt { t: number; v: number; color?: string }
+// The points inside the shared window, in draw order — exactly the set TChart plots. Card captions use this
+// too, so their "latest"/Δ numbers describe the chart on screen rather than the whole run history.
+function inWin<T extends { t: number }>(pts: T[], t0: number, t1: number): T[] {
+  return pts.filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
+}
+// OLS fit over (index, value) — the SAME fit TChart draws as its grey trend line. Shared so a caption's
+// "±d over the window" (= fit(end) − fit(start) = m·(n−1)) always agrees with the line drawn in the card.
+function olsFit(vals: number[]): { m: number; b0: number } | null {
+  const n = vals.length; if (n < 2) return null;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += vals[i]; sxx += i * i; sxy += i * vals[i]; }
+  const den = n * sxx - sx * sx; if (!den) return null;
+  const m = (n * sxy - sx * sy) / den;
+  return { m, b0: (sy - m * sx) / n };
+}
+// ≥3 points, same as TChart's trend line — a caption must never quote a "trend" the chart doesn't draw.
+const trendDelta = (vals: number[]): number | null => {
+  if (vals.length < 3) return null;
+  const f = olsFit(vals); return f ? f.m * (vals.length - 1) : null;
+};
+const signed = (v: number, dp: number) => `${v >= 0 ? '+' : ''}${v.toFixed(dp)}`;
 function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries }: {
   pts: TPt[]; t0: number; t1: number; color: string;
   band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
@@ -266,7 +288,7 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
     onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
   })).current;
 
-  const win = pts.filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
+  const win = inWin(pts, t0, t1);
   if (innerW <= 0) return <View style={{ height: TS_H + TX_H + 20 }} />;
   if (win.length < 2) return <View style={{ height: TS_H + TX_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint, fontSize: 12 }}>Fewer than 2 points in this range.</Text></View>;
 
@@ -296,10 +318,8 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
   const readEv = nearEv && nearEv.dx < 12 ? nearEv.e : null;
   let trendEl: React.ReactNode = null;
   if (trend && win.length >= 3) {
-    const n = win.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (let i = 0; i < n; i++) { sx += i; sy += win[i].v; sxx += i * i; sxy += i * win[i].v; }
-    const den = n * sxx - sx * sx;
-    if (den) { const m = (n * sxy - sx * sy) / den, b0 = (sy - m * sx) / n;
+    const n = win.length, fit = olsFit(vals);
+    if (fit) { const { m, b0 } = fit;
       const x1 = x(win[0].t), y1 = toY(b0), x2 = x(win[n - 1].t), y2 = toY(b0 + m * (n - 1));
       const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
       trendEl = <View pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c.textSub, opacity: 0.7, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
@@ -335,7 +355,7 @@ function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfm
         </View>
         {rightGutter > 0 && (
           <View style={{ width: rightGutter, height: TS_H }}>
-            {has2 && [y2Hi - (y2Hi - y2Lo) * 0.15, (y2Lo + y2Hi) / 2, y2Lo + (y2Hi - y2Lo) * 0.15].map((vv, i) => <Text key={`y2l${i}`} pointerEvents="none" style={{ position: 'absolute', top: toY2(vv) - 7, left: 3, fontSize: 9.5, color: c2, fontWeight: '700', opacity: 0.9 }}>{f2(vv)}</Text>)}
+            {has2 && [y2Hi - (y2Hi - y2Lo) * 0.15, (y2Lo + y2Hi) / 2, y2Lo + (y2Hi - y2Lo) * 0.15].map((vv, i) => <Text key={`y2l${i}`} style={{ position: 'absolute', top: toY2(vv) - 7, left: 3, fontSize: 9.5, color: c2, fontWeight: '700', opacity: 0.9 }}>{f2(vv)}</Text>)}
           </View>
         )}
       </View>
@@ -517,43 +537,84 @@ function ZoneBar({ z }: { z: ZoneSummary }) {
 }
 
 // ─── Weekly TSS bars (TrainingPeaks training-load view) ──────────────────────────
-function WeeklyTssBars({ runs, t0, t1 }: { runs: any[]; t0: number; t1: number }) {
+// Every calendar week in the shared window gets a bar, ZERO-filled — a week off must count as 0 in the
+// average, not silently vanish (that inflated "n-week avg"). No fixed 16-week cap: the bar count follows the
+// window. A week belongs to the window by the Volume chart's rule (its Monday within [t0 − 4d, t1]) and sums
+// ALL of its runs, so a window edge can't clip a week into a falsely light one. The in-progress week is drawn
+// grey, labelled "so far", and kept OUT of the average.
+function WeeklyTssBars({ runs, t0, t1, innerW }: { runs: any[]; t0: number; t1: number; innerW: number }) {
   const { c } = useTheme();
   const weeks = useMemo(() => {
     const monday = (ms: number) => { const d = new Date(ms); const off = (d.getDay() + 6) % 7; d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - off); return d.getTime(); };
-    const m = new Map<number, number>();
+    const byWk = new Map<number, number>();
+    let firstWk = Infinity;
     for (const r of runs) {
-      const t = new Date(r.date).getTime();
-      if (t < t0 || t > t1) continue;
       const tss = r.tss ?? 0;
-      if (tss > 0) { const wk = monday(t); m.set(wk, (m.get(wk) ?? 0) + tss); }
+      if (!(tss > 0)) continue;
+      const wk = monday(new Date(r.date).getTime());
+      byWk.set(wk, (byWk.get(wk) ?? 0) + tss);
+      if (wk < firstWk) firstWk = wk;
     }
-    return [...m.entries()].sort((a, b) => a[0] - b[0]).slice(-16).map(([wk, tss]) => ({ wk, tss: Math.round(tss) }));
+    if (!byWk.size) return null;   // no power-based TSS anywhere yet
+    // Weeks before the first TSS-bearing run are pre-power history, not "zero load" — don't zero-fill those.
+    const from = Math.max(t0 - 4 * 86400000, firstWk);
+    const d = new Date(monday(from)); if (d.getTime() < from) d.setDate(d.getDate() + 7);
+    const now = Date.now();
+    const out: { wk: number; tss: number; inProgress: boolean }[] = [];
+    for (; d.getTime() <= t1; d.setDate(d.getDate() + 7)) {   // setDate (not +7·24h) keeps local midnight across DST
+      const wk = d.getTime(), end = new Date(wk); end.setDate(end.getDate() + 7);
+      out.push({ wk, tss: Math.round(byWk.get(wk) ?? 0), inProgress: end.getTime() > now });
+    }
+    return out;
   }, [runs, t0, t1]);
 
-  if (!weeks.length) return <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 16 }}>No power-based TSS yet — set your power zones, then Rebuild history.</Text>;
+  const empty = (msg: string) => <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 16 }}>{msg}</Text>;
+  if (!weeks) return empty('No power-based TSS yet — set your power zones, then Rebuild history.');
+  if (!weeks.some(w => w.tss > 0)) return empty('No TSS in this range.');
 
-  const max = Math.max(...weeks.map(w => w.tss), 1);
-  const avg = Math.round(weeks.reduce((a, w) => a + w.tss, 0) / weeks.length);
   const n = weeks.length;
+  const max = Math.max(...weeks.map(w => w.tss), 1);
+  const done = weeks.filter(w => !w.inProgress);
+  const avg = done.length ? Math.round(done.reduce((a, w) => a + w.tss, 0) / done.length) : null;
+  const lastDone = done[done.length - 1] ?? null;
+  const cur = weeks[n - 1].inProgress ? weeks[n - 1] : null;
+  // Long windows (1Y+ ≈ 52–260 weeks) can't fit per-bar value labels or 3px gaps — thin the chrome instead.
+  const dense = n > 20;
+  const gap = n > 60 ? 0 : dense ? 1 : 3;
+  const cellW = innerW > 0 ? (innerW - gap * (n - 1)) / n : 0;
+  const LBL_W = 56;
+  const labelIdx = [...new Set([0, Math.floor(n / 2), n - 1])];
   return (
     <View>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 116, gap: 3, marginTop: 6 }}>
-        {weeks.map((w, i) => (
-          <View key={w.wk} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end' }}>
-            {(w.tss >= max * 0.55 || i === n - 1) ? <Text style={{ fontSize: 8, color: c.textSub, marginBottom: 2 }}>{w.tss}</Text> : null}
-            <View style={{ width: '72%', height: Math.max(2, (w.tss / max) * 96), backgroundColor: i === n - 1 ? c.accent : c.accent + '99', borderRadius: 2 }} />
-          </View>
-        ))}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 116, gap, marginTop: 6 }}>
+        {weeks.map((w) => {
+          const hl = w === lastDone;   // highlight the latest COMPLETED week; the in-progress one is grey
+          return (
+            <View key={w.wk} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end' }}>
+              {!dense && (w.tss >= max * 0.55 || hl || w.inProgress) ? <Text style={{ fontSize: 8, color: c.textSub, marginBottom: 2 }}>{w.tss}</Text> : null}
+              <View style={{ width: '72%', height: Math.max(2, (w.tss / max) * 96), backgroundColor: w.inProgress ? c.textFaint : hl ? c.accent : c.accent + '99', opacity: w.inProgress ? 0.6 : 1, borderRadius: 2 }} />
+            </View>
+          );
+        })}
       </View>
-      <View style={{ flexDirection: 'row', gap: 3, marginTop: 3 }}>
-        {weeks.map((w, i) => (
-          <Text key={w.wk} style={{ flex: 1, fontSize: 7.5, color: c.textFaint, textAlign: 'center' }} numberOfLines={1}>
-            {(i === 0 || i === n - 1 || i === Math.floor(n / 2)) ? new Date(w.wk).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''}
-          </Text>
-        ))}
+      {/* Date labels positioned under their bars (absolute, so they stay legible however thin the bars get). */}
+      <View style={{ height: 12, marginTop: 3 }}>
+        {cellW > 0 && labelIdx.map((i) => {
+          const cx = i * (cellW + gap) + cellW / 2;
+          const atL = cx - LBL_W / 2 < 0, atR = cx + LBL_W / 2 > innerW;
+          return (
+            <Text key={i} numberOfLines={1} style={{ position: 'absolute', width: LBL_W, fontSize: 7.5, color: c.textFaint,
+              left: atL ? 0 : atR ? innerW - LBL_W : cx - LBL_W / 2, textAlign: atL ? 'left' : atR ? 'right' : 'center' }}>
+              {new Date(weeks[i].wk).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+            </Text>
+          );
+        })}
       </View>
-      <Text style={{ fontSize: 11, color: c.textSub, marginTop: 8 }}>{n}-week avg {avg} TSS/wk · latest {weeks[n - 1].tss}</Text>
+      <Text style={{ fontSize: 11, color: c.textSub, marginTop: 8 }}>
+        {avg != null ? `${done.length}-week avg ${avg} TSS/wk (completed weeks)` : 'No completed week in this range yet'}
+        {lastDone ? ` · last full week ${lastDone.tss}` : ''}
+        {cur ? ` · this week so far ${cur.tss} (in progress)` : ''}
+      </Text>
     </View>
   );
 }
@@ -581,7 +642,8 @@ function RacePredictorCard({ curve, runs }: { curve: PowerCurve | null; runs: an
         </View>
       ))}
       <Text style={{ color: c.textFaint, fontSize: 11, lineHeight: 16, marginTop: 10 }}>
-        Anchored on CP {curve.cp} W (≈ threshold pace {fmtRacePace(pred.thresholdPaceSec)}/km). Target paces are
+        Anchored on your all-time-best CP {curve.cp} W (≈ threshold pace {fmtRacePace(pred.thresholdPaceSec)}/km), so this is
+        what your best-ever power supports, not today's form or the selected window. Target paces are
         even splits — run the first km ~2–3 s/km easier and negative-split from there.
       </Text>
     </View>
@@ -600,7 +662,6 @@ export default function StatisticsScreen() {
   const [innerW, setInnerW] = useState(0);
   const [pz, setPz] = useState<PowerZones | undefined>(undefined);
   const [ef, setEf] = useState<EfPoint[]>([]);
-  const [zones, setZones] = useState<ZoneSummary | null>(null);
   const [acwr, setAcwr] = useState<AcwrPoint[]>([]);
   const [dc, setDc] = useState<DecouplePoint[] | null>(null);
   const [dcProg, setDcProg] = useState<{ done: number; total: number } | null>(null);
@@ -634,7 +695,6 @@ export default function StatisticsScreen() {
       repairWorkStats(runs)
         .then(rep => { setRepairs(rep); setEf(efficiencyTrend(runs, rep)); })
         .catch(() => {});
-      setZones(zoneSummary(runs, 56, (snap as any)?.estimatedMaxHR || 188));
       setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));   // instant, short (~45d) — replaced below
       // Full-history CTL/ATL for ACWR (snapshot only holds ~45d), + body-weight overlay for the EC chart.
       fetchTrainingLoadHistory(24).then(load => setAcwr(acwrSeries(load))).catch(() => {});
@@ -692,6 +752,13 @@ export default function StatisticsScreen() {
   const t1 = days ? gMax - offset * spanMs : gMax;
   const t0 = days ? t1 - spanMs : gMin;
   const zoneWeeks = useMemo(() => zoneDistributionOverTime(allRuns, 0, gMax + 86400000, maxHR), [allRuns, gMax, maxHR]);
+  // Intensity Distribution over the SHARED window (it used to be a fixed "last 56 days from now" that ignored
+  // the selector). Runs are placed by their calendar day, like the chart points (tOf(date.slice(0,10))), so a
+  // run on the window's last day is included; sinceDays just has to reach back past t0 so it cuts nothing more.
+  const zones = useMemo(() => {
+    const inRange = allRuns.filter((r: any) => { const t = tOf(String(r.date ?? '').slice(0, 10)); return t >= t0 && t <= t1; });
+    return zoneSummary(inRange, (Date.now() - t0) / 86400000 + 1, maxHR);
+  }, [allRuns, t0, t1, maxHR]);
   // Volume-vs-budget weekly history (moved in from the old standalone screen). Fetch enough weeks to fill the
   // window (ending at t1 so it pages with the shared controls); the "right now" gauges are always live.
   const [capWeeks, setCapWeeks] = useState<CapWeek[]>([]);
@@ -707,7 +774,9 @@ export default function StatisticsScreen() {
   // once (fixed baseline) from the loaded runs; the emphasis weighting mirrors the full /performance screen.
   const [gpi, setGpi] = useState<GpiResult | null>(null);
   const [gpiEmphasis, setGpiEmphasis] = useState<Emphasis>('performance');
-  useEffect(() => { SecureStore.getItemAsync('gpi_emphasis_v1').then(v => { if (v && v in WEIGHT_PRESETS) setGpiEmphasis(v as Emphasis); }).catch(() => {}); }, []);
+  // Re-read on FOCUS (not just mount): this screen stays mounted under /performance, so an emphasis change made
+  // there would otherwise leave this card showing a differently-weighted GPI than the screen it opens.
+  useFocusEffect(useCallback(() => { SecureStore.getItemAsync('gpi_emphasis_v1').then(v => { if (v && v in WEIGHT_PRESETS) setGpiEmphasis(v as Emphasis); }).catch(() => {}); }, []));
   useEffect(() => {
     if (!allRuns.length) return;
     let alive = true;
@@ -715,13 +784,15 @@ export default function StatisticsScreen() {
     return () => { alive = false; };
   }, [allRuns]);
   const gpiView = useMemo(() => {
-    if (!gpi?.series?.length) return null;
+    if (!gpi) return null;
     const w = WEIGHT_PRESETS[gpiEmphasis];
-    const all = gpi.series.map(p => ({ date: p.date, gpi: weightedGpi(p, w) }));
-    const latest = [...all].reverse().find(p => p.gpi != null) ?? null;
+    const all = (gpi.series ?? []).map(p => ({ date: p.date, gpi: weightedGpi(p, w) }));
     const win = all.filter(p => p.gpi != null && tOf(p.date) >= t0 && tOf(p.date) <= t1);
+    // Headline follows the window like the chart under it: the LAST point in [t0, t1] (paged back, that's the
+    // GPI at the window's end — not today's), and Δ = last − first WITHIN the window.
+    const latest = win[win.length - 1] ?? null;
     const first = win[0] ?? null;
-    const delta = latest?.gpi != null && first?.gpi != null ? latest.gpi - first.gpi : null;
+    const delta = win.length >= 2 && latest?.gpi != null && first?.gpi != null ? latest.gpi - first.gpi : null;
     // GPI is a DAILY series (up to 365 pts for 1Y). TChart draws a View per segment+dot, so downsample to
     // ≤60 (it's already a 7-day smoothed line — weekly-ish sampling loses nothing and keeps the card light).
     const raw = win.map(p => ({ t: tOf(p.date), v: p.gpi! }));
@@ -747,12 +818,19 @@ export default function StatisticsScreen() {
     computeCapHistory(1).then(w => setNowWeek(w.find(x => x.isCurrent) ?? w[w.length - 1] ?? null)).catch(() => {});
   }, []);
   // Moving "normal aerobic efficiency" band + the runs that survive its cut + a stable recent-median read.
-  const { dcClean, dcBand, dcMed } = useMemo(() => {
+  const { dcClean, dcBand } = useMemo(() => {
     const { clean, band } = decouplingBanded(dc ?? []);
-    const recent = clean.slice(-8).map(p => p.pct).sort((a, b) => a - b);
-    const med = recent.length ? recent[Math.floor(recent.length / 2)] : null;
-    return { dcClean: clean, dcBand: band.map(b => ({ t: tOf(b.date), lo: b.lo, hi: b.hi })), dcMed: med };
+    return { dcClean: clean, dcBand: band.map(b => ({ t: tOf(b.date), lo: b.lo, hi: b.hi })) };
   }, [dc]);
+  // Caption stats follow the shared window: latest run, recent median and the cut count all come from the runs
+  // inside [t0, t1] (what the chart draws), not from all history.
+  const { dcWin, dcMed, dcCut } = useMemo(() => {
+    const inW = (d: string) => { const t = tOf(d); return t >= t0 && t <= t1; };
+    const win = dcClean.filter(p => inW(p.date));
+    const recent = win.slice(-8).map(p => p.pct).sort((a, b) => a - b);
+    const med = recent.length ? recent[Math.floor(recent.length / 2)] : null;
+    return { dcWin: win, dcMed: med, dcCut: (dc ?? []).filter(p => inW(p.date)).length - win.length };
+  }, [dc, dcClean, t0, t1]);
   const monthYear = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 
   // Measured on the ScrollView (stable) rather than a single card, so it survives the user disabling or
@@ -770,8 +848,10 @@ export default function StatisticsScreen() {
           Your overall trajectory — recovery, sleep &amp; training folded into one line, each vs your own
           baseline (50 = your starting point; above = improved). Tap for the full breakdown.
         </CardHead>
-        {gpiView?.latest?.gpi == null ? (
+        {gpiView == null ? (
           <View style={s.center}><ActivityIndicator /></View>
+        ) : gpiView.latest?.gpi == null ? (
+          <Text style={s.errorText}>No Performance data in this range.</Text>
         ) : (
           <>
             <TouchableOpacity style={s.perfHead} activeOpacity={0.7} onPress={() => router.push('/performance' as any)}>
@@ -810,15 +890,17 @@ export default function StatisticsScreen() {
       <View style={s.card}>
         <CardHead title="Weekly TSS">
           Training load per week — TrainingPeaks Training Stress Score (power-based), summed across each
-          week's runs. Rising = building; a drop = a recovery/taper week or time off.
+          week's runs. Rising = building; a drop = a recovery/taper week or time off. Every week in the window
+          is shown — a week with no runs counts as 0. Grey = the in-progress week, left out of the average.
         </CardHead>
-        {loading ? <View style={s.center}><ActivityIndicator /></View> : <WeeklyTssBars runs={allRuns} t0={t0} t1={t1} />}
+        {loading ? <View style={s.center}><ActivityIndicator /></View> : <WeeklyTssBars runs={allRuns} t0={t0} t1={t1} innerW={innerW} />}
       </View>
     ),
     pdc: (
       <View style={s.card}>
         <CardHead title="Power–Duration Curve">
-          Best average running power you've held for each duration, across your runs.
+          Best average running power you've held for each duration — ALL-TIME bests across your loaded history,
+          so this card (and CP / W′) does not follow the time window.
           {curve ? ` From ${curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4). A fed, paced 20-min test refines the long end of this curve.` : ''}
           {curve?.cp != null ? ' Critical Power = estimated sustainable power (3+12-min bests).' : ''}
           {pz && pz.tempoMax > 0 ? ` Your set threshold band is ${pz.tempoMax}–${pz.intervalsMin} W (shaded).` : ''}
@@ -841,6 +923,8 @@ export default function StatisticsScreen() {
                 {curve.wPrime ? `   ·   W′ ${(curve.wPrime / 1000).toFixed(1)} kJ` : ''}
               </Text>
             )}
+            {/* Visible (not just in Notes): the curve is all-time, unlike the windowed cards around it. */}
+            <Text style={s.winNote}>All-time bests — not limited to the selected window.</Text>
             <TouchableOpacity style={s.rebuild} onPress={rebuildDeep}>
               <Text style={s.rebuildText}>↻ Rebuild + load full history</Text>
             </TouchableOpacity>
@@ -851,36 +935,47 @@ export default function StatisticsScreen() {
     race: !loading ? (
       <View style={s.card}>
         <CardHead title="Race Predictor">
-          Current fresh-legs race times from your Critical Power + running economy, scaled across
-          distances with Riegel. A guide to your fitness — not a goal; TSB, heat, terrain & fueling move it.
+          Fresh-legs race times from your ALL-TIME-best Critical Power (Power–Duration card) + your median running
+          economy across your history, scaled across distances with Riegel. It does not follow the time window. A
+          guide to your fitness — not a goal; TSB, heat, terrain & fueling move it.
         </CardHead>
         <RacePredictorCard curve={curve} runs={allRuns} />
       </View>
     ) : null,
-    ef: ef.filter(p => p.ef > 0).length >= 2 ? (() => { const p = ef.filter(x => x.ef > 0); return (
+    ef: ef.filter(p => p.ef > 0).length >= 2 ? (() => {
+      const p = ef.filter(x => x.ef > 0);
+      // Caption numbers use only the runs in the window (the points drawn); Δ = the grey trend line's Δ.
+      const pw = inWin(p.map(x => ({ ...x, t: tOf(x.date) })), t0, t1);
+      const d = trendDelta(pw.map(x => x.ef));
+      const ad = trendDelta(pw.filter(x => x.aerobic).map(x => x.ef));   // same OLS, steady aerobic runs only
+      return (
       <View style={s.card}>
         <CardHead title="Efficiency Factor">
           Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.
-          {' '}Grey line = trend. Green = steady aerobic runs. Latest {p[p.length - 1].ef.toFixed(2)}
-          {p.filter(x => x.aerobic).length >= 2 ? ((): string => {
-            const a = p.filter(x => x.aerobic); const d = a[a.length - 1].ef - a[0].ef;
-            return `  ·  aerobic EF ${d >= 0 ? '+' : ''}${(d).toFixed(2)} over the window (${d >= 0 ? 'improving' : 'down'}).`;
-          })() : ''}
-          {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat lifts HR, so those sit LOW for reasons other than fitness.` : ''}
-          {tempTrace(p).length >= 2 ? '  The orange line is run-time temperature (right axis, smoothed) — dips here that track it upward are weather, not lost fitness.' : ''}
+          {' '}Grey line = trend. Green = steady aerobic runs.
+          {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].ef.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
+          {ad != null ? `  ·  Aerobic runs alone: trend ${signed(ad, 2)} (${ad >= 0 ? 'improving' : 'down'}).` : ''}
+          {pw.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat lifts HR, so those sit LOW for reasons other than fitness.` : ''}
+          {tempTrace(pw).length >= 2 ? '  The orange line is run-time temperature (right axis, smoothed) — dips here that track it upward are weather, not lost fitness.' : ''}
         </CardHead>
         <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
           pts={p.map(x => ({ t: tOf(x.date), v: x.ef, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))}
           pts2={tempTrace(p)} color2={HEAT_ORANGE} y2fmt={(v) => `${Math.round(v)}°`} y2label="°C" />
       </View>
     ); })() : null,
-    ec: ef.filter(p => p.ec > 0).length >= 2 ? (() => { const p = ef.filter(x => x.ec > 0); return (
+    ec: ef.filter(p => p.ec > 0).length >= 2 ? (() => {
+      const p = ef.filter(x => x.ec > 0);
+      const pw = inWin(p.map(x => ({ ...x, t: tOf(x.date) })), t0, t1);   // window runs = the points drawn
+      const d = trendDelta(pw.map(x => x.ec));                             // = the grey trend line's Δ
+      const nRep = pw.filter(x => x.repaired).length;
+      return (
       <View style={s.card}>
         <CardHead title="Running Economy (EC)">
           Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy (and heat-proof: no 🟠 flags needed here). Rising = more speed per watt.
-          {' '}Grey line = trend. Latest {p[p.length - 1].ec.toFixed(3)} ({((p[p.length - 1].ec - p[0].ec) >= 0 ? '+' : '') + (p[p.length - 1].ec - p[0].ec).toFixed(3)} over the window).
+          {' '}Grey line = trend.
+          {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].ec.toFixed(3)} (trend ${signed(d, 3)} over the window).` : ''}
           {wt.length >= 2 ? '  Purple = body weight (right axis) — if EC RISES as weight falls, it\'s the power-from-mass estimate (power ∝ mass), not a real economy gain.' : ''}
-          {p.some(x => x.repaired) ? `  ${p.filter(x => x.repaired).length} run${p.filter(x => x.repaired).length === 1 ? '' : 's'} had stationary time (unpaused stops) removed from the work averages before plotting.` : ''}
+          {nRep ? `  ${nRep} run${nRep === 1 ? '' : 's'} had stationary time (unpaused stops) removed from the work averages before plotting.` : ''}
         </CardHead>
         <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
           pts={p.map(x => ({ t: tOf(x.date), v: x.ec, color: x.aerobic ? '#22c55e' : '#cbd5e1' }))}
@@ -897,40 +992,48 @@ export default function StatisticsScreen() {
       const pts = p.map(x => { const w = nearW(tOf(x.date)); return w ? { t: tOf(x.date), v: x.ec * w, color: x.aerobic ? '#14b8a6' : '#cbd5e1' } : null; })
         .filter(Boolean) as { t: number; v: number; color: string }[];
       if (pts.length < 2) return null;
-      const d = pts[pts.length - 1].v - pts[0].v;
+      const pw = inWin(pts, t0, t1);             // window runs = the points drawn
+      const d = trendDelta(pw.map(x => x.v));    // = the grey trend line's Δ
       return (
         <View style={s.card}>
           <CardHead title="Economy (weight-adjusted)">
             Speed ÷ power-per-kg — i.e. raw EC × body weight, which cancels the mass term (watch/pod power ∝ your weight). THIS is the economy signal to trust across a weight change: rising = a genuine efficiency gain, not just a lighter body inflating raw EC.
-            {' '}Grey line = trend. Latest {pts[pts.length - 1].v.toFixed(2)} ({(d >= 0 ? '+' : '') + d.toFixed(2)} over the window).
+            {' '}Grey line = trend.
+            {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].v.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
           </CardHead>
           <TChart innerW={innerW} t0={t0} t1={t1} color="#14b8a6" events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
             pts={pts} />
         </View>
       );
     })(),
-    se: ef.filter(p => p.se > 0).length >= 2 ? (() => { const p = ef.filter(x => x.se > 0); return (
+    se: ef.filter(p => p.se > 0).length >= 2 ? (() => {
+      const p = ef.filter(x => x.se > 0);
+      const pw = inWin(p.map(x => ({ ...x, t: tOf(x.date) })), t0, t1);   // window runs = the points drawn
+      const d = trendDelta(pw.map(x => x.se));                             // = the grey trend line's Δ
+      return (
       <View style={s.card}>
         <CardHead title="Speed Efficiency (SE)">
           Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).
-          {' '}Grey line = trend. Latest {p[p.length - 1].se.toFixed(2)} ({((p[p.length - 1].se - p[0].se) >= 0 ? '+' : '') + (p[p.length - 1].se - p[0].se).toFixed(2)} over the window).
-          {p.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}
-          {tempTrace(p).length >= 2 ? '  Orange line = run-time temperature (right axis, smoothed).' : ''}
+          {' '}Grey line = trend.
+          {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].se.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
+          {pw.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}
+          {tempTrace(pw).length >= 2 ? '  Orange line = run-time temperature (right axis, smoothed).' : ''}
         </CardHead>
         <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(2)}
           pts={p.map(x => ({ t: tOf(x.date), v: x.se, color: x.hot ? HEAT_ORANGE : x.aerobic ? '#22c55e' : '#cbd5e1' }))}
           pts2={tempTrace(p)} color2={HEAT_ORANGE} y2fmt={(v) => `${Math.round(v)}°`} y2label="°C" />
       </View>
     ); })() : null,
-    intensity: zones ? (
+    intensity: allRuns.length ? (
       <View style={s.card}>
         <CardHead title="Intensity Distribution">
-          Where your running time goes (last 8 weeks). Most endurance plans want ~80% easy.
+          Where your running time goes over the selected time window. Most endurance plans want ~80% easy.
           {' '}PI = Seiler polarization index (&gt;0 leans polarised).
-          {zones.modPct > 35 ? ' You have a lot of moderate "gray zone" — the classic flat-fitness trap.'
-            : zones.easyPct >= 75 ? ' Nicely polarised (lots of easy).' : ''}
+          {zones && zones.modPct > 35 ? ' You have a lot of moderate "gray zone" — the classic flat-fitness trap.'
+            : zones && zones.easyPct >= 75 ? ' Nicely polarised (lots of easy).' : ''}
         </CardHead>
-        <ZoneBar z={zones} />
+        {zones ? <ZoneBar z={zones} /> : <Text style={s.errorText}>No zone data in this range.</Text>}
+        <Text style={s.winNote}>{shortDmy(t0)} – {shortDmy(t1)}</Text>
       </View>
     ) : null,
     mix: zoneWeeks.length >= 1 ? (
@@ -942,27 +1045,30 @@ export default function StatisticsScreen() {
         <StackedZoneChart weeks={zoneWeeks} t0={t0} t1={t1} events={events} showEvents={showEvents} innerW={innerW} />
       </View>
     ) : null,
-    acwr: acwr.length >= 3 ? (
+    acwr: acwr.length >= 3 ? (() => {
+      const ap = acwr.map(p => ({ t: tOf(p.date), v: p.ratio }));
+      const aw = inWin(ap, t0, t1);   // "Latest" = the last point drawn in the window, not the newest overall
+      return (
       <View style={s.card}>
         <CardHead title="Load Ratio (ACWR)">
           Acute ÷ chronic load. The 0.8–1.3 band is the injury-risk sweet spot.
-          {' '}Latest {acwr[acwr.length - 1].ratio.toFixed(2)}. Green band = sweet spot; red dashed = 1.5 (spike-risk).
+          {aw.length ? ` Latest in window ${aw[aw.length - 1].v.toFixed(2)}.` : ''} Green band = sweet spot; red dashed = 1.5 (spike-risk).
         </CardHead>
         <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents}
           band={[0.8, 1.3]} refs={[{ y: 1.5, color: '#ef4444', dash: true }]} yfmt={(v) => v.toFixed(1)}
-          pts={acwr.map(p => ({ t: tOf(p.date), v: p.ratio }))} />
+          pts={ap} />
       </View>
-    ) : null,
+    ); })() : null,
     decoupling: (
       <View style={s.card}>
         <CardHead title="Aerobic Decoupling (Pw:HR)">
           How much HR drifts up relative to power over a steady run. Under 5% = strong aerobic base.
           One point per steady run ≥30 min; green line = 5% threshold.
-          {dcClean.length >= 2 ? `  ${dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of last ${Math.min(8, dcClean.length)}), ` : ''}latest run ${dcClean[dcClean.length - 1].pct.toFixed(1)}%.` : ''}
-          {dcClean.length >= 2 ? ((dcMed ?? dcClean[dcClean.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.') : ''}
-          {dc ? `  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dc.length - dcClean.length} run${dc.length - dcClean.length === 1 ? '' : 's'} cut as unusable (stop-and-go, HR dropout, or not steady).` : ''}
-          {dcClean.some(p => p.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat drives extra cardiac drift, so those read HIGH.` : ''}
-          {tempTrace(dcClean).length >= 2 ? '  Orange line = run-time temperature (right axis, smoothed) — drift rising with it is the weather.' : ''}
+          {dcWin.length >= 2 ? `  ${dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of the last ${Math.min(8, dcWin.length)} in this window), ` : ''}latest run ${dcWin[dcWin.length - 1].pct.toFixed(1)}%.` : ''}
+          {dcWin.length >= 2 ? ((dcMed ?? dcWin[dcWin.length - 1].pct) < 5 ? ' Well-coupled aerobic base.' : ' Some drift; more Z2 volume helps.') : ''}
+          {dc ? `  Shaded = your moving "normal" band; single runs are noisy so read the band/median, not one dot. ${dcCut} run${dcCut === 1 ? '' : 's'} in this window cut as unusable (stop-and-go, HR dropout, or not steady).` : ''}
+          {dcWin.some(p => p.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat drives extra cardiac drift, so those read HIGH.` : ''}
+          {tempTrace(dcWin).length >= 2 ? '  Orange line = run-time temperature (right axis, smoothed) — drift rising with it is the weather.' : ''}
         </CardHead>
         {dc == null ? (
           <View style={{ paddingVertical: 20, alignItems: 'center' }}><ActivityIndicator color={CTL_BLUE} /><Text style={s.loadingText}>Reading long runs…{dcProg && dcProg.total ? ` ${dcProg.done}/${dcProg.total}` : ''}</Text></View>
@@ -1007,7 +1113,7 @@ export default function StatisticsScreen() {
           <TouchableOpacity onPress={() => setCustomising(true)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Text style={{ fontSize: 20 }}>⚙︎</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => router.push('/data-chat?mode=stats')} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+          <TouchableOpacity onPress={() => router.push('/data-chat?mode=stats' as any)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Text style={{ fontSize: 22 }}>💬</Text>
           </TouchableOpacity>
         </View>
@@ -1097,6 +1203,8 @@ const makeS = (c: Palette) => StyleSheet.create({
   // Derived Critical Power — the per-duration bests are drawn on the chart itself now.
   cpLine:    { marginTop: 10, fontSize: 12, color: c.textSub, fontWeight: '600' },
   cpLineVal: { fontSize: 14, fontWeight: '800', color: CTL_BLUE },
+  // Small faint scope label ("which period does this number cover") under a card's chart/bar.
+  winNote:   { marginTop: 6, fontSize: 11, color: c.textFaint },
   // Compact Performance (GPI) headline
   perfHead:    { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
   perfNum:     { fontSize: 34, fontWeight: '800', lineHeight: 38, minWidth: 52 },
