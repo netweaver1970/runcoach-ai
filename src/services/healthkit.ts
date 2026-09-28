@@ -102,11 +102,16 @@ import { loadRecoveryCache, saveRecoveryCache } from './recoveryCache';
 // ─── Snapshot cache ───────────────────────────────────────────────────────────
 
 const SNAPSHOT_CACHE_FILE = `${FileSystem.documentDirectory}runcoach-snapshot-cache.json`;
+// Bumped whenever the snapshot changes, so derived memos (e.g. the cycle-restart detection) know to recompute.
+let snapshotVersion = 0;
+export const getSnapshotVersion = (): number => snapshotVersion;
 export async function saveSnapshotCache(snap: HealthSnapshot): Promise<void> {
   try { await FileSystem.writeAsStringAsync(SNAPSHOT_CACHE_FILE, JSON.stringify(snap)); } catch {}
+  snapshotVersion++;
 }
 export async function clearSnapshotCache(): Promise<void> {
   try { await FileSystem.deleteAsync(SNAPSHOT_CACHE_FILE, { idempotent: true }); } catch {}
+  snapshotVersion++;
 }
 export async function loadSnapshotCache(): Promise<HealthSnapshot | null> {
   try {

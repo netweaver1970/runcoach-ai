@@ -122,6 +122,8 @@ export default function SettingsScreen() {
   const [dropPct, setDropPct]   = useState('25');
   const [periodSaved, setPeriodSaved] = useState(false);
   const [anchor, setAnchor] = useState('');
+  const [restartOn, setRestartOn] = useState(true);                                  // restart the cycle after time off
+  const [lastRestart, setLastRestart] = useState<{ from: string; reason: string } | null>(null);
   const [planMode, setPlanModeState] = useState<PlanMode>('leisure');
   const [raceDateObj, setRaceDateObj] = useState<Date>(() => { const d = new Date(); d.setDate(d.getDate() + 56); d.setHours(0, 0, 0, 0); return d; });
   const [raceDist, setRaceDist]   = useState('10');
@@ -150,6 +152,50 @@ export default function SettingsScreen() {
   const [dayViewAuto, setDayViewAuto] = useState(true);
   const [preparing, setPreparing] = useState(false);
   const [activeCat, setActiveCat] = useState<string | null>(null);
+  // ── Settings search ──
+  const [query, setQuery] = useState('');
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const searchHits = React.useMemo(() => {
+    const toks = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (query.trim().length < 2) return [] as { label: string; section: string; cat: string; score: number }[];
+    // A word-START match ranks above a mid-word one ("hr" → "Max HR" before "threshold").
+    const wordStart = (hay: string) => toks.every(t => new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(hay));
+    const catLabel = (id: string) => (CATEGORIES.find(x => x.id === id)?.label ?? '').toLowerCase();
+    const hits: { label: string; section: string; cat: string; score: number }[] = [];
+    for (const e of SECTION_INDEX.values()) {
+      const section = e.title;
+      const ctx = `${section} ${catLabel(e.cat)}`.toLowerCase();
+      let labelHit = false;
+      for (const lb of e.labels) {
+        const hay = lb.toLowerCase();
+        if (toks.every(t => hay.includes(t))) { hits.push({ label: lb, section, cat: e.cat, score: hay.startsWith(toks[0]) ? 4 : wordStart(hay) ? 3.5 : 3 }); labelHit = true; }
+        else if (toks.every(t => `${hay} ${ctx}`.includes(t))) { hits.push({ label: lb, section, cat: e.cat, score: 1 }); labelHit = true; }
+      }
+      if (toks.every(t => section.toLowerCase().includes(t))) hits.push({ label: section, section, cat: e.cat, score: wordStart(section.toLowerCase()) ? 5 : 2 });
+      else if (!labelHit && toks.every(t => `${e.blob} ${ctx}`.includes(t))) hits.push({ label: section, section, cat: e.cat, score: 0 });
+    }
+    return hits.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, 40);
+  }, [query]);
+  const openHit = (h: { label: string; section: string; cat: string }) => {
+    Keyboard.dismiss();   // never leave the keyboard up across a screen change (the known iOS keyboard freeze)
+    setActiveCat(h.cat || null);
+    setJumpTarget({ section: h.section, cat: h.cat, label: h.label !== h.section ? h.label : undefined });
+  };
+  const jumpCtx = React.useMemo(() => ({
+    target: jumpTarget,
+    done: () => setJumpTarget(null),
+    scrollToNode: (node: any, fallback?: any) => {
+      const inner = (scrollRef.current as any)?.getInnerViewRef?.();
+      if (!inner) return;
+      const go = (_x: number, y: number) => scrollRef.current?.scrollTo({ y: Math.max(0, y - 90), animated: true });
+      const measure = (n: any, onFail: () => void) => {
+        if (n && typeof n.measureLayout === 'function') n.measureLayout(inner, go, onFail); else onFail();
+      };
+      // The exact setting row first; if it can't be measured, at least the section.
+      measure(node, () => { if (fallback && fallback !== node) measure(fallback, () => {}); });
+    },
+  }), [jumpTarget]);
   const [watchKPI, setWatchKPIState] = useState('stress');
   useEffect(() => { getWatchKPI().then(setWatchKPIState); }, []);
 
@@ -193,7 +239,11 @@ export default function SettingsScreen() {
     isDriveConnected().then(setDriveConnected).catch(() => {});
     getMinTSB().then(v => setMinTsb(String(v)));
     getLoadCapBasis().then(setCapBasisState);
-    getPeriodization().then(p => { setPeriodOn(p.on); setBuildW(String(p.buildWeeks)); setDeloadW(String(p.deloadWeeks)); setDropPct(String(p.deloadDropPct)); setAnchor(p.anchor); });
+    getPeriodization().then(p => {
+      setPeriodOn(p.on); setBuildW(String(p.buildWeeks)); setDeloadW(String(p.deloadWeeks)); setDropPct(String(p.deloadDropPct)); setAnchor(p.anchor);
+      setRestartOn(p.restartAfterBreak !== false);
+      const r = p.restarts?.[p.restarts.length - 1]; setLastRestart(r ? { from: r.from, reason: r.reason } : null);
+    });
     getPlanMode().then(setPlanModeState);
     getRaceConfig().then(r => {
       if (r.date) { const d = new Date(r.date + 'T00:00:00'); if (!isNaN(d.getTime())) setRaceDateObj(d); }
@@ -312,12 +362,13 @@ export default function SettingsScreen() {
     setTimeout(() => setMaxRunDaysSaved(false), 2000);
   };
 
-  const handleSavePeriod = async (on?: boolean) => {
+  const handleSavePeriod = async (on?: boolean, restart?: boolean) => {
     const bw = parseInt(buildW, 10), dw = parseInt(deloadW, 10), dp = parseInt(dropPct, 10);
     if ([bw, dw, dp].some(isNaN)) { Alert.alert('Invalid value', 'Enter whole numbers for build weeks, deload weeks and the drop %.'); return; }
     const a = anchor.trim();
     if (a && isNaN(new Date(a + 'T00:00:00').getTime())) { Alert.alert('Invalid date', 'Cycle start must be YYYY-MM-DD (or leave blank for the default).'); return; }
-    await setPeriodization({ on: on ?? periodOn, buildWeeks: bw, deloadWeeks: dw, deloadDropPct: dp, anchor: a });
+    await setPeriodization({ on: on ?? periodOn, buildWeeks: bw, deloadWeeks: dw, deloadDropPct: dp, anchor: a,
+      restartAfterBreak: restart ?? restartOn });
     setPeriodSaved(true); setTimeout(() => setPeriodSaved(false), 2000);
   };
 
@@ -533,7 +584,7 @@ export default function SettingsScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.navHeader}>
         <TouchableOpacity
-          onPress={() => { if (activeCat) setActiveCat(null); else router.back(); }}
+          onPress={() => { Keyboard.dismiss(); setJumpTarget(null); if (activeCat) setActiveCat(null); else router.back(); }}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Text style={styles.backLink} numberOfLines={1}>{activeCat ? '‹ Settings' : '‹ Back'}</Text>
@@ -541,11 +592,41 @@ export default function SettingsScreen() {
         <Text style={styles.navTitle}>{activeCat ? (CATEGORIES.find(x => x.id === activeCat)?.label ?? 'Settings') : 'Settings'}</Text>
         <View style={{ width: 96 }} />
       </View>
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets keyboardDismissMode="interactive">
+        {/* iOS-Settings-style search: live results across ALL categories → tap jumps straight to the setting. */}
         {!activeCat && (
+          <View style={styles.searchBox}>
+            <Text style={styles.searchIcon}>🔍</Text>
+            <TextInput
+              style={styles.searchInput} value={query} onChangeText={setQuery}
+              placeholder="Search settings" placeholderTextColor={c.textFaint ?? '#999'}
+              autoCapitalize="none" autoCorrect={false} clearButtonMode="always" returnKeyType="search"
+            />
+          </View>
+        )}
+        {!activeCat && query.trim() !== '' && (
+          <View style={styles.catList}>
+            {query.trim().length < 2 ? (
+              <Text style={styles.hint}>Type at least 2 letters…</Text>
+            ) : searchHits.length === 0 ? (
+              <Text style={styles.hint}>No settings match “{query.trim()}”.</Text>
+            ) : searchHits.map((h, i) => (
+              <TouchableOpacity key={`${h.section}|${h.label}|${i}`} style={styles.searchRow} onPress={() => openHit(h)}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.catLabel} numberOfLines={1}>{h.label}</Text>
+                  <Text style={styles.catDesc} numberOfLines={1}>
+                    {(CATEGORIES.find(x => x.id === h.cat)?.label ?? 'Settings')}{h.label !== h.section ? ` › ${h.section}` : ''}
+                  </Text>
+                </View>
+                <Text style={styles.catChevron}>›</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+        {!activeCat && query.trim() === '' && (
           <View style={styles.catList}>
             {CATEGORIES.map(cat => (
-              <TouchableOpacity key={cat.id} style={styles.catRow} onPress={() => setActiveCat(cat.id)}>
+              <TouchableOpacity key={cat.id} style={styles.catRow} onPress={() => { Keyboard.dismiss(); setActiveCat(cat.id); }}>
                 <Text style={styles.catIcon}>{cat.icon}</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.catLabel}>{cat.label}</Text>
@@ -556,6 +637,7 @@ export default function SettingsScreen() {
             ))}
           </View>
         )}
+        <JumpCtx.Provider value={jumpCtx}>
         <ActiveCat.Provider value={activeCat}>
 
         {/* Appearance */}
@@ -1142,7 +1224,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Long Run Threshold */}
-        <Section title="Long Run Threshold" cat="zones">
+        <Section title="Long Run Threshold" cat="zones" labels={["Long run minutes"]}>
           <Text style={styles.hint}>
             Runs longer than this are classified as "Long Run" regardless of pace or HR.
             Changing this clears the classification cache so all runs are re-evaluated.
@@ -1190,7 +1272,7 @@ export default function SettingsScreen() {
           </Text>
         </Section>
 
-        <Section title="Workout Structure" cat="zones">
+        <Section title="Workout Structure" cat="zones" labels={["Warm-up distance", "Cool-down distance", "Drills minutes"]}>
           <Text style={styles.hint}>
             The warm-up, cool-down and drills that wrap every prescribed run — on the watch and in the plan.
             Leave warm-up / cool-down blank for an OPEN goal (you end it yourself with the lap button); or enter
@@ -1231,7 +1313,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Section>
 
-        <Section title="Max Heart Rate" cat="zones">
+        <Section title="Max Heart Rate" cat="zones" labels={["Max HR (bpm)"]}>
           <Text style={styles.hint}>
             Your true max HR sets the strain zones (Bevel-style %max-HR). We can only observe a peak
             from logged runs, which under-reads it if you don't sprint — making strain read too high.
@@ -1257,7 +1339,7 @@ export default function SettingsScreen() {
           </View>
         </Section>
 
-        <Section title="Progression Cap" cat="zones">
+        <Section title="Progression Cap" cat="zones" labels={["Weekly increase % (volume cap)", "Minimum form (min TSB)"]}>
           <Text style={styles.hint}>
             Limits how fast your weekly running load can grow. Default +10% per rolling 7 days (the
             classic guideline). Coming back from injury you can ramp faster — e.g. 20%. Only the REAL
@@ -1345,7 +1427,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Weekly volume shape */}
-        <Section title="Weekly Volume" cat="zones">
+        <Section title="Weekly Volume" cat="zones" labels={["Max running days per week", "Heat sensitivity"]}>
           <Text style={styles.hint}>
             Max running days per week. The coach fits your quality sessions (intervals / tempo / long)
             first, then fills easy volume up to this many days — so lowering it concentrates the week into
@@ -1395,7 +1477,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Periodization */}
-        <Section title="Periodization" cat="zones">
+        <Section title="Periodization" cat="zones" labels={["Build weeks", "Deload weeks", "Deload drop %", "Cycle start (Build 1 week)"]}>
           <Text style={styles.hint}>
             Instead of growing forever, build for a set number of weeks then take a lighter DELOAD week
             (lower volume) so you recover and absorb the training — the build then resumes from where it
@@ -1443,6 +1525,23 @@ export default function SettingsScreen() {
             <TouchableOpacity style={[styles.btn, periodSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]} onPress={() => handleSavePeriod()}>
               <Text style={styles.btnText}>{periodSaved ? '✓ Saved' : 'Save'}</Text>
             </TouchableOpacity>
+          </View>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.switchLabel}>Restart the cycle after a break</Text>
+              <Text style={styles.switchSub}>
+                After time off (≥7 days without running, or ≥5 days Sick / Injured / On a break) the first week back
+                becomes Build 1 again, so you get a full build phase. Back Thu–Sun → an easy "back from break" week,
+                then Build 1 the next Monday. Your cycle start above is never changed.
+                {lastRestart ? `\nLast restart: back ${lastRestart.from} (${lastRestart.reason}).` : ''}
+              </Text>
+            </View>
+            <Switch
+              value={restartOn}
+              onValueChange={(v) => { setRestartOn(v); handleSavePeriod(undefined, v); }}
+              trackColor={{ true: c.accent, false: c.switchTrack }} ios_backgroundColor={c.switchTrack}
+              thumbColor="#fff"
+            />
           </View>
         </Section>
 
@@ -1538,7 +1637,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Body Weight */}
-        <Section title="Body Weight" cat="profile">
+        <Section title="Body Weight" cat="profile" labels={["Weight (kg)"]}>
           <Text style={styles.hint}>
             Used to estimate running power (W) when Apple Watch power data is unavailable.
             Auto-filled from Apple Health if recorded there.
@@ -1983,6 +2082,7 @@ export default function SettingsScreen() {
           </Text>
         </Section>
         </ActiveCat.Provider>
+        </JumpCtx.Provider>
 
       </ScrollView>
     </SafeAreaView>
@@ -2002,14 +2102,104 @@ const CATEGORIES: { id: string; label: string; icon: string; desc: string }[] = 
   { id: 'cloud',      label: 'Cloud & Human Coach',        icon: '☁️', desc: 'Account, sync, external human coach' },
 ];
 
-function Section({ title, cat, children }: { title: string; cat?: string; children: React.ReactNode }) {
+// ── Settings search (iOS-Settings style) ─────────────────────────────────────────────────────────────────
+// The index BUILDS ITSELF: every Section renders on every pass (hidden ones return null AFTER registering), and it
+// walks its own JSX for (a) setting LABELS — bold Text (switchLabel / fieldLabel …) that isn't a button caption or
+// a lowercase unit like "build wks" — and (b) all its text (hints included) for keyword matching. New settings are
+// searchable automatically; nothing to keep in sync by hand.
+// Keyed by `${cat}|${title}` so a future duplicate section title can't overwrite another's entry.
+const SECTION_INDEX = new Map<string, { title: string; cat: string; labels: string[]; blob: string }>();
+type JumpTarget = { section: string; cat: string; label?: string };
+const JumpCtx = React.createContext<{ target: JumpTarget | null; done: () => void; scrollToNode: (node: any, fallback?: any) => void } | null>(null);
+
+function textOf(children: React.ReactNode): string {
+  if (children == null || typeof children === 'boolean') return '';
+  if (typeof children === 'string' || typeof children === 'number') return String(children);
+  if (Array.isArray(children)) return children.map(textOf).join('');
+  if (React.isValidElement(children)) return textOf((children.props as any)?.children);
+  return '';
+}
+const isTouchableType = (t: any) => t === TouchableOpacity || /Touchable|Pressable|Button/.test(t?.displayName ?? t?.name ?? '');
+function isLabelText(style: any, txt: string): boolean {
+  const f: any = StyleSheet.flatten(style) || {};
+  const bold = ['600', '700', '800', 'bold'].includes(String(f.fontWeight ?? ''));
+  // The first letter-or-digit must be an UPPERCASE LETTER: rejects lowercase units ("build wks", "bpm") and values
+  // that start with a number ("215 – 260 W" — its only letter being uppercase used to let it through).
+  const first = txt.match(/[A-Za-z0-9À-ÖØ-öø-ÿ]/)?.[0];   // (× U+00D7 / ÷ U+00F7 are NOT letters)
+  return bold && txt.length >= 4 && txt.length <= 70 && !!first && /[A-ZÀ-ÖØ-Þ]/.test(first);
+}
+function indexNode(node: React.ReactNode, out: { labels: string[]; all: string[] }, inButton = false, depth = 0): void {
+  if (node == null || typeof node === 'boolean' || depth > 14) return;
+  if (typeof node === 'string' || typeof node === 'number') { out.all.push(String(node)); return; }
+  if (Array.isArray(node)) { node.forEach(n => indexNode(n, out, inButton, depth + 1)); return; }
+  if (!React.isValidElement(node)) return;
+  const props: any = node.props ?? {};
+  if (node.type === Text) {
+    const txt = textOf(props.children).replace(/\s+/g, ' ').trim();
+    if (txt) { out.all.push(txt); if (!inButton && isLabelText(props.style, txt)) out.labels.push(txt); }
+    return;
+  }
+  if (typeof props.placeholder === 'string') out.all.push(props.placeholder);
+  if (typeof props.label === 'string') out.all.push(props.label);   // e.g. Picker.Item options
+  indexNode(props.children, out, inButton || isTouchableType(node.type), depth + 1);
+}
+// Clone the tree with the matching label Text highlighted + ref'd, so the jump can scroll to that exact row.
+function markLabel(node: React.ReactNode, label: string, ref: React.MutableRefObject<any>, hl: object | null, depth = 0): React.ReactNode {
+  if (node == null || typeof node === 'boolean' || typeof node === 'string' || typeof node === 'number' || depth > 14) return node;
+  if (Array.isArray(node)) return node.map((n, i) => {
+    const m = markLabel(n, label, ref, hl, depth + 1);
+    return React.isValidElement(m) && m.key == null ? React.cloneElement(m, { key: `mk${i}` }) : m;
+  });
+  if (!React.isValidElement(node)) return node;
+  const props: any = node.props ?? {};
+  if (label && node.type === Text && textOf(props.children).replace(/\s+/g, ' ').trim() === label) {
+    return React.cloneElement(node as React.ReactElement<any>, { ref, style: hl ? [props.style, hl] : props.style });
+  }
+  if (props.children == null) return node;
+  return React.cloneElement(node as React.ReactElement<any>, undefined, markLabel(props.children, label, ref, hl, depth + 1));
+}
+
+// `labels`: extra setting NAMES for search whose on-screen captions aren't bold labels (units like "build wks",
+// settings only described in a hint) — they list as their own hits and jump to this section.
+function Section({ title, cat, labels: extraLabels, children }: { title: string; cat?: string; labels?: string[]; children: React.ReactNode }) {
   const styles = useThemedStyles(makeStyles);
+  const { c } = useTheme();
   const active = React.useContext(ActiveCat);
+  const jump = React.useContext(JumpCtx);
+  const boxRef = useRef<View>(null);
+  const labelRef = useRef<any>(null);
+  const flashLabel = useRef<string | undefined>(undefined);   // the jumped-to label, kept for the highlight
+  const [flash, setFlash] = useState(false);
+  // Register for search while on the LANDING page (the only place search is shown) — a walk of this section's JSX,
+  // visible or not; not on every keystroke inside a category.
+  if (!active) {
+    const out = { labels: [] as string[], all: [] as string[] };
+    indexNode(children, out);
+    SECTION_INDEX.set(`${cat ?? ''}|${title}`, {
+      title, cat: cat ?? '', labels: [...new Set([...out.labels, ...(extraLabels ?? [])])],
+      blob: `${title} ${(extraLabels ?? []).join(' ')} ${out.all.join(' ')}`.toLowerCase(),
+    });
+  }
+  const isTarget = !!jump?.target && jump.target.section === title && jump.target.cat === (cat ?? '') && (!cat || active === cat);
+  if (isTarget) flashLabel.current = jump!.target!.label;   // (labelRef is attached/cleared by React at commit)
+  useEffect(() => {
+    if (!isTarget || !jump) return;
+    const t = setTimeout(() => {           // after the category's sections have laid out
+      jump.scrollToNode(labelRef.current ?? boxRef.current, boxRef.current);
+      setFlash(true); setTimeout(() => setFlash(false), 1800);
+      jump.done();
+    }, 120);
+    return () => clearTimeout(t);
+  }, [isTarget]);
   if (cat && active !== cat) return null; // hidden until its category is opened
+  const label = isTarget || flash ? flashLabel.current : undefined;
+  // ALWAYS through markLabel (label '' matches nothing): its keys stay identical across renders, so the section is
+  // NOT remounted when the highlight ends — a remount dropped focus + keyboard mid-edit ~2 s after a jump.
+  const body = markLabel(children, label ?? '', labelRef, flash && label ? { backgroundColor: c.accent + '33', borderRadius: 4 } : null);
   return (
-    <View style={styles.section}>
+    <View ref={boxRef} style={[styles.section, flash && !labelRef.current ? { borderRadius: 10, backgroundColor: c.accent + '14' } : null]}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      <View style={styles.sectionBody}>{children}</View>
+      <View style={styles.sectionBody}>{body}</View>
     </View>
   );
 }
@@ -2032,6 +2222,16 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   navTitle: { fontSize: 17, fontWeight: '700', color: c.text },
   backLink: { fontSize: 16, color: c.accent, fontWeight: '600', width: 96 },
   catList: { gap: 10, marginBottom: 8 },
+  searchBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, borderRadius: 10,
+    backgroundColor: c.surfaceAlt, borderWidth: 1, borderColor: c.border, marginBottom: 12,
+  },
+  searchIcon: { fontSize: 14, opacity: 0.7 },
+  searchInput: { flex: 1, paddingVertical: 10, fontSize: 16, color: c.text },
+  searchRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 12, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt,
+  },
   catRow: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
     padding: 16, borderRadius: 12, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt,

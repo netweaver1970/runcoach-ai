@@ -10,7 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import { callLLM, getLLMStatus, extractJsonObject, setUsageFeature } from './llm';
 import { buildKnowledgePrompt, recordPrescription, readKnowledgeContent } from './coachFiles';
 import { raceActive, getRaceWeekPlan, raceSlotForToday, getRaceConfig, fmtTime } from './racePlan';
-import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory, fetchTrainingLoadHistory, loadSnapshotCache } from './healthkit';
+import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDistanceHistory, fetchDailyRunWeatherHistory, fetchTrainingLoadHistory, loadSnapshotCache, getSnapshotVersion } from './healthkit';
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
@@ -2091,10 +2091,115 @@ export interface TofPlan {
 // by `deloadDropPct`% before the build RESUMES from the pre-deload level (not the trough). Adjustable by
 // the athlete/coach with safe defaults. Cycle phase is a deterministic function of the athlete's cycle-start
 // anchor (a blank anchor auto-fills to the current week on first use) + the settings.
-export interface Periodization { on: boolean; buildWeeks: number; deloadWeeks: number; deloadDropPct: number; anchor: string; }
+export interface Periodization {
+  on: boolean; buildWeeks: number; deloadWeeks: number; deloadDropPct: number; anchor: string;
+  restartAfterBreak?: boolean;   // persisted; default ON — time off restarts the cycle at Build 1 (see computeCycleRestarts)
+  restarts?: CycleRestart[];     // DERIVED on every getPeriodization() from runs + timeline — never persisted
+}
+// A cycle restart after time off: `from` = first day back (YYYY-MM-DD), `monday` = the Monday that becomes Build 1
+// (the return week itself when back Mon–Wed; the NEXT Monday when back Thu–Sun, so the build phase is full-length).
+export interface CycleRestart { from: string; monday: string; reason: string }
+const BREAK_GAP_DAYS    = 7;   // ≥7 full days without a run = time off (a deload week still has runs)
+const BREAK_STATUS_DAYS = 5;   // or a Sick / Injured / "On a break" status period of ≥5 days
+
+/**
+ * Restart points for the build/deload cycle after TIME OFF (Geert 2026-09-28: "after a time off (vacation/illness/
+ * whatever), restart the training block nr. to 1 again, so there's a full build phase again"). Pure + derived from
+ * data — run days + status timeline events — so it's reconstructible after a reinstall and never rewrites the
+ * stored anchor; a restart before the athlete's own (later) anchor is ignored.
+ */
+export function computeCycleRestarts(
+  runDaysIn: string[], events: { date: string; type: string; status?: string; endDate?: string }[],
+  anchor: string, today: string, currentStatus?: string,
+): CycleRestart[] {
+  const DAY = 86_400_000;
+  const t = (k: string) => new Date(k + 'T00:00:00').getTime();
+  const key = (ms: number) => isoDate(new Date(ms));
+  const runDays = [...new Set(runDaysIn)].filter(d => d <= today).sort();
+  const firstRunOnOrAfter = (k: string) => runDays.find(d => d >= k);
+  const out: { from: string; reason: string }[] = [];
+  // (a) a gap between consecutive runs of ≥ BREAK_GAP_DAYS full days → restart on the run that ends it.
+  for (let i = 1; i < runDays.length; i++) {
+    const off = Math.round((t(runDays[i]) - t(runDays[i - 1])) / DAY) - 1;
+    if (off >= BREAK_GAP_DAYS) out.push({ from: runDays[i], reason: `${off} days without running` });
+  }
+  // Still in a gap TODAY (no run for ≥ BREAK_GAP_DAYS) and not on a logged break → today is the return day, so
+  // today's plan is already Build 1 / "back from break" instead of whatever week the old cycle has reached.
+  const last = runDays[runDays.length - 1];
+  if (last && (currentStatus ?? 'running') === 'running') {
+    const off = Math.round((t(today) - t(last)) / DAY) - 1;
+    if (off >= BREAK_GAP_DAYS) out.push({ from: today, reason: `${off} days without running` });
+  }
+  // (b) a non-running STATUS period (sick / injured / holiday) of ≥ BREAK_STATUS_DAYS → restart on the first run
+  // on/after it ends (its own "until", else the next status change, else today while it's still ongoing).
+  const statuses = events.filter(e => e.type === 'status' && e.status).sort((a, b) => a.date.localeCompare(b.date));
+  statuses.forEach((e, i) => {
+    if (e.status === 'running') return;
+    const next = statuses[i + 1]?.date;
+    const end = e.endDate && (!next || e.endDate < next) ? e.endDate : (next ?? today);
+    const days = Math.round((t(end) - t(e.date)) / DAY);
+    if (days < BREAK_STATUS_DAYS) return;
+    const back = firstRunOnOrAfter(end);
+    // Only when the run history reaches back PAST the status start: otherwise (an old break whose return run has
+    // aged out of the ~90-day snapshot) `back` would be the oldest run still in the window and slide forward
+    // every week, freezing the cycle. Old restarts are kept by the persisted list instead (getPeriodization).
+    if (back && runDays.length && runDays[0] < e.date) out.push({ from: back, reason: `${e.status} ${days} days` });
+  });
+  // Build-1 Monday: the return week when back Mon–Wed, else the next Monday. Only restarts AFTER the anchor count.
+  const anchorMon = anchor ? t(isoDate(mondayOf(new Date(anchor + 'T00:00:00')))) : -Infinity;
+  const byMonday = new Map<string, CycleRestart>();
+  for (const r of out) {
+    const d = new Date(r.from + 'T00:00:00');
+    const mon = mondayOf(d);
+    if (((d.getDay() + 6) % 7) >= 3) mon.setDate(mon.getDate() + 7);   // Thu–Sun return → Build 1 next Monday
+    const monday = isoDate(mon);
+    if (t(monday) <= anchorMon) continue;
+    const prev = byMonday.get(monday);
+    if (!prev || r.from < prev.from) byMonday.set(monday, { from: r.from, monday, reason: r.reason });
+  }
+  return [...byMonday.values()].sort((a, b) => a.monday.localeCompare(b.monday));
+}
 // anchor = ISO date (YYYY-MM-DD) the athlete chose to START a cycle (its week = Build 1); '' → fixed calendar default.
 export const DEFAULT_PERIODIZATION: Periodization = { on: true, buildWeeks: 3, deloadWeeks: 1, deloadDropPct: 25, anchor: '' };
 const PERIODIZATION_KEY = 'periodization_v1';
+const RESTARTS_KEY = 'periodization_restarts_v1';   // grow-only list of CONFIRMED restarts (survive the snapshot window)
+let restartMemo: { key: string; at: number; p: Promise<CycleRestart[]> } | null = null;
+
+// Detected restarts (from the ~90-day snapshot + timeline) MERGED with the persisted confirmed ones — a break older
+// than the snapshot window can no longer be seen in the run gaps, and forgetting it would jump the cycle back onto
+// the anchor's phase. Only confirmed restarts (return day before today) are persisted; the provisional "today" one
+// isn't. Restarts at/before the (possibly later-moved) anchor are dropped on read.
+async function detectRestarts(anchor: string): Promise<CycleRestart[]> {
+  const today = isoDate(new Date());
+  const [snap, events, status, storedRaw] = await Promise.all([
+    loadSnapshotCache().catch(() => null), loadEvents().catch(() => []), getAthleteStatus().catch(() => null),
+    SecureStore.getItemAsync(RESTARTS_KEY).catch(() => null),
+  ]);
+  // 4 am training-day attribution, like the rest of the load maths (a 1 am run belongs to the previous day).
+  const runDays = ((snap as any)?.runs ?? []).map((r: RunWorkout) => trainingDayKey(r.date));
+  const detected = computeCycleRestarts(runDays, events as any[], anchor, today, status?.status);
+  let stored: CycleRestart[] = [];
+  try { const a = storedRaw ? JSON.parse(storedRaw) : []; if (Array.isArray(a)) stored = a; } catch { /* ignore */ }
+  // Re-validate stored restarts while the data can still see them: one whose return day is well INSIDE the run
+  // window (≥30 days past its start) but is no longer detected — a Sick status logged by mistake and deleted, or a
+  // run backfilled into the gap — is dropped. Older ones (outside what the window can prove) are kept.
+  const sortedDays = [...runDays].sort();
+  if (sortedDays.length) {
+    const revalidateFrom = isoDate(new Date(new Date(sortedDays[0] + 'T00:00:00').getTime() + 30 * 86_400_000));
+    stored = stored.filter(r => r.from < revalidateFrom || detected.some(d => d.monday === r.monday));
+  }
+  const byMonday = new Map<string, CycleRestart>();
+  for (const r of [...stored, ...detected]) {
+    const prev = byMonday.get(r.monday);
+    if (!prev || r.from < prev.from) byMonday.set(r.monday, r);
+  }
+  const confirmed = [...byMonday.values()].filter(r => r.from < today).sort((a, b) => a.monday.localeCompare(b.monday)).slice(-50);
+  if (confirmed.length !== stored.length || confirmed.some((r, i) => r.monday !== stored[i]?.monday || r.from !== stored[i]?.from)) {
+    SecureStore.setItemAsync(RESTARTS_KEY, JSON.stringify(confirmed)).catch(() => {});
+  }
+  const anchorMon = anchor ? isoDate(mondayOf(new Date(anchor + 'T00:00:00'))) : '';
+  return [...byMonday.values()].filter(r => !anchorMon || r.monday > anchorMon).sort((a, b) => a.monday.localeCompare(b.monday));
+}
 export async function getPeriodization(): Promise<Periodization> {
   try {
     const raw = await SecureStore.getItemAsync(PERIODIZATION_KEY);
@@ -2113,11 +2218,24 @@ export async function getPeriodization(): Promise<Periodization> {
       p.anchor = isoDate(mondayOf(new Date()));
       await setPeriodization(p);
     }
+    p.restartAfterBreak = p.restartAfterBreak !== false;
+    p.restarts = [];
+    if (p.on && p.restartAfterBreak) {
+      // Memoised ~60 s AS A PROMISE (parallel callers share one computation): getPeriodization runs for every plan
+      // and every LLM call, and the snapshot is a few-hundred-KB JSON parse. Keyed on anchor + day + snapshot
+      // version, so a changed cycle start, a new day or FRESH health data recomputes.
+      const memoKey = `${p.anchor}|${isoDate(new Date())}|${getSnapshotVersion()}`;
+      if (!restartMemo || restartMemo.key !== memoKey || Date.now() - restartMemo.at > 60_000) {
+        restartMemo = { key: memoKey, at: Date.now(), p: detectRestarts(p.anchor) };
+      }
+      p.restarts = await restartMemo.p.catch(() => []);
+    }
     return p;
   } catch { return { ...DEFAULT_PERIODIZATION }; }
 }
 export async function setPeriodization(p: Periodization): Promise<void> {
-  try { await SecureStore.setItemAsync(PERIODIZATION_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+  const { restarts: _derived, ...persist } = p;   // restarts are derived from data every read — never stored
+  try { await SecureStore.setItemAsync(PERIODIZATION_KEY, JSON.stringify(persist)); } catch { /* ignore */ }
 }
 
 // Monday of the ISO week containing `d` (local).
@@ -2127,11 +2245,25 @@ function isoDate(d: Date): string { return `${d.getFullYear()}-${String(d.getMon
 // Last-resort reference only: getPeriodization now fills a blank anchor with the current week, so weekIndex
 // almost always has a real anchor. This epoch just keeps the math finite if an anchor is somehow missing/invalid.
 const PERIODIZATION_EPOCH = new Date(2024, 0, 1); // a Monday
-function weekIndex(d: Date, per: Periodization): number {
-  const ref = per.anchor ? mondayOf(new Date(per.anchor + 'T00:00:00')) : PERIODIZATION_EPOCH;
-  const t = ref.getTime();
-  return Math.round((mondayOf(d).getTime() - (Number.isNaN(t) ? PERIODIZATION_EPOCH.getTime() : t)) / (7 * 86_400_000));
+// Week position in the cycle. The reference Monday is the anchor, or the latest RESTART after time off whose
+// first day back is on/before `d`. `returnWeek` = a Thu–Sun return's partial week before its Build-1 Monday (a
+// gentle build week, never a deload); `restarted` = the position counts from a restart, not the anchor.
+function cyclePos(d: Date, per: Periodization): { idx: number; returnWeek: boolean; restarted: boolean } {
+  let ref = per.anchor ? mondayOf(new Date(per.anchor + 'T00:00:00')) : PERIODIZATION_EPOCH;
+  if (Number.isNaN(ref.getTime())) ref = PERIODIZATION_EPOCH;
+  const md = mondayOf(d), dKey = isoDate(d);
+  let restarted = false;
+  for (const r of per.restarts ?? []) {                          // sorted by monday (monotonic in `from`)
+    const rm = new Date(r.monday + 'T00:00:00');
+    // Not back yet on `d` AND `d` is before the restart's Build-1 week → the restart doesn't apply. (A Mon–Wed return
+    // makes its WHOLE week Build 1, including the days before the first run back.)
+    if (r.from > dKey && md.getTime() < rm.getTime()) break;
+    if (md.getTime() < rm.getTime()) return { idx: 0, returnWeek: true, restarted: true };
+    ref = rm; restarted = true;
+  }
+  return { idx: Math.round((md.getTime() - ref.getTime()) / (7 * 86_400_000)), returnWeek: false, restarted };
 }
+function weekIndex(d: Date, per: Periodization): number { return cyclePos(d, per).idx; }
 
 // Per-week cap multiplier: +cap% ramp on a build week; a drop on the FIRST deload week (hold thereafter);
 // a rebuild jump on the first build week AFTER a deload (undo the drop + ramp → back to the pre-deload
@@ -2183,7 +2315,10 @@ export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: 
   const ramp = 1 + capPct / 100;
   if (!per.on) return ramp;
   const cycleLen = per.buildWeeks + per.deloadWeeks;
-  const idx = weekIndex(dateInWeek, per);
+  const pos = cyclePos(dateInWeek, per);
+  if (pos.returnWeek) return ramp;                  // back from a break (partial week) → a plain build ramp
+  const idx = pos.idx;
+  // (After a restart idx counts from the restart Monday, so its first cycle is cycleNum 0 → no rebuild jump.)
   const cycleNum = Math.floor(idx / cycleLen);
   const w = ((idx % cycleLen) + cycleLen) % cycleLen;
   const deload = 1 - per.deloadDropPct / 100;
@@ -2195,8 +2330,11 @@ export function weekCapMultiplier(dateInWeek: Date, per: Periodization, capPct: 
 export function cyclePhase(date: Date, per: Periodization): { phase: 'build' | 'deload'; label: string } {
   if (!per.on) return { phase: 'build', label: '' };
   const cycleLen = per.buildWeeks + per.deloadWeeks;
-  const w = ((weekIndex(date, per) % cycleLen) + cycleLen) % cycleLen;
-  if (w < per.buildWeeks) return { phase: 'build', label: `Build ${w + 1}/${per.buildWeeks}` };
+  const pos = cyclePos(date, per);
+  if (pos.returnWeek) return { phase: 'build', label: 'Back from break' };
+  const w = ((pos.idx % cycleLen) + cycleLen) % cycleLen;
+  const fresh = pos.restarted && pos.idx < per.buildWeeks;   // the first build phase after a break
+  if (w < per.buildWeeks) return { phase: 'build', label: `Build ${w + 1}/${per.buildWeeks}${fresh ? ' · after break' : ''}` };
   return { phase: 'deload', label: per.deloadWeeks > 1 ? `Deload ${w - per.buildWeeks + 1}/${per.deloadWeeks}` : 'Deload week' };
 }
 
