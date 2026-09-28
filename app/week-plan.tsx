@@ -7,7 +7,7 @@ import { loadSnapshotCache, fetchTrainingLoadHistory } from '../src/services/hea
 import {
   freshnessCapFactor, assembleCoachSnapshot, getWeekPlan, synthesizeWorkout, ensureBlockPower, WeekPlanDay, accountingModeSync,
   loadWeekPlanCache, saveWeekPlanCache, getMinTSB, getShrinkToFit, setShrinkToFit,
-  getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS, deterministicCoachPlan,
+  getPeriodization, weekCapMultiplier, cyclePhase, HEAT_CREDIT_MAX, BASE_WINDOWS, deterministicCoachPlan, restartVolumeFloor,
   getDanceOffDates, toggleDanceOff,
 } from '../src/services/coach';
 import {
@@ -347,8 +347,10 @@ export default function WeekPlan() {
           const buildDay = per.on && cyclePhase(dDate, per).phase === 'build';
           const freshDay = freshnessCapFactor(coach.tsb, coach.acwr, buildDay);
           // Floor a BUILD week at maintenance, then reserve the long's minutes out of every day before it.
-          const grossCap = maintFloorS(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildDay);
-          const allowance = baseRef > 0 ? Math.max(0, Math.round(grossCap - prior6 - (longIdxW > i ? longReserveMin : 0))) : heatMin;
+          // After a break never below the restart floor (75% of pre-break, +cap%/wk) — same as getWeekPlan.
+          const restartFloor = Math.round(restartVolumeFloor(dDate, per, capPct) * Math.min(1, freshDay));
+          const grossCap = Math.max(baseRef > 0 ? maintFloorS(baseRef * weekCapMultiplier(dDate, per, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildDay) : 0, restartFloor);
+          const allowance = grossCap > 0 ? Math.max(0, Math.round(grossCap - prior6 - (longIdxW > i ? longReserveMin : 0))) : heatMin;
           const isLongDay = d.kind === 'long' && d.intensity !== 'rest';   // the long is protected from the VOLUME cap (not only when shrink-forced)
           // TRUST THE PLANNER for volume. getWeekPlan already applied the +cap% cap, the maintenance floor, the
           // tendon caps and the TSB-aware progressive fill — its runMinutes IS the prescription (and it's what

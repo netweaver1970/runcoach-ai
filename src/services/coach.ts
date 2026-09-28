@@ -1070,7 +1070,10 @@ export async function getWeekPlan(
     for (let w = 0; w < BASE_WINDOWS; w++) { let s = 0; for (let idx = j - 13 - 7 * w; idx <= j - 7 - 7 * w; idx++) s += creditedAt(idx); baseRef = Math.max(baseRef, s); }
     const prior6   = tof.slice(j - 6, j).reduce((a, b) => a + b, 0);
     const rawPrev7 = tof.slice(Math.max(0, j - 13), j - 6).reduce((a, b) => a + b, 0);
-    let allowance = baseRef > 0 ? Math.max(0, Math.round(maintFloor(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildWk) - prior6)) : 45;
+    // After a break the ceiling never drops below the restart floor (75% of pre-break, +cap%/wk; see restartVolumeFloor).
+    const restartFloor = Math.round(restartVolumeFloor(d, periodization, capPct) * Math.min(1, freshDay));
+    const grossCeil = Math.max(baseRef > 0 ? maintFloor(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildWk) : 0, restartFloor);
+    let allowance = grossCeil > 0 ? Math.max(0, Math.round(grossCeil - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
     // Capture the week's +cap% ToF ceiling from day 0 — RAW recent-max weekly ToF × the (periodization- and
     // freshness-adjusted) cap multiplier. Same number the Volume-vs-Budget budget shows; the progressive-fill
@@ -1082,7 +1085,7 @@ export async function getWeekPlan(
       // drop the target.
       const w1 = tof.slice(j - 7, j).reduce((a, b) => a + (b || 0), 0);
       const w2 = tof.slice(j - 14, j - 7).reduce((a, b) => a + (b || 0), 0);
-      weekCeiling = Math.round(maintFloor(Math.max(w1, w2) * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, Math.max(w1, w2), buildWk));
+      weekCeiling = Math.max(restartFloor, Math.round(maintFloor(Math.max(w1, w2) * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, Math.max(w1, w2), buildWk)));
     }
 
     const kind = template[d.getDay()];
@@ -2098,7 +2101,14 @@ export interface Periodization {
 }
 // A cycle restart after time off: `from` = first day back (YYYY-MM-DD), `monday` = the Monday that becomes Build 1
 // (the return week itself when back Mon–Wed; the NEXT Monday when back Thu–Sun, so the build phase is full-length).
-export interface CycleRestart { from: string; monday: string; reason: string }
+export interface CycleRestart {
+  from: string; monday: string; reason: string;
+  preBreakMin?: number;   // best 7-day time-on-feet in the 3 weeks before the break (for the volume restart floor)
+}
+// After a break the rolling cap's base is just the (tiny) post-break weeks, so the comeback crawled. Instead the
+// return week's ceiling = RESTART_VOLUME_PCT% of the pre-break level, and each following week +cap% on that —
+// Geert 2026-09-28: "last week would have had a limit of 150, this week of 150+20%".
+export const RESTART_VOLUME_PCT = 75;
 const BREAK_GAP_DAYS    = 7;   // ≥7 full days without a run = time off (a deload week still has runs)
 const BREAK_STATUS_DAYS = 5;   // or a Sick / Injured / "On a break" status period of ≥5 days
 
@@ -2191,10 +2201,46 @@ async function detectRestarts(anchor: string): Promise<CycleRestart[]> {
   const byMonday = new Map<string, CycleRestart>();
   for (const r of [...stored, ...detected]) {
     const prev = byMonday.get(r.monday);
-    if (!prev || r.from < prev.from) byMonday.set(r.monday, r);
+    const preBreakMin = prev?.preBreakMin ?? r.preBreakMin;   // a stored pre-break level survives re-detection
+    if (!prev || r.from < prev.from) byMonday.set(r.monday, { ...r, preBreakMin });
+    else if (preBreakMin != null && prev.preBreakMin == null) byMonday.set(r.monday, { ...prev, preBreakMin });
+  }
+  // Pre-break volume for restarts that don't have it yet: the best 7-day time-on-feet (the cap's own minutes basis)
+  // in the 3 weeks ending on the last run before the break. Computed ONCE and persisted — old restarts keep theirs
+  // after the history window moves on.
+  const missing = [...byMonday.values()].filter(r => r.preBreakMin == null);
+  if (missing.length) {
+    // The last run BEFORE each return, from the run days we already have (the snapshot); the fetch then only has
+    // to reach 3 weeks before the earliest of those. Unresolvable (no run before it in the snapshot, or no volume)
+    // → preBreakMin 0 = "no floor", persisted, so the heavy lookup never re-runs on every refresh.
+    const daysAsc: string[] = [...new Set<string>(runDays as string[])].sort();
+    const lastBefore = new Map<string, string | undefined>(missing.map(r => [r.monday, [...daysAsc].reverse().find(dt => dt < r.from)]));
+    const lasts = [...lastBefore.values()].filter((x): x is string => !!x);
+    const minsBy = new Map<string, number>();
+    let fetched = false;   // HealthKit actually answered (it throws while the phone is LOCKED — e.g. the morning auto-plan)
+    if (lasts.length) {
+      const earliestLast = lasts.reduce((m, x) => (x < m ? x : m));
+      const span = Math.min(365, Math.round((new Date(today + 'T00:00:00').getTime() - new Date(earliestLast + 'T00:00:00').getTime()) / 86_400_000) + 22);
+      const hist = await fetchDailyDurationHistory(undefined, span).catch(() => [] as { date: string; value: number }[]);
+      fetched = hist.length > 0;   // there IS a run in the span (`last`), so an empty answer means "couldn't read", not "no volume"
+      for (const h of hist) minsBy.set(h.date, h.value);
+    }
+    const shift = (k: string, n: number) => { const x = new Date(k + 'T00:00:00'); x.setDate(x.getDate() + n); return isoDate(x); };
+    for (const r of missing) {
+      const last = lastBefore.get(r.monday);
+      if (last && !fetched) continue;   // HealthKit unreadable → leave it unset and retry later, never persist a false 0
+      let best = 0;
+      if (last) {
+        for (let w = 0; w < 3; w++) {
+          let s = 0; for (let j = 0; j < 7; j++) s += minsBy.get(shift(last, -j - 7 * w)) ?? 0;
+          best = Math.max(best, s);
+        }
+      }
+      byMonday.set(r.monday, { ...r, preBreakMin: Math.round(best) });   // 0 = unresolved → no floor, no retry
+    }
   }
   const confirmed = [...byMonday.values()].filter(r => r.from < today).sort((a, b) => a.monday.localeCompare(b.monday)).slice(-50);
-  if (confirmed.length !== stored.length || confirmed.some((r, i) => r.monday !== stored[i]?.monday || r.from !== stored[i]?.from)) {
+  if (confirmed.length !== stored.length || confirmed.some((r, i) => r.monday !== stored[i]?.monday || r.from !== stored[i]?.from || r.preBreakMin !== stored[i]?.preBreakMin)) {
     SecureStore.setItemAsync(RESTARTS_KEY, JSON.stringify(confirmed)).catch(() => {});
   }
   const anchorMon = anchor ? isoDate(mondayOf(new Date(anchor + 'T00:00:00'))) : '';
@@ -2248,20 +2294,40 @@ const PERIODIZATION_EPOCH = new Date(2024, 0, 1); // a Monday
 // Week position in the cycle. The reference Monday is the anchor, or the latest RESTART after time off whose
 // first day back is on/before `d`. `returnWeek` = a Thu–Sun return's partial week before its Build-1 Monday (a
 // gentle build week, never a deload); `restarted` = the position counts from a restart, not the anchor.
-function cyclePos(d: Date, per: Periodization): { idx: number; returnWeek: boolean; restarted: boolean } {
+function cyclePos(d: Date, per: Periodization): { idx: number; returnWeek: boolean; restarted: boolean; restart?: CycleRestart } {
   let ref = per.anchor ? mondayOf(new Date(per.anchor + 'T00:00:00')) : PERIODIZATION_EPOCH;
   if (Number.isNaN(ref.getTime())) ref = PERIODIZATION_EPOCH;
   const md = mondayOf(d), dKey = isoDate(d);
-  let restarted = false;
+  let restarted = false, restart: CycleRestart | undefined;
   for (const r of per.restarts ?? []) {                          // sorted by monday (monotonic in `from`)
     const rm = new Date(r.monday + 'T00:00:00');
     // Not back yet on `d` AND `d` is before the restart's Build-1 week → the restart doesn't apply. (A Mon–Wed return
     // makes its WHOLE week Build 1, including the days before the first run back.)
     if (r.from > dKey && md.getTime() < rm.getTime()) break;
-    if (md.getTime() < rm.getTime()) return { idx: 0, returnWeek: true, restarted: true };
-    ref = rm; restarted = true;
+    if (md.getTime() < rm.getTime()) return { idx: 0, returnWeek: true, restarted: true, restart: r };
+    ref = rm; restarted = true; restart = r;
   }
-  return { idx: Math.round((md.getTime() - ref.getTime()) / (7 * 86_400_000)), returnWeek: false, restarted };
+  return { idx: Math.round((md.getTime() - ref.getTime()) / (7 * 86_400_000)), returnWeek: false, restarted, restart };
+}
+
+/**
+ * Volume-ceiling FLOOR (minutes of time on feet per rolling 7 days) after a break: the return week gets
+ * RESTART_VOLUME_PCT% of the pre-break level, each week after it +capPct% on that, never above the pre-break level.
+ * Applies only in the return week + the first build phase after the restart (a deload week keeps its normal cap).
+ * 0 = no floor. Call sites use max(normal ceiling, floor), so a strong comeback's own base still wins.
+ */
+export function restartVolumeFloor(date: Date, per: Periodization, capPct: number): number {
+  if (!per.on) return 0;
+  const pos = cyclePos(date, per);
+  const r = pos.restart;
+  if (!pos.restarted || !r?.preBreakMin) return 0;
+  if (!pos.returnWeek && pos.idx >= per.buildWeeks) return 0;
+  // Weeks since the RETURN week: Mon–Wed return → its own week is Build 1 (k = idx); Thu–Sun return → the partial
+  // "back from break" week is k 0 and Build 1 (the next Monday) is k 1.
+  const thuSun = r.monday > isoDate(mondayOf(new Date(r.from + 'T00:00:00')));
+  const k = pos.returnWeek ? 0 : pos.idx + (thuSun ? 1 : 0);
+  const base0 = r.preBreakMin * RESTART_VOLUME_PCT / 100;
+  return Math.round(Math.min(r.preBreakMin, base0 * Math.pow(1 + capPct / 100, k)));
 }
 function weekIndex(d: Date, per: Periodization): number { return cyclePos(d, per).idx; }
 
@@ -2350,6 +2416,9 @@ export interface CapOpts {
   //                                         run counts as its ~normal-conditions volume so weather doesn't erode fitness.
   heatCreditMax?: number; // per-day credit ceiling (default 1.15) — bounds crediting so it can't spiral the cap up.
   freshness?:    number;  // ceiling modulation from ACWR/TSB (freshnessCapFactor); 1 = neutral
+  // restartVolumeFloor is in TIME-ON-FEET MINUTES; a caller whose series is another unit converts it (km: 1/pace).
+  // Default 1 (minutes series).
+  restartFloorScale?: number;
   baseWindows?:  number;  // # of prior 7-day blocks to take the MAX over as the base (default 1). >1 → a single bad
   //                         (hot / sick / travel) week can't drop the ceiling; the base tracks demonstrated capacity.
 }
@@ -2402,7 +2471,14 @@ export function computeTimeOnFeetPlan(
   let tofLast6  = 0; for (let o = 1; o <= 6;  o++) tofLast6  += minsAt(o);
   let tofPrev7  = 0; for (let o = 7; o <= 13; o++) tofPrev7  += minsAt(o);  // RAW immediate prior week (re-entry gate + display)
   const todayDone = minsAt(0);                       // time-on-feet ALREADY done today (e.g. a morning run)
-  const cap = Math.round(weekMultAt(0) * baseRefAgo());
+  // After a break: never below the restart floor (75% of pre-break, +cap%/wk). Freshness may still CUT it (safety),
+  // never raise it.
+  const floorAt = (offsetDays: number) => {
+    if (!per) return 0;
+    const d = new Date(today); d.setDate(d.getDate() + offsetDays);
+    return Math.round(restartVolumeFloor(d, per, capPct) * Math.min(1, freshFac) * (opts.restartFloorScale ?? 1));
+  };
+  const cap = Math.max(Math.round(weekMultAt(0) * baseRefAgo()), floorAt(0));
   // The cap limits the TRAILING-7 window (days 0–6), so today's remaining room must subtract BOTH the
   // last 6 days AND what's already been run today — otherwise after a morning run the plan offers the
   // whole day's allowance again and a second session blows the weekly cap (eating next week's budget).
@@ -2432,7 +2508,7 @@ export function computeTimeOnFeetPlan(
     let prev7 = 0; for (let j = 7; j <= 13; j++) prev7 += minIdx(k - j);   // raw, for the re-entry gate only
     // minIdx(k) = the current day's already-done minutes (today's run for k=0; 0 for future days) —
     // subtract it too so "does a run fit today?" reflects what's already on the legs today.
-    let b = Math.max(0, Math.round(weekMultAt(k) * baseRefAt(k)) - last6 - minIdx(k));
+    let b = Math.max(0, Math.max(Math.round(weekMultAt(k) * baseRefAt(k)), floorAt(k)) - last6 - minIdx(k));
     if (prev7 < reentryBelow) b = Math.max(b, reentryFloor); // re-entry / very low base
     if (b >= meaningful) { nextRunInDays = k; nextRunBudgetMin = b; break; }
   }
@@ -2497,11 +2573,16 @@ export async function buildCapContext(
   if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
 
   const distKm = await fetchDailyWorkDistanceHistory(toDate);
-  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow, buildWk), ...antiErosion });
   const p = (n: number) => String(n).padStart(2, '0');
   const dStr = `${toDate.getFullYear()}-${p(toDate.getMonth() + 1)}-${p(toDate.getDate())}`;
-  const dist7d = distKm.filter(d => d.date <= dStr).slice(-7).reduce((s, d) => s + d.value, 0);
+  // The 7 CALENDAR days ending today (same window as tof7d). `slice(-7)` took the last 7 RUN days — right after a
+  // break those reach back before it, giving a far-too-low pace that inflated the km floor and budget.
+  const wk0 = new Date(toDate); wk0.setDate(wk0.getDate() - 7);
+  const dStrMinus7 = `${wk0.getFullYear()}-${p(wk0.getMonth() + 1)}-${p(wk0.getDate())}`;
+  const dist7d = distKm.filter(d => d.date <= dStr && d.date > dStrMinus7).reduce((s, d) => s + d.value, 0);
   const paceMinPerKm = dist7d > 0 ? tof.tof7d / dist7d : 6; // fallback ~6 min/km
+  // The restart floor is in MINUTES → convert to km for this km series (applying it raw made a 193-km cap).
+  const cap = computeTimeOnFeetPlan(distKm, toDate, { capPct, meaningful: 2, reentryBelow: 3, reentryFloor: 2, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow, buildWk), restartFloorScale: paceMinPerKm > 0 ? 1 / paceMinPerKm : 0, ...antiErosion });
   return { tof, cap, budgetMin: Math.round(cap.budgetTodayMin * paceMinPerKm), loadUnit: 'km', capBasis, capPct, paceMinPerKm, heatCredit };
 }
 
