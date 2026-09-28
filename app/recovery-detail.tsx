@@ -14,6 +14,11 @@ import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { KpiTabs } from '../src/components/KpiTabs';
 import { DayNav } from '../src/components/DayNav';
 import { cached } from '../src/services/detailCache';
+import { interpretHrvCv, HrvCvState } from '../src/services/hrvCv';
+
+const CV_COLOR: Record<HrvCvState, string> = {
+  unsettled: '#e67e22', 'flat-falling': '#c0392b', drifting: '#e67e22', settled: '#27ae60', normal: '#27ae60',
+};
 
 function Row({ label, value, valueColor, sub }: {
   label: string; value: string; valueColor?: string; sub?: string;
@@ -67,7 +72,7 @@ export default function RecoveryDetailScreen() {
   useEffect(() => { loadComps().finally(() => setLoadingH(false)); }, [loadComps]);
   const onRefresh = useCallback(() => { setRefreshing(true); loadComps(true).finally(() => setRefreshing(false)); }, [loadComps]);
   const hist = useMemo(
-    () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
+    () => buildHistories(comps, ['recoveryScore', 'restingHrv', 'hrvCv', 'restingHr', 'respiratoryRate', 'oxygenSaturation', 'heartRateDip']),
     [comps],
   );
   // Sub-KPI values for the VIEWED day (the `date` param), not just today.
@@ -76,6 +81,19 @@ export default function RecoveryDetailScreen() {
   const target = comps[viewedDate] ?? {};
   const navTo = (type: string) => router.push({ pathname: '/history' as any, params: { type } });
   const last = (k: string) => { const v = target[k]; return v != null ? v : null; };
+
+  // HRV-CV for the VIEWED day, judged against the days before it (own normal) + the 7-night level a week earlier.
+  const cvReading = useMemo(() => {
+    const cv = target.hrvCv;
+    if (cv == null) return null;
+    const prior = dates.filter(d => d < viewedDate);
+    const cvHist  = prior.map(d => comps[d].hrvCv).filter((v): v is number => v != null);
+    const ln7Hist = prior.map(d => comps[d].hrvLn7).filter((v): v is number => v != null);
+    const [y, m, d] = viewedDate.split('-').map(Number);
+    const wk = new Date(y, m - 1, d - 7, 12);
+    const wkKey = `${wk.getFullYear()}-${String(wk.getMonth() + 1).padStart(2, '0')}-${String(wk.getDate()).padStart(2, '0')}`;
+    return interpretHrvCv(cv, cvHist, target.hrvLn7 ?? null, comps[wkKey]?.hrvLn7 ?? null, ln7Hist);
+  }, [comps, viewedDate]);
 
   // The SLEEP NIGHT's individual HRV readings (each heartbeat-series sample) — listed with a green/red quality
   // dot; tap one for the full metric breakdown. Grouped by sleep night, not calendar day: use the exact
@@ -192,6 +210,7 @@ export default function RecoveryDetailScreen() {
         <View style={s.card}>
           <SubKPICard label="Recovery Score" value={`${recoveryScore}`} unit="/100" history={[...(hist.recoveryScore ?? []), recoveryScore]} higherIsBetter color={color} onPress={() => navTo('recovery')} />
           <SubKPICard label="Resting HRV"   value={last('restingHrv') !== null ? `${last('restingHrv')}` : '—'} unit="ms"  history={hist.restingHrv ?? []}       higherIsBetter        color="#8e44ad" onPress={() => navTo('hrv')} />
+          <SubKPICard label="HRV Stability (CV)" value={last('hrvCv') !== null ? `${last('hrvCv')}` : '—'} unit="%" history={hist.hrvCv ?? []} higherIsBetter={false} color="#6c5ce7" onPress={() => navTo('hrv-cv')} />
           <SubKPICard label="Resting HR"    value={last('restingHr') !== null ? `${last('restingHr')}` : '—'}   unit="bpm" history={hist.restingHr ?? []}        higherIsBetter={false} color="#e74c3c" onPress={() => navTo('rhr')} />
           <SubKPICard label="Respiratory Rate" value={last('respiratoryRate') !== null ? `${last('respiratoryRate')}` : '—'} unit="rpm" history={hist.respiratoryRate ?? []} higherIsBetter={false} color="#2980b9" onPress={() => navTo('resp-rate')} />
           <SubKPICard label="Oxygen Saturation" value={last('oxygenSaturation') !== null ? `${last('oxygenSaturation')}` : '—'} unit="%" history={hist.oxygenSaturation ?? []} higherIsBetter color="#27ae60" onPress={() => navTo('spo2')} />
@@ -199,6 +218,24 @@ export default function RecoveryDetailScreen() {
         </View>
         </>)}
         <View style={{ height: 14 }} />
+
+        {/* HRV-CV — night-to-night stability of ln(RMSSD) + the 7-night level trend (any viewed day). */}
+        {cvReading && (
+          <Section title="HRV Stability (HRV-CV)">
+            <Row label="7-night HRV-CV" value={`${last('hrvCv')} %`} valueColor={CV_COLOR[cvReading.state]}
+              sub="Night-to-night swing of ln(RMSSD) · needs ≥5 of 7 nights" />
+            <Row label="Your normal"
+              value={cvReading.normalLo != null ? `${cvReading.normalLo}–${cvReading.normalHi} %` : 'building…'}
+              sub={cvReading.normalLo != null ? 'your mean ± 1 SD' : 'needs 14 days · typical ≈ 3–7.5 %'} />
+            <Row label="7-night HRV level"
+              value={cvReading.trend === 'up' ? '↑ rising' : cvReading.trend === 'down' ? '↓ falling' : cvReading.trend === 'flat' ? '→ steady' : '—'}
+              valueColor={cvReading.trend === 'down' ? '#c0392b' : cvReading.trend === 'up' ? '#27ae60' : undefined}
+              sub="vs a week earlier" />
+            <Row label={cvReading.title} value="●" valueColor={CV_COLOR[cvReading.state]} sub={cvReading.advice} />
+            <Row label="Source" value=""
+              sub="Plews et al. 2012, Eur J Appl Physiol · Grosicki, …, Plews, Altini 2026, Am J Physiol Heart Circ Physiol" />
+          </Section>
+        )}
 
         {/* Detailed breakdown (z-scores, score build-up, last night's sleep) — today's snapshot only. */}
         {useRec && (<>

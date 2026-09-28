@@ -4775,6 +4775,33 @@ async function computeDailyComponents(
     if (b.daytimeHR > 0)       r.daytimeHR = Math.round(b.daytimeHR);
     if (b.hrDipPct !== 0)      r.heartRateDip = Math.round(b.hrDipPct * 10) / 10;
   }
+  // HRV-CV — night-to-night autonomic fluctuation (Plews et al. 2012, Eur J Appl Physiol; Grosicki…Plews, Altini
+  // 2026, Am J Physiol Heart Circ Physiol): SD ÷ mean × 100 of ln(nightly RMSSD) over the 7 nights ENDING on the date.
+  // TRUE-RMSSD nights only (an SDNN-fallback night would inflate the CV), and only with ≥5 of the 7 nights — the 2026
+  // paper's reliability floor (ICC ≥ 0.80 vs the full week). hrvLn7 = that window's mean ln(RMSSD) → the level trend
+  // that tells a healthy "stable" CV from Plews' flat-and-falling over-reaching pattern (see hrvCv.ts).
+  {
+    // One value per date: a tracked NAP is its own session with the same wake date — keep the MAIN night (the row
+    // with the most heartbeat series), so a nap's RMSSD can't overwrite the night's and skew the CV.
+    const lnByDate = new Map<string, number>(), seriesByDate = new Map<string, number>();
+    for (const b of bio) {
+      if (!(b.rmssd > 1)) continue;
+      const n = b.hrvSeriesCount ?? 0;
+      if (lnByDate.has(b.date) && n <= (seriesByDate.get(b.date) ?? 0)) continue;
+      lnByDate.set(b.date, Math.log(b.rmssd)); seriesByDate.set(b.date, n);
+    }
+    const back = (key: string, k: number) => { const [y, m, d] = key.split('-').map(Number); return dcKey(new Date(y, m - 1, d - k, 12)); };
+    for (const date of new Set(bio.map(b => b.date))) {
+      const vals: number[] = [];
+      for (let k = 0; k < 7; k++) { const v = lnByDate.get(back(date, k)); if (v !== undefined) vals.push(v); }
+      if (vals.length < 5) continue;
+      const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
+      const sd = Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / (vals.length - 1));   // sample SD
+      const r = day(date);
+      r.hrvCv = Math.round((sd / mean) * 1000) / 10;
+      r.hrvLn7 = Math.round(mean * 1000) / 1000;
+    }
+  }
   for (const s of sessions) {
     const r = day(s.date);
     const asleep = s.deepMinutes + s.remMinutes + s.coreMinutes;
@@ -4858,7 +4885,9 @@ interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string,
 // v6: heals the strain/recovery/sleep-null band (Aug-2026 "watch not worn overnight" bug) — the old
 // store was corrupted by refreshRecent's whole-row replace + the un-chunked strain HR query throwing.
 // Bumping forces one clean full recompute with the merge + chunked-fetch fixes in place.
-const DC_FILE = FileSystem.documentDirectory + 'daily-components-v6.json';
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v7.json';   // v7: + hrvCv / hrvLn7 (full backfill)
+// The superseded v6 store is never read again — remove it once (best-effort) so it doesn't linger in Documents.
+FileSystem.deleteAsync(FileSystem.documentDirectory + 'daily-components-v6.json', { idempotent: true }).catch(() => {});
 const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;
 let dcLoadP: Promise<DcStore> | null = null;

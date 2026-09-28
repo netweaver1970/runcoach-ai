@@ -30,7 +30,7 @@ type HistoryType = 'km' | 'time' | 'vo2' | 'rhr' | 'hrv' | 'timeline' | 'strain'
   | 'sleep-hrdip' | 'sleep-bank' | 'sleep-awake'
   // component sub-metrics (sourced from fetchOurDailyComponents)
   | 'exercise-duration' | 'daytime-hr' | 'total-energy' | 'step-count'
-  | 'resp-rate' | 'spo2' | 'cardio-load';
+  | 'resp-rate' | 'spo2' | 'cardio-load' | 'hrv-cv';
 
 // Sub-metric history types → the key inside fetchOurDailyComponents' per-day record.
 const COMPONENT_KEY: Partial<Record<HistoryType, string>> = {
@@ -41,6 +41,7 @@ const COMPONENT_KEY: Partial<Record<HistoryType, string>> = {
   'resp-rate':         'respiratoryRate',
   'spo2':              'oxygenSaturation',
   'cardio-load':       'cardioLoad',
+  'hrv-cv':            'hrvCv',
 };
 type Period = '1M' | '3M' | '6M' | '1Y';
 
@@ -92,6 +93,7 @@ const CONFIGS: Record<Exclude<HistoryType, 'timeline'>, {
   'resp-rate':      { title: 'Respiratory Rate',  unit: 'rpm',       color: '#2980b9', aggregate: 'avg' },
   'spo2':           { title: 'Oxygen Saturation', unit: '%',         color: '#27ae60', aggregate: 'avg' },
   'cardio-load':    { title: 'Cardio Load',       unit: '',          color: '#F97316', aggregate: 'avg' },
+  'hrv-cv':         { title: 'HRV Stability (CV)', unit: '%',        color: '#6c5ce7', aggregate: 'avg' },
 };
 
 function fmtInt(v: number): string { return String(Math.round(v)); }
