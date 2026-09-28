@@ -18,7 +18,10 @@ export interface ExecPhaseStats { d: number; hr: number; p: number; c?: number }
 /** Pause/resume transitions as the watch saw them, with WHO asked (screen / action / auto / system; "event" = a
  *  HealthKit-generated event, src "hk<type>"). t = seconds since run start. */
 export interface ExecPause { t: number; a: string; src: string }
-export interface ExecStructure { start: number; dur: number; segs: ExecPhase[]; stats?: ExecPhaseStats[]; pauses?: ExecPause[] }
+export interface ExecStructure { start: number; dur: number; segs: ExecPhase[]; stats?: ExecPhaseStats[]; statsV?: number; pauses?: ExecPause[] }
+/** Bump when the per-phase stats computation changes → stored stats from older versions are recomputed.
+ *  v2 (2026-09-28): uncapped, Watch-only, boundary-split distance (v1 lost the second half of long runs). */
+export const EXEC_STATS_V = 2;
 
 let cache: ExecStructure[] | null = null;
 let loading: Promise<ExecStructure[]> | null = null;
@@ -68,7 +71,7 @@ export async function saveExecStats(start: number, stats: ExecPhaseStats[]): Pro
   try {
     const e = (await readAll()).find(x => x.start === start);
     if (!e || stats.length !== e.segs.length) return;
-    e.stats = stats;
+    e.stats = stats; e.statsV = EXEC_STATS_V;
     await persist();
   } catch { /* best-effort */ }
 }

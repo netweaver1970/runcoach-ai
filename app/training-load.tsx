@@ -317,6 +317,18 @@ export default function TrainingLoadScreen() {
   const rampWk = data.length >= 8
     ? Math.round((data[data.length - 1].ctl - data[data.length - 8].ctl) * 10) / 10
     : 0;
+  // Change over the DISPLAYED period (first → last day on the chart). The tile used to show only the 7-day ramp,
+  // which read as the period change: "+1" while CTL had actually gone 43 → 37 over the month (2026-09-28).
+  // Every tile follows the SELECTED window (period + paging): the big number is the value at the END of the
+  // displayed window (today when not paged back), the small line is what happened OVER that window.
+  const first = data.length >= 2 ? data[0] : null;
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+  const periodDelta = first && latest ? r1(latest.ctl - first.ctl) : 0;
+  const atlDelta    = first && latest ? r1(latest.atl - first.atl) : 0;
+  const tsbAvg      = data.length ? r1(data.reduce((a, d) => a + d.tsb, 0) / data.length) : 0;
+  const weeks       = data.length >= 2 ? (data.length - 1) / 7 : 0;
+  const perWk       = weeks > 0 ? r1(periodDelta / weeks) : 0;
+  const signed = (v: number) => `${v >= 0 ? '+' : ''}${v}`;
 
   // Cardio-status breakdown: days in each training state over the displayed period.
   const cardioBreakdown = (() => {
@@ -380,22 +392,26 @@ export default function TrainingLoadScreen() {
             <View style={s.summaryBox}>
               <Text style={[s.summaryVal, { color: CTL_COLOR }]}>{latest ? Math.round(latest.ctl) : '—'}</Text>
               <Text style={s.summaryLbl}>Fitness · CTL</Text>
+              {first ? <Text style={s.summaryLbl} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{signed(Math.round(periodDelta))} in {period}</Text> : null}
             </View>
             <View style={s.summaryBox}>
               <Text style={[s.summaryVal, { color: ATL_COLOR }]}>{latest ? Math.round(latest.atl) : '—'}</Text>
               <Text style={s.summaryLbl}>Fatigue · ATL</Text>
+              {first ? <Text style={s.summaryLbl} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{signed(Math.round(atlDelta))} in {period}</Text> : null}
             </View>
             <View style={s.summaryBox}>
               <Text style={[s.summaryVal, { color: status?.color ?? '#888' }]}>
                 {latest ? `${latest.tsb >= 0 ? '+' : ''}${Math.round(latest.tsb)}` : '—'}
               </Text>
               <Text style={s.summaryLbl}>Form · TSB</Text>
+              {data.length ? <Text style={s.summaryLbl} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>avg {signed(Math.round(tsbAvg))} in {period}</Text> : null}
             </View>
             <View style={s.summaryBox}>
-              <Text style={[s.summaryVal, { color: rampWk >= 0 ? '#27ae60' : '#c0392b' }]}>
-                {rampWk >= 0 ? '+' : ''}{rampWk}
+              <Text style={[s.summaryVal, { color: periodDelta >= 0 ? '#27ae60' : '#c0392b' }]}>
+                {signed(Math.round(periodDelta))}
               </Text>
-              <Text style={s.summaryLbl}>CTL ramp/wk</Text>
+              <Text style={s.summaryLbl}>CTL Δ {period}</Text>
+              <Text style={s.summaryLbl} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{signed(perWk)}/wk · 7d {signed(rampWk)}</Text>
             </View>
           </View>
 
@@ -536,7 +552,7 @@ const makeS = (c: Palette) => StyleSheet.create({
 
   summaryRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   summaryBox: {
-    flex: 1, backgroundColor: c.surface, borderRadius: 10, paddingVertical: 10, alignItems: 'center',
+    flex: 1, backgroundColor: c.surface, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.shadowOpacity, shadowRadius: 3, elevation: 2,
   },
   summaryVal: { fontSize: 20, fontWeight: '800' },

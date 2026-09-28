@@ -11,7 +11,7 @@ import * as FileSystem from 'expo-file-system';
 import { requireNativeModule } from 'expo-modules-core';
 import { readingFromSeries, HRVReading } from './hrvDetail';
 import { isHRVIgnored } from './hrvIgnore';
-import { getExecStructure, getAllExecStructures, matchExec, saveExecStats, ExecStructure } from './runSegmentsLog';
+import { getExecStructure, getAllExecStructures, matchExec, saveExecStats, ExecStructure, EXEC_STATS_V } from './runSegmentsLog';
 import { loadRunWorkOverrides } from './runWorkOverride';
 
 // Native bridge (modules/runcoach-workout) exposing HKQuantitySeriesSampleQuery to expand
@@ -1086,11 +1086,31 @@ function serialFetch<T>(fn: () => Promise<T>): Promise<T> {
 // Persist per-phase stats only once the watch's samples have had time to sync to the phone — stats computed
 // straight after the run could be missing its tail and would then stick forever.
 const EXEC_STATS_SETTLE_MS = 15 * 60_000;
-// Paused intervals (absolute epoch ms) from the workout's HK events: pause=1 / motionPaused=5, closed by the
-// event's own endDate or by the next resume=2 / motionResumed=6 — same rules as the detail screen.
-function pauseIntervalsAbs(w: any): { s: number; e: number }[] {
+// HealthKit adds motionPaused/motionResumed MARKERS (5/6) whenever the runner stands still — auto-pause or not.
+// They are real pauses only when HK actually left that time out of the workout's ACTIVE duration (Apple Workout
+// with Auto-Pause on). On a RunCoach-watch run the recording never stopped: 2026-09-28's run had 13 such stops
+// (3.7 min) while HK's duration was the full 53.8 min wall clock — counting them as pauses drew grey "Pause"
+// bands, stretched the chart's time axis and shrank the phase durations. Decide from the workout's own numbers.
+export function motionStopsArePauses(wallMs: number, activeMs: number, realPauseMs: number, motionMs: number): boolean {
+  if (motionMs <= 0) return false;
+  // ≥10 s absolute margin: a few seconds of start/end latency must not flip a run with little motion time.
+  return Math.max(0, wallMs - activeMs) - realPauseMs >= Math.max(0.5 * motionMs, 10_000);
+}
+const spanMs = (ivs: { s: number; e: number }[]) => ivs.reduce((a, p) => a + Math.max(0, p.e - p.s), 0);
+/** Union of intervals (real pauses + counted motion stops can overlap — the chart must not add the overlap twice). */
+function mergeIntervals(ivs: { s: number; e: number }[]): { s: number; e: number }[] {
   const out: { s: number; e: number }[] = [];
-  let open: number | null = null;
+  for (const iv of [...ivs].sort((a, b) => a.s - b.s)) {
+    const last = out[out.length - 1];
+    if (last && iv.s <= last.e) last.e = Math.max(last.e, iv.e); else out.push({ ...iv });
+  }
+  return out;
+}
+// Paused intervals (absolute epoch ms) from the workout's HK events: real pause=1…resume=2 always; motion stops
+// 5…6 only when HK excluded them (see motionStopsArePauses). Same rules as the detail screen.
+function pauseIntervalsAbs(w: any): { s: number; e: number }[] {
+  const real: { s: number; e: number }[] = [], motion: { s: number; e: number }[] = [];
+  let openReal: number | null = null, openMotion: number | null = null;
   for (const ev of (w?.events ?? []) as any[]) {
     const type = typeof ev.type === 'number' ? ev.type : -1;
     const sRaw = ev.startDate ?? ev.date, eRaw = ev.endDate;
@@ -1098,10 +1118,22 @@ function pauseIntervalsAbs(w: any): { s: number; e: number }[] {
     const eMs = eRaw ? new Date(toISOStr(eRaw)).getTime() : NaN;
     if (isNaN(sMs)) continue;
     if (type === 1 || type === 5) {
-      if (!isNaN(eMs) && eMs > sMs) out.push({ s: sMs, e: eMs }); else if (open === null) open = sMs;
-    } else if ((type === 2 || type === 6) && open !== null) { out.push({ s: open, e: sMs }); open = null; }
+      const list = type === 1 ? real : motion;
+      if (!isNaN(eMs) && eMs > sMs) list.push({ s: sMs, e: eMs });
+      else if (type === 1 && openReal === null) openReal = sMs;
+      else if (type === 5 && openMotion === null) openMotion = sMs;
+    } else if (type === 2 && openReal !== null) { real.push({ s: openReal, e: sMs }); openReal = null; }
+    else if (type === 6 && openMotion !== null) { motion.push({ s: openMotion, e: sMs }); openMotion = null; }
   }
-  return out;
+  const start = new Date(toISOStr(w?.startDate)).getTime(), end = new Date(toISOStr(w?.endDate)).getTime();
+  // Ended while paused (pause → End): that last pause never got a resume but IS excluded from the active duration.
+  if (!isNaN(end)) {
+    if (openReal !== null && end > openReal) real.push({ s: openReal, e: end });
+    if (openMotion !== null && end > openMotion) motion.push({ s: openMotion, e: end });
+  }
+  const durSec = typeof w?.duration === 'object' && w?.duration !== null ? (w.duration.quantity ?? 0) : (w?.duration ?? 0);
+  const motionCounts = !isNaN(start) && !isNaN(end) && motionStopsArePauses(end - start, durSec * 1000, spanMs(real), spanMs(motion));
+  return mergeIntervals(motionCounts ? [...real, ...motion] : real);
 }
 const overlapMs = (a: number, b: number, ivs: { s: number; e: number }[]) =>
   ivs.reduce((acc, p) => acc + Math.max(0, Math.min(b, p.e) - Math.max(a, p.s)), 0);
@@ -1120,23 +1152,58 @@ async function fetchStepSegs(w: any): Promise<{ t: number; tEnd: number; steps: 
   const watch = all.filter(x => x.watch);
   return watch.length > 0 ? watch : all;
 }
-async function execSegmentsFor(w: any, prd?: PerRunData): Promise<WorkoutSegment[] | null> {
+// Per-phase samples for the executed-structure stats: UNCAPPED (fetchWorkoutSamples caps distance at 500 samples,
+// oldest first — a 54-min run lost its whole second half: cool-down 0 m, 2026-09-28), distance from the WATCH only
+// when it has any (the iPhone in a pocket logs its own distance for the same minutes → double counting), and each
+// distance sample keeps its END so it can be split across a phase boundary instead of credited to its start.
+async function fetchPhaseSamples(w: any): Promise<{
+  hr: { t: number; v: number }[]; dist: { t: number; tEnd: number; m: number }[]; power: { t: number; v: number }[];
+}> {
+  const from = new Date(new Date(toISOStr(w.startDate)).getTime() - 30_000);
+  const to   = new Date(new Date(toISOStr(w.endDate)).getTime() + 30_000);
+  const q = (id: string, unit: string) => safeQuery(() => (HealthKit.queryQuantitySamples as any)(
+    id, { filter: { startDate: from, endDate: to }, unit, ascending: true, limit: 20_000 }), [] as any[]);
+  const [hr, dist, power] = await Promise.all([
+    q('HKQuantityTypeIdentifierHeartRate', 'count/min'),
+    q('HKQuantityTypeIdentifierDistanceWalkingRunning', 'm'),
+    q('HKQuantityTypeIdentifierRunningPower', 'W'),
+  ]);
+  const ms = (x: any) => new Date(toISOStr(x)).getTime();
+  // Distance from ONE source: the workout's own (its builder) if present, else Watch-only, else all. Two Watch
+  // sources (the watch pedometer + the workout builder) can both log the same minutes → doubled phase distances.
+  const bundle = (x: any) => String(x?.sourceRevision?.source?.bundleIdentifier ?? '');
+  const own = bundle(w);
+  const ownDist = own ? (dist as any[]).filter(x => bundle(x) === own) : [];
+  const isWatch = (x: any) => String(x?.sourceRevision?.productType ?? '').startsWith('Watch');
+  const watchDist = ownDist.length ? ownDist : (dist as any[]).filter(isWatch);
+  return {
+    hr:    (hr as any[]).map(x => ({ t: ms(x.startDate), v: x.quantity as number })),
+    dist:  (watchDist.length ? watchDist : dist as any[]).map(x => ({ t: ms(x.startDate), tEnd: ms(x.endDate ?? x.startDate), m: x.quantity as number })),
+    power: (power as any[]).map(x => ({ t: ms(x.startDate), v: x.quantity as number })),
+  };
+}
+// Recompute budget: a stats-version bump makes EVERY stored run recompute (4 queries each) on the next scan —
+// spread that out: at most 8 runs per minute; the rest keep their old stats (or the HK path) until a later scan.
+let phaseFetches: number[] = [];
+function takePhaseFetchBudget(): boolean {
+  const now = Date.now();
+  phaseFetches = phaseFetches.filter(t => now - t < 60_000);
+  if (phaseFetches.length >= 8) return false;
+  phaseFetches.push(now); return true;
+}
+async function execSegmentsFor(w: any): Promise<WorkoutSegment[] | null> {
   const exec = await getExecStructure(new Date(toISOStr(w.startDate)).getTime()).catch(() => null);
   if (!exec || exec.segs.length < 2) return null;
   const pauses = pauseIntervalsAbs(w);
-  // Stored stats from before cadence was added (no `c`) are recomputed once.
-  let stats = exec.stats && exec.stats.length === exec.segs.length && exec.stats.every(x => typeof x.c === 'number')
-    ? exec.stats : null;
+  // Stored stats from an older computation (EXEC_STATS_V) are recomputed once.
+  let stats = exec.stats && exec.stats.length === exec.segs.length && exec.statsV === EXEC_STATS_V
+    && exec.stats.every(x => typeof x.c === 'number') ? exec.stats : null;
   if (!stats) {
-    let data: PerRunData | null = prd && (prd.hrValues.length > 0 || prd.distSegs.length > 0) ? prd : null;
-    if (!data) {
-      try { const r = await serialFetch(() => fetchWorkoutSamples(w)); data = toPerRunData(r.hr, r.dist, r.power); }
-      catch { return null; }
-    }
-    // fetchWorkoutSamples never throws (safeQuery) — an EMPTY result (locked-phone background scan, samples not synced
-    // yet) must not become all-zero phases. Keep previously stored stats (pre-cadence) if there are any; otherwise
-    // leave the HK-activity path in charge and retry on a later scan.
-    if (data.hrValues.length === 0 && data.distSegs.length === 0) {
+    const data = takePhaseFetchBudget() ? await serialFetch(() => fetchPhaseSamples(w)).catch(() => null) : null;
+    // safeQuery never throws — an EMPTY result (locked-phone background scan, samples not synced yet) must not become
+    // all-zero phases. Keep previously stored stats if there are any (not re-saved); otherwise leave the HK-activity
+    // path in charge and retry on a later scan.
+    if (!data || (data.hr.length === 0 && data.dist.length === 0)) {
       const old = exec.stats && exec.stats.length === exec.segs.length ? exec.stats : null;
       if (!old) return null;
       stats = old.map(x => ({ ...x, c: x.c ?? 0 }));
@@ -1157,13 +1224,26 @@ async function execSegmentsFor(w: any, prd?: PerRunData): Promise<WorkoutSegment
           if (ov <= 0 || sampleRun <= 0) continue;
           steps += x.steps * (ov / sampleRun); runMs += ov;
         }
+        // Distance: each sample's metres split by its time overlap with the phase (a sample spanning the boundary
+        // is shared, not credited whole to the phase it started in).
+        let dm = 0;
+        for (const x of d.dist) {
+          if (x.tEnd <= x.t) { if (inWin(x.t)) dm += x.m; continue; }
+          const ov = Math.min(b, x.tEnd) - Math.max(a, x.t);
+          if (ov > 0) dm += x.m * (ov / (x.tEnd - x.t));
+        }
         return {
-          d:  Math.round(d.distSegs.filter(x => inWin(x.t)).reduce((sum, x) => sum + x.m, 0)),
-          hr: Math.round(mean(d.hrValues.filter((_, i) => inWin(d.hrTimestampsMs[i])))),
-          p:  Math.round(mean(d.powerSegs.filter(x => inWin(x.t)).map(x => x.w))),
+          d:  Math.round(dm),
+          hr: Math.round(mean(d.hr.filter(x => inWin(x.t)).map(x => x.v))),
+          p:  Math.round(mean(d.power.filter(x => inWin(x.t)).map(x => x.v))),
           c:  runMs >= 30_000 ? Math.round(steps / (runMs / 60_000)) : 0,   // <30 s of step coverage → unknown
         };
       });
+      // Sanity: the phases can't add up to more than the run. If they do (a duplicate source slipped through),
+      // scale them back to the workout's own total distance.
+      const totalM = (w.totalDistance?.quantity as number) ?? 0;
+      const sumM = stats.reduce((a, x) => a + x.d, 0);
+      if (totalM > 0 && sumM > 1.1 * totalM) stats = stats.map(x => ({ ...x, d: Math.round(x.d * totalM / sumM) }));
       if (Date.now() - (exec.start + exec.dur * 1000) > EXEC_STATS_SETTLE_MS && stats.some(x => x.hr > 0 || x.d > 0)) {
         void saveExecStats(exec.start, stats);   // never persist a run's stats as all zeros
       }
@@ -1440,7 +1520,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     const wStartMs = new Date(toISOStr(w.startDate)).getTime();
     // Our watch's runs carry ≤1 activity → phases from the executed structure it forwarded. Those labels are the
     // watch's own phase kinds (authoritative), so the label heuristics + prescribed relabel below are skipped.
-    const execSegs = rawActs.length <= 1 ? await execSegmentsFor(w, data) : null;
+    const execSegs = rawActs.length <= 1 ? await execSegmentsFor(w) : null;
     const segments: WorkoutSegment[] = execSegs ?? rawActs
       .map((act: any) => {
         const uuidStr: string = act.uuid ?? '';
@@ -3051,7 +3131,8 @@ export async function fetchWorkoutDetail(
   let debugEvents = '';
   {
     const wEvents: any[] = workout?.events ?? [];
-    let pStart: number | null = null;
+    let pStart: number | null = null, mStart: number | null = null;
+    const motionIntervs: { s: number; e: number }[] = [];   // HK "stood still" markers — pauses only if HK excluded them
     const seg7: { s: number; e: number }[] = [];  // type=7 segment events
     const evSummary: string[] = [];
 
@@ -3077,17 +3158,26 @@ export async function fetchWorkoutDetail(
           seg7.push({ s: sMs, e: eMs });
         }
       } else if (evType === 1 || evType === 5) {
-        // Pause / motionPaused — Apple encodes the full pause interval in one event
-        if (eMs !== null && !isNaN(eMs) && eMs > sMs) {
-          pauseIntervs.push({ s: sMs, e: eMs });
-        } else if (pStart === null) {
-          pStart = sMs;   // fallback: wait for separate resume event
-        }
-      } else if ((evType === 2 || evType === 6) && pStart !== null) {
-        pauseIntervs.push({ s: pStart, e: sMs });
-        pStart = null;
+        // Pause / motionPaused — Apple encodes the full interval in one event (else wait for the resume)
+        const list = evType === 1 ? pauseIntervs : motionIntervs;
+        if (eMs !== null && !isNaN(eMs) && eMs > sMs) list.push({ s: sMs, e: eMs });
+        else if (evType === 1 && pStart === null) pStart = sMs;
+        else if (evType === 5 && mStart === null) mStart = sMs;
+      } else if (evType === 2 && pStart !== null) {
+        pauseIntervs.push({ s: pStart, e: sMs }); pStart = null;
+      } else if (evType === 6 && mStart !== null) {
+        motionIntervs.push({ s: mStart, e: sMs }); mStart = null;
       }
     }
+    // Ended while paused (pause → End): close the open interval at the workout's end — it IS excluded time.
+    if (pStart !== null && workoutEndMs > pStart) pauseIntervs.push({ s: pStart, e: workoutEndMs });
+    if (mStart !== null && workoutEndMs > mStart) motionIntervs.push({ s: mStart, e: workoutEndMs });
+    // Motion stops are pauses only if HK left them out of the active duration (Apple Workout auto-pause).
+    if (motionStopsArePauses(workoutEndMs, durationSec * 1000, spanMs(pauseIntervs), spanMs(motionIntervs))) {
+      pauseIntervs.push(...motionIntervs);
+    }
+    const merged = mergeIntervals(pauseIntervs);
+    pauseIntervs.length = 0; pauseIntervs.push(...merged);
 
     // If no type=3 lap events, extract km boundaries from the longest type=7 chain.
     // Two chains start at t≈0: the km-split chain (16+ segments) and the activity-phase
