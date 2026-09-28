@@ -17,6 +17,7 @@ import { loadActiveRoute, clearActiveRoute } from '../src/services/activeRoute';
 import { requireNativeModule } from 'expo-modules-core';
 import { sendRouteToWatch, watchRouteAvailable } from '../src/services/watchRoute';
 import { getHandedRouteWorkout } from '../src/services/routeWorkoutHandoff';
+import { prefetchJunctionCues } from '../src/services/junctionCues';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { deterministicCoachPlan, assembleCoachSnapshot, ensureBlockPower } from '../src/services/coach';
 import type { WatchWorkout } from '../src/services/coach';
@@ -459,8 +460,10 @@ export default function WayfinderScreen() {
   }, [opts, sel, dest]);
 
   const base = opts[sel];
-  const cur: (RouteOption & { reachKm?: number }) | undefined =
-    base ? (steered ? { ...base, ...steered } : base) : undefined;
+  // Memoised: the heading/position watchers re-render this screen several times a second, and a fresh merged
+  // object per render made every steered route look "new" — re-arming the fork-cue prefetch and missing its cache.
+  const cur: (RouteOption & { reachKm?: number }) | undefined = useMemo(
+    () => (base ? (steered ? { ...base, ...steered } : base) : undefined), [base, steered]);
   const hasRoute = !!cur;
 
   // Open the route in Google Maps as a WALKING trip through ~8 waypoints. Endpoint = the route's LAST coord —
@@ -511,11 +514,30 @@ export default function WayfinderScreen() {
     return () => { alive = false; sub?.remove(); hsub?.remove(); };
   }, [hasRoute]);
   const [watchMsg, setWatchMsg] = useState('');
-  const sendToWatch = useCallback(async () => {
+  // "At the fork, keep left/right" cues come from the real trail network (OSM) — ORS is silent where a trail splits
+  // into two of the same kind. Look them up in the BACKGROUND once the runner settles on a route (1.5 s), so Send
+  // doesn't wait on the network; Send waits at most 4 s more, then goes without them.
+  useEffect(() => {
     if (!cur) return;
-    const ok = await sendRouteToWatch(cur, `${cur.heading} · ${cur.distanceKm.toFixed(1)}km`, 'running', dayWorkout);
-    setWatchMsg(ok ? '✓ Sent to watch' : 'Watch not reachable — open the RunCoach watch app');
-    setTimeout(() => setWatchMsg(''), 2500);
+    const t = setTimeout(() => { prefetchJunctionCues(cur).catch(() => {}); }, 1500);
+    return () => clearTimeout(t);
+  }, [cur]);
+  const [sending, setSending] = useState(false);   // one send at a time (a 2nd tap could land the no-cues copy last)
+  const sendingRef = useRef(false);                 // ref, not just state: two taps within one render both saw false
+  const sendToWatch = useCallback(async () => {
+    if (!cur || sendingRef.current) return;
+    sendingRef.current = true; setSending(true);
+    try {
+      setWatchMsg('Adding trail-fork cues…');
+      const route = await Promise.race([
+        prefetchJunctionCues(cur),
+        new Promise<RouteLoop>(res => setTimeout(() => res(cur), 4000)),
+      ]);
+      const forks = (route.steps ?? []).filter(st => /at the fork/i.test(st.text)).length;
+      const ok = await sendRouteToWatch(route, `${cur.heading} · ${cur.distanceKm.toFixed(1)}km`, 'running', dayWorkout);
+      setWatchMsg(ok ? `✓ Sent to watch${forks ? ` · ${forks} fork cue${forks === 1 ? '' : 's'}` : ''}` : 'Watch not reachable — open the RunCoach watch app');
+      setTimeout(() => setWatchMsg(''), 3500);
+    } finally { sendingRef.current = false; setSending(false); }
   }, [cur, dayWorkout]);
 
   // On-the-spot STRUCTURE test: push a realistic full workout (open warmup → drills → 3× work/recovery → open
@@ -743,8 +765,8 @@ export default function WayfinderScreen() {
                       <Text style={[s.btnT, { color: c.text }]}>🗺️ Open in Google Maps</Text>
                     </TouchableOpacity>
                     {watchRouteAvailable() && (
-                      <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8 }]} onPress={sendToWatch}>
-                        <Text style={[s.btnT, { color: c.text }]}>⌚ Send to Watch</Text>
+                      <TouchableOpacity style={[s.btn, { backgroundColor: c.surfaceAlt, marginTop: 8, opacity: sending ? 0.5 : 1 }]} onPress={sendToWatch} disabled={sending}>
+                        <Text style={[s.btnT, { color: c.text }]}>{sending ? '⌚ Sending…' : '⌚ Send to Watch'}</Text>
                       </TouchableOpacity>
                     )}
                     {watchMsg ? <Text style={[s.hint, { textAlign: 'center' }]}>{watchMsg}</Text> : null}

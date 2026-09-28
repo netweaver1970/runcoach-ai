@@ -28,6 +28,7 @@ export interface RouteStep {
   dist: number;   // metres this step covers (≈ distance to the next maneuver)
   type: number;   // ORS maneuver code (0 left, 1 right, 6 continue, 10 arrive, 12/13 keep left/right, …)
   wt?: number;    // ORS waytype at the maneuver (internal, for cue post-processing — not sent to the watch)
+  syn?: boolean;  // synthesized by us (not an ORS instruction) — a better-informed cue may replace it
 }
 export interface RouteLoop {
   distanceKm: number;
@@ -40,7 +41,7 @@ export interface RouteLoop {
 }
 
 // Equirectangular metres between two points ([lon,lat,…] — extra dims ignored). Accurate at loop scale, cheap.
-function distM(a: number[], b: number[]): number {
+export function distM(a: number[], b: number[]): number {
   const toR = Math.PI / 180, R = 6371000;
   const x = (b[0] - a[0]) * toR * Math.cos(((a[1] + b[1]) / 2) * toR);
   const y = (b[1] - a[1]) * toR;
@@ -63,7 +64,7 @@ function elevStats(ele: number[]): { ascentM: number; descentM: number; elev: nu
 // instruction reads "Turn left" (and vice-versa). Since the watch speaks the instruction verbatim, that hands
 // the runner a wrong left/right. Cross-check each clear turn against the GEOMETRY (bearing in vs bearing out at
 // the maneuver, sampled ~20 m either side) and flip the direction word only when they clearly disagree.
-function bearingDeg(a: number[], b: number[]): number {
+export function bearingDeg(a: number[], b: number[]): number {
   const toR = Math.PI / 180;
   const dLon = (b[0] - a[0]) * toR, la = a[1] * toR, lb = b[1] * toR;
   const y = Math.sin(dLon) * Math.cos(lb);
@@ -71,7 +72,7 @@ function bearingDeg(a: number[], b: number[]): number {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 // Walk ~wantM metres from index i in the given direction and return that point (for stable bearings on dense geometry).
-function ptAlong(coords: number[][], i: number, dir: 1 | -1, wantM: number): number[] {
+export function ptAlong(coords: number[][], i: number, dir: 1 | -1, wantM: number): number[] {
   let acc = 0, k = i;
   while (k + dir >= 0 && k + dir < coords.length) { acc += distM(coords[k], coords[k + dir]); k += dir; if (acc >= wantM) break; }
   return coords[k];
@@ -108,7 +109,7 @@ function correctTurnDirections(steps: RouteStep[], coords: number[][]): RouteSte
 const WT_NAME: Record<number, string> = { 1: 'road', 2: 'road', 3: 'street', 4: 'path', 5: 'track', 6: 'cycle path', 7: 'footpath', 8: 'steps' };
 const ROADISH = new Set([1, 2, 3]);
 const SIDE_TYPES = new Set([0, 1, 2, 3, 4, 5, 12, 13]);   // maneuvers that carry a left/right
-function cumDist(coords: number[][]): number[] {
+export function cumDist(coords: number[][]): number[] {
   const c = [0]; for (let k = 1; k < coords.length; k++) c.push(c[k - 1] + distM(coords[k - 1], coords[k])); return c;
 }
 function turnDelta(coords: number[][], iIn: number, iOut: number): number | null {
@@ -141,12 +142,12 @@ function addForkCues(steps: RouteStep[], coords: number[][], wt: number[][]): Ro
     const [text, type] = Math.abs(d) < 20 ? [`Continue straight${onto}`, 6]
       : Math.abs(d) < 60 ? [`Keep ${d > 0 ? 'right' : 'left'}${onto}`, d > 0 ? 13 : 12]
       : [`Turn ${d > 0 ? 'right' : 'left'}${onto}`, d > 0 ? 1 : 0];
-    added.push({ i, text, dist: 0, type, wt: to });
+    added.push({ i, text, dist: 0, type, wt: to, syn: true });
   }
   return [...out, ...added].sort((a, b) => a.i - b.i);
 }
 /** Merge two maneuvers ≤40 m apart into ONE cue: a road crossing (net heading ≈ unchanged) or one net turn. */
-function mergeCloseTurns(steps: RouteStep[], coords: number[][]): RouteStep[] {
+export function mergeCloseTurns(steps: RouteStep[], coords: number[][]): RouteStep[] {
   if (coords.length < 3) return steps;
   const cum = cumDist(coords);
   const out: RouteStep[] = [];
@@ -162,12 +163,12 @@ function mergeCloseTurns(steps: RouteStep[], coords: number[][]): RouteStep[] {
     // Both decisions in one utterance: "Turn right, then keep left onto Bospad".
     const compound = () => `${a.text.replace(/\s+onto\s.+$/i, '')}, then ${b.text.charAt(0).toLowerCase()}${b.text.slice(1)}`;
     let text: string, type: number;
-    if (aSide && bSide && aSide !== bSide) {
-      if (Math.abs(net) < 35 && !bKeep) {                       // off one way and straight onto the next: a crossing
-        const road = a.wt == null || ROADISH.has(a.wt);         // what you walk along between the two turns
-        text = road ? `Cross the road slightly to the ${aSide}` : `Jog ${aSide}, then continue straight`;
-        type = 6;
-      } else { text = compound(); type = b.type; }              // opposite sides + a real change / a fork: say both
+    if (aSide && bSide && aSide !== bSide && Math.abs(net) < 35 && !bKeep) {   // off one way, straight onto the next
+      const road = a.wt == null || ROADISH.has(a.wt);           // what you walk along between the two turns
+      text = road ? `Cross the road slightly to the ${aSide}` : `Jog ${aSide}, then continue straight`;
+      type = 6;
+    } else if (bKeep || (aSide && bSide && aSide !== bSide)) { // a fork, or opposite sides + a real change: say both
+      text = compound(); type = b.type;
     } else if (Math.abs(net) >= 35) {                           // same side (or one unsided): ONE net turn
       const side = net > 0 ? 'right' : 'left';
       text = `${Math.abs(net) > 120 ? 'Turn sharp' : 'Turn'} ${side}${onto ? ` onto ${onto}` : ''}`;
