@@ -52,6 +52,7 @@ export interface ProviderSpec {
   agentic:         boolean;         // supports the native tool loop (⇒ api === 'messages')
   liveModels:      boolean;         // provider implements a listable /models (or /v1/models) endpoint
   hint?:           string;          // shown under the field in Settings
+  retiredModels?:  string[];        // ids the provider has shut down — a stored one falls back to defaultModel
 }
 
 export const PROVIDERS: Record<LLMProvider, ProviderSpec> = {
@@ -81,10 +82,13 @@ export const PROVIDERS: Record<LLMProvider, ProviderSpec> = {
   kimi: {
     id: 'kimi', label: 'Kimi · Moonshot', api: 'messages',
     baseUrl: 'https://api.moonshot.ai/anthropic', auth: 'both',
-    keyPlaceholder: 'Moonshot API key', defaultModel: 'kimi-k2-turbo-preview',
-    suggestedModels: ['kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-latest'],
+    keyPlaceholder: 'Moonshot API key', defaultModel: 'kimi-k2.6',
+    suggestedModels: ['kimi-k2.6', 'kimi-k3'],
     agentic: true, liveModels: false,
     hint: 'Moonshot Kimi — supports the agentic coach (tools).',
+    // platform.kimi.ai/docs/models.md: kimi-latest off 28 Jan 2026, k2 series 25 May 2026, k2.5 31 Aug 2026.
+    retiredModels: ['kimi-k2-turbo-preview', 'kimi-k2-0711-preview', 'kimi-k2-0905-preview', 'kimi-k2-thinking',
+                    'kimi-k2-thinking-turbo', 'kimi-latest', 'kimi-k2.5', 'kimi-thinking-preview'],
   },
   openai: {
     id: 'openai', label: 'OpenAI', api: 'openai',
@@ -108,6 +112,13 @@ export const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'deepseek', 'glm', 'k
 
 export function providerSpec(p: LLMProvider): ProviderSpec {
   return PROVIDERS[p] ?? PROVIDERS.anthropic;
+}
+
+/** True when the provider has shut this model id down (moonshot-v1-* is Kimi's whole retired v1 family). */
+function isRetiredModel(p: LLMProvider, model: string): boolean {
+  const m = model.trim();
+  if (providerSpec(p).retiredModels?.includes(m)) return true;
+  return p === 'kimi' && /^moonshot-v1-/.test(m);
 }
 
 /** Human label for the CURRENTLY-configured provider + model, e.g. "DeepSeek · deepseek-v4-flash".
@@ -154,6 +165,14 @@ function systemField(spec: ProviderSpec, system?: string): any {
     : system;
 }
 
+/** Sampling fields for a messages-format body. Kimi fixes temperature (any explicit value is an error),
+ *  and kimi-k2.6 thinks by default, which spends max_tokens on reasoning — so drop the one and disable
+ *  the other. kimi-k3 takes no `thinking` parameter. */
+function samplingFields(spec: ProviderSpec, model: string, temperature?: number): Record<string, unknown> {
+  if (spec.id === 'kimi') return /^kimi-k2\.6/.test(model) ? { thinking: { type: 'disabled' } } : {};
+  return temperature != null ? { temperature } : {};
+}
+
 /** Resolve the OpenAI-format base URL (fixed for 'openai', user-supplied for 'custom'). */
 function openaiBase(spec: ProviderSpec, cfgBaseUrl?: string): string {
   return (spec.baseUrl ?? cfgBaseUrl ?? '').replace(/\/+$/, '');
@@ -182,7 +201,12 @@ export async function loadLLMConfig(): Promise<LLMConfig> {
   // letting an undefined spec crash every consumer.
   const storedProvider = (await SecureStore.getItemAsync(SK_PROVIDER)) as LLMProvider | null;
   const provider: LLMProvider = storedProvider && PROVIDERS[storedProvider] ? storedProvider : 'anthropic';
-  const model    = (await SecureStore.getItemAsync(SK_MODEL(provider))) ?? DEFAULT_MODELS[provider];
+  let   model    = (await SecureStore.getItemAsync(SK_MODEL(provider))) ?? DEFAULT_MODELS[provider];
+  // A stored id the provider has since shut down 404s every call — move it to the current default.
+  if (isRetiredModel(provider, model)) {
+    model = DEFAULT_MODELS[provider];
+    await SecureStore.setItemAsync(SK_MODEL(provider), model).catch(() => {});
+  }
   const apiKey   = (await SecureStore.getItemAsync(SK_APIKEY(provider))) ?? '';
   const baseUrl  = provider === 'custom'
     ? ((await SecureStore.getItemAsync(SK_BASEURL)) ?? '')
@@ -252,7 +276,7 @@ export async function getLLMStatus(): Promise<LLMStatus> {
 export async function loadModelHistory(provider: LLMProvider): Promise<string[]> {
   try {
     const raw = await SecureStore.getItemAsync(SK_HISTORY(provider));
-    return raw ? (JSON.parse(raw) as string[]) : [];
+    return raw ? (JSON.parse(raw) as string[]).filter(m => !isRetiredModel(provider, m)) : [];
   } catch { return []; }
 }
 
@@ -366,7 +390,7 @@ export async function callLLM(options: LLMCallOptions): Promise<string> {
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
-        ...(temperature != null ? { temperature } : {}),
+        ...samplingFields(spec, cfg.model, temperature),
         ...(sys ? { system: sys } : {}),
         messages,
       }),
@@ -426,7 +450,7 @@ export async function callLLMTools(opts: LLMToolsCallOptions): Promise<LLMToolsR
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: opts.maxTokens,
-      ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+      ...samplingFields(spec, cfg.model, opts.temperature),
       ...(sys ? { system: sys } : {}),
       ...(opts.tools?.length ? { tools: opts.tools } : {}),   // omit when empty → forces a final text answer
       messages: opts.messages,
@@ -486,7 +510,12 @@ export async function fetchAvailableModels(provider: LLMProvider, apiKey?: strin
   return ids;
 }
 export async function loadModelList(provider: LLMProvider): Promise<string[]> {
-  try { const raw = await SecureStore.getItemAsync(SK_MODEL_LIST(provider)); return raw ? JSON.parse(raw) : []; } catch { return []; }
+  try {
+    const raw = await SecureStore.getItemAsync(SK_MODEL_LIST(provider));
+    const ids: string[] = raw ? JSON.parse(raw) : [];
+    // A list cached before a model was retired (curated or fetched) must not keep offering it.
+    return ids.filter(m => !isRetiredModel(provider, m));
+  } catch { return []; }
 }
 
 // ─── Vision call (single image + prompt) ──────────────────────────────────────
@@ -517,6 +546,7 @@ export async function callLLMWithImage(options: LLMVisionOptions): Promise<strin
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: maxTokens,
+        ...samplingFields(spec, cfg.model),
         messages: [{
           role: 'user',
           content: [
