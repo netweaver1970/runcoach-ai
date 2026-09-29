@@ -8,19 +8,20 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useThemedStyles, Palette } from '../theme';
 
-const DAY = 86_400_000;
 const iso = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-export function DayNav({ date }: { date?: string }) {
+/** `todayKey` lets a screen with a different day boundary (Food: 4 am training day) define which day is "Today". */
+export function DayNav({ date, todayKey }: { date?: string; todayKey?: string }) {
   const router = useRouter();
   const s = useThemedStyles(makeStyles);
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const today = todayKey ? new Date(todayKey + 'T00:00:00') : new Date(); today.setHours(0, 0, 0, 0);
   const cur = date ? new Date(date + 'T00:00:00') : new Date(today);
   const isToday = cur.getTime() >= today.getTime();
   const label = isToday ? 'Today' : cur.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   const go = (delta: number) => {
-    const next = new Date(cur.getTime() + delta * DAY);
+    // calendar arithmetic, not ±24 h: across a DST change ±24 h lands on the same date (stuck) or skips one
+    const next = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + delta);
     if (next.getTime() > today.getTime()) return;
     // Landing on today clears the param — restores the screens' rich today-only sections (see useDetailSwipe).
     router.setParams({ date: next.getTime() >= today.getTime() ? '' : iso(next) });

@@ -13,6 +13,16 @@
  * config state ONLY — never a key or token.
  */
 import { exportAllSettings } from './backup';
+import { foodTotalsForExport } from './foodLog';
+
+/** Food logs/library must never leave the device in a debug export (item names, times) — REPORT.md §6.1.
+ *  Only daily totals are exported, in their own section. */
+function stripFood(s: any): any {
+  if (s && typeof s === 'object' && s.files && typeof s.files === 'object') {
+    for (const k of Object.keys(s.files)) if (/^runcoach-food-/.test(k)) delete s.files[k];
+  }
+  return s;
+}
 import { computeBodyBattery } from './bodyBattery';
 import { buildTrainingLoadCalibration, loadSnapshotCache } from './healthkit';
 import { assembleCoachSnapshot, computeCapHistory, parseWeeklyTemplate, parseWeeklyCommitments } from './coach';
@@ -75,7 +85,8 @@ export async function buildDebugExport(): Promise<DebugExport> {
     catch (e: any) { sections[name] = { error: String(e?.message ?? e) }; }
   };
 
-  await add('settings', async () => JSON.parse(await exportAllSettings(false))); // false = BYOK key excluded
+  await add('settings', async () => stripFood(JSON.parse(await exportAllSettings(false)))); // false = BYOK key excluded
+  await add('nutritionTotals', async () => foodTotalsForExport(30));   // daily totals only, never item names
   await add('bodyBattery', async () => {
     const bb = await computeBodyBattery();
     if (!bb) return null;
@@ -313,7 +324,7 @@ export async function buildDebugSections(): Promise<{ name: string; json: string
     };
   });
   await add('settings', async () => {
-    const s = JSON.parse(await exportAllSettings(false));
+    const s = stripFood(JSON.parse(await exportAllSettings(false)));
     // Drop ONLY the chat history (bulky + not calibration data); KEEP the real config files (schedule,
     // zones, knowledge, plan logs…).
     if (s && typeof s === 'object' && s.files && typeof s.files === 'object') {

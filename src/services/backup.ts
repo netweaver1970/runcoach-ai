@@ -63,6 +63,7 @@ const FILES = [
   'runcoach-travel-itinerary.json', // travel-mode trip itinerary (legs + climates)
   'runcoach-workout-library.json',  // reusable structured-workout library
   'runcoach-supplements.json',      // supplement list + daily intake log
+  'runcoach-food-library.json',     // food library: custom foods, saved meals, favourites, recents
   'runcoach-labs.json',             // imported blood-test / clinical-lab history
   'runcoach-hrv-ignore.json',       // user-ignored HRV readings (excluded from recovery/HRV KPIs)
   'runcoach-hrv-layout.json',       // HRV-reading-detail card order/visibility
@@ -79,7 +80,9 @@ const FILES = [
 ];
 // Per-date files captured by prefix — the prescription plan-logs that drive deterministic
 // run-detail phase labels (HealthKit has no record of the prescribed structure).
-const FILE_PREFIXES = ['coach-plan-log-'];
+// + the monthly food-log shards (runcoach-food-log-YYYY-MM.json). The Open Food Facts lookup cache is NOT backed
+// up: it is rebuildable, and keeping ODbL-derived data out of backups keeps the licence picture simple.
+const FILE_PREFIXES = ['coach-plan-log-', 'runcoach-food-log-'];
 
 export interface SettingsBackup {
   app: 'RunCoachAI';
