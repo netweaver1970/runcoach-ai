@@ -10,6 +10,7 @@
  * Search is local, keyless and offline; Open Food Facts is only queried on an explicit tap (foodOff.ts).
  */
 import type { FoodItem, Nutr, NutrKey } from './foodLog';
+import { matchSports, sportsByKey } from './foodSports';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const RAW = require('../../assets/food/ciqual-2025.json') as {
@@ -82,6 +83,9 @@ const NL: Record<string, string[]> = {
   groentesoep: ['soupe legumes', 'vegetable soup'], peperkoek: ['gingerbread'], ontbijtkoek: ['gingerbread'],
   gerookt: ['fume', 'smoked'], gerookte: ['fume', 'smoked'], chocomelk: ['chocolate milk beverage'],
   pils: ['biere', 'beer'], gehakt: ['minced steak', 'minced meat'], speculoos: ['speculoos'], thee: ['tea brewed', 'the'],
+  // English words CIQUAL names differently
+  rolled: ['flakes'], oatmeal: ['oat flakes'], havervlokken: ['oat flakes'], vlokken: ['flakes'], zout: ['salt', 'sel'], porridge: ['oat flakes boiled'], granola: ['granola'],
+  fries: ['french fries'], chips: ['crisps', 'french fries'],
   cappuccino: ['cappuccino'], broodje: ['sandwich'], koekjes: ['biscuit', 'cookie'], zero: ['without added sugars'], light: ['without added sugars', 'allege'], sportdrank: ['sports drink'], isotoon: ['sports drink'],
 };
 
@@ -115,6 +119,7 @@ const wordHit = (w: string, a: string, exact: boolean): number =>
 // ─── table ────────────────────────────────────────────────────────────────────────────────────────
 interface Row { item: FoodItem; w: string[]; first: string[]; nWords: number; generic: boolean }
 let TABLE: Row[] | null = null;
+const HITS = new Map<string, number>();       // word → number of table foods it matches (the table never changes)
 let BY_ID: Map<string, FoodItem> | null = null;
 
 const COOK = /\b(cuit|cooked|bouilli|boiled|grille|grilled|roti|roasted|frit|fried|poele|braise|vapeur|steamed)\b/;
@@ -140,7 +145,7 @@ function load(): Row[] {
   return rows;
 }
 
-export function foodByKey(key: string): FoodItem | undefined { load(); return BY_ID!.get(key); }
+export function foodByKey(key: string): FoodItem | undefined { load(); return BY_ID!.get(key) ?? sportsByKey(key); }
 export const tableSize = () => load().length;
 
 /**
@@ -167,9 +172,14 @@ export function searchFoodsEx(query: string, limit = 30, boost?: Record<string, 
   if (r.items.length || opts?.fallback === false) return { ...r, notCombined: [] };
   const ws = words(query).filter(w => !STOP.has(w) && !/^\d+$/.test(w) && !r.ignored.includes(w));
   if (ws.length < 2 || ws.length > 4) return { ...r, notCombined: [] };
-  // drop ONE word — prefer keeping words the dictionary knows and longer (more specific) words
-  // Dutch puts the base food first ("yoghurt aardbei") → on a tie, drop the LAST word first
-  const order = [...ws].reverse().sort((a, b) => (NL[a] ? 1 : 0) - (NL[b] ? 1 : 0));
+  // drop ONE word: the one fewest foods contain goes first (a modifier like "rolled" matches 2 foods, the food
+  // itself — "oats" — matches many); dictionary words are kept longest; ties drop the LAST word (Dutch puts the
+  // base food first: "yoghurt aardbei").
+  const rows = load();
+  const hits = (w: string) => HITS.get(w) ?? (HITS.set(w, countHits(rows, w)), HITS.get(w)!);
+  const countHits = (rs: Row[], w: string) => rs.reduce((a, r) => a + (expandToken(w).some(ph => ph.w.every(x => r.w.some(y => wordHit(y, x, ph.exact) > 0))) ? 1 : 0), 0);
+  const order = [...ws].reverse().map(w => ({ w, h: hits(w), nl: NL[w] ? 1 : 0 }))
+    .sort((a, b) => a.nl - b.nl || a.h - b.h).map(x => x.w);
   for (const drop of order) {
     const rr = searchCore(ws.filter(w => w !== drop).join(' '), limit, boost);
     if (rr.items.length) return { items: rr.items, ignored: r.ignored, notCombined: [drop] };
@@ -178,6 +188,16 @@ export function searchFoodsEx(query: string, limit = 30, boost?: Record<string, 
 }
 
 function searchCore(query: string, limit: number, boost?: Record<string, number>): { items: FoodItem[]; ignored: string[] } {
+  // built-in sports/supplement items (creatine, whey, gels…) — no composition table carries them — come first
+  const sports = matchSports(words(query).filter(t => !/^\d+$/.test(t)));
+  const core = searchTable(query, limit, boost);
+  if (!sports.length) return core;
+  const qw = words(query).filter(t => !/^\d+$/.test(t));
+  // words the built-in items matched are not "ignored"
+  return { items: [...sports, ...core.items].slice(0, limit), ignored: core.ignored.filter(w => !qw.includes(w) || !matchSports([w]).length) };
+}
+
+function searchTable(query: string, limit: number, boost?: Record<string, number>): { items: FoodItem[]; ignored: string[] } {
   const q = words(query).filter(t => !/^\d+$/.test(t));      // numbers are portions, not food words
   if (!q.length) return { items: [], ignored: [] };
   const rows = load();
@@ -229,7 +249,8 @@ function searchCore(query: string, limit: number, boost?: Record<string, number>
       // grains/pasta/rice (grp 0301) are eaten cooked; produce/meat/fish default to raw/plain
       const g = r.item.grp ?? '';
       // grains, pasta, potatoes, meat and fish are weighed as eaten = cooked; vegetables and fruit default to raw
-      if (g === '0301' || g === '0202' || g === '0203' || g.startsWith('04')) s += COOK.test(name) || g === '0401' || g === '0405' || g === '0407' ? 1 : 0;
+      // …except flakes (oats, muesli): those are weighed DRY — "80 g rolled oats" is 300 kcal, not 55
+      if ((g === '0301' || g === '0202' || g === '0203' || g.startsWith('04')) && !/\b(flocons|flakes)\b/.test(name)) s += COOK.test(name) || g === '0401' || g === '0405' || g === '0407' ? 1 : 0;
       if (g === '0301' && /\b(blanc|white)\b/.test(name)) s += 0.3;   // plain "rijst"/"pasta" = the white one
       else if (g.startsWith('02') && g !== '0205') s += RAWW.test(name) ? 0.8 : 0;
     }
@@ -253,9 +274,14 @@ const GROUP_SERVING: Record<string, { g: number; label: string }> = {
   '0603': { g: 250, label: 'glass' }, '0701': { g: 10, label: '2 tsp' }, '0702': { g: 20, label: '2 squares' },
   '0703': { g: 20, label: 'portion' }, '0704': { g: 15, label: '1 tbsp' }, '0801': { g: 70, label: '1 scoop' },
   '0901': { g: 10, label: 'knob' }, '0902': { g: 10, label: '1 tbsp' }, '0903': { g: 10, label: 'knob' },
-  '1001': { g: 20, label: '1 tbsp' }, '1002': { g: 10, label: '1 tsp' }, '0102': { g: 250, label: 'bowl' },
+  '1001': { g: 20, label: '1 tbsp' }, '1002': { g: 10, label: '1 tsp' }, '1004': { g: 1, label: 'pinch' },
+  '1005': { g: 1, label: 'pinch' }, '1006': { g: 2, label: 'pinch' }, '0102': { g: 250, label: 'bowl' },
   '0103': { g: 300, label: 'plate' }, '0104': { g: 150, label: 'slice' }, '0105': { g: 200, label: '1 sandwich' },
 };
 export function defaultServing(f: FoodItem): { g: number; label: string } {
-  return f.serving ?? GROUP_SERVING[f.grp ?? ''] ?? { g: 100, label: '100 g' };
+  if (f.serving) return f.serving;
+  // dry grains / flakes / dry pasta are weighed dry: 180 g "cooked portion" of raw oats would be ~680 kcal
+  if ((f.grp === '0301' || f.grp === '0707') && /\b(raw|cru|crue|crus|dry|sec|seche|seches|flakes|flocons)\b/.test(norm(`${f.name} ${f.nameAlt ?? ''}`))
+    && !COOK.test(norm(`${f.name} ${f.nameAlt ?? ''}`))) return { g: 60, label: 'dry portion' };
+  return GROUP_SERVING[f.grp ?? ''] ?? { g: 100, label: '100 g' };
 }

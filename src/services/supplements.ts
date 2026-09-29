@@ -53,6 +53,22 @@ export async function toggleSupplementToday(name: string): Promise<boolean> {
   return taken;
 }
 
+/**
+ * Mark every listed supplement whose name matches `re` as taken on `dateISO` (idempotent — never un-marks, unlike
+ * the toggle). Used when a supplement is logged from the food log (e.g. "10g creatine" in a typed meal).
+ */
+export async function markSupplementTaken(re: RegExp, dateISO: string): Promise<string[]> {
+  const d = await read();
+  const hit = d.list.filter(n => re.test(n));
+  let changed = false;
+  for (const name of hit) {
+    const dates = new Set(d.log[name] ?? []);
+    if (!dates.has(dateISO)) { dates.add(dateISO); d.log[name] = [...dates].sort(); changed = true; }
+  }
+  if (changed) await write(d);
+  return hit;
+}
+
 export function takenToday(d: SupplementData, name: string, today = todayISO()): boolean {
   return (d.log[name] ?? []).includes(today);
 }

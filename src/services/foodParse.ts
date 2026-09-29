@@ -4,7 +4,7 @@
  * EN / NL / FR number words and household units. Deterministic, offline — works with iOS keyboard dictation.
  * With an LLM key the same review list can be filled by the model instead (A4), but this path always exists.
  */
-import { searchFoods, defaultServing, norm } from './foodDb';
+import { searchFoodsEx, defaultServing, norm } from './foodDb';
 import type { FoodItem } from './foodLog';
 
 export interface ParsedItem {
@@ -50,6 +50,7 @@ const UNITS: { re: RegExp; key: string; g: number | null }[] = [
   { re: /^(pakje|pakjes|brikje|brikjes|briquette)$/, key: 'juicebox', g: 200 },
   { re: /^(portie|porties|portion|portions|bord|plate|assiette)$/, key: 'portion', g: null },
   { re: /^(handje|handvol|handful|poignee)$/, key: 'handful', g: 30 },
+  { re: /^(scoop|scoops|schep|scheppen|schepje|schepjes|maatschep|maatschepje|dose|doses)$/, key: 'scoop', g: null },
   { re: /^(scheut|dash|trait)$/, key: 'dash', g: 5 },
 ];
 
@@ -98,7 +99,8 @@ export function parseFragment(frag: string, boost?: Record<string, number>, find
   if (!query && unit && unitTok) query = /^(boterham|sneetje|snee|sneden|slice|tranche)/.test(norm(unitTok)) ? 'brood' : unitTok;
   if (!query) return null;
   const own = findOwn?.(query);
-  const found = searchFoods(query, 4, boost);
+  // with the one-word fallback: a fragment is short, and "rolled oats" must still find oats
+  const found = searchFoodsEx(query, 4, boost).items;
   const food = own ?? found[0];
   const alternatives = own ? found.slice(0, 3) : found.slice(1);
   const n = qty ?? 1;
@@ -108,12 +110,17 @@ export function parseFragment(frag: string, boost?: Record<string, number>, find
   else if (!unit && qty != null && qty >= 10) grams = qty;   // (but see `countable` below)
   else if (food) grams = n * defaultServing(food).g;
   else grams = n * 100;
+  // a built-in POWDER (whey, creatine, malto…) with a volume unit ("300 ml whey") is a shake: the ml is the liquid,
+  // not the powder → use one scoop and make the user look
+  const volume = !!unit && ['ml', 'cl', 'l', 'glass', 'cup', 'can', 'bottle', 'wine-bottle', 'carton', 'juicebox'].includes(unit.key);
+  const powderInLiquid = food?.src === 'builtin' && volume && (food as { powder?: boolean }).powder === true;
+  if (powderInLiquid && food) grams = defaultServing(food).g;
   grams = Math.round(grams);
   // "12 eieren" / "15 druiven": ≥10 read as grams, but it could be a count → don't mark it sure, make the user look
   const countable = !unit && qty != null && qty >= 10 && qty <= 24 && !!food && qty * defaultServing(food).g <= MAX_ITEM_GRAMS;
   return {
     text, query, qty: n, unit: unit?.key ?? (!unit && qty != null && qty >= 10 ? 'g' : undefined), food, alternatives, grams,
-    sure: !!food && (qty != null || unit != null) && grams <= MAX_ITEM_GRAMS && !countable,
+    sure: !!food && (qty != null || unit != null) && grams <= MAX_ITEM_GRAMS && !countable && !powderInLiquid,
   };
 }
 

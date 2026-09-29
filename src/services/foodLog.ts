@@ -11,12 +11,24 @@
  */
 import * as FileSystem from 'expo-file-system';
 import { trainingDayKey } from './trainingLoad';
+import { sportsByKey } from './foodSports';
+import { markSupplementTaken } from './supplements';
+
+/** Logging a built-in supplement (creatine, whey, electrolytes…) also ticks a matching supplement in the tracker. */
+async function linkSupplements(keys: string[], t: string): Promise<void> {
+  // the supplement tracker uses CALENDAR dates (todayISO), not the 4 am food day
+  const cal = t.slice(0, 10);
+  for (const k of keys) {
+    const sp = sportsByKey(k)?.supp;
+    if (sp) await markSupplementTaken(sp, cal).catch(() => undefined);
+  }
+}
 
 export type NutrKey =
   | 'kcal' | 'prot' | 'carb' | 'fat' | 'sug' | 'fib' | 'sat' | 'salt' | 'na' | 'k' | 'ca' | 'fe' | 'mg'
   | 'water' | 'alc' | 'vitC' | 'vitD' | 'caf';
 export type Nutr = Partial<Record<NutrKey, number>>;
-export type FoodSrc = 'ciqual' | 'off' | 'custom' | 'quick' | 'ai';
+export type FoodSrc = 'ciqual' | 'off' | 'custom' | 'quick' | 'ai' | 'builtin';
 export type EntryVia = 'search' | 'recent' | 'fav' | 'meal' | 'copy' | 'quick' | 'parse' | 'photo' | 'ean' | 'label' | 'suggest';
 
 /** A food as it can be logged: nutrients PER 100 g (quick-add items carry absolute `n` instead). */
@@ -170,6 +182,7 @@ export async function logFood(
   };
   await mutateDay(date, d => { d.entries.push(e); });
   await touchRecent(item, opts.grams, t).catch(() => undefined);   // the entry is saved; recents are a convenience
+  await linkSupplements([item.key], t);
   return e;
 }
 
@@ -182,6 +195,7 @@ export async function logFoods(items: { item: FoodItem; grams: number }[], opts:
   }));
   await mutateDay(foodDayOf(t), d => { d.entries.push(...out); });
   for (const { item, grams } of items) await touchRecent(item, grams, t).catch(() => undefined);
+  await linkSupplements(items.map(x => x.item.key), t);
   return out;
 }
 
