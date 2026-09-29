@@ -20,6 +20,7 @@ import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-rou
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
+import { PhotoTest } from '../src/components/PhotoTest';
 import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT } from '../src/services/foodDb';
 import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
@@ -40,6 +41,7 @@ const hhmm = (iso: string) => iso.slice(11, 16);
 const prevDay = (d: string) => { const [y, m, dd] = d.split('-').map(Number); const x = new Date(y, m - 1, dd - 1); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const macroLine = (n: Nutr) => `C ${r0(n.carb)} · P ${r0(n.prot)} · F ${r0(n.fat)}`;
 const dateKeyCal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const FIXED_UNITS = new Set(['g', 'kg', 'ml', 'cl', 'l', 'tbsp', 'tsp', 'glass', 'cup', 'can', 'bottle', 'wine-bottle', 'carton', 'juicebox', 'handful', 'dash']);
 const idOf = (key: string) => key.slice(key.indexOf(':') + 1);
 const openUrl = (u: string) => { Linking.openURL(u).catch(() => {}); };
 const saveFailed = (e: unknown) => Alert.alert('Not saved', `The food log couldn't be written (${String((e as any)?.message ?? e)}). Nothing was changed.`);
@@ -72,6 +74,7 @@ export default function FoodMode() {
   const [burn, setBurn] = useState<{ kcal: number; at: number } | null>(null);   // watch active + basal kcal (stored, not recomputed)
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<FoodEntry | null>(null);
+  const [photoTest, setPhotoTest] = useState(false);
   const [undo, setUndo] = useState<Undo>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reqId = useRef(0);
@@ -288,6 +291,9 @@ export default function FoodMode() {
           </View>
         )}
 
+        <TouchableOpacity style={s.testBtn} onPress={() => setPhotoTest(true)}>
+          <Text style={s.testTxt}>🧪 Photo test — one-time check before photo meals are built</Text>
+        </TouchableOpacity>
         <Text style={s.credit}>Generic foods: {CIQUAL_CREDIT}. Products: {OFF_CREDIT} Totals are calculated by RunCoach.</Text>
       </ScrollView>
 
@@ -302,6 +308,7 @@ export default function FoodMode() {
         <Text style={s.fabTxt}>＋</Text>
       </TouchableOpacity>
 
+      {photoTest && <PhotoTest onClose={() => setPhotoTest(false)} />}
       {adding && lib && <AddSheet date={date} lib={lib} onClose={() => { Keyboard.dismiss(); setAdding(false); reload(); }} />}
       {editing && (
         <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)}
@@ -318,7 +325,7 @@ type Mode =
   | { m: 'portion'; item: FoodItem | OffProduct; grams?: number }
   | { m: 'quick' }
   | { m: 'label'; ean?: string; name?: string }
-  | { m: 'parse'; items: ParsedItem[] }
+  | { m: 'editItem'; entry: FoodEntry }
   | { m: 'online'; query: string; results: OffProduct[] | null; error?: string };
 
 function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary; onClose: () => void }) {
@@ -334,6 +341,22 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
   const [dq, setDq] = useState('');                     // debounced query: search runs ~150 ms after typing stops
   useEffect(() => { const t = setTimeout(() => setDq(q), 150); return () => clearTimeout(t); }, [q]);
   const onlineTok = useRef(0);
+  // Parts of a typed meal that had no match: kept as "Still to find" chips (with their typed grams) until the user
+  // finds each one or dismisses it — nothing typed ever silently disappears.
+  const [pending, setPendingState] = useState<{ query: string; grams?: number }[]>([]);
+  const pendingRef = useRef<{ query: string; grams?: number }[]>([]);
+  const setPending = (next: { query: string; grams?: number }[]) => { pendingRef.current = next; setPendingState(next); };
+  // The chip being worked on — EXPLICIT (set when a chip is tapped/jumped to), so rewording the search ("quinoaxyz"
+  // → "quinoa") or going online keeps its typed grams and still ticks it off. Cleared on ✕ or once found.
+  const [activeChip, setActiveChipState] = useState<string | null>(null);
+  const activeChipRef = useRef<string | null>(null);
+  const setActiveChip = (q: string | null) => { activeChipRef.current = q; setActiveChipState(q); };
+  // NOT cleared when the box is emptied: clearing it to retype other words is exactly how a chip gets found.
+  // The active chip is highlighted with a "Finding …" hint; ✕ drops it.
+  const [asOne, setAsOne] = useState(false);           // "search the whole phrase as ONE food" (fish and chips…)
+  useEffect(() => { setAsOne(false); }, [dq]);
+  const batchesRef = useRef<FoodEntry[][]>([]);
+  const inflight = useRef<Promise<void> | null>(null);
   const groupId = useRef(`g${Date.now().toString(36)}`).current;   // everything added in one sheet = one meal
   const busy = useRef(false);
 
@@ -349,6 +372,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
   const dqt = dq.trim();
   const digits = /^\d{8,14}$/.test(qt);
   const phrase = dqt.length >= 4 && !/^\d+$/.test(dqt) && looksLikeMeal(dqt);
+  const activePending = pending.find(p => p.query === activeChip);
   // a meal phrase goes to the parser; search then doesn't try word-dropping fallbacks on it
   const search = useMemo(() => (dqt.length >= 2 && !/^\d{8,14}$/.test(dqt) ? searchFoodsEx(dqt, 40, boost, { fallback: !phrase }) : { items: [], ignored: [], notCombined: [] }), [dqt, phrase, boost]);
   // your own foods: custom label foods + products you looked up before (offline copies)
@@ -360,21 +384,42 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     return [...searchCustom(lib, text, norm), ...offHits].filter(f => (seen.has(f.key) ? false : (seen.add(f.key), true))).slice(0, 6);
   }, [offCache, lib]);
   const mine = useMemo(() => (dqt.length < 2 || /^\d{8,14}$/.test(dqt) ? [] as FoodItem[] : ownMatches(dqt)), [dqt, ownMatches]);
+  // A typed meal ("2 eieren, toast met boter") is parsed LIVE and shown inline — never hidden behind a button,
+  // and search results for the whole phrase are not shown (they only matched part of it and confused things).
+  const parsed = useMemo(() => (phrase ? parseMeal(dqt, boost, t => ownMatches(t)[0]) : []), [phrase, dqt, boost, ownMatches]);
+  const showParse = phrase && parsed.length > 0 && !asOne;
   const recentOf = (key: string) => lib.recents.find(r => r.key === key);
 
   const refreshLib = async () => setLib(await loadLibrary());
   const guard = async (fn: () => Promise<void>) => {
     if (busy.current) return;
     busy.current = true;
-    try { await fn(); } catch (e) { saveFailed(e); } finally { busy.current = false; }
+    const p = (async () => { try { await fn(); } catch (e) { saveFailed(e); } finally { busy.current = false; } })();
+    inflight.current = p;
+    await p;
   };
-  const logged = async (es: FoodEntry[]) => { if (es.length) setBatches(prev => [...prev, es]); setQ(''); setDq(''); setMode({ m: 'search' }); await refreshLib(); };
+  const pushBatch = (es: FoodEntry[]) => { batchesRef.current = [...batchesRef.current, es]; setBatches(batchesRef.current); };
+  const setBatchesBoth = (next: FoodEntry[][]) => { batchesRef.current = next; setBatches(next); };
+  /** After an add: if it was one of the "still to find" parts, tick it off and jump to the next one. */
+  const logged = async (es: FoodEntry[]) => {
+    if (es.length) pushBatch(es);
+    // refs, not render state: this runs from list callbacks memoised on earlier renders
+    const act = activeChipRef.current;
+    const rest = act ? pendingRef.current.filter(p => p.query !== act) : pendingRef.current;
+    if (act) setPending(rest);
+    const next = act ? rest[0]?.query ?? '' : '';
+    setActiveChip(next || null);
+    setQ(next); setDq(next); setMode({ m: 'search' });
+    await refreshLib();
+  };
+  const chipGrams = () => pendingRef.current.find(p => p.query === activeChipRef.current)?.grams;
 
   const pick = (item: FoodItem, longPress = false) => guard(async () => {
     const rec = recentOf(item.key);
-    if (!longPress && rec?.grams) { await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId })]); return; }
+    const typed = chipGrams();                          // "200 g quinoa" typed in the meal → keep the 200 g
+    if (!longPress && !typed && rec?.grams) { await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId })]); return; }
     Keyboard.dismiss();
-    setMode({ m: 'portion', item, grams: rec?.grams });
+    setMode({ m: 'portion', item, grams: typed ?? rec?.grams });
   });
   const pickRecent = (r: { key: string; name: string; src: FoodItem['src']; per100?: Nutr; n?: Nutr; grams?: number }, longPress = false) => guard(async () => {
     // a remembered serving (or a fixed quick-add) logs in one tap; a favourite never logged before asks the amount
@@ -388,12 +433,27 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
   });
   const pickMeal = (m: SavedMeal) => guard(async () => { await logged(await logMeal(m, date)); });
   const undoLast = () => guard(async () => {
-    const last = batches[batches.length - 1]; if (!last) return;
+    const cur = batchesRef.current;
+    const last = cur[cur.length - 1]; if (!last) return;
     const byDay = new Map<string, string[]>();
     for (const e of last) { const d = e.key === 'water' ? date : foodDayOf(e.t); byDay.set(d, [...(byDay.get(d) ?? []), e.id]); }
     for (const [d, ids] of byDay) await removeEntries(d, ids);
-    setBatches(prev => prev.slice(0, -1));
+    setBatchesBoth(batchesRef.current.slice(0, -1));
   });
+  const added = batches.flat();
+  const removeItem = (e: FoodEntry) => guard(async () => {
+    await removeEntries(e.key === 'water' ? date : foodDayOf(e.t), [e.id]);
+    setBatchesBoth(batchesRef.current.map(b => b.filter(x => x.id !== e.id)).filter(b => b.length));
+  });
+  const perOf = (e: FoodEntry): Nutr => foodByKey(e.key)?.per100
+    ?? (e.grams && e.grams > 0 ? Object.fromEntries(Object.entries(e.n).map(([k, v]) => [k, (v as number) * 100 / e.grams!])) as Nutr : e.n);
+  const editItem = (e: FoodEntry, grams: number) => guard(async () => {
+    const per100 = perOf(e);
+    await updateEntry(foodDayOf(e.t), e.id, { grams, per100 });
+    setBatchesBoth(batchesRef.current.map(b => b.map(x => (x.id === e.id ? { ...x, grams, n: scaleNutr(per100, grams) } : x))));
+    setMode({ m: 'search' });
+  });
+
   const lookup = async (code: string, refresh = false) => {
     Keyboard.dismiss();
     // a pack label you entered for this barcode wins — no network needed
@@ -453,8 +513,8 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dqt, digits, search, mine, tab, lib]);
 
-  const close = () => { Keyboard.dismiss(); onClose(); };
-  const lastBatch = batches[batches.length - 1];
+  // wait for a save that is still running, so the day view reloads with the last item in it
+  const close = async () => { Keyboard.dismiss(); try { await inflight.current; } catch { /* reported already */ } onClose(); };
 
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
@@ -462,19 +522,36 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
       <View style={[s.sheet, { backgroundColor: c.bg }]}>
         <View style={s.sheetHead}>
           <Text style={s.sheetTitle}>Add food</Text>
-          <TouchableOpacity onPress={close} hitSlop={12}><Text style={s.done}>Done</Text></TouchableOpacity>
+          <TouchableOpacity onPress={close} hitSlop={12}><Text style={s.done}>{added.length ? `Done · ${added.length} added` : 'Done'}</Text></TouchableOpacity>
         </View>
 
         {/* confirmation + Undo sit ABOVE the list so the keyboard never hides them */}
-        {lastBatch && (
-          <View style={s.loggedBar}>
-            <Text style={s.loggedTxt} numberOfLines={1}>✓ {lastBatch.length > 1 ? `${lastBatch.length} items` : lastBatch[0].name.split(',')[0]}{batches.length > 1 ? `  ·  ${batches.reduce((a, b) => a + b.length, 0)} added` : ''}</Text>
-            <TouchableOpacity onPress={undoLast} hitSlop={10}><Text style={s.toastBtn}>Undo</Text></TouchableOpacity>
+        {/* THIS MEAL: everything added in this sheet, always visible — tap to change the amount, ✕ to remove */}
+        {added.length > 0 && mode.m !== 'editItem' && (
+          <View style={s.basket}>
+            <View style={s.basketHead}>
+              <Text style={s.basketTitle}>✓ This meal · {added.length} item{added.length === 1 ? '' : 's'} · {r0(added.reduce((a, e) => a + (e.n.kcal ?? 0), 0))} kcal</Text>
+              <TouchableOpacity onPress={undoLast} hitSlop={10}><Text style={s.toastBtn}>Undo{batches[batches.length - 1]?.length > 1 ? ` last ${batches[batches.length - 1].length}` : ' last'}</Text></TouchableOpacity>
+            </View>
+            {!showParse && <ScrollView style={{ maxHeight: 132 }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              {added.map(e => (
+                <View key={e.id} style={s.basketRow}>
+                  <TouchableOpacity style={{ flex: 1 }} onPress={() => {
+                    if (!e.grams || e.key === 'water') { Alert.alert(e.name, 'This one has no weight to change — remove it (✕) and add it again if needed.'); return; }
+                    Keyboard.dismiss(); setMode({ m: 'editItem', entry: e });
+                  }}>
+                    <Text style={s.basketName} numberOfLines={1}>{e.name.split(',').slice(0, 2).join(',')}</Text>
+                  </TouchableOpacity>
+                  <Text style={s.basketMeta}>{e.grams ? `${r0(e.grams)} g · ` : ''}{e.key === 'water' ? '' : `${r0(e.n.kcal)} kcal`}</Text>
+                  <TouchableOpacity onPress={() => removeItem(e)} hitSlop={10}><Text style={s.basketX}>✕</Text></TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>}
           </View>
         )}
 
         {mode.m === 'portion' ? (
-          <PortionPanel item={mode.item} initial={mode.grams} isFav={lib.favs.includes(mode.item.key)}
+          <PortionPanel item={mode.item} initial={mode.grams} isFav={lib.favs.includes(mode.item.key)} forChip={activeChip ?? undefined}
             onFav={() => guard(async () => { await toggleFav(mode.item.key, { name: mode.item.name, src: mode.item.src, per100: mode.item.per100 }); await refreshLib(); })}
             onCancel={() => setMode({ m: 'search' })}
             onConfirm={g => guard(async () => {
@@ -487,20 +564,21 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
         ) : mode.m === 'label' ? (
           <LabelPanel ean={mode.ean} name={mode.name} onCancel={() => setMode({ m: 'search' })}
             onSave={f => guard(async () => { const item = await addCustomFood(f); await refreshLib(); setMode({ m: 'portion', item }); })} />
-        ) : mode.m === 'parse' ? (
-          <ParsePanel items={mode.items} onCancel={() => setMode({ m: 'search' })}
-            onConfirm={items => guard(async () => {
-              // one atomic write: all items or none (a failure can't leave a half-logged phrase behind)
-              await logged(await logFoods(items.filter(it => it.food).map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId }));
-            })} />
+        ) : mode.m === 'editItem' ? (
+          <PortionPanel item={{ key: mode.entry.key, src: mode.entry.src, id: idOf(mode.entry.key), name: mode.entry.name, per100: perOf(mode.entry) }}
+            initial={mode.entry.grams} isFav={lib.favs.includes(mode.entry.key)} confirmLabel="Save"
+            onFav={() => guard(async () => { await toggleFav(mode.entry.key, { name: mode.entry.name, src: mode.entry.src, per100: perOf(mode.entry) }); await refreshLib(); })}
+            onCancel={() => setMode({ m: 'search' })}
+            onDelete={() => { removeItem(mode.entry); setMode({ m: 'search' }); }}
+            onConfirm={g => editItem(mode.entry, g)} />
         ) : mode.m === 'online' ? (
           <OnlinePanel query={mode.query} results={mode.results} error={mode.error} onCancel={() => setMode({ m: 'search' })}
-            onPick={p => { setMode({ m: 'portion', item: p, grams: recentOf(p.key)?.grams }); }} />
+            onPick={p => { setMode({ m: 'portion', item: p, grams: chipGrams() ?? recentOf(p.key)?.grams }); }} />
         ) : (
           <>
             <TextInput
               style={s.search} value={q} onChangeText={setQ}
-              placeholder="banaan · 2 eieren, toast met boter · 5410…"
+              placeholder={added.length ? 'Add another item…' : 'banaan · 2 eieren, toast met boter · 5410…'}
               placeholderTextColor={c.textFaint} autoFocus autoCorrect={false} returnKeyType="search" clearButtonMode="while-editing"
             />
             <View style={s.actions}>
@@ -509,13 +587,29 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
               {[250, 500].map(ml => (
                 <TouchableOpacity key={ml} style={s.action} onPress={() => guard(async () => {
                   const w = await addWater(date, ml);
-                  setBatches(prev => [...prev, [{ id: w.id, t: w.t, key: 'water', name: `Water ${ml} mL`, src: 'quick', n: {}, via: 'quick' }]]);
+                  pushBatch([{ id: w.id, t: w.t, key: 'water', name: `Water ${ml} mL`, src: 'quick', n: {}, via: 'quick' }]);
                 })}>
                   <Text style={s.actionTxt}>💧 {ml}</Text>
                 </TouchableOpacity>
               ))}
             </View>
 
+            {pending.length > 0 && (
+              <View style={s.pendingBox}>
+                <Text style={s.pendingHead}>Still to find from your meal:</Text>
+                <View style={s.chips}>
+                  {pending.map(p => (
+                    <View key={p.query} style={[s.pendingChip, p === activePending && { borderColor: c.accent }]}>
+                      <TouchableOpacity onPress={() => { Keyboard.dismiss(); setActiveChip(p.query); setQ(p.query); setDq(p.query); }}>
+                        <Text style={s.pendingTxt}>{p.grams ? `${p.grams} g ` : ''}{p.query}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => { setPending(pendingRef.current.filter(x => x.query !== p.query)); if (activeChipRef.current === p.query) setActiveChip(null); }} hitSlop={8}><Text style={s.basketX}>✕</Text></TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+                {activePending && <Text style={s.hint}>Finding "{activePending.query}": pick the right food below{activePending.grams ? ` — ${activePending.grams} g is kept` : ''}, or change the words / search online.</Text>}
+              </View>
+            )}
             {digits && (
               <TouchableOpacity style={s.bigRow} onPress={() => lookup(qt)} disabled={lookingUp}>
                 {lookingUp ? <ActivityIndicator /> : <Text style={s.bigRowTxt}>▥ Look up barcode {qt}</Text>}
@@ -523,16 +617,28 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
                 <Text style={s.resultSub}>Asks Open Food Facts (only the barcode is sent).</Text>
               </TouchableOpacity>
             )}
-            {phrase && (
-              <TouchableOpacity style={s.bigRow} onPress={() => { Keyboard.dismiss(); setMode({ m: 'parse', items: parseMeal(qt, boost, t => ownMatches(t)[0]) }); }}>
-                <Text style={s.bigRowTxt}>✨ Log "{qt.length > 40 ? qt.slice(0, 40) + '…' : qt}" as a meal →</Text>
-                <Text style={s.resultSub}>Splits it into foods with amounts you can check first. Works offline.</Text>
-              </TouchableOpacity>
+            {showParse && (
+              <ParsePanel key={dqt} items={parsed}
+                onAsOne={() => setAsOne(true)}
+                onConfirm={(items, missing) => guard(async () => {
+                  // one atomic write for the matched items; every unmatched part becomes a "still to find" chip
+                  // (with its typed grams) and the search jumps to the first one — nothing is dropped
+                  const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId }) : [];
+                  if (es.length) pushBatch(es);
+                  // keep typed grams only when the unit has a fixed weight (g, ml, tbsp, glass…) — "2 sneetjes xyz" has none
+                  const add = missing.map(m => ({ query: m.query, ...(m.unit && FIXED_UNITS.has(m.unit) ? { grams: m.grams } : {}) }));
+                  const all = [...add, ...pendingRef.current.filter(p => !add.some(a => a.query === p.query))];
+                  setPending(all);
+                  const next = all[0]?.query ?? '';
+                  setActiveChip(next || null);
+                  setQ(next); setDq(next); setMode({ m: 'search' });
+                  await refreshLib();
+                })} />
             )}
-            {dqt.length >= 2 && !digits && !phrase && search.ignored.length > 0 && (
+            {dqt.length >= 2 && !digits && !showParse && search.ignored.length > 0 && (
               <Text style={s.hint}>Ignored: {search.ignored.join(', ')} — not in the food table.</Text>
             )}
-            {dqt.length >= 2 && !digits && !phrase && search.notCombined.length > 0 && (
+            {dqt.length >= 2 && !digits && !showParse && search.notCombined.length > 0 && (
               <Text style={s.hint}>Left out "{search.notCombined.join(', ')}" — no single food has all the words. Tip: "a, b" logs them separately.</Text>
             )}
 
@@ -545,7 +651,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
                 ))}
               </View>
             )}
-            <FlatList
+            {!showParse && <FlatList
               data={list} keyExtractor={it => it.key} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
               ListEmptyComponent={digits ? null : <Text style={s.empty}>{qt.length >= 2 ? 'No match in the food table. Try another word, search online, or use Quick add / Label.' : tab === 'meals' ? 'No saved meals yet — open a logged meal (⋯) and choose "Save as meal".' : tab === 'fav' ? 'No favourites yet — ★ a food in its portion view.' : 'Foods you log appear here, with the serving you used.'}</Text>}
               ListFooterComponent={qt.length >= 3 && !digits ? (
@@ -560,8 +666,8 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
                   <Text style={s.resultSub} numberOfLines={1}>{item.sub}</Text>
                 </TouchableOpacity>
               )}
-            />
-            {dqt.length >= 2 && !digits && list.length > 0 && <Text style={s.hint}>Tap = log (your usual serving) · long-press = choose the amount</Text>}
+            />}
+            {dqt.length >= 2 && !digits && !showParse && list.length > 0 && <Text style={s.hint}>Tap = add (your usual serving) · long-press = choose the amount</Text>}
           </>
         )}
       </View>
@@ -571,9 +677,9 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
 }
 
 // ─── Portion panel ────────────────────────────────────────────────────────────────────────────────
-function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDelete, confirmLabel = 'Log' }: {
+function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDelete, confirmLabel = 'Log', forChip }: {
   item: FoodItem | OffProduct; initial?: number; isFav: boolean; onFav: () => void; onCancel: () => void;
-  onConfirm: (g: number) => void; onDelete?: () => void; confirmLabel?: string;
+  onConfirm: (g: number) => void; onDelete?: () => void; confirmLabel?: string; forChip?: string;
 }) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
@@ -596,6 +702,7 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
         <TouchableOpacity onPress={() => { setFav(f => !f); onFav(); }} hitSlop={10}><Text style={{ fontSize: 24, color: fav ? c.accent : c.textFaint }}>{fav ? '★' : '☆'}</Text></TouchableOpacity>
       </View>
       {item.nameAlt && item.nameAlt !== item.name && <Text style={s.resultSub}>{item.nameAlt}</Text>}
+      {forChip && <Text style={s.warn}>For "{forChip}" from your typed meal — Cancel if this is something else.</Text>}
       {off?.rcn8 && <Text style={s.warn}>Store codes starting with 2 are reused across countries — check this is really your product.</Text>}
       {off?.incomplete && <Text style={s.warn}>Open Food Facts is missing some values for this product — check them against the pack, or enter the label.</Text>}
       {off?.implausible && <Text style={s.warn}>These values don't add up (energy vs carbs/protein/fat) — probably mis-entered on Open Food Facts. Check the pack, or enter the label.</Text>}
@@ -635,8 +742,10 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
   );
 }
 
-// ─── Parsed phrase review ─────────────────────────────────────────────────────────────────────────
-function ParsePanel({ items: items0, onCancel, onConfirm }: { items: ParsedItem[]; onCancel: () => void; onConfirm: (items: ParsedItem[]) => void }) {
+// ─── Typed meal → inline preview ──────────────────────────────────────────────────────────────────
+function ParsePanel({ items: items0, onConfirm, onAsOne }: {
+  items: ParsedItem[]; onConfirm: (items: ParsedItem[], missing: ParsedItem[]) => void; onAsOne: () => void;
+}) {
   const s = useThemedStyles(makeStyles);
   const [items, setItems] = useState(items0.map(it => ({ ...it, on: !!it.food, gTxt: String(it.grams) })));
   const upd = (i: number, patch: Partial<typeof items[number]>) => setItems(prev => prev.map((x, j) => (j === i ? { ...x, ...patch } : x)));
@@ -651,29 +760,42 @@ function ParsePanel({ items: items0, onCancel, onConfirm }: { items: ParsedItem[
   const okG = (g: number) => isFinite(g) && g > 0 && g < 5000;       // same bound as the portion panel
   const final = items.filter(x => x.on && x.food).map(x => ({ ...x, grams: gOf(x.gTxt) })).filter(x => okG(x.grams));
   const bad = items.some(x => x.on && x.food && !okG(gOf(x.gTxt)));
+  const missing = items.filter(x => !x.food);
   const kcal = final.reduce((a, x) => a + (scaleNutr(x.food!.per100, x.grams).kcal ?? 0), 0);
   return (
-    <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 40 }}>
-      <Text style={s.portionName}>Check the amounts</Text>
-      <Text style={s.hint}>Tap a food name to switch to the next match. Items marked ? had no amount — a typical serving is filled in.</Text>
-      {items.map((it, i) => (
-        <View key={i} style={[s.parseRow, !it.on && { opacity: 0.45 }]}>
-          <TouchableOpacity onPress={() => upd(i, { on: !it.on })} hitSlop={8}><Text style={s.check}>{it.on ? '☑' : '☐'}</Text></TouchableOpacity>
-          <TouchableOpacity style={{ flex: 1 }} onPress={() => cycle(i)}>
-            <Text style={s.resultTitle} numberOfLines={2}>{it.food ? it.food.name : `No match for "${it.query}"`}{!it.sure && it.food ? '  ?' : ''}</Text>
-            <Text style={s.resultSub} numberOfLines={1}>"{it.text}"{it.alternatives.length ? '  · tap for other matches' : ''}</Text>
-          </TouchableOpacity>
-          <TextInput style={[s.parseGrams, (!okG(gOf(it.gTxt)) || gOf(it.gTxt) > MAX_ITEM_GRAMS) && it.on && { borderColor: '#d97706' }]} value={it.gTxt} onChangeText={v => upd(i, { gTxt: v })} keyboardType="decimal-pad" selectTextOnFocus />
-          <Text style={s.gramsUnitSm}>g</Text>
-        </View>
-      ))}
-      <View style={s.btnRow}>
-        <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => { Keyboard.dismiss(); onCancel(); }}><Text style={s.btnGhostTxt}>Back</Text></TouchableOpacity>
-        <TouchableOpacity style={[s.btn, (!final.length || bad) && { opacity: 0.4 }]} disabled={!final.length || bad} onPress={() => { Keyboard.dismiss(); onConfirm(final); }}>
-          <Text style={s.btnTxt}>{bad ? 'Check the amounts' : `Log ${final.length} · ${r0(kcal)} kcal`}</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+    <View style={s.parseBox}>
+      <Text style={s.parseHead}>Recognised {items.filter(x => x.food).length} of {items.length} — check the amounts</Text>
+      <ScrollView style={{ maxHeight: 300 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" nestedScrollEnabled>
+        {items.map((it, i) => it.food ? (
+          <View key={i} style={[s.parseRow, !it.on && { opacity: 0.45 }]}>
+            <TouchableOpacity onPress={() => upd(i, { on: !it.on })} hitSlop={8}><Text style={s.check}>{it.on ? '☑' : '☐'}</Text></TouchableOpacity>
+            <TouchableOpacity style={{ flex: 1 }} onPress={() => cycle(i)}>
+              <Text style={s.resultTitle} numberOfLines={2}>{it.food.name}{!it.sure ? '  ?' : ''}</Text>
+              <Text style={s.resultSub} numberOfLines={1}>"{it.text}"{it.alternatives.length ? '  · tap = other match' : ''}</Text>
+            </TouchableOpacity>
+            <TextInput style={[s.parseGrams, (!okG(gOf(it.gTxt)) || gOf(it.gTxt) > MAX_ITEM_GRAMS) && it.on && { borderColor: '#d97706' }]} value={it.gTxt} onChangeText={v => upd(i, { gTxt: v })} keyboardType="decimal-pad" selectTextOnFocus />
+            <Text style={s.gramsUnitSm}>g</Text>
+          </View>
+        ) : (
+          <View key={i} style={s.parseRow}>
+            <Text style={[s.check, { color: '#d97706' }]}>?</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[s.resultTitle, { color: '#d97706' }]} numberOfLines={1}>No match for "{it.query}"</Text>
+              <Text style={s.resultSub}>Kept — you'll search it right after adding the rest</Text>
+            </View>
+          </View>
+        ))}
+      </ScrollView>
+      <TouchableOpacity style={[s.btn, { flex: 0, marginTop: 10 }, ((!final.length && !missing.length) || bad) && { opacity: 0.4 }]} disabled={(!final.length && !missing.length) || bad}
+        onPress={() => { Keyboard.dismiss(); onConfirm(final, missing); }}>
+        <Text style={s.btnTxt}>{bad ? 'Check the amounts'
+          : final.length ? `Add ${final.length} item${final.length === 1 ? '' : 's'} · ${r0(kcal)} kcal${missing.length ? ` — then find ${missing.length} more` : ''}`
+          : `Search the ${missing.length} part${missing.length === 1 ? '' : 's'} one by one`}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => { Keyboard.dismiss(); onAsOne(); }} hitSlop={8}>
+        <Text style={s.asOne}>It's one dish — search the whole text as one food</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -860,6 +982,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   ySub:      { color: c.textSub, fontSize: 12.5, marginTop: 2 },
   copyBtn:   { paddingVertical: 7, paddingHorizontal: 14, borderRadius: 10, backgroundColor: c.accent },
   copyTxt:   { color: c.onAccent, fontWeight: '800', fontSize: 13.5 },
+  testBtn:   { marginTop: 22, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: c.border, alignItems: 'center' },
+  testTxt:   { color: c.textSub, fontSize: 13, fontWeight: '600' },
   credit:    { color: c.textFaint, fontSize: 11, lineHeight: 15, marginTop: 24, textAlign: 'center' },
   creditSmall: { color: c.textFaint, fontSize: 11, lineHeight: 15, marginTop: 14 },
   toast:     { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.text, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14 },
@@ -888,6 +1012,20 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   badge:     { color: c.accent, fontSize: 11, fontWeight: '800' },
   onlineBtn: { paddingVertical: 14 },
   onlineTxt: { color: c.accent, fontSize: 14.5, fontWeight: '700' },
+  basket:    { backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: '#16a34a', padding: 10, marginBottom: 10 },
+  basketHead:{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 8 },
+  basketTitle: { color: c.text, fontSize: 14, fontWeight: '800', flex: 1 },
+  basketRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border },
+  basketName:{ color: c.text, fontSize: 13.5 },
+  basketMeta:{ color: c.textSub, fontSize: 12.5, fontVariant: ['tabular-nums'] },
+  basketX:   { color: c.textFaint, fontSize: 16, fontWeight: '700', paddingHorizontal: 4 },
+  parseBox:  { marginTop: 10, backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: c.accent, padding: 10, flexShrink: 1 },
+  asOne:     { color: c.accent, fontSize: 13, fontWeight: '600', textAlign: 'center', marginTop: 10 },
+  pendingBox:{ marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: c.surface, borderWidth: 1, borderColor: '#d97706' },
+  pendingHead: { color: '#d97706', fontSize: 13, fontWeight: '800', marginBottom: 6 },
+  pendingChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 16, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt },
+  pendingTxt:  { color: c.text, fontSize: 13.5, fontWeight: '600' },
+  parseHead: { color: c.text, fontSize: 14, fontWeight: '800', marginBottom: 2 },
   loggedBar: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.surface, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: c.border, marginBottom: 10 },
   loggedTxt: { color: c.text, fontSize: 14, fontWeight: '600', flex: 1 },
   portionName: { color: c.text, fontSize: 18, fontWeight: '800' },
