@@ -17,6 +17,8 @@ import {
 import { activeTripSummary } from './travelStore';
 import { computeAdherence } from './adherenceRead';
 import { adherenceForLLM } from './adherence';
+import { fuelPreferenceLine, getFuelLongMin } from './foodFuel';
+import { foodTotalsForExport } from './foodLog';
 
 export async function buildAppModelPrompt(): Promise<string> {
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -36,6 +38,14 @@ export async function buildAppModelPrompt(): Promise<string> {
       activeTripSummary(todayISO).catch(() => null),
       computeAdherence(todayISO).then(adherenceForLLM).catch(() => null),
     ]);
+  const [fuelLongMin, foodDays] = await Promise.all([
+    getFuelLongMin().catch(() => 90),
+    foodTotalsForExport(7).catch(() => []),
+  ]);
+  const full = foodDays.filter(d => d.complete);
+  const foodLine = full.length
+    ? `• FOOD LOG (athlete-entered, last 7 days, ${full.length} fully-logged day${full.length === 1 ? '' : 's'}): avg ${Math.round(full.reduce((a, d) => a + d.kcal, 0) / full.length)} kcal · C ${Math.round(full.reduce((a, d) => a + d.carb, 0) / full.length)} g · P ${Math.round(full.reduce((a, d) => a + d.prot, 0) / full.length)} g · F ${Math.round(full.reduce((a, d) => a + d.fat, 0) / full.length)} g. Advisory context only — nutrition never changes the training plan.`
+    : '';
 
   const basisTxt = capBasis === 'distance' ? 'work+drills DISTANCE (km)'
     : capBasis === 'trimp' ? 'prescribed Banister TRIMP' : 'time-on-feet MINUTES';
@@ -50,5 +60,7 @@ export async function buildAppModelPrompt(): Promise<string> {
     `• ATHLETE SETTINGS: ${planMode} mode · ${coachMode === 'coach' ? 'external-coach' : 'self-coached'} · ≤${maxRunDays} run days/wk · long run ${longMin} min · structure warm-up ${m(struct.warmupMeters)} / drills ${struct.drillsMinutes}min / cool-down ${m(struct.cooldownMeters)} · heat sensitivity ${heatSens} · periodization ${per.on ? `on (build ${per.buildWeeks}/deload ${per.deloadWeeks}wk, −${per.deloadDropPct}%${(per as any).restartAfterBreak !== false ? '; the cycle RESTARTS at Build 1 after time off — ≥7 days without running or ≥5 days sick/injured/on a break' : ''}${(per as any).restarts?.length ? `; last restart: back ${(per as any).restarts[(per as any).restarts.length - 1].from}` : ''})` : 'off'}.`,
     tripSummary ? `• TRAVEL (athlete's saved trips — plan around these): ${tripSummary}` : '',
     adherence ? `• ${adherence}` : '',
+    fuelPreferenceLine(fuelLongMin),
+    foodLine,
   ].filter(Boolean).join('\n');
 }

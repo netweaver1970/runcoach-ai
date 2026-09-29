@@ -29,7 +29,9 @@ import {
 } from '../src/services/foodLog';
 import { lookupBarcode, searchOff, rememberProduct, cachedProducts, validBarcode, OFF_CREDIT, OFF_URL, OffProduct } from '../src/services/foodOff';
 import { parseMeal, looksLikeMeal, ParsedItem, MAX_ITEM_GRAMS } from '../src/services/foodParse';
-import { loadSnapshotCache } from '../src/services/healthkit';
+import { loadSnapshotCache, fetchBodyMassHistory, peekDailyComponents } from '../src/services/healthkit';
+import { loadCachedPlan } from '../src/services/coach';
+import { fuelAdvice, getFuelLongMin, FuelAdvice } from '../src/services/foodFuel';
 import { trainingDayKey } from '../src/services/trainingLoad';
 
 const r0 = (v?: number) => Math.round(v ?? 0);
@@ -37,6 +39,7 @@ const r1 = (v?: number) => (v == null ? '–' : (Math.round(v * 10) / 10).toStri
 const hhmm = (iso: string) => iso.slice(11, 16);
 const prevDay = (d: string) => { const [y, m, dd] = d.split('-').map(Number); const x = new Date(y, m - 1, dd - 1); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const macroLine = (n: Nutr) => `C ${r0(n.carb)} · P ${r0(n.prot)} · F ${r0(n.fat)}`;
+const dateKeyCal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const idOf = (key: string) => key.slice(key.indexOf(':') + 1);
 const openUrl = (u: string) => { Linking.openURL(u).catch(() => {}); };
 const saveFailed = (e: unknown) => Alert.alert('Not saved', `The food log couldn't be written (${String((e as any)?.message ?? e)}). Nothing was changed.`);
@@ -65,6 +68,8 @@ export default function FoodMode() {
   const [yday, setYday] = useState<DayLog | null>(null);
   const [lib, setLib] = useState<FoodLibrary | null>(null);
   const [runs, setRuns] = useState<RunMark[]>([]);
+  const [fuel, setFuel] = useState<FuelAdvice | null>(null);
+  const [burn, setBurn] = useState<{ kcal: number; at: number } | null>(null);   // watch active + basal kcal (stored, not recomputed)
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<FoodEntry | null>(null);
   const [undo, setUndo] = useState<Undo>(null);
@@ -90,6 +95,33 @@ export default function FoodMode() {
     return () => { live = false; };
   }, [date]);
   useEffect(() => () => { if (undoTimer.current) clearTimeout(undoTimer.current); }, []);
+  // Between 00:00 and 04:00 the food day (4 am rule) is still YESTERDAY while the plan and energy stores are keyed
+  // by calendar date → don't show today-only readouts then (they'd describe the wrong day).
+  const calToday = dateKeyCal(new Date());
+  const sameDay = date === calToday;
+  // Fuel advice for today's planned session — only intervals / very long runs (the athlete runs fasted otherwise).
+  // Re-read on every focus: the plan can be regenerated (e.g. readiness turns green) while Food stays mounted.
+  const [focusTick, setFocusTick] = useState(0);
+  useFocusEffect(useCallback(() => { setFocusTick(t => t + 1); }, []));
+  useEffect(() => {
+    let live = true;
+    if (!isToday || !sameDay) { setFuel(null); return; }
+    (async () => {
+      const [plan, longMin, wts] = await Promise.all([
+        loadCachedPlan(date).catch(() => null), getFuelLongMin(), fetchBodyMassHistory(3).catch(() => [] as any[]),
+      ]);
+      const kg = (wts as { value: number }[]).filter(w => w.value > 0).slice(-1)[0]?.value;
+      if (live) setFuel(fuelAdvice(plan, kg, longMin));
+    })().catch(() => {});
+    return () => { live = false; };
+  }, [date, isToday, sameDay, focusTick]);
+  // Watch expenditure (active + basal) — a READ-ONLY peek at the daily-components store: opening Food must never
+  // kick off a HealthKit recompute (CPU-watchdog history). The main app scan keeps the store fresh.
+  useEffect(() => {
+    let live = true;
+    peekDailyComponents().then(dc => { const v = dc.days?.[date]?.totalEnergy; if (live) setBurn(v > 0 ? { kcal: v, at: dc.updatedAt } : null); }).catch(() => {});
+    return () => { live = false; };
+  }, [date, focusTick]);
 
   const showUndo = (u: Undo) => {
     if (undoTimer.current) clearTimeout(undoTimer.current);
@@ -172,6 +204,13 @@ export default function FoodMode() {
           </View>
           <Text style={s.macros}>Carbs {r0(totals?.carb)} g · Protein {r0(totals?.prot)} g · Fat {r0(totals?.fat)} g</Text>
           <Text style={s.sub}>💧 {r1((totals?.waterMl ?? 0) / 1000)} L drinks · Sodium {r1((totals?.na ?? 0) / 1000)} g · Fibre {r0(totals?.fib)} g</Text>
+          {burn != null && !(isToday && !sameDay) && (
+            isToday
+              ? <Text style={s.sub}>⌚ Watch energy so far: {r0(burn.kcal)} kcal (active + resting{burn.at > 0 ? `, as of ${new Date(burn.at).toTimeString().slice(0, 5)}` : ''})</Text>
+              : day?.complete
+                ? <Text style={s.sub}>⚖︎ Intake {r0(totals?.kcal)} − watch {r0(burn.kcal)} = <Text style={s.bold}>{(totals?.kcal ?? 0) - burn.kcal >= 0 ? '+' : ''}{r0((totals?.kcal ?? 0) - burn.kcal)} kcal</Text>  (watch energy is an estimate, ±15–20 %)</Text>
+                : <Text style={s.sub}>⌚ Watch energy {r0(burn.kcal)} kcal — mark the day fully logged to see the balance.</Text>
+          )}
           <View style={s.completeRow}>
             <Text style={s.completeTxt}>Day fully logged</Text>
             <Switch value={!!day?.complete} onValueChange={v => once(async () => { await setDayComplete(date, v); })}
@@ -179,6 +218,14 @@ export default function FoodMode() {
           </View>
           <Text style={s.hint}>Only fully-logged days will count toward energy balance.</Text>
         </View>
+
+        {fuel && fuel.kind !== 'none' && (
+          <View style={[s.card, s.fuelCard]}>
+            <Text style={s.fuelTitle}>⚡ {fuel.title}</Text>
+            {fuel.lines.map((l, i) => <Text key={i} style={s.fuelLine}>• {l}</Text>)}
+            <Text style={s.hint}>Shown only for intervals and very long runs — the rest you run fasted.</Text>
+          </View>
+        )}
 
         {suggestions.length > 0 && (
           <View style={{ marginTop: 14 }}>
@@ -785,6 +832,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   sub:       { color: c.textSub, fontSize: 13, marginTop: 4, fontVariant: ['tabular-nums'] },
   completeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
   completeTxt: { color: c.text, fontSize: 14, fontWeight: '600' },
+  bold:      { color: c.text, fontWeight: '800' },
+  fuelCard:  { marginTop: 14, borderColor: '#f59e0b' },
+  fuelTitle: { color: c.text, fontSize: 15, fontWeight: '800', marginBottom: 6 },
+  fuelLine:  { color: c.text, fontSize: 13.5, lineHeight: 19, marginTop: 3 },
   hint:      { color: c.textFaint, fontSize: 12, marginTop: 6, lineHeight: 16 },
   warn:      { color: '#d97706', fontSize: 12.5, marginTop: 6, lineHeight: 17, fontWeight: '600' },
   section:   { color: c.textSub, fontSize: 12.5, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 },

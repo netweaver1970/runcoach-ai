@@ -4935,6 +4935,12 @@ function dcDiag(line: string): void {
   })();
 }
 
+/** READ-ONLY peek at the stored daily components — never triggers a HealthKit recompute (cheap UI reads). */
+export async function peekDailyComponents(): Promise<{ days: Record<string, Record<string, number>>; updatedAt: number }> {
+  const s = await dcLoad();
+  return { days: s.days as Record<string, Record<string, number>>, updatedAt: s.updatedAt };
+}
+
 /** Cache-first per-day components: serve from the disk store, computing only a missing window or the recent
  *  days (once/day). Same signature + return shape as the raw compute, so every caller benefits unchanged. */
 export async function fetchOurDailyComponents(
