@@ -106,7 +106,11 @@ function correctTurnDirections(steps: RouteStep[], coords: number[][]): RouteSte
 // ORS often emits NO step at all (same-name continuation), leaving "straight on while the main track bends left"
 // unguided. ORS waytype (1 state road, 2 road, 3 street, 4 path, 5 track, 6 cycleway, 7 footway, 8 steps)
 // marks where the route moves onto a different kind of way — a fork/junction when no step is already there.
-const WT_NAME: Record<number, string> = { 1: 'road', 2: 'road', 3: 'street', 4: 'path', 5: 'track', 6: 'cycle path', 7: 'footpath', 8: 'steps' };
+// 7 = OSM footway — which is ALSO every sidewalk along a road, so "the footpath" confused next to a dual carriageway
+// with paths both sides (2026-09-29). Say "path".
+const WT_NAME: Record<number, string> = { 1: 'road', 2: 'road', 3: 'street', 4: 'path', 5: 'track', 6: 'cycle path', 7: 'path', 8: 'steps' };
+/** A road crossing is ~8–20 m of walking between the two turns; a longer offset is a real double turn. */
+const CROSSING_MAX_M = 22;
 const ROADISH = new Set([1, 2, 3]);
 const SIDE_TYPES = new Set([0, 1, 2, 3, 4, 5, 12, 13]);   // maneuvers that carry a left/right
 export function cumDist(coords: number[][]): number[] {
@@ -163,10 +167,15 @@ export function mergeCloseTurns(steps: RouteStep[], coords: number[][]): RouteSt
     // Both decisions in one utterance: "Turn right, then keep left onto Bospad".
     const compound = () => `${a.text.replace(/\s+onto\s.+$/i, '')}, then ${b.text.charAt(0).toLowerCase()}${b.text.slice(1)}`;
     let text: string, type: number;
-    if (aSide && bSide && aSide !== bSide && Math.abs(net) < 35 && !bKeep) {   // off one way, straight onto the next
+    const gap = Math.abs(cum[b.i] - cum[a.i]);
+    if (aSide && bSide && aSide !== bSide && Math.abs(net) < 35 && !bKeep && gap <= CROSSING_MAX_M) {   // across and straight on
       const road = a.wt == null || ROADISH.has(a.wt);           // what you walk along between the two turns
       text = road ? `Cross the road slightly to the ${aSide}` : `Jog ${aSide}, then continue straight`;
       type = 6;
+    } else if (aSide && bSide && aSide !== bSide && Math.abs(net) < 35 && !bKeep) {
+      // 20–40 m apart: NOT a crossing ("40 m to the right, then left") — say both turns and the distance between
+      text = `Turn ${aSide}, then ${bSide} after ${Math.max(25, Math.round(gap / 5) * 5)} metres`;
+      type = a.type;
     } else if (bKeep || (aSide && bSide && aSide !== bSide)) { // a fork, or opposite sides + a real change: say both
       text = compound(); type = b.type;
     } else if (Math.abs(net) >= 35) {                           // same side (or one unsided): ONE net turn
@@ -177,7 +186,14 @@ export function mergeCloseTurns(steps: RouteStep[], coords: number[][]): RouteSt
     out.push({ ...a, text, type, dist: a.dist + b.dist, wt: b.wt });
     k++;                                                        // b is folded into a
   }
-  return out;
+  // A synthetic "Continue straight onto the path" right after another cue (e.g. a crossing that lands on the
+  // sidewalk) is noise — spoken back-to-back it read as "cross the road onto the footpath". Keep synthetic
+  // STRAIGHT cues only when nothing was said in the previous 60 m.
+  return out.filter((st, k) => {
+    if (!st.syn || st.type !== 6 || !/^Continue straight/i.test(st.text) || k === 0) return true;
+    const prev = out[k - 1];
+    return Math.abs(cum[Math.min(st.i, cum.length - 1)] - cum[Math.min(prev.i, cum.length - 1)]) > 60;
+  });
 }
 
 // Metres from point p to segment a→b (local equirectangular — fine at these few-hundred-metre scales).

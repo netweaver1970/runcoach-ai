@@ -62,6 +62,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var segLog: [[String: Any]] = []    // executed phases {label,kind,zone,startSec,endSec} → sent to the phone on end
                                               // so it can reconstruct the structure even if HK activities don't read back
   private var segStartElapsed: TimeInterval = 0
+  // `elapsed` is ACTIVE time (wall − paused), so a pause really pauses the step timer. The phone's executed-structure
+  // log wants WALL-clock offsets from the start (it cuts HealthKit samples at start + sec), so segLog keeps those.
+  private var pausedTotal: TimeInterval = 0
+  private var segStartWall: TimeInterval = 0
+  private var wallElapsed: TimeInterval { startDate.map { Date().timeIntervalSince($0) } ?? 0 }
   private var segStartDist: Double = 0
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
@@ -304,8 +309,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
       let bat0 = dev.batteryLevel
       DispatchQueue.main.async {
-        self.running = true; self.paused = false; self.elapsed = 0
-        self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartDist = 0
+        self.running = true; self.paused = false; self.elapsed = 0; self.pausedTotal = 0; self.pausedSince = nil
+        self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartWall = 0; self.segStartDist = 0
         self.lastMoveAt = Date(); self.autoPaused = false
         self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
         self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
@@ -346,7 +351,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard let s = session, let b = builder else { return }
     if segIndex < segs.count {   // log the final in-progress phase (run stopped before it completed)
       let seg = segs[segIndex]
-      segLog.append(["label": seg.label, "kind": seg.kind, "zone": seg.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
+      segLog.append(["label": seg.label, "kind": seg.kind, "zone": seg.zone ?? "", "startSec": segStartWall, "endSec": wallElapsed])
     }
     let pn = pauseSummary(); DispatchQueue.main.async { self.pauseNote = pn }
     sendExecStructure()   // forward the executed phase boundaries so the phone can reconstruct the structure
@@ -418,7 +423,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard !segLog.isEmpty, let sd = startDate else { return }
     let s = WCSession.default
     guard s.activationState == .activated else { return }
-    s.transferUserInfo(["execStart": sd.timeIntervalSince1970 * 1000, "execDur": elapsed, "execSegs": segLog,
+    s.transferUserInfo(["execStart": sd.timeIntervalSince1970 * 1000, "execDur": Date().timeIntervalSince(sd), "execSegs": segLog,
                         "execPauses": pauseLog])
   }
 
@@ -428,7 +433,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       guard let self, let sd = self.startDate else { return }
       if self.paused { self.remindIfPaused(); return }
       DispatchQueue.main.async {
-        self.elapsed = Date().timeIntervalSince(sd); self.updatePace(); self.updateSectionStats()
+        self.elapsed = max(0, Date().timeIntervalSince(sd) - self.pausedTotal); self.updatePace(); self.updateSectionStats()
         self.paceSamples.append((self.elapsed, self.distanceM))                       // rolling-pace window for treadmill cues
         self.paceSamples.removeAll { self.elapsed - $0.t > 22 }                       // keep ~last 22 s
         self.tickSegments()
@@ -468,6 +473,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       WKInterfaceDevice.current().play(.stop)
       SpeechCue.shared.say("Run paused")          // bypasses mute: recording has stopped
     } else {
+      if let ps = pausedSince { pausedTotal += max(0, date.timeIntervalSince(ps)) }   // the pause no longer counts as run time
       pausedSince = nil
       WKInterfaceDevice.current().play(.start)
       speak("Resumed")
@@ -610,7 +616,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private func advanceSegment() {
     if segIndex < segs.count {   // log the ACTUAL span of the phase that just finished → phone rebuilds the bands
       let s = segs[segIndex]
-      segLog.append(["label": s.label, "kind": s.kind, "zone": s.zone ?? "", "startSec": segStartElapsed, "endSec": elapsed])
+      segLog.append(["label": s.label, "kind": s.kind, "zone": s.zone ?? "", "startSec": segStartWall, "endSec": wallElapsed])
       // A work rep just finished → remember its average pace so the NEXT work rep can show a faster/slower arrow.
       if s.kind == "work" {
         let t = elapsed - segStartElapsed, d = distanceM - segStartDist
@@ -621,7 +627,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       }
     }
     segIndex += 1
-    segStartElapsed = elapsed; segStartDist = distanceM
+    segStartElapsed = elapsed; segStartWall = wallElapsed; segStartDist = distanceM
     segDistM = 0; segPaceStr = "--:--"; paceTrend = 0; recomputeWorkIndex()   // reset section stats for the new phase
     targetState = 0; outSince = nil; lastTargetCue = nil; paceOutSince = nil; lastPaceCue = nil; cueSpoken = []   // reset per-segment trackers
     if segIndex >= segs.count {
