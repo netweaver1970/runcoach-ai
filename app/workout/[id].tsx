@@ -702,7 +702,8 @@ export default function WorkoutDetailScreen() {
       // an extremely slow one is Drills/strides. Warmup/Cooldown (already labelled) are left alone.
       const durOf = (a: any) => a.netDurationSec > 0 ? a.netDurationSec : (a.endMs - a.startMs) / 1000;
       const paceOf = (a: any) => a.distanceM > 30 && durOf(a) > 0 ? durOf(a) / (a.distanceM / 1000) : 0;
-      const workSegs = d.activities.filter((a: any) => /^(work|rep)/i.test(a.label) && paceOf(a) > 0);
+      // phases rebuilt from our watch's own executed structure carry AUTHORITATIVE labels — never re-guess them by speed
+      const workSegs = d.activities.some((a: any) => a.fromExec) ? [] : d.activities.filter((a: any) => /^(work|rep)/i.test(a.label) && paceOf(a) > 0);
       if (workSegs.length >= 2) {
         const paces = workSegs.map(paceOf).sort((x, y) => x - y);
         const fast = paces.slice(0, Math.max(1, Math.ceil(paces.length / 2)));      // the true HARD reps

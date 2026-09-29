@@ -1162,6 +1162,23 @@ async function fetchStepSegs(w: any): Promise<{ t: number; tEnd: number; steps: 
 // oldest first — a 54-min run lost its whole second half: cool-down 0 m, 2026-09-28), distance from the WATCH only
 // when it has any (the iPhone in a pocket logs its own distance for the same minutes → double counting), and each
 // distance sample keeps its END so it can be split across a phase boundary instead of credited to its start.
+/**
+ * Distance from ONE source: the workout's own (its builder) if present, else Watch-only, else all. Several sources
+ * (the workout builder, the watch pedometer, the iPhone in a pocket) log the SAME minutes → summing them doubles
+ * phase distances, and their interleaved, out-of-order end times broke the per-km splits (km 3/4 vanished,
+ * 2026-09-29). Sorted by end time so a cumulative sum is monotonic.
+ */
+export function oneDistanceSource(dist: any[], workout: any): any[] {
+  const bundle = (x: any) => String(x?.sourceRevision?.source?.bundleIdentifier ?? '');
+  const own = workout ? bundle(workout) : '';
+  const ownDist = own ? dist.filter(x => bundle(x) === own) : [];
+  const isWatch = (x: any) => String(x?.sourceRevision?.productType ?? '').startsWith('Watch');
+  const pick = ownDist.length ? ownDist : dist.filter(isWatch).length ? dist.filter(isWatch) : dist;
+  // parse each end time ONCE (a comparator that parses Dates is ~n·log n parses — noticeable on Hermes at 20k)
+  return pick.map(x => ({ x, t: new Date(toISOStr(x.endDate ?? x.startDate)).getTime() }))
+    .sort((a, b) => a.t - b.t).map(o => o.x);
+}
+
 async function fetchPhaseSamples(w: any): Promise<{
   hr: { t: number; v: number }[]; dist: { t: number; tEnd: number; m: number }[]; power: { t: number; v: number }[];
 }> {
@@ -1175,16 +1192,9 @@ async function fetchPhaseSamples(w: any): Promise<{
     q('HKQuantityTypeIdentifierRunningPower', 'W'),
   ]);
   const ms = (x: any) => new Date(toISOStr(x)).getTime();
-  // Distance from ONE source: the workout's own (its builder) if present, else Watch-only, else all. Two Watch
-  // sources (the watch pedometer + the workout builder) can both log the same minutes → doubled phase distances.
-  const bundle = (x: any) => String(x?.sourceRevision?.source?.bundleIdentifier ?? '');
-  const own = bundle(w);
-  const ownDist = own ? (dist as any[]).filter(x => bundle(x) === own) : [];
-  const isWatch = (x: any) => String(x?.sourceRevision?.productType ?? '').startsWith('Watch');
-  const watchDist = ownDist.length ? ownDist : (dist as any[]).filter(isWatch);
   return {
     hr:    (hr as any[]).map(x => ({ t: ms(x.startDate), v: x.quantity as number })),
-    dist:  (watchDist.length ? watchDist : dist as any[]).map(x => ({ t: ms(x.startDate), tEnd: ms(x.endDate ?? x.startDate), m: x.quantity as number })),
+    dist:  oneDistanceSource(dist as any[], w).map(x => ({ t: ms(x.startDate), tEnd: ms(x.endDate ?? x.startDate), m: x.quantity as number })),
     power: (power as any[]).map(x => ({ t: ms(x.startDate), v: x.quantity as number })),
   };
 }
@@ -1202,8 +1212,11 @@ async function execSegmentsFor(w: any): Promise<WorkoutSegment[] | null> {
   if (!exec || exec.segs.length < 2) return null;
   const pauses = pauseIntervalsAbs(w);
   // Stored stats from an older computation (EXEC_STATS_V) are recomputed once.
+  const runM = (w.totalDistance?.quantity as number) ?? 0;
   let stats = exec.stats && exec.stats.length === exec.segs.length && exec.statsV === EXEC_STATS_V
-    && exec.stats.every(x => typeof x.c === 'number') ? exec.stats : null;
+    && exec.stats.every(x => typeof x.c === 'number')
+    && !(runM > 300 && exec.stats.every(x => !x.d) && Date.now() - (exec.start + exec.dur * 1000) < 24 * 3_600_000)
+    ? exec.stats : null;   // an all-0 m result within a day of the run = distance not synced yet → recompute
   if (!stats) {
     const data = takePhaseFetchBudget() ? await serialFetch(() => fetchPhaseSamples(w)).catch(() => null) : null;
     // safeQuery never throws — an EMPTY result (locked-phone background scan, samples not synced yet) must not become
@@ -1250,7 +1263,11 @@ async function execSegmentsFor(w: any): Promise<WorkoutSegment[] | null> {
       const totalM = (w.totalDistance?.quantity as number) ?? 0;
       const sumM = stats.reduce((a, x) => a + x.d, 0);
       if (totalM > 0 && sumM > 1.1 * totalM) stats = stats.map(x => ({ ...x, d: Math.round(x.d * totalM / sumM) }));
-      if (Date.now() - (exec.start + exec.dur * 1000) > EXEC_STATS_SETTLE_MS && stats.some(x => x.hr > 0 || x.d > 0)) {
+      // Never persist 0 m for every phase of a run that HAS distance: its distance samples simply weren't synced yet
+      // (HR streams in during the run, distance can land later) — recompute on a later scan instead.
+      const recent = Date.now() - (exec.start + exec.dur * 1000) < 24 * 3_600_000;   // after a day: accept + persist
+      const noDistYet = recent && totalM > 300 && stats.every(x => x.d === 0);
+      if (!noDistYet && Date.now() - (exec.start + exec.dur * 1000) > EXEC_STATS_SETTLE_MS && stats.some(x => x.hr > 0 || x.d > 0)) {
         void saveExecStats(exec.start, stats);   // never persist a run's stats as all zeros
       }
     }
@@ -2381,6 +2398,7 @@ export interface WorkoutActivity {
   avgPower:     number;   // watts (0 if no power meter)
   cadenceSPM:   number;   // steps/min (0 if unavailable)
   stepActType:  number;   // workoutConfiguration.activityType for THIS step (may differ from parent)
+  fromExec?:    boolean;  // rebuilt from our watch's executed structure — its labels are authoritative
 }
 
 export interface WorkoutDetailData {
@@ -2583,8 +2601,11 @@ function computeKmSplitsDetail(
   maxDistM:     number,
   activities:   WorkoutActivity[],
   lapTimesMs:   number[],  // ms rel. to start; one entry per completed km
+  elapsedEndMs?: number,   // workout END (start→end, incl. pauses) — the sample cutoff; durationSec is NET
 ): KmSplit[] {
-  const workoutEndMs = durationSec * 1000;
+  // Cut samples off at the ELAPSED end: with durationSec (net) every sample after a pause was dropped → a paused
+  // run lost its later km entirely.
+  const workoutEndMs = Math.max(durationSec * 1000, elapsedEndMs ?? 0);
 
   // ── Activity timeline (for cadence fallback only) ──────────────────────────
   interface ActSeg { startMs: number; endMs: number; startDistM: number; endDistM: number; cadenceSPM: number; }
@@ -2609,7 +2630,10 @@ function computeKmSplitsDetail(
 
   // ── GPS cumulative (speed-filtered) — used for pace ratio & lap fallback ──
   const MAX_SPEED_MS = 12;   // m/s — faster = GPS catch-up batch
-  const cum: { t: number; cumM: number }[] = [];
+  // Cumulative distance over ONE source (caller passes oneDistanceSource → sorted by end time), keeping each
+  // sample's span so a km boundary can be INTERPOLATED inside the sample that crosses it. Taking the sample's end
+  // time instead let two boundaries land on the same (or an earlier) instant → those km were skipped.
+  const cum: { tS: number; t: number; m: number; cumM: number }[] = [];
   {
     let accM = 0;
     for (const s of distRaw) {
@@ -2620,10 +2644,25 @@ function computeKmSplitsDetail(
       if (m <= 0) continue;
       const durMs = tE - tS;
       if (durMs > 0 && m / (durMs / 1000) > MAX_SPEED_MS) continue;
+      if (durMs <= 0 && m > 50) continue;            // a zero-length catch-up batch: no speed to check, no time to place it
       accM += m;
-      cum.push({ t: tE, cumM: accM });
+      cum.push({ tS: Math.max(tS, cum.length ? cum[cum.length - 1].t : tS), t: tE, m, cumM: accM });
     }
   }
+  // One source can total slightly LESS than the workout's own total distance (sparser pedometer, speed filter) → the
+  // last km would never be reached and got dropped. Within 15 %, scale the km targets to this source's total.
+  const cumTotal = cum.length ? cum[cum.length - 1].cumM : 0;
+  const distScale = !useLaps && maxDistM > 100 && cumTotal > 0.85 * maxDistM && cumTotal < maxDistM ? cumTotal / maxDistM : 1;
+  /** Time (ms from start) when the cumulative distance reaches `target` m, interpolated within the sample. */
+  const crossAt = (target: number): number | null => {
+    for (const c of cum) {
+      if (c.cumM < target) continue;
+      const before = c.cumM - c.m;
+      const frac = c.m > 0 ? Math.min(1, Math.max(0, (target - before) / c.m)) : 1;
+      return c.tS + frac * Math.max(0, c.t - c.tS);
+    }
+    return null;
+  };
 
   if (nKm === 0) return [];
   if (!useLaps && cum.length === 0) return [];
@@ -2690,14 +2729,14 @@ function computeKmSplitsDetail(
       startT = kmN === 1 ? 0 : lapTimesMs[kmN - 2];
       endT   = lapTimesMs[kmN - 1];
     } else {
-      // GPS fallback
-      const ei = cum.findIndex(c => c.cumM >= kmN * 1000);
-      if (ei < 0) break;
+      // GPS fallback — interpolated km crossing (monotonic, so every km gets its own window)
+      const ct = crossAt(kmN * 1000 * distScale);
+      if (ct == null) break;
       startT = prevT;
-      endT   = cum[ei].t;
+      endT   = ct;
     }
 
-    if (endT <= startT) { prevT = endT; continue; }
+    if (endT <= startT) { if (useLaps) { prevT = endT; continue; } endT = startT + 1000; }   // never drop a km
 
     const wallSec = Math.max(1, (endT - startT) / 1000);
     // Net running time: subtract any pause intervals that fall within this km window
@@ -2734,7 +2773,7 @@ function computeKmSplitsDetail(
     // with easy HR/power). Fall back to gpsMtrs only when the total isn't known.
     const remainderM = (kmN === nKm && maxDistM > 100) ? maxDistM - (nKm - 1) * 1000 : 0;
     const partialKmM = (remainderM > 10 && remainderM < 1000) ? remainderM
-                     : (gpsMtrs > 10 && gpsMtrs < 950)       ? gpsMtrs
+                     : (kmN === nKm && gpsMtrs > 10 && gpsMtrs < 950) ? gpsMtrs   // only the LAST km can be partial
                      : 0;
     const paceSecs = partialKmM > 0
       ? Math.round(netSec / (partialKmM / 1000))
@@ -3228,6 +3267,8 @@ export async function fetchWorkoutDetail(
   // the executed boundaries the watch forwarded at run end (matched to this workout by start time) → the phases
   // show as bands with real per-phase HR/power. Only fires when there's essentially no HK structure AND the
   // watch actually sent boundaries for this run, so plain (unstructured) runs are untouched.
+  // ONE distance source (the workout's own), sorted by end time — shared by the phase distances and the km splits
+  const distOne = oneDistanceSource(distRaw as any[], workout);
   if (activities.length <= 1) {
     const exec = await getExecStructure(startMs).catch(() => null);
     if (exec && exec.segs.length >= 2) {
@@ -3239,12 +3280,27 @@ export async function fetchWorkoutDetail(
         kind === 'warmup' ? 'Warmup' : kind === 'recovery' ? 'Recovery' : kind === 'cooldown' ? 'Cooldown'
         : kind === 'drills' ? 'Drills' : kind === 'work' ? 'Work' : (fallback || 'Work');
       const rebuilt: WorkoutActivity[] = [];
+      // the watch's exec.start can differ from the HK workout start by up to the match tolerance → align to HK time
+      const off = exec.start - startMs;
       for (const seg of exec.segs) {
-        const sMs = Math.round(seg.startSec * 1000), eMs = Math.round(seg.endSec * 1000);
+        const sMs = Math.round(seg.startSec * 1000 + off), eMs = Math.round(seg.endSec * 1000 + off);
         if (eMs - sMs < 3_000) continue;
+        // Distance: each (single-source) sample's metres prorated by its overlap with the phase. Duration: NET of
+        // pauses (the phase table used to show clock time and a hard-coded 0 m → no pace for any phase).
+        let dm = 0;
+        for (const x of distOne) {
+          const t0 = new Date(toISOStr(x.startDate)).getTime() - startMs, t1 = new Date(toISOStr(x.endDate ?? x.startDate)).getTime() - startMs;
+          const m = x.quantity as number;
+          if (!(m > 0)) continue;
+          if (t1 <= t0) { if (t0 >= sMs && t0 < eMs) dm += m; continue; }
+          const ov = Math.min(eMs, t1) - Math.max(sMs, t0);
+          if (ov > 0) dm += m * (ov / (t1 - t0));
+        }
+        const pausedMs = pauseIntervs.reduce((a, p) => a + Math.max(0, Math.min(p.e, eMs) - Math.max(p.s, sMs)), 0);
         rebuilt.push({
+          fromExec: true,
           startMs: sMs, endMs: eMs, activityType: 37, label: labelOf(seg.kind, seg.label),
-          netDurationSec: Math.round((eMs - sMs) / 1000), distanceM: 0,
+          netDurationSec: Math.round(Math.max(0, eMs - sMs - pausedMs) / 1000), distanceM: Math.round(dm),
           avgHR: avgIn(hr, sMs, eMs), avgPower: avgIn(power, sMs, eMs), cadenceSPM: 0, stepActType: 37,
         });
       }
@@ -3255,8 +3311,8 @@ export async function fetchWorkoutDetail(
   // Pass the DENSE (series-expanded) hr/power so per-km + segment averages aren't blank on
   // older runs — the sparse discrete hrRaw2 left most km's with no HR sample ("—").
   const kmSplits = computeKmSplitsDetail(
-    distRaw as any[], hr, power, cadenceRaw2, stepSegs,
-    startMs, durationSec, pauseIntervs, workoutDistM, activities, lapTimesMs,
+    distOne, hr, power, cadenceRaw2, stepSegs,
+    startMs, durationSec, pauseIntervs, workoutDistM, activities, lapTimesMs, workoutEndMs,
   );
 
   // ── Clean stationary periods from pace & power (keep HR) ───────────────────
