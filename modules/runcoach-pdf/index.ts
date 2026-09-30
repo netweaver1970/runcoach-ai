@@ -19,3 +19,16 @@ export async function detectBarcodes(uri: string): Promise<string[] | null> {
     return await mod.detectBarcodes(uri);
   } catch { return null; }
 }
+
+/**
+ * LIVE barcode scanner (VisionKit DataScannerViewController): point → resolves with the digits.
+ * null = cancelled · 'unsupported' / 'unavailable' = can't run here (fall back to the photo path or typed digits)
+ * · undefined = the installed app build doesn't have it yet (an OTA ahead of the native build).
+ */
+export async function scanBarcodeLive(): Promise<string | null | 'unsupported' | 'unavailable' | undefined> {
+  try {
+    const mod = requireNativeModule('RunCoachPdf');
+    if (typeof mod.scanBarcodeLive !== 'function') return undefined;
+    return await mod.scanBarcodeLive();
+  } catch { return undefined; }
+}

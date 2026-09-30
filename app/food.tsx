@@ -22,7 +22,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
 import { PhotoTest } from '../src/components/PhotoTest';
 import * as ImagePicker from 'expo-image-picker';
-import { detectBarcodes } from '../modules/runcoach-pdf';
+import { detectBarcodes, scanBarcodeLive } from '../modules/runcoach-pdf';
 import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT } from '../src/services/foodDb';
 import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
@@ -422,7 +422,10 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
   const pick = (item: FoodItem, longPress = false) => guard(async () => {
     const rec = recentOf(item.key);
     const typed = chipGrams();                          // "200 g quinoa" typed in the meal → keep the 200 g
-    if (!longPress && !typed && rec?.grams) { await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId })]); return; }
+    if (!longPress && !typed && rec?.grams) {
+      if (item.src === 'off') await rememberProduct(item as OffProduct).catch(() => undefined);
+      await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId })]); return;
+    }
     Keyboard.dismiss();
     setMode({ m: 'portion', item, grams: typed ?? rec?.grams });
   });
@@ -492,6 +495,14 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
   };
   const scanInner = async () => {
     Keyboard.dismiss();
+    // 1) the LIVE scanner (point → reads instantly); 2) if this phone/build can't run it, a photo of the barcode
+    const live = await scanBarcodeLive();
+    if (live === null) return;                                    // cancelled
+    if (typeof live === 'string' && live !== 'unsupported' && live !== 'unavailable') {
+      const code = live.replace(/\D/g, '');
+      if (/^\d{8,14}$/.test(code)) { setQ(code); setDq(code); await lookup(code); return; }
+    }
+    if (live === 'unavailable') { Alert.alert('Camera not available', 'Check that RunCoach may use the camera (iOS Settings › RunCoach) and no other app is using it — or type the digits under the barcode.'); return; }
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) { Alert.alert('Camera not allowed', 'Allow camera access for RunCoach in iOS Settings, or type the digits under the barcode.'); return; }
     const r = await ImagePicker.launchCameraAsync({ quality: 0.6, allowsEditing: false });
@@ -511,6 +522,24 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     await lookup(code);
   };
 
+  // Branded products INLINE in the result list (like the big apps): fetched on the keyboard's Search key or the
+  // footer tap — never per keystroke (Open Food Facts forbids search-as-you-type).
+  const [offRes, setOffRes] = useState<{ q: string; items: OffProduct[]; loading: boolean; err?: string } | null>(null);
+  const offTok = useRef(0);
+  const fetchProducts = async (query: string) => {
+    const qq = query.trim();
+    if (qq.length < 3 || /^\d+$/.test(qq)) return;
+    if (offRes?.q === qq && (offRes.loading || !offRes.err)) return;   // same query again → no new requests (rate limit)
+    const tok = ++offTok.current;
+    setOffRes({ q: qq, items: [], loading: true });
+    try {
+      const items = await searchOff(qq);
+      if (tok === offTok.current) setOffRes({ q: qq, items, loading: false });
+    } catch (e: any) {
+      if (tok === offTok.current) setOffRes({ q: qq, items: [], loading: false, err: e?.message ?? String(e) });
+    }
+  };
+
   const goOnline = async () => {
     Keyboard.dismiss();
     const query = qt;
@@ -522,7 +551,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     if (tok === onlineTok.current) setMode(prev => (prev.m === 'online' && prev.query === query ? next : prev));
   };
 
-  type Li = { key: string; title: string; sub: string; badge?: string; onPress: () => void; onLong?: () => void; star?: boolean };
+  type Li = { key: string; title: string; sub: string; badge?: string; onPress: () => void; onLong?: () => void; star?: boolean; header?: boolean };
   const list: Li[] = useMemo(() => {
     const favs = new Set(lib.favs);
     const foodRow = (f: FoodItem, badge?: string): Li => ({
@@ -532,7 +561,13 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     });
     if (dqt.length >= 2 && !digits) {
       const seen = new Set(mine.map(f => f.key));
-      return [...mine.map(f => foodRow(f, f.src === 'custom' ? 'mine' : 'product')), ...search.items.filter(f => !seen.has(f.key)).map(f => foodRow(f))];
+      const local = [...mine.map(f => foodRow(f, f.src === 'custom' ? 'mine' : 'product')), ...search.items.filter(f => !seen.has(f.key)).map(f => foodRow(f))];
+      local.forEach(r => seen.add(r.key));
+      const prods = offRes && offRes.q === dqt ? offRes.items.filter(p => !seen.has(p.key)).map(p => foodRow(p, 'product')) : [];
+      const head: Li[] = offRes && offRes.q === dqt
+        ? [{ key: '__prod', title: offRes.loading ? 'Searching products…' : prods.length ? 'Products (Open Food Facts)' : offRes.err ? `Product search failed — ${offRes.err}` : 'No branded products found — try fewer words, or ✏️ Add your own', sub: '', onPress: () => {}, header: true }]
+        : [];
+      return [...local, ...head, ...prods];
     }
     if (digits) return [];
     if (tab === 'meals') return lib.meals.map(m => ({
@@ -550,7 +585,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
       onPress: () => pickRecent(r), onLong: () => pickRecent(r, true),
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dqt, digits, search, mine, tab, lib]);
+  }, [dqt, digits, search, mine, tab, lib, offRes]);
 
   // wait for a save that is still running, so the day view reloads with the last item in it
   const close = async () => { Keyboard.dismiss(); try { await inflight.current; } catch { /* reported already */ } onClose(); };
@@ -617,14 +652,19 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             onPick={p => { setMode({ m: 'portion', item: p, grams: chipGrams() ?? recentOf(p.key)?.grams }); }} />
         ) : (
           <>
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'stretch' }}>
             <TextInput
-              style={s.search} value={q} onChangeText={setQ}
-              placeholder={added.length ? 'Add another item…' : 'banaan · 2 eieren, toast met boter · 5410…'}
+              style={[s.search, { flex: 1 }]} value={q} onChangeText={setQ}
+              placeholder={added.length ? 'Add another item…' : 'Search food or product…'}
               placeholderTextColor={c.textFaint} autoFocus autoCorrect={false} returnKeyType="search" clearButtonMode="while-editing"
+              onSubmitEditing={() => { if (digits) lookup(qt); else if (!phrase) fetchProducts(qt); }}
             />
+            <TouchableOpacity style={s.scanBtn} onPress={() => { scan().catch(e => { setLookingUp(false); Alert.alert('Scan failed', String(e?.message ?? e)); }); }}>
+              <Text style={s.scanIcon}>▥</Text><Text style={s.scanTxt}>Scan</Text>
+            </TouchableOpacity>
+            </View>
             <View style={s.actions}>
               <TouchableOpacity style={s.action} onPress={() => { Keyboard.dismiss(); setMode({ m: 'quick', name: digits ? undefined : qt || undefined }); }}><Text style={s.actionTxt}>✏️ Add your own</Text></TouchableOpacity>
-              <TouchableOpacity style={s.action} onPress={() => { scan().catch(e => { setLookingUp(false); Alert.alert('Scan failed', String(e?.message ?? e)); }); }}><Text style={s.actionTxt}>▥ Scan barcode</Text></TouchableOpacity>
               {[250, 500].map(ml => (
                 <TouchableOpacity key={ml} style={s.action} onPress={() => guard(async () => {
                   const w = await addWater(date, ml);
@@ -694,14 +734,17 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             )}
             {!showParse && <FlatList
               data={list} keyExtractor={it => it.key} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
-              ListEmptyComponent={digits ? null : <Text style={s.empty}>{qt.length >= 2 ? 'No match in the food table. Try another word, search online, or use Quick add / Label.' : tab === 'meals' ? 'No saved meals yet — open a logged meal (⋯) and choose "Save as meal".' : tab === 'fav' ? 'No favourites yet — ★ a food in its portion view.' : 'Foods you log appear here, with the serving you used.'}</Text>}
+              ListEmptyComponent={digits ? null : <Text style={s.empty}>{qt.length >= 2 ? 'No match in the food table. Press Search for branded products, or ✏️ Add your own.' : tab === 'meals' ? 'No saved meals yet — open a logged meal (⋯) and choose "Save as meal".' : tab === 'fav' ? 'No favourites yet — ★ a food in its portion view.' : 'Foods you log appear here, with the serving you used.'}</Text>}
               ListFooterComponent={qt.length >= 3 && !digits ? (
-                <TouchableOpacity style={s.onlineBtn} onPress={goOnline}>
-                  <Text style={s.onlineTxt}>🌐 Search online (Open Food Facts) for "{qt}"</Text>
-                  <Text style={s.resultSub}>Branded products · sends only these words</Text>
-                </TouchableOpacity>
+                offRes && offRes.q === dqt ? null : (
+                <TouchableOpacity style={s.onlineBtn} onPress={() => { Keyboard.dismiss(); fetchProducts(qt); }}>
+                  <Text style={s.onlineTxt}>🔎 Show branded products for "{qt}"</Text>
+                  <Text style={s.resultSub}>Open Food Facts · or press Search on the keyboard · sends only these words</Text>
+                </TouchableOpacity>)
               ) : null}
-              renderItem={({ item }) => (
+              renderItem={({ item }) => item.header ? (
+                <Text style={s.prodHead}>{item.title}</Text>
+              ) : (
                 <TouchableOpacity style={s.result} onPress={item.onPress} onLongPress={item.onLong}>
                   <Text style={s.resultTitle} numberOfLines={2}>{item.star ? '★ ' : ''}{item.badge ? <Text style={s.badge}>{item.badge === 'mine' ? 'MINE  ' : 'PRODUCT  '}</Text> : null}{item.title}</Text>
                   <Text style={s.resultSub} numberOfLines={1}>{item.sub}</Text>
@@ -1107,6 +1150,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   resultTitle: { color: c.text, fontSize: 15, fontWeight: '600' },
   resultSub: { color: c.textSub, fontSize: 12.5, marginTop: 2, fontVariant: ['tabular-nums'] },
   badge:     { color: c.accent, fontSize: 11, fontWeight: '800' },
+  scanBtn:   { paddingHorizontal: 14, borderRadius: 12, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+  scanIcon:  { color: c.onAccent, fontSize: 20, fontWeight: '800', lineHeight: 22 },
+  scanTxt:   { color: c.onAccent, fontSize: 12, fontWeight: '800' },
+  prodHead:  { color: c.textSub, fontSize: 12.5, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase', paddingTop: 14, paddingBottom: 4 },
   onlineBtn: { paddingVertical: 14 },
   onlineTxt: { color: c.accent, fontSize: 14.5, fontWeight: '700' },
   basket:    { backgroundColor: c.surface, borderRadius: 12, borderWidth: 1, borderColor: '#16a34a', padding: 10, marginBottom: 10 },

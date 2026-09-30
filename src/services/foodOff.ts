@@ -157,6 +157,16 @@ export async function searchOff(query: string): Promise<OffProduct[]> {
   return [];
 }
 
+// OFF allows 10 searches/min per IP — keep our own budget below it (8/min) so a burst can't get the IP blocked,
+// which would also break barcode lookups.
+let searchTimes: number[] = [];
+function takeSearchBudget(): boolean {
+  const now = Date.now();
+  searchTimes = searchTimes.filter(t => now - t < 60_000);
+  if (searchTimes.length >= 8) return false;
+  searchTimes.push(now); return true;
+}
+
 async function searchOffOnce(query: string): Promise<OffProduct[]> {
   const q = encodeURIComponent(query.trim());
   if (!q) return [];
@@ -164,8 +174,9 @@ async function searchOffOnce(query: string): Promise<OffProduct[]> {
   // Belgium first, then worldwide; one failing call (search.pl often 503s) must not sink the other
   let prods: any[] = [];
   let lastErr: unknown = null;
+  if (!takeSearchBudget()) throw new Error('Too many product searches in a minute — wait a moment, or scan the barcode.');
   try { prods = (await get(url('&tagtype_0=countries&tag_contains_0=contains&tag_0=belgium'), 12000))?.products ?? []; } catch (e) { lastErr = e; }
-  if (prods.length < 5) {
+  if (prods.length < 5 && takeSearchBudget()) {
     try { prods = [...prods, ...((await get(url(''), 12000))?.products ?? [])]; } catch (e) { lastErr = e; }
   }
   if (!prods.length && lastErr) throw lastErr;
