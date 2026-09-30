@@ -21,6 +21,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
 import { PhotoTest } from '../src/components/PhotoTest';
+import * as ImagePicker from 'expo-image-picker';
+import { detectBarcodes } from '../modules/runcoach-pdf';
 import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT } from '../src/services/foodDb';
 import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
@@ -43,6 +45,8 @@ const prevDay = (d: string) => { const [y, m, dd] = d.split('-').map(Number); co
 const macroLine = (n: Nutr) => `C ${r0(n.carb)} · P ${r0(n.prot)} · F ${r0(n.fat)}`;
 const dateKeyCal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const FIXED_UNITS = new Set(['g', 'kg', 'ml', 'cl', 'l', 'tbsp', 'tsp', 'glass', 'cup', 'can', 'bottle', 'wine-bottle', 'carton', 'juicebox', 'handful', 'dash']);
+/** "330 ml" / "80 g" — the amount in the unit the food was entered in. */
+const amt = (grams?: number, unit?: string) => (grams ? `${r0(grams)} ${unit === 'ml' ? 'ml' : 'g'}` : '');
 const idOf = (key: string) => key.slice(key.indexOf(':') + 1);
 const openUrl = (u: string) => { Linking.openURL(u).catch(() => {}); };
 const saveFailed = (e: unknown) => Alert.alert('Not saved', `The food log couldn't be written (${String((e as any)?.message ?? e)}). Nothing was changed.`);
@@ -163,7 +167,7 @@ export default function FoodMode() {
       showUndo({ msg: `Logged ${sg.meal.name}`, date: foodDayOf(es[0]?.t ?? timeForDay(date)), ids: es.map(e => e.id) });
     } else {
       const e = await logRecent(sg.recent, date, 'suggest');
-      showUndo({ msg: `Logged ${e.name.split(',')[0]}${e.grams ? ` · ${r0(e.grams)} g` : ''}`, date: foodDayOf(e.t), ids: [e.id] });
+      showUndo({ msg: `Logged ${e.name.split(',')[0]}${e.grams ? ` · ${amt(e.grams, e.unit)}` : ''}`, date: foodDayOf(e.t), ids: [e.id] });
     }
   });
 
@@ -267,7 +271,7 @@ export default function FoodMode() {
               {row.items.map(e => (
                 <TouchableOpacity key={e.id} style={s.entry} onPress={() => setEditing(e)}>
                   <Text style={s.entryName} numberOfLines={1}>{e.name}</Text>
-                  <Text style={s.entryMeta}>{e.grams ? `${r0(e.grams)} g · ` : ''}{r0(e.n.kcal)} kcal</Text>
+                  <Text style={s.entryMeta}>{e.grams ? `${amt(e.grams, e.unit)} · ` : ''}{r0(e.n.kcal)} kcal</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -312,7 +316,7 @@ export default function FoodMode() {
       {photoTest && <PhotoTest onClose={() => setPhotoTest(false)} />}
       {adding && lib && <AddSheet date={date} lib={lib} onClose={() => { Keyboard.dismiss(); setAdding(false); reload(); }} />}
       {editing && (
-        <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)}
+        <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)} own={lib?.custom.find(x => x.key === editing.key)}
           onClose={() => { Keyboard.dismiss(); setEditing(null); reload(); }} />
       )}
     </View>
@@ -324,7 +328,7 @@ type Tab = 'recent' | 'fav' | 'meals';
 type Mode =
   | { m: 'search' }
   | { m: 'portion'; item: FoodItem | OffProduct; grams?: number }
-  | { m: 'quick' }
+  | { m: 'quick'; name?: string; ean?: string }
   | { m: 'label'; ean?: string; name?: string }
   | { m: 'editItem'; entry: FoodEntry }
   | { m: 'online'; query: string; results: OffProduct[] | null; error?: string };
@@ -422,15 +426,21 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     Keyboard.dismiss();
     setMode({ m: 'portion', item, grams: typed ?? rec?.grams });
   });
-  const pickRecent = (r: { key: string; name: string; src: FoodItem['src']; per100?: Nutr; n?: Nutr; grams?: number }, longPress = false) => guard(async () => {
+  /** unit + piece size of one of your own foods (from its saved definition, else the recent's snapshot) */
+  const ownExtras = (key: string, snap?: { unit?: 'g' | 'ml'; serving?: { g: number; label: string } }) => {
+    const own = lib.custom.find(x => x.key === key);
+    const unit = own?.unit ?? snap?.unit, serving = own?.serving ?? snap?.serving;
+    return { ...(unit === 'ml' ? { unit: 'ml' as const } : {}), ...(serving ? { serving } : {}) };
+  };
+  const pickRecent = (r: { key: string; name: string; src: FoodItem['src']; per100?: Nutr; n?: Nutr; grams?: number; unit?: 'g' | 'ml'; serving?: { g: number; label: string } }, longPress = false) => guard(async () => {
     // a remembered serving (or a fixed quick-add) logs in one tap; a favourite never logged before asks the amount
     if ((!longPress && r.grams) || !r.per100) {
-      const asRecent: Recent = { key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams, count: 0, last: '', hrs: [] };
+      const asRecent: Recent = { key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams, ...ownExtras(r.key, r), count: 0, last: '', hrs: [] };
       await logged([await logRecent(asRecent, date, 'recent', groupId)]);
       return;
     }
     Keyboard.dismiss();
-    setMode({ m: 'portion', item: { key: r.key, src: r.src, id: idOf(r.key), name: r.name, per100: r.per100 }, grams: r.grams });
+    setMode({ m: 'portion', item: { key: r.key, src: r.src, id: idOf(r.key), name: r.name, per100: r.per100, ...ownExtras(r.key, r) }, grams: r.grams });
   });
   const pickMeal = (m: SavedMeal) => guard(async () => { await logged(await logMeal(m, date)); });
   const undoLast = () => guard(async () => {
@@ -473,6 +483,34 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
       Alert.alert('Lookup failed', `${e?.message ?? e}\n\nNo connection? Use Quick add or enter the label.`);
     } finally { setLookingUp(false); }
   };
+  /** Scan = take a photo of the barcode; iOS Vision reads it on the phone → the same lookup as typed digits. */
+  const scanning = useRef(false);
+  const scan = async () => {
+    if (scanning.current) return;                       // a double tap must not open the camera twice
+    scanning.current = true;
+    try { await scanInner(); } finally { scanning.current = false; }
+  };
+  const scanInner = async () => {
+    Keyboard.dismiss();
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) { Alert.alert('Camera not allowed', 'Allow camera access for RunCoach in iOS Settings, or type the digits under the barcode.'); return; }
+    const r = await ImagePicker.launchCameraAsync({ quality: 0.6, allowsEditing: false });
+    if (r.canceled || !r.assets?.[0]?.uri) return;
+    setLookingUp(true);
+    const codes = await detectBarcodes(r.assets[0].uri);
+    setLookingUp(false);
+    if (codes == null) { Alert.alert('Needs the new app build', 'Barcode photos need the latest app build on this phone. Until then, type the digits under the barcode.'); return; }
+    const code = codes.map(x => x.replace(/\D/g, '')).find(x => /^\d{8,14}$/.test(x));
+    if (!code) {
+      Alert.alert('No barcode found', 'Hold the barcode flat, fill most of the picture with it and avoid glare — or type the digits under it.', [
+        { text: 'Try again', onPress: () => { scan().catch(() => {}); } }, { text: 'Cancel', style: 'cancel' },
+      ]);
+      return;
+    }
+    setQ(code); setDq(code);
+    await lookup(code);
+  };
+
   const goOnline = async () => {
     Keyboard.dismiss();
     const query = qt;
@@ -489,7 +527,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     const favs = new Set(lib.favs);
     const foodRow = (f: FoodItem, badge?: string): Li => ({
       key: f.key, title: f.name, badge, star: favs.has(f.key),
-      sub: `${f.brand ? `${f.brand} · ` : ''}${r0(f.per100.kcal)} kcal/100 g · ${macroLine(f.per100)}${recentOf(f.key)?.grams ? ` · last ${r0(recentOf(f.key)!.grams)} g` : ''}`,
+      sub: `${f.brand ? `${f.brand} · ` : ''}${r0(f.per100.kcal)} kcal/100 ${f.unit === 'ml' ? 'ml' : 'g'} · ${macroLine(f.per100)}${recentOf(f.key)?.grams ? ` · last ${amt(recentOf(f.key)!.grams, f.unit)}` : ''}`,
       onPress: () => pick(f), onLong: () => pick(f, true),
     });
     if (dqt.length >= 2 && !digits) {
@@ -508,7 +546,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
       : lib.recents.slice(0, 40);
     return (src as FavItem[]).map(r => ({
       key: r.key, title: r.name, star: favs.has(r.key),
-      sub: r.grams ? `${r0(r.grams)} g · ${r0(r.per100 ? scaleNutr(r.per100, r.grams).kcal : r.n?.kcal)} kcal` : r.per100 ? `${r0(r.per100.kcal)} kcal/100 g` : `${r0(r.n?.kcal)} kcal`,
+      sub: r.grams ? `${amt(r.grams, ownExtras(r.key, r).unit)} · ${r0(r.per100 ? scaleNutr(r.per100, r.grams).kcal : r.n?.kcal)} kcal` : r.per100 ? `${r0(r.per100.kcal)} kcal/100 g` : `${r0(r.n?.kcal)} kcal`,
       onPress: () => pickRecent(r), onLong: () => pickRecent(r, true),
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -543,7 +581,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
                   }}>
                     <Text style={s.basketName} numberOfLines={1}>{e.name.split(',').slice(0, 2).join(',')}</Text>
                   </TouchableOpacity>
-                  <Text style={s.basketMeta}>{e.grams ? `${r0(e.grams)} g · ` : ''}{e.key === 'water' ? '' : `${r0(e.n.kcal)} kcal`}</Text>
+                  <Text style={s.basketMeta}>{e.grams ? `${amt(e.grams, e.unit)} · ` : ''}{e.key === 'water' ? '' : `${r0(e.n.kcal)} kcal`}</Text>
                   <TouchableOpacity onPress={() => removeItem(e)} hitSlop={10}><Text style={s.basketX}>✕</Text></TouchableOpacity>
                 </View>
               ))}
@@ -553,20 +591,22 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
 
         {mode.m === 'portion' ? (
           <PortionPanel item={mode.item} initial={mode.grams} isFav={lib.favs.includes(mode.item.key)} forChip={activeChip ?? undefined}
-            onFav={() => guard(async () => { await toggleFav(mode.item.key, { name: mode.item.name, src: mode.item.src, per100: mode.item.per100 }); await refreshLib(); })}
+            onFav={() => guard(async () => { await toggleFav(mode.item.key, { name: mode.item.name, src: mode.item.src, per100: mode.item.per100, ...(mode.item.unit ? { unit: mode.item.unit } : {}), ...(mode.item.serving ? { serving: mode.item.serving } : {}) }); await refreshLib(); })}
             onCancel={() => setMode({ m: 'search' })}
             onConfirm={g => guard(async () => {
               if (mode.item.src === 'off') await rememberProduct(mode.item as OffProduct);
               await logged([await logFood(mode.item, { grams: g, via: mode.item.src === 'off' ? 'ean' : 'search', date, groupId })]);
             })} />
         ) : mode.m === 'quick' ? (
-          <QuickPanel onCancel={() => setMode({ m: 'search' })}
+          <QuickPanel key={`q${mode.name ?? ''}`} name0={mode.name} onCancel={() => setMode({ m: 'search' })}
+            onPer100={name => setMode({ m: 'label', name, ean: mode.ean })}
             onConfirm={(label, n) => guard(async () => { await logged([await logFood(quickItem(label, n), { via: 'quick', date, groupId })]); })} />
         ) : mode.m === 'label' ? (
-          <LabelPanel ean={mode.ean} name={mode.name} onCancel={() => setMode({ m: 'search' })}
-            onSave={f => guard(async () => { const item = await addCustomFood(f); await refreshLib(); setMode({ m: 'portion', item }); })} />
+          <LabelPanel key={`l${mode.name ?? ''}${mode.ean ?? ''}`} ean={mode.ean} name={mode.name} onCancel={() => setMode({ m: 'search' })}
+            onTotals={name => setMode({ m: 'quick', name, ean: mode.ean })}
+            onSave={f => guard(async () => { const item = await addCustomFood(f); await refreshLib(); setMode({ m: 'portion', item, grams: item.serving?.g }); })} />
         ) : mode.m === 'editItem' ? (
-          <PortionPanel item={{ key: mode.entry.key, src: mode.entry.src, id: idOf(mode.entry.key), name: mode.entry.name, per100: perOf(mode.entry) }}
+          <PortionPanel item={{ key: mode.entry.key, src: mode.entry.src, id: idOf(mode.entry.key), name: mode.entry.name, per100: perOf(mode.entry), ...ownExtras(mode.entry.key, { unit: mode.entry.unit }) }}
             initial={mode.entry.grams} isFav={lib.favs.includes(mode.entry.key)} confirmLabel="Save"
             onFav={() => guard(async () => { await toggleFav(mode.entry.key, { name: mode.entry.name, src: mode.entry.src, per100: perOf(mode.entry) }); await refreshLib(); })}
             onCancel={() => setMode({ m: 'search' })}
@@ -583,8 +623,8 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
               placeholderTextColor={c.textFaint} autoFocus autoCorrect={false} returnKeyType="search" clearButtonMode="while-editing"
             />
             <View style={s.actions}>
-              <TouchableOpacity style={s.action} onPress={() => { Keyboard.dismiss(); setMode({ m: 'quick' }); }}><Text style={s.actionTxt}>⚡ Quick</Text></TouchableOpacity>
-              <TouchableOpacity style={s.action} onPress={() => { Keyboard.dismiss(); setMode({ m: 'label', ean: digits ? qt : undefined, name: digits ? undefined : qt }); }}><Text style={s.actionTxt}>🏷️ Label</Text></TouchableOpacity>
+              <TouchableOpacity style={s.action} onPress={() => { Keyboard.dismiss(); setMode({ m: 'quick', name: digits ? undefined : qt || undefined }); }}><Text style={s.actionTxt}>✏️ Add your own</Text></TouchableOpacity>
+              <TouchableOpacity style={s.action} onPress={() => { scan().catch(e => { setLookingUp(false); Alert.alert('Scan failed', String(e?.message ?? e)); }); }}><Text style={s.actionTxt}>▥ Scan barcode</Text></TouchableOpacity>
               {[250, 500].map(ml => (
                 <TouchableOpacity key={ml} style={s.action} onPress={() => guard(async () => {
                   const w = await addWater(date, ml);
@@ -690,7 +730,21 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
   const g = parseFloat(txt.replace(',', '.'));
   const valid = isFinite(g) && g > 0 && g < 5000;
   const n = valid ? scaleNutr(item.per100, g) : {};
-  const chips = [...new Set([def.g, ...(initial ? [initial] : []), Math.round(def.g / 2), def.g * 2, 50, 100, 150, 200].map(r0))].filter(x => x > 0).slice(0, 7);
+  const u = item.unit === 'ml' ? 'ml' : 'g';
+  // A food with its own piece/pack size ("1 can = 330 ml") offers pieces first: ½ · 1 · 2 of it.
+  const piece = item.serving && item.serving.g > 0 && /^1\s+\S/.test(item.serving.label) ? item.serving : null;
+  const pieceName = piece ? piece.label.replace(/^1\s+/, '') : '';
+  const chipsRaw: { v: number; label: string }[] = piece
+    ? [
+        { v: piece.g, label: `1 ${pieceName} · ${r0(piece.g)} ${u}` },
+        { v: piece.g / 2, label: `½ · ${r0(piece.g / 2)} ${u}` },
+        { v: piece.g * 2, label: `2 · ${r0(piece.g * 2)} ${u}` },
+        ...(initial && ![piece.g, piece.g / 2, piece.g * 2].some(x => r0(x) === r0(initial)) ? [{ v: initial, label: `${r0(initial)} ${u}` }] : []),
+        { v: 100, label: `100 ${u}` },
+      ]
+    : [...new Set([def.g, ...(initial ? [initial] : []), Math.round(def.g / 2), def.g * 2, 50, 100, 150, 200].map(r0))].filter(x => x > 0).slice(0, 7).map(v => ({ v, label: `${v} ${u}` }));
+  // one chip per amount (a 100 ml piece must not also get the fixed "100 ml" chip → duplicate key + double highlight)
+  const chips = chipsRaw.filter((ch, i) => chipsRaw.findIndex(o => r0(o.v) === r0(ch.v)) === i);
   const off = item.src === 'off' ? (item as OffProduct) : null;
   return (
     <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 40 }}>
@@ -708,17 +762,17 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
       {off?.rcn8 && <Text style={s.warn}>Store codes starting with 2 are reused across countries — check this is really your product.</Text>}
       {off?.incomplete && <Text style={s.warn}>Open Food Facts is missing some values for this product — check them against the pack, or enter the label.</Text>}
       {off?.implausible && <Text style={s.warn}>These values don't add up (energy vs carbs/protein/fat) — probably mis-entered on Open Food Facts. Check the pack, or enter the label.</Text>}
-      <Text style={[s.resultSub, { marginTop: 4 }]}>Per 100 g{off ? ' (or 100 mL)' : ''}: {r0(item.per100.kcal)} kcal · {macroLine(item.per100)}</Text>
+      <Text style={[s.resultSub, { marginTop: 4 }]}>Per 100 {u}{off ? ' (or 100 mL)' : ''}: {r0(item.per100.kcal)} kcal · {macroLine(item.per100)}</Text>
 
       <View style={s.gramsRow}>
         <TextInput style={s.gramsInput} value={txt} onChangeText={setTxt} keyboardType="decimal-pad" selectTextOnFocus />
-        <Text style={s.gramsUnit}>g</Text>
-        <Text style={s.gramsHint}>{def.label !== '100 g' ? `${def.label} ≈ ${def.g} g` : ''}</Text>
+        <Text style={s.gramsUnit}>{u}</Text>
+        <Text style={s.gramsHint}>{piece ? `1 ${pieceName} = ${r0(piece.g)} ${u}` : def.label !== '100 g' ? `${def.label} ≈ ${def.g} g` : ''}</Text>
       </View>
       <View style={s.chips}>
-        {chips.map(v => (
-          <TouchableOpacity key={v} style={[s.chip, r0(g) === v && s.chipOn]} onPress={() => setTxt(String(v))}>
-            <Text style={[s.chipTxt, r0(g) === v && { color: c.onAccent }]}>{v} g</Text>
+        {chips.map(ch => (
+          <TouchableOpacity key={ch.label} style={[s.chip, r0(g) === r0(ch.v) && s.chipOn]} onPress={() => setTxt(String(r0(ch.v)))}>
+            <Text style={[s.chipTxt, r0(g) === r0(ch.v) && { color: c.onAccent }]}>{ch.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -828,11 +882,34 @@ function OnlinePanel({ query, results, error, onCancel, onPick }: { query: strin
 }
 
 // ─── Pack label → custom food ─────────────────────────────────────────────────────────────────────
-function LabelPanel({ ean, name: name0, onCancel, onSave }: { ean?: string; name?: string; onCancel: () => void; onSave: (f: { name: string; brand?: string; ean?: string; per100: Nutr }) => void }) {
+/** "Total amount" ⇄ "Per 100 g / ml" — the two ways to add your own food, switchable in place. */
+function OwnSwitch({ mode, onChange }: { mode: 'total' | 'per100'; onChange: (m: 'total' | 'per100') => void }) {
+  const s = useThemedStyles(makeStyles);
+  return (
+    <View style={s.tabs}>
+      {(['total', 'per100'] as const).map(m => (
+        <TouchableOpacity key={m} onPress={() => { if (m !== mode) { Keyboard.dismiss(); onChange(m); } }} style={[s.tab, { flex: 1, alignItems: 'center' }, mode === m && s.tabOn]}>
+          <Text style={[s.tabTxt, mode === m && s.tabTxtOn]}>{m === 'total' ? 'Total amount' : 'Per 100 g / ml'}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
+function LabelPanel({ ean, name: name0, onCancel, onSave, onTotals }: {
+  ean?: string; name?: string; onCancel: () => void; onTotals: (name: string) => void;
+  onSave: (f: { name: string; brand?: string; ean?: string; per100: Nutr; unit: 'g' | 'ml'; serving?: { g: number; label: string } }) => void;
+}) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const [name, setName] = useState(name0 ?? '');
   const [brand, setBrand] = useState('');
+  const [unit, setUnit] = useState<'g' | 'ml'>('g');
+  const [pieceTxt, setPieceTxt] = useState('');
+  const [pieceName, setPieceName] = useState('');
+  const pieceAmt = parseFloat(pieceTxt.replace(',', '.'));
+  const serving = isFinite(pieceAmt) && pieceAmt > 0 && pieceAmt < 5000
+    ? { g: pieceAmt, label: `1 ${pieceName.trim() || (unit === 'ml' ? 'bottle' : 'piece')}` } : undefined;
   const [v, setV] = useState<Record<string, string>>({});
   const num = (k: string) => { const x = parseFloat((v[k] ?? '').replace(',', '.')); return isFinite(x) && x >= 0 ? x : undefined; };
   // EU label order (Regulation 1169/2011 Art. 30) + fibre
@@ -847,12 +924,28 @@ function LabelPanel({ ean, name: name0, onCancel, onSave }: { ean?: string; name
   const valid = name.trim().length > 0 && (per100.kcal ?? 0) > 0 && (per100.kcal ?? 0) < 1000;
   return (
     <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 60 }}>
-      <Text style={s.portionName}>From the pack label</Text>
-      <Text style={s.hint}>Per 100 g / 100 mL, as printed. Saved as your own food{ean ? ` for barcode ${ean}` : ''} — it stays on this phone.</Text>
+      <Text style={s.portionName}>Add your own</Text>
+      <OwnSwitch mode="per100" onChange={() => onTotals(name)} />
+      <Text style={s.hint}>Values as printed on the pack. Saved as your own food{ean ? ` for barcode ${ean}` : ''} — next time it's one tap. It stays on this phone.</Text>
       <Text style={s.fieldLab}>Name</Text>
-      <TextInput style={s.field} value={name} onChangeText={setName} placeholder="e.g. Boni muesli" placeholderTextColor={c.textFaint} />
+      <TextInput style={s.field} value={name} onChangeText={setName} placeholder="e.g. Boni high protein drink" placeholderTextColor={c.textFaint} />
+      <Text style={s.fieldLab}>The label gives values per</Text>
+      <View style={s.tabs}>
+        {(['g', 'ml'] as const).map(x => (
+          <TouchableOpacity key={x} onPress={() => setUnit(x)} style={[s.tab, unit === x && s.tabOn]}>
+            <Text style={[s.tabTxt, unit === x && s.tabTxtOn]}>100 {x}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <Text style={s.fieldLab}>One piece / pack is (optional — then you log "1 bottle" instead of typing {unit})</Text>
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+        <TextInput style={[s.field, { width: 100 }]} value={pieceTxt} onChangeText={setPieceTxt} keyboardType="decimal-pad" placeholder={unit === 'ml' ? '330' : '250'} placeholderTextColor={c.textFaint} />
+        <Text style={s.gramsUnitSm}>{unit}</Text>
+        <TextInput style={[s.field, { flex: 1 }]} value={pieceName} onChangeText={setPieceName} placeholder={unit === 'ml' ? 'bottle / can / glass' : 'piece / bar / pot'} placeholderTextColor={c.textFaint} autoCapitalize="none" />
+      </View>
       <Text style={s.fieldLab}>Brand (optional)</Text>
       <TextInput style={s.field} value={brand} onChangeText={setBrand} placeholderTextColor={c.textFaint} />
+      <Text style={[s.fieldLab, { marginTop: 14 }]}>Per 100 {unit}:</Text>
       {FIELDS.map(f => (
         <View key={f.k} style={s.labelRow}>
           <Text style={[s.fieldLab, { flex: 1, marginTop: 0 }]}>{f.lab}</Text>
@@ -861,7 +954,7 @@ function LabelPanel({ ean, name: name0, onCancel, onSave }: { ean?: string; name
       ))}
       <View style={s.btnRow}>
         <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => { Keyboard.dismiss(); onCancel(); }}><Text style={s.btnGhostTxt}>Cancel</Text></TouchableOpacity>
-        <TouchableOpacity style={[s.btn, !valid && { opacity: 0.4 }]} disabled={!valid} onPress={() => { Keyboard.dismiss(); onSave({ name, brand: brand.trim() || undefined, ean, per100 }); }}>
+        <TouchableOpacity style={[s.btn, !valid && { opacity: 0.4 }]} disabled={!valid} onPress={() => { Keyboard.dismiss(); onSave({ name, brand: brand.trim() || undefined, ean, per100, unit, serving }); }}>
           <Text style={s.btnTxt}>Save & choose amount</Text>
         </TouchableOpacity>
       </View>
@@ -870,10 +963,10 @@ function LabelPanel({ ean, name: name0, onCancel, onSave }: { ean?: string; name
 }
 
 // ─── Quick add ────────────────────────────────────────────────────────────────────────────────────
-function QuickPanel({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: (label: string, n: Nutr) => void }) {
+function QuickPanel({ name0, onCancel, onConfirm, onPer100 }: { name0?: string; onCancel: () => void; onConfirm: (label: string, n: Nutr) => void; onPer100: (name: string) => void }) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
-  const [label, setLabel] = useState('');
+  const [label, setLabel] = useState(name0 ?? '');
   const [f, setF] = useState<{ kcal: string; carb: string; prot: string; fat: string }>({ kcal: '', carb: '', prot: '', fat: '' });
   const num = (v: string) => { const x = parseFloat(v.replace(',', '.')); return isFinite(x) && x >= 0 ? x : undefined; };
   const n: Nutr = {};
@@ -889,8 +982,10 @@ function QuickPanel({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: 
   );
   return (
     <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 40 }}>
-      <Text style={s.portionName}>Quick add</Text>
-      <Text style={s.fieldLab}>Label (optional — "Gel", "Sports drink"… repeats show up in Recents)</Text>
+      <Text style={s.portionName}>Add your own</Text>
+      <OwnSwitch mode="total" onChange={() => onPer100(label)} />
+      <Text style={s.hint}>Type the totals for what you ate. Only have "per 100 g / ml" on the pack? Switch above — you can also set "1 bottle = 330 ml".</Text>
+      <Text style={s.fieldLab}>Name (optional — repeats show up in Recents)</Text>
       <TextInput style={s.field} value={label} onChangeText={setLabel} placeholder="Quick add" placeholderTextColor={c.textFaint} />
       <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
         {field('kcal', 'kcal')}{field('carb', 'Carbs g')}{field('prot', 'Protein g')}{field('fat', 'Fat g')}
@@ -906,14 +1001,14 @@ function QuickPanel({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: 
 }
 
 // ─── Edit an entry ────────────────────────────────────────────────────────────────────────────────
-function EditSheet({ entry, date, isFav, onClose }: { entry: FoodEntry; date: string; isFav: boolean; onClose: () => void }) {
+function EditSheet({ entry, date, isFav, own, onClose }: { entry: FoodEntry; date: string; isFav: boolean; own?: FoodItem; onClose: () => void }) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   // per-100 from the table when we have it (exact), else back-computed from the entry
   const tableItem = foodByKey(entry.key);
   const per100: Nutr = tableItem?.per100
     ?? (entry.grams && entry.grams > 0 ? Object.fromEntries(Object.entries(entry.n).map(([k, v]) => [k, (v as number) * 100 / entry.grams!])) as Nutr : entry.n);
-  const item: FoodItem = tableItem ?? { key: entry.key, src: entry.src, id: idOf(entry.key), name: entry.name, per100 };
+  const item: FoodItem = tableItem ?? { key: entry.key, src: entry.src, id: idOf(entry.key), name: entry.name, per100, ...(entry.unit ? { unit: entry.unit } : {}), ...(own?.serving ? { serving: own.serving } : {}) };
   const run = async (fn: () => Promise<void>) => { try { await fn(); } catch (e) { saveFailed(e); } onClose(); };
   const del = () => run(() => removeEntries(date, [entry.id]));
   return (

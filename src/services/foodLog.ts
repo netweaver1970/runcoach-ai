@@ -41,7 +41,8 @@ export interface FoodItem {
   brand?: string;
   grp?: string;
   per100: Nutr;
-  serving?: { g: number; label: string };
+  serving?: { g: number; label: string };   // one piece / pack / can, in the item's unit (g or ml)
+  unit?: 'g' | 'ml';      // how amounts are entered and shown; per100 then means per 100 ml. Absent = g
 }
 
 export interface FoodEntry {
@@ -50,7 +51,8 @@ export interface FoodEntry {
   key: string;
   name: string;
   src: FoodSrc;
-  grams?: number;         // absent for quick-add
+  grams?: number;         // absent for quick-add. For a unit:'ml' item this is millilitres
+  unit?: 'ml';            // display only: show the amount as ml
   n: Nutr;                // ABSOLUTE amounts for this entry
   via: EntryVia;
   confidence?: number;    // 0..1 for AI-derived entries
@@ -64,14 +66,16 @@ export interface Recent {
   per100?: Nutr;          // snapshot so the item can be re-logged even if it isn't in the bundled table
   n?: Nutr;               // quick-add items
   grams?: number;         // remembered serving
+  unit?: 'g' | 'ml';
+  serving?: { g: number; label: string };
   count: number;
   last: string;           // ISO
   hrs: number[];          // hours of day it was logged (last 30), for "usually now" chips
 }
-export interface SavedMealItem { key: string; name: string; src: FoodSrc; grams?: number; per100?: Nutr; n?: Nutr }
+export interface SavedMealItem { key: string; name: string; src: FoodSrc; grams?: number; per100?: Nutr; n?: Nutr; unit?: 'ml' }
 export interface SavedMeal { id: string; name: string; items: SavedMealItem[]; count: number; last?: string; hrs: number[] }
 /** A favourite keeps its own snapshot so it survives dropping out of recents and works for OFF/custom foods. */
-export interface FavItem { key: string; name: string; src: FoodSrc; per100?: Nutr; n?: Nutr; grams?: number }
+export interface FavItem { key: string; name: string; src: FoodSrc; per100?: Nutr; n?: Nutr; grams?: number; unit?: 'g' | 'ml'; serving?: { g: number; label: string } }
 export interface FoodLibrary { v: 1; custom: FoodItem[]; meals: SavedMeal[]; favs: string[]; favItems?: Record<string, FavItem>; recents: Recent[] }
 
 const DIR = FileSystem.documentDirectory;
@@ -177,6 +181,7 @@ export async function logFood(
   const e: FoodEntry = {
     id: uid(), t, key: item.key, name: item.name, src: item.src, n, via: opts.via,
     ...(opts.grams != null ? { grams: opts.grams } : {}),
+    ...('unit' in item && item.unit === 'ml' ? { unit: 'ml' as const } : {}),
     ...(opts.groupId ? { groupId: opts.groupId } : {}),
     ...(opts.confidence != null ? { confidence: opts.confidence } : {}),
   };
@@ -192,6 +197,7 @@ export async function logFoods(items: { item: FoodItem; grams: number }[], opts:
   const groupId = opts.groupId ?? uid();
   const out: FoodEntry[] = items.map(({ item, grams }) => ({
     id: uid(), t, key: item.key, name: item.name, src: item.src, n: scaleNutr(item.per100, grams), grams, via: opts.via, groupId,
+    ...(item.unit === 'ml' ? { unit: 'ml' as const } : {}),
   }));
   await mutateDay(foodDayOf(t), d => { d.entries.push(...out); });
   for (const { item, grams } of items) await touchRecent(item, grams, t).catch(() => undefined);
@@ -301,6 +307,8 @@ async function touchRecent(item: FoodItem | { key: string; name: string; src: Fo
     const r: Recent = {
       key: item.key, name: item.name, src: item.src,
       ...('per100' in item ? { per100: item.per100 } : { n: item.n }),
+      ...('unit' in item && item.unit ? { unit: item.unit } : prev?.unit ? { unit: prev.unit } : {}),
+      ...('serving' in item && item.serving ? { serving: item.serving } : prev?.serving ? { serving: prev.serving } : {}),
       grams: grams ?? prev?.grams,
       count: (prev?.count ?? 0) + 1,
       last: t,
@@ -332,7 +340,7 @@ export function favouriteList(l: FoodLibrary): FavItem[] {
     const snap = l.favItems?.[k];
     const r = l.recents.find(x => x.key === k);
     if (snap) out.push({ ...snap, grams: r?.grams ?? snap.grams });
-    else if (r) out.push({ key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams });
+    else if (r) out.push({ key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams, ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) });
   }
   return out;
 }
@@ -341,16 +349,19 @@ export async function saveMeal(name: string, entries: FoodEntry[]): Promise<Save
   const meal: SavedMeal = {
     id: uid(), name: name.trim() || 'Meal', count: 0, hrs: entries.length ? [hourOf(entries[0].t)] : [],
     items: entries.map(e => (e.grams && e.grams > 0
-      ? { key: e.key, name: e.name, src: e.src, grams: e.grams, per100: Object.fromEntries(Object.entries(e.n).map(([k, v]) => [k, (v as number) * 100 / e.grams!])) as Nutr }
+      ? { key: e.key, name: e.name, src: e.src, grams: e.grams, ...(e.unit ? { unit: e.unit } : {}), per100: Object.fromEntries(Object.entries(e.n).map(([k, v]) => [k, (v as number) * 100 / e.grams!])) as Nutr }
       : { key: e.key, name: e.name, src: e.src, n: e.n })),
   };
   await mutateLib(l => { l.meals.unshift(meal); });
   return meal;
 }
 /** A food from a pack label (the 7 EU-mandatory values + fibre), saved locally. Returns the new item. */
-export async function addCustomFood(f: { name: string; brand?: string; ean?: string; per100: Nutr }): Promise<FoodItem> {
+export async function addCustomFood(f: { name: string; brand?: string; ean?: string; per100: Nutr; unit?: 'g' | 'ml'; serving?: { g: number; label: string } }): Promise<FoodItem> {
   const id = f.ean && /^\d{8,14}$/.test(f.ean) ? `ean${f.ean}` : uid();
-  const item: FoodItem = { key: `custom:${id}`, src: 'custom', id, name: f.name.trim() || 'My food', ...(f.brand ? { brand: f.brand } : {}), per100: f.per100 };
+  const item: FoodItem = {
+    key: `custom:${id}`, src: 'custom', id, name: f.name.trim() || 'My food', ...(f.brand ? { brand: f.brand } : {}), per100: f.per100,
+    ...(f.unit === 'ml' ? { unit: 'ml' as const } : {}), ...(f.serving && f.serving.g > 0 ? { serving: f.serving } : {}),
+  };
   await mutateLib(l => { l.custom = [item, ...l.custom.filter(c => c.key !== item.key)]; });
   return item;
 }
@@ -370,6 +381,7 @@ export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'me
     id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId,
     n: it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams) : (it.n ?? {}),
     ...(it.grams != null ? { grams: it.grams } : {}),
+    ...(it.unit ? { unit: it.unit } : {}),
   }));
   await mutateDay(foodDayOf(t), d => { d.entries.push(...out); });
   await mutateLib(l => {                                // entries are saved; usage stats are bookkeeping only
@@ -381,7 +393,7 @@ export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'me
 
 /** Re-log a recent with its remembered serving (the 1–2 tap path). */
 export async function logRecent(r: Recent, date: string, via: EntryVia = 'recent', groupId?: string): Promise<FoodEntry> {
-  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':') }, { grams: r.grams ?? 100, via, date, groupId });
+  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? r.serving?.g ?? 100, via, date, groupId });
   return logFood({ key: r.key, name: r.name, src: r.src, n: r.n ?? {} }, { via, date, groupId });
 }
 

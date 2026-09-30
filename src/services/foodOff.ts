@@ -74,13 +74,22 @@ function toItem(p: any): OffProduct | null {
   const name = String(p.product_name_nl || p.product_name_en || p.product_name || p.product_name_fr || p.generic_name || '').trim();
   const per100 = mapNutriments(p.nutriments);
   const sq = num(p.serving_quantity);
+  // Pack size "330ml" / "33 cl" / "1 l" / "250 g" → the unit and ONE PACK as the piece (single-serve packs only).
+  const qm = typeof p.quantity === 'string' ? /^\s*(\d+(?:[.,]\d+)?)\s*(ml|cl|l|g|kg)\s*[e℮]?\s*$/i.exec(p.quantity) : null;
+  const qUnit = qm ? qm[2].toLowerCase() : '';
+  const qAmt = qm ? parseFloat(qm[1].replace(',', '.')) * ({ ml: 1, cl: 10, l: 1000, g: 1, kg: 1000 } as Record<string, number>)[qUnit] : 0;
+  const liquid = qUnit === 'ml' || qUnit === 'cl' || qUnit === 'l';
+  // A drink up to 750 ml is one bottle/can. A SOLID pack is a piece only when it's plausibly single-serve (≤ 150 g:
+  // a bar, a pot) — a 500 g muesli box must not pre-fill the portion with the whole pack.
+  const pack = qAmt > 0 && (liquid ? qAmt <= 750 : qAmt <= 150) ? { g: qAmt, label: liquid ? '1 bottle' : '1 pack' } : null;
   return {
     key: `off:${code}`, src: 'off', id: code,
     name: name || `Product ${code}`,
     nameAlt: [p.product_name_fr, p.product_name].find((x: unknown) => typeof x === 'string' && x && x !== name) as string | undefined,
     brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() : undefined,
     per100,
-    ...(sq && sq > 0 && sq < 2000 ? { serving: { g: sq, label: String(p.serving_size || `${sq} g`) } } : {}),
+    ...(pack ? { serving: pack } : sq && sq > 0 && sq < 2000 ? { serving: { g: sq, label: '1 serving' } } : {}),
+    ...(liquid ? { unit: 'ml' as const } : {}),
     image: typeof p.image_front_small_url === 'string' ? p.image_front_small_url : undefined,
     quantity: typeof p.quantity === 'string' ? p.quantity : undefined,
     incomplete: per100.kcal == null || per100.carb == null || per100.prot == null || per100.fat == null,
@@ -133,6 +142,22 @@ export async function lookupBarcode(code: string, refresh = false): Promise<{ it
 
 /** Explicit "Search online": OFF full-text search, Belgian products first. */
 export async function searchOff(query: string): Promise<OffProduct[]> {
+  // OFF only returns products matching EVERY word, so one extra word ("vanilla" when only the choc variant is
+  // listed) gives nothing. Retry with the last word dropped, down to 2 words (≤ 3 rounds → within 10 searches/min).
+  const ws = query.trim().split(/\s+/).filter(Boolean);
+  let err: unknown = null;
+  for (let n = ws.length, round = 0; n >= Math.min(2, ws.length) && round < 3; n--, round++) {
+    try {
+      const hit = await searchOffOnce(ws.slice(0, n).join(' '));
+      if (hit.length) return hit;
+      err = null;                                         // a clean "nothing found" beats an earlier error
+    } catch (e) { err = e; }                              // search.pl is often 503 — still try the shorter query
+  }
+  if (err) throw err;
+  return [];
+}
+
+async function searchOffOnce(query: string): Promise<OffProduct[]> {
   const q = encodeURIComponent(query.trim());
   if (!q) return [];
   const url = (extra: string) => `${BASE}/cgi/search.pl?search_terms=${q}&search_simple=1&action=process&json=1&page_size=20&fields=${FIELDS}${extra}`;
