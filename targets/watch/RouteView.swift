@@ -81,6 +81,13 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
   private var preciseGps = true            // GPS power mode: precise (best accuracy / every fix / fine heading) vs economy
   private let turnPreciseM = 150.0         // … flip back to precise within this many m of the next turn
   private var turns: [RouteTurn] = []
+  // Location permission + GPS liveness. Turn cues and off-route depend ONLY on this GPS — a reinstall resets the
+  // permission, and the old code just asked mid-Start and never checked (2026-10-02: 2 silent route runs).
+  @Published var locAuth: CLAuthorizationStatus = .notDetermined
+  var locationUsable: Bool { locAuth == .authorizedWhenInUse || locAuth == .authorizedAlways }
+  var locationDenied: Bool { locAuth == .denied || locAuth == .restricted }
+  private(set) var lastFixAt: Date?        // last GPS fix this run (nil until the first one)
+  var hasRoute: Bool { (route?.pts.count ?? 0) > 1 }
   private var announced: Set<Int> = []     // turn indices already spoken (or passed) for this route
   private var turnMinDist: [Int: Double] = [:]   // closest approach seen per turn → detect a turn we walked past
 
@@ -89,6 +96,18 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     mgr.delegate = self
     mgr.desiredAccuracy = kCLLocationAccuracyBest
     mgr.headingFilter = kCLHeadingFilterNone   // frequent heading updates → a steadier compass fan
+    locAuth = mgr.authorizationStatus
+  }
+
+  // Ask for location when the app OPENS (before any run), not in the middle of pressing Start — a prompt on the
+  // wrist at the start line is easy to miss, and a miss meant a whole run without turn cues.
+  func ensureLocationPermission() {
+    locAuth = mgr.authorizationStatus
+    if locAuth == .notDetermined { mgr.requestWhenInUseAuthorization() }
+  }
+  func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
+    let st = m.authorizationStatus
+    DispatchQueue.main.async { self.locAuth = st; WorkoutEngine.shared.locationAuthChanged() }
   }
 
   func setRoute(_ r: RoutePayload) {
@@ -108,6 +127,9 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     offRoute = false; wasOff = false; offSpokenAt = nil; offCandidateSince = nil
     announced = []; turnMinDist = [:]; nextTurnText = ""; turnDistM = 9999
   }
+  // Per-RUN reset of the GPS liveness — called from WorkoutEngine.start ONLY. Not in start(): the run screen's
+  // onAppear calls start() again mid-run (e.g. after cancelling the End dialog) → a false "No GPS" alarm.
+  func resetRunFix() { lastFixAt = nil }
   func start() {
     applyGpsPower(precise: true)   // begin each run precise → a solid initial fix + clean track start
     mgr.requestWhenInUseAuthorization(); mgr.startUpdatingLocation()
@@ -176,6 +198,11 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
     // records its track too → the phone gets a run map. Reuses this one location manager (no 2nd one).
     if WorkoutEngine.shared.running { WorkoutEngine.shared.addRouteLocations(locs) }
     guard let loc = locs.last else { return }
+    if loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 65 {
+      let first = lastFixAt == nil
+      lastFixAt = Date()
+      if first { DispatchQueue.main.async { WorkoutEngine.shared.gpsFixArrived() } }
+    }
     guard let r = route, r.pts.count > 1 else {
       // Routeless run (track intervals / free run): no turns or off-route to watch → economise GPS while running
       // (the track is still recorded above, just at 10 m granularity). Idempotent.

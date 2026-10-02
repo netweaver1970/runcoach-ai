@@ -96,7 +96,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var starting = false            // a Start is in flight (auth sheet / session creation) → ignore repeat taps
   private var authCheckInFlight = false   // prepareAuth running (.task AND scenePhase .active both fire at launch)
   private var authRefusedAt: Date?        // Start refused for missing access → a 2nd Start within 60 s runs anyway
-  private enum IssueKind { case none, auth, hr, start, save, route }
+  private enum IssueKind { case none, auth, hr, start, save, route, location }
+  private var gpsAlerted = false           // spoke "no GPS" this run (route runs only)
+  private var openRemindAt: TimeInterval = 0   // in-segment time of the next "press Next" reminder (open steps)
   private var issueKind: IssueKind = .none
 
   // NO Health sheet from the watch — REMOVED 2026-09-25. On Geert's iOS 27 iPhone + watchOS 26 Ultra the watch sheet
@@ -143,10 +145,55 @@ final class WorkoutEngine: NSObject, ObservableObject {
     let ok = workoutAuthorized
     await MainActor.run {
       self.authCheckInFlight = false
+      RouteStore.shared.ensureLocationPermission()   // ask HERE (app open), never first at the start line
       // Haptic only the FIRST time the missing-access banner appears — not on every wrist raise while it's denied.
       // Never cover a REAL failure (e.g. "Run NOT saved" after a run, then a wrist raise) with the access banner.
-      if ok { self.clearIssue(.auth) }
-      else if self.issueKind == .none || self.issueKind == .auth { self.flagIssue(.auth, self.authIssueText(), speak: nil, alert: self.issueKind != .auth) }
+      if ok { self.clearIssue(.auth); self.refreshLocationIssue() }
+      else if self.issueKind == .none || self.issueKind == .auth || self.issueKind == .location {
+        self.flagIssue(.auth, self.authIssueText() + self.locationSuffix(), speak: nil, alert: self.issueKind != .auth)
+      }
+    }
+  }
+
+  // What the location permission does: route guidance (turn cues, off-route) runs ONLY on the watch GPS.
+  private func locationSuffix() -> String {
+    RouteStore.shared.locationDenied ? " · Location OFF → no turn cues." : ""
+  }
+  private func refreshLocationIssue() {
+    let st = RouteStore.shared
+    if st.locationDenied {
+      if issueKind == .none || issueKind == .location {
+        flagIssue(.location, "Location OFF → no turn cues. Watch Settings › Privacy › Location Services › RunCoach › While Using.",
+                  speak: nil, alert: issueKind != .location)
+      }
+    } else { clearIssue(.location) }
+  }
+  // RouteStore → the permission changed (granted from the prompt or in Settings) → update the banner.
+  func locationAuthChanged() {
+    if issueKind == .auth { if !RouteStore.shared.locationDenied, workoutAuthorized { clearIssue(.auth) } ; return }
+    refreshLocationIssue()
+  }
+  // RouteStore → first GPS fix of the run. If we had warned "no GPS", say it's back.
+  func gpsFixArrived() {
+    guard running, gpsAlerted else { return }
+    gpsAlerted = false
+    clearIssue(.location)
+    speak("GPS found. Route guidance on.")
+  }
+  // Route run, no GPS fix 30 s after start → say so once (the run records, but turn cues can't fire).
+  private func checkGpsFlow() {
+    guard running, !paused, !isIndoor, !gpsAlerted, RouteStore.shared.hasRoute, elapsed > 30,
+          RouteStore.shared.lastFixAt == nil else { return }
+    gpsAlerted = true
+    if RouteStore.shared.locationDenied {
+      flagIssue(.location, "Location OFF → no turn cues. Watch Settings › Privacy › Location Services › RunCoach.",
+                speak: "Location is off. No route cues on this run.")
+    } else if RouteStore.shared.locAuth == .notDetermined {
+      flagIssue(.location, "Location permission not answered → no turn cues. Reopen RunCoach and tap Allow.",
+                speak: "Location permission not answered. No route cues on this run.")
+    } else {
+      flagIssue(.location, "No GPS signal yet — turn cues start once it's found. Keep going; a clear sky view helps.",
+                speak: "No GPS signal yet. Route cues will start when it's found.")
     }
   }
 
@@ -271,9 +318,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
     // distance-based warm-up).
     issueKind = .none; healthIssue = ""; hrSeenAt = nil; hrWatchFrom = Date(); hrAlerted = false; hrDropoutSpoken = false
     hkToggleAt = nil; pauseSrc = nil; pauseSrcAt = nil; pauseLog = []; pausedSince = nil; pauseReminderAt = nil; pauseNote = ""
-    routeFailed = false; heartRate = 0; distanceM = 0; energyKcal = 0; power = 0; paceStr = "--:--"
+    routeFailed = false; heartRate = 0; distanceM = 0; energyKcal = 0; power = 0; paceStr = "--:--"; gpsAlerted = false
     if !indoor && store.authorizationStatus(for: HKSeriesType.workoutRoute()) != .sharingAuthorized {
-      flagIssue(.route, "Workout Routes not allowed — this run records, but its map won't be saved (iPhone Settings › Privacy › Health › RunCoach).",
+      flagIssue(.route, "Workout Routes OFF → this run's MAP won't be saved (the run itself records). iPhone: Health app › your profile › Apps › RunCoach › Turn On All.",
                 speak: nil, alert: false)
     }
     let cfg = HKWorkoutConfiguration()
@@ -303,7 +350,15 @@ final class WorkoutEngine: NSObject, ObservableObject {
       signalRun("start")   // wake the phone's keep-alive so cues can route to the earbuds
       if !indoor {         // no GPS on a treadmill — don't burn battery hunting for a fix
         RouteStore.shared.resetGuidance()   // fresh turn/off-route state (so a 2nd run on the same route re-announces)
+        RouteStore.shared.resetRunFix()     // GPS liveness is per RUN (not per screen appearance)
         RouteStore.shared.start()           // GPS tracking is tied to the RUN (start→stop), not to the route being loaded
+        if RouteStore.shared.hasRoute && RouteStore.shared.locationDenied {   // say it NOW, not after a silent run
+          DispatchQueue.main.async {
+            self.gpsAlerted = true
+            self.flagIssue(.location, "Location OFF → no turn cues. Watch Settings › Privacy › Location Services › RunCoach.",
+                           speak: "Location is off. No route cues on this run.")
+          }
+        }
       }
       // Internal battery profiling: snapshot the watch battery so we can report drain/hr when the run ends.
       let dev = WKInterfaceDevice.current(); dev.isBatteryMonitoringEnabled = true
@@ -311,6 +366,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       DispatchQueue.main.async {
         self.running = true; self.paused = false; self.elapsed = 0; self.pausedTotal = 0; self.pausedSince = nil
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartWall = 0; self.segStartDist = 0
+        self.openRemindAt = 480
         self.lastMoveAt = Date(); self.autoPaused = false
         self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
         self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
@@ -438,6 +494,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.paceSamples.removeAll { self.elapsed - $0.t > 22 }                       // keep ~last 22 s
         self.tickSegments()
         self.checkHeartRateFlow()
+        self.checkGpsFlow()
         // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
         // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
         if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15, !self.autoPaused,
@@ -540,6 +597,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
     var done = false
     if let d = seg.dur { done = inTime >= d }
     else if let m = seg.dist { done = inDist >= m }
+    else if seg.kind != "cooldown" && inTime >= openRemindAt {
+      // Open step still running: remind at 8 min, then every 5 min ("Still in warm-up. Press Next…").
+      speak("Still in \(seg.label.lowercased()). Press Next when you're ready.")
+      openRemindAt = inTime + 300
+    }
     if done { advanceSegment() }
     else { updateSegDisplay(seg, inTime, inDist); if isIndoor { checkPaceTarget(seg) } else { checkTarget(seg) }; countdownEnd(seg, inTime) }
   }
@@ -630,6 +692,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     segStartElapsed = elapsed; segStartWall = wallElapsed; segStartDist = distanceM
     segDistM = 0; segPaceStr = "--:--"; paceTrend = 0; recomputeWorkIndex()   // reset section stats for the new phase
     targetState = 0; outSince = nil; lastTargetCue = nil; paceOutSince = nil; lastPaceCue = nil; cueSpoken = []   // reset per-segment trackers
+    openRemindAt = 480                                 // first "still in <open step>" reminder 8 min into it
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
       WKInterfaceDevice.current().play(.success); speak("Workout complete")
@@ -647,6 +710,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
       phrase += m >= 1 ? ", \(m) minute\(m == 1 ? "" : "s")" : ", \(Int(d)) seconds"
     } else if let mm = seg.dist {
       phrase += ", \(Int(mm)) meters"
+    } else if seg.kind != "cooldown" {
+      // OPEN step (no time/distance): it lasts until Next — say so, or the watch just goes quiet (2026-10-02).
+      phrase += ", press Next when you're ready"
     }
     if let z = seg.zone, !z.isEmpty { phrase += ", \(z)" }
     // State the prescribed target band on a work segment so you know it before you're in it. Indoor/treadmill

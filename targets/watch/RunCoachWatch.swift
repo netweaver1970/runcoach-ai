@@ -68,7 +68,9 @@ final class KPIStore: NSObject, ObservableObject, WCSessionDelegate {
     if let p = try? JSONDecoder().decode(KPIPayload.self, from: data) {
       DispatchQueue.main.async { self.payload = p; self.persist(data, p) }
     } else if let r = try? JSONDecoder().decode(RoutePayload.self, from: data), r.type == "route" {
-      RouteStore.shared.setRoute(r)
+      // MAIN thread: if this is the first touch of RouteStore.shared, its CLLocationManager is created HERE — on the
+      // WCSession queue (no run loop) it would never deliver a location/heading/permission callback all launch.
+      DispatchQueue.main.async { RouteStore.shared.setRoute(r) }
     }
   }
 
