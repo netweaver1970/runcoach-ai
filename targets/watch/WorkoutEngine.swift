@@ -99,6 +99,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private enum IssueKind { case none, auth, hr, start, save, route, location }
   private var gpsAlerted = false           // spoke "no GPS" this run (route runs only)
   private var openRemindAt: TimeInterval = 0   // in-segment time of the next "press Next" reminder (open steps)
+  private var routeMidSeen = false         // this run has been seen around the MIDDLE of the route (forward progress proof)
+  private var routeEndTicks = 0            // consecutive ticks with route remaining ≤ toEndM (one bad fix can't end the step)
   private var issueKind: IssueKind = .none
 
   // NO Health sheet from the watch — REMOVED 2026-09-25. On Geert's iOS 27 iPhone + watchOS 26 Ultra the watch sheet
@@ -366,7 +368,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       DispatchQueue.main.async {
         self.running = true; self.paused = false; self.elapsed = 0; self.pausedTotal = 0; self.pausedSince = nil
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartWall = 0; self.segStartDist = 0
-        self.openRemindAt = 480
+        self.openRemindAt = 480; self.routeMidSeen = false; self.routeEndTicks = 0
         self.lastMoveAt = Date(); self.autoPaused = false
         self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
         self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
@@ -589,6 +591,29 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // ─── Structured intervals ───────────────────────────────────────────────────────────────────────────────
   func lap() { if running { advanceSegment() } }   // manual advance (open segments, or skip)
 
+  // ROUTE run work step (toEndM): done when the route's remaining distance is ≤ toEndM. On a LOOP the start IS the
+  // finish, so near the start the nearest route point can be the last one (remaining ≈ 0) — only trust it once the
+  // run has covered at least half the route, and only with a live GPS fix.
+  // Progress is PROVEN by having been around the route's middle (remaining 25–75 %) with a fresh fix — total distance
+  // can't prove it (a warm-up run off the route, then Next at the loop start, would end the step at once). The end
+  // must then hold for 3 consecutive ticks on fresh fixes.
+  private func routeEndReached(_ seg: RouteSeg) -> Bool {
+    guard let toEnd = seg.toEndM, let r = RouteStore.shared.route, r.pts.count > 1, r.distanceKm > 0,
+          let fix = RouteStore.shared.lastFixAt, Date().timeIntervalSince(fix) < 15,
+          !RouteStore.shared.offRoute else { routeEndTicks = 0; return false }
+    let remM = RouteStore.shared.remainingKm * 1000, routeM = r.distanceKm * 1000
+    if remM > 0.25 * routeM && remM < 0.75 * routeM { routeMidSeen = true }
+    guard routeMidSeen, remM <= toEnd else { routeEndTicks = 0; return false }
+    routeEndTicks += 1
+    return routeEndTicks >= 3
+  }
+  /** Metres left in a route-end work step (route remaining − toEndM), or nil when it can't be judged yet. */
+  private func routeStepRemaining(_ seg: RouteSeg) -> Double? {
+    guard let toEnd = seg.toEndM, let r = RouteStore.shared.route, r.pts.count > 1, RouteStore.shared.lastFixAt != nil else { return nil }
+    if !routeMidSeen && RouteStore.shared.remainingKm < r.distanceKm * 0.25 { return nil }   // loop-start ambiguity
+    return max(0, RouteStore.shared.remainingKm * 1000 - toEnd)
+  }
+
   private func tickSegments() {
     guard running, !segs.isEmpty, segIndex < segs.count else { return }
     let seg = segs[segIndex]
@@ -596,7 +621,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     let inDist = distanceM - segStartDist
     var done = false
     if let d = seg.dur { done = inTime >= d }
-    else if let m = seg.dist { done = inDist >= m }
+    else if let m = seg.dist { done = inDist >= m || routeEndReached(seg) }
     else if seg.kind != "cooldown" && inTime >= openRemindAt {
       // Open step still running: remind at 8 min, then every 5 min ("Still in warm-up. Press Next…").
       speak("Still in \(seg.label.lowercased()). Press Next when you're ready.")
@@ -708,6 +733,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
     if let d = seg.dur {
       let m = Int((d / 60).rounded())
       phrase += m >= 1 ? ", \(m) minute\(m == 1 ? "" : "s")" : ", \(Int(d)) seconds"
+    } else if let te = seg.toEndM, seg.dist != nil {
+      phrase += ", until \(Int(te)) meters before the finish"
     } else if let mm = seg.dist {
       phrase += ", \(Int(mm)) meters"
     } else if seg.kind != "cooldown" {
@@ -736,7 +763,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
       let rem = max(0, d - inTime)
       segRemain = String(format: "%d:%02d", Int(rem) / 60, Int(rem) % 60)
     } else if let m = seg.dist {
-      segRemain = "\(max(0, Int(m - inDist))) m"
+      // route-end step: show what's left of the ROUTE (to 200 m before the finish) once that can be judged
+      let left = routeStepRemaining(seg) ?? max(0, m - inDist)
+      segRemain = left >= 1000 ? String(format: "%.1f km", left / 1000) : "\(Int(left)) m"
     } else {
       segRemain = "lap ▸"
     }

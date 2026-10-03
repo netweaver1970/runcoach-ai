@@ -43,14 +43,38 @@ const r5 = (n: number) => Math.round(n * 1e5) / 1e5;
 // A flat, ordered list of segments the watch engine steps through (Stage 2). Mirrors how RunCoachWorkoutModule
 // builds the WorkoutKit intervals: warmup → drills → per block reps×(work[,recover]) with NO trailing recover →
 // cooldown. dur (s) OR dist (m) → a goal; neither → an OPEN segment advanced by the lap button.
-export interface WorkoutSeg { kind: string; dur?: number; dist?: number; label: string; zone?: string; pLo?: number; pHi?: number; paceLo?: number; paceHi?: number }
-export function flattenWorkout(w: WatchWorkout): WorkoutSeg[] {
+export interface WorkoutSeg { kind: string; dur?: number; dist?: number; toEndM?: number; label: string; zone?: string; pLo?: number; pHi?: number; paceLo?: number; paceHi?: number }
+/** Metres the route's work step is SHORT of the route (Geert, 2026-10-03: "route distance −200 m"). */
+export const ROUTE_WORK_MARGIN_M = 200;
+
+/**
+ * True when the workout is ONE continuous work block (an easy/steady/long run) — the only shape whose work step
+ * can be measured by the route's distance. Interval sessions (reps, recoveries, several blocks) stay on time.
+ */
+export function isContinuousWork(w: WatchWorkout): boolean {
+  const bs = w.blocks ?? [];
+  if (bs.length !== 1 || Math.max(1, bs[0].repeats || 1) !== 1 || bs[0].restMinutes > 0) return false;
+  // easy, long AND tempo (Geert's choice) — but the threshold TEST stays a true 20-minute test
+  return !/threshold test/i.test(`${bs[0].label ?? ''} ${w.name ?? ''}`);
+}
+
+/**
+ * `opts.workDistM`: ROUTE runs only — the continuous work step targets this DISTANCE (route length − 200 m) instead
+ * of the prescribed minutes, so the whole route counts as work however long it takes. Time-based otherwise
+ * (non-route pushes, track/indoor workouts, Apple Workout) — those never pass it.
+ */
+export function flattenWorkout(w: WatchWorkout, opts?: { workDistM?: number }): WorkoutSeg[] {
   const segs: WorkoutSeg[] = [];
+  const byDistance = !!opts?.workDistM && opts.workDistM > 0 && isContinuousWork(w);
   segs.push(w.warmupMeters > 0 ? { kind: 'warmup', dist: w.warmupMeters, label: 'Warm-up' } : { kind: 'warmup', label: 'Warm-up' });
   if (w.drillsMinutes > 0) segs.push({ kind: 'drills', dur: w.drillsMinutes * 60, label: 'Drills' });
   for (const b of w.blocks ?? []) {
     const reps = Math.max(1, b.repeats || 1);
-    const work = (): WorkoutSeg => ({ kind: 'work', ...(b.workMinutes > 0 ? { dur: b.workMinutes * 60 } : {}), label: b.label || 'Work', zone: b.hrZone,
+    // Route run: the watch ends the work step when the ROUTE's remaining distance drops to 200 m (toEndM) — exact
+    // whatever the warm-up/drills already covered. `dist` (route − 200 m) is only a backstop for a watch without GPS
+    // or an older watch build that ignores toEndM.
+    const goal = byDistance ? { dist: Math.round(opts!.workDistM!), toEndM: ROUTE_WORK_MARGIN_M } : b.workMinutes > 0 ? { dur: b.workMinutes * 60 } : {};
+    const work = (): WorkoutSeg => ({ kind: 'work', ...goal, label: b.label || 'Work', zone: b.hrZone,
       ...(b.powerLowWatts && b.powerHighWatts ? { pLo: b.powerLowWatts, pHi: b.powerHighWatts } : {}),         // watch reports under/over power (outdoor)
       ...(b.paceLoSec && b.paceHiSec ? { paceLo: b.paceLoSec, paceHi: b.paceHiSec } : {}) });                 // …or under/over pace (indoor/treadmill)
     if (b.restMinutes > 0) {
@@ -80,7 +104,9 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
   const payload = {
     type: 'route', name, distanceKm: Math.round(loop.distanceKm * 10) / 10, pts, turns,
     voice: await getVoiceNav(), sport,
-    workout: workout ? flattenWorkout(workout) : [],       // Stage 2: structured intervals for the run session
+    // ROUTE run: a continuous work step targets the ROUTE's distance (−200 m) instead of minutes — the real
+    // distance counts as work whatever the pace. Cool-down stays open. (Too-short/stub routes keep the time goal.)
+    workout: workout ? flattenWorkout(workout, loop.distanceKm >= 1 ? { workDistM: loop.distanceKm * 1000 - ROUTE_WORK_MARGIN_M } : undefined) : [],
     hrZones: await hrZonesForWatch(),                         // Z1–Z5 bpm bands → on-wrist live zone (Apple-unified on iOS 27)
   };
   // Sending a route = the user is about to run → start the keep-alive NOW (foreground, so WhenInUse suffices)

@@ -61,6 +61,7 @@ export async function buildAppModelPrompt(): Promise<string> {
     tripSummary ? `• TRAVEL (athlete's saved trips — plan around these): ${tripSummary}` : '',
     adherence ? `• ${adherence}` : '',
     fuelPreferenceLine(fuelLongMin),
+    '• WAYFINDER ROUTE RUNS: an easy/long/tempo session run on a route has a DISTANCE-based work step (it ends 200 m before the route finish), so its work minutes can differ from the prescribed minutes — judge the session by route completion and intensity, not by minutes over/under.',
     foodLine,
   ].filter(Boolean).join('\n');
 }

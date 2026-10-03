@@ -10,7 +10,9 @@ import WatchConnectivity
 struct RoutePoint: Codable, Hashable { let lat: Double; let lon: Double }
 struct RouteTurn: Codable, Hashable { let lat: Double; let lon: Double; let text: String; let dist: Double }
 // One structured-workout segment (Stage 2). dur (s) OR dist (m) → a goal; neither → OPEN (advance with the lap button).
-struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String?; let pLo: Double?; let pHi: Double?; let paceLo: Double?; let paceHi: Double? }  // paceLo/Hi = sec/km work band (indoor/treadmill: FAST/SLOW bound)
+struct RouteSeg: Codable, Hashable { let kind: String; let dur: Double?; let dist: Double?; let label: String; let zone: String?; let pLo: Double?; let pHi: Double?; let paceLo: Double?; let paceHi: Double?
+  let toEndM: Double?   // ROUTE runs: end this step when the route's remaining distance ≤ toEndM (MUST stay optional)
+}  // paceLo/Hi = sec/km work band (indoor/treadmill: FAST/SLOW bound)
 struct HrZone: Codable, Hashable { let z: String; let lo: Double; let hi: Double }   // Z1–Z5 HR band, bpm (Apple-unified on iOS 27, else Karvonen)
 struct RoutePayload: Codable {
   let type: String            // "route"
@@ -232,9 +234,12 @@ final class RouteStore: NSObject, ObservableObject, CLLocationManagerDelegate {
       let b = CLLocationCoordinate2D(latitude: r.pts[j + 1].lat, longitude: r.pts[j + 1].lon)
       perpD = min(perpD, distToSegmentMeters(loc.coordinate, a, b))
     }
+    let accurate = loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy < 65
     DispatchQueue.main.async {
       self.here = loc.coordinate
-      self.remainingKm = rem / 1000
+      // remaining distance only from ACCURATE fixes: a 100 m+ Wi-Fi/cell fix (underpass, trees) snapping to the
+      // route's last stretch would otherwise read "200 m to go" mid-route (it also steadies the "km left" readout)
+      if accurate { self.remainingKm = rem / 1000 }
       // EASE the on↔off transition (hysteresis + debounce): go off-route only after the deviation stays beyond
       // offThreshM for offDebounceS (a road-cross or GPS wobble won't trip it), and rejoin once back inside the
       // tighter onThreshM — so it doesn't flap at the boundary.
