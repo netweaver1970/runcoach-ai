@@ -70,6 +70,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var segStartDist: Double = 0
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
+  private var autoPauseHoldUntil: Date?    // no auto-pause until then (a MANUAL resume means "I'm going now")
   private var hkToggleAt: Date?            // pause()/resume() sent, HealthKit's state change not in yet (delegate clears it)
   // WHO paused (2026-09-25: real pauses kept appearing in runs with auto-pause OFF). The requester stamps its source
   // here; the delegate logs each actual running⇄paused transition with it ("system" = no request of ours pending).
@@ -369,7 +370,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.running = true; self.paused = false; self.elapsed = 0; self.pausedTotal = 0; self.pausedSince = nil
         self.segCount = self.segs.count; self.segIndex = 0; self.segStartElapsed = 0; self.segStartWall = 0; self.segStartDist = 0
         self.openRemindAt = 480; self.routeMidSeen = false; self.routeEndTicks = 0
-        self.lastMoveAt = Date(); self.autoPaused = false
+        self.lastMoveAt = Date(); self.autoPaused = false; self.autoPauseHoldUntil = nil; self.segKind = ""
         self.powerMin = 0; self.powerMax = 0; self.batteryNote = ""; self.startBattery = bat0; self.segLog = []
         self.cueSpoken = []; self.isIntervalWorkout = self.segs.filter { $0.kind == "work" }.count >= 2
         self.workCount = self.segs.filter { $0.kind == "work" }.count
@@ -401,7 +402,12 @@ final class WorkoutEngine: NSObject, ObservableObject {
     guard let s = session, hkCanToggle(s) else { return }
     autoPaused = false                     // a manual pause/resume overrides auto-pause bookkeeping
     hkToggleAt = Date(); pauseSrc = source; pauseSrcAt = Date()
-    if s.state == .paused { s.resume() } else { s.pause() }
+    if s.state == .paused {
+      // a manual resume restarts the "still since" clock (it was still the pre-pause time → re-paused 3 s later)
+      // and holds auto-pause off for a minute
+      lastMoveAt = Date(); autoPauseHoldUntil = Date().addingTimeInterval(60)
+      s.resume()
+    } else { s.pause() }
   }
 
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
@@ -450,7 +456,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     DispatchQueue.main.async {
       self.running = false; self.paused = false; self.power = 0
-      self.segLabel = ""; self.segRemain = ""; self.segZone = ""; self.segIndex = 0; self.segCount = 0
+      self.segLabel = ""; self.segRemain = ""; self.segZone = ""; self.segKind = ""; self.segIndex = 0; self.segCount = 0
       self.workIndex = 0; self.workCount = 0; self.segDistM = 0; self.segPaceStr = "--:--"; self.prevWorkPaceStr = ""; self.paceTrend = 0
     }
   }
@@ -499,7 +505,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.checkGpsFlow()
         // Auto-pause is OPT-IN (default off) and only after the run has genuinely started (25 s + 15 m moved),
         // so it never pauses at the start or spuriously; the distance handler auto-resumes on the next movement.
+        // Never during Warm-up/Drills (lunges/skips cover ~no distance → it kept pausing; drills often happen inside an
+        // open warm-up), Recovery (standing still is the point; a pause would freeze its clock and stall the next rep)
+        // or within a minute of a manual resume.
         if UserDefaults.standard.bool(forKey: "autoPause"), self.elapsed > 25, self.distanceM > 15, !self.autoPaused,
+           !["drills", "warmup", "recovery"].contains(self.segKind), (self.autoPauseHoldUntil.map { Date() >= $0 } ?? true),
            let lm = self.lastMoveAt, Date().timeIntervalSince(lm) > 12,
            let s = self.session, s.state == .running, self.hkCanToggle(s) {   // once — not every tick until .paused lands
           self.autoPaused = true; self.hkToggleAt = Date(); self.pauseSrc = "auto"; self.pauseSrcAt = Date(); s.pause()
