@@ -125,6 +125,7 @@ export interface CoachPlan {
   genReadiness?: number;     // readiness (0–100) when generated — morning plans use STALE (yesterday's) readiness
                              // before overnight HRV/sleep lands; refresh once it crosses the green (≥60) gate
   shrinkForced?: boolean;    // shrink-to-fit placed this quality on its day OVER the cap → skip the budget/cap refresh checks
+  rampHeld?: boolean;        // a FITNESS-RAMP week slot honoured over the daily +cap% budget → same refresh exemption
   coachEdited?: boolean;     // the athlete APPROVED a chat-coach proposal → never auto-regenerate over it (only ↻ Regenerate)
   sessionKind?: SessionKind; // canonical type → drives the honest UI label (not the workout's hardest zone)
   prescribedLoad?: number;   // derived readout: the session's prescribed Banister TRIMP (impact), incl. warm-up/cool-down
@@ -192,7 +193,7 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   // you've actually RUN today, the forced session is DONE → re-check so it can't keep prescribing another
   // run (the phantom-2nd-run bug — force-placed this morning at todayDone 0, then you ran).
   const todayRunMin = (snap.recentTimeOnFeet ?? []).find(d => d.date === snap.date)?.min ?? 0;
-  if (!plan.shrinkForced || todayRunMin >= 8) {
+  if (!(plan.shrinkForced || plan.rampHeld) || todayRunMin >= 8) {
     // A run done since the plan was written shrinks today's remaining budget — if the prescribed run now
     // exceeds it, regenerate so we don't keep advising a session that would blow the weekly cap.
     if (plan.intensity !== 'rest' && (plan.runMinutes ?? 0) > 0 && snap.tofBudgetTodayMin != null
@@ -733,6 +734,7 @@ export interface WeekPlanDay {
   forced?: boolean;    // shrink-to-fit force-placed this short quality on its day — the screen must NOT re-trim it away
   runKm?: number;      // target distance (km) — shown instead of minutes when distance basis
   commitment?: string; // standing commitment on this day (e.g. "dancing") — lets the UI find the day to offer the "not this week" toggle, whatever weekday it falls on
+  capRest?: boolean;   // rested ONLY because the rolling +cap% was full (not schedule/commitment) — the ramp fill may use it
 }
 
 // Forward 7-day plan (tomorrow → +7), following the preferred weekly schedule but adjusted
@@ -1200,7 +1202,7 @@ export async function getWeekPlan(
       kind === 'flex'                 ? 'Easy recovery jog' : 'Easy aerobic Z2';
     const runKm = intensity !== 'rest' && snap.loadUnit === 'km' && snap.paceMinPerKm
       ? Math.round((runMinutes / snap.paceMinPerKm) * 10) / 10 : undefined;
-    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm, commitment: commitments[d.getDay()]?.label });
+    out.push({ date: key, weekday, intensity, runMinutes, structure, note, kind: placed, forced: forcePlaced, runKm, commitment: commitments[d.getDay()]?.label, ...(capRest ? { capRest: true } : {}) });
   }
 
   // ── PROGRESSIVE FILL — trajectory-aware build instead of parking at maintenance ───────────────────────
@@ -1228,8 +1230,13 @@ export async function getWeekPlan(
       // wins over the +cap% minutes guard, within the +25 % ceiling) and an easy day may reach 60 min. The fill
       // stops once the projected week reaches that load, so it doesn't overshoot either.
       const rates = snap.trimpRates;   // calibrated (CTL units); undefined → defaults
+      // With a ramp, the fill's FORM walk is priced in the same calibrated units as snap.ctl/atl (the defaults count
+      // an interval minute at 2.8 vs ~1.1 measured → phantom fatigue that blocked the growth). No ramp → unchanged.
+      const walkRates = rampT > 0 ? rates : undefined;
       const rampLoad = rampT > 0 ? 7 * ((snap.ctl ?? 0) + rampT / CTL_WEEK_RESPONSE) : 0;
       let weekLoad = rampT > 0 ? out.reduce((a, o) => a + estimateDayTrimp(o.intensity, o.intensity === 'rest' ? 0 : o.runMinutes, rates), 0) : 0;
+      let extraRunDayUsed = false;
+      let converted: WeekPlanDay | null = null;   // the cap-rest day turned into the extra jog (not grown further)
       const FILL_EASY_MAX = rampT > 0 ? 60 : 50; // TENDON-SAFE: an easy day never grows past this via the fill…
       const FILL_STEP     = 15;                 // …nor more than this above its pre-fill length in one week
       // Two TSB thresholds shape the trajectory. GATE: only START adding load to a day once its projected form
@@ -1251,11 +1258,30 @@ export async function getWeekPlan(
         const oDeload = oPhase === 'deload';   // never GROW a deload day — the point of a deload is to reduce load
         const growFloorTSB = oBuild ? Math.max(-25, minTSB - 2) : minTSB + 2;   // build weeks push ~4pt deeper
         const growGateTSB  = growFloorTSB + 2;
-        if (headroom >= 5 && !oDeload && o.intensity !== 'rest' && (isEasy || isLong) && preTSB >= growGateTSB) {
+        // FITNESS RAMP short of its load: ONE cap-rest day (rested only because the minutes cap was full — not a
+        // scheduled rest, not a commitment day, not a deload) may become a short easy run, one run day beyond
+        // maxRunDays (Geert's chosen lever, 2026-10-05). Only while its projected form allows it.
+        if (rampT > 0 && !extraRunDayUsed && o.capRest && o.intensity === 'rest' && !o.commitment && !oDeload
+            && weekLoad < rampLoad && headroom >= MEANINGFUL && preTSB >= growGateTSB + 2   // +2: margin over the screen's re-trim
+            && out.filter(x => x.intensity !== 'rest').length < maxRunDays + 1) {
+          const perMinE = estimateDayTrimp('easy', 100, rates) / 100;
+          const tMaxE   = (ctlP * (1 - Lc) - atlP * (1 - La) - (growFloorTSB + 2)) / (La - Lc);   // TSB-floor load bound (+2 margin)
+          const byFloor = Math.floor(tMaxE / (estimateDayTrimp('easy', 100, walkRates) / 100));
+          const byLoad  = perMinE > 0 ? Math.ceil((rampLoad - weekLoad + estimateDayTrimp('rest', 0, rates)) / perMinE) : 0;
+          const mins    = Math.min(30, byFloor, byLoad, headroom);
+          if (mins >= MEANINGFUL) {
+            weekLoad += estimateDayTrimp('easy', mins, rates) - estimateDayTrimp('rest', 0, rates);
+            o.intensity = 'easy'; o.kind = 'easy'; o.runMinutes = mins; o.capRest = undefined;
+            o.structure = `${mins}min easy @ Z2`;
+            o.note = `Easy jog — extra run day toward your +${rampT} CTL/week fitness target`;
+            headroom -= mins; extraRunDayUsed = true; converted = o;
+          }
+        }
+        if (headroom >= 5 && !oDeload && o.intensity !== 'rest' && (isEasy || isLong) && preTSB >= growGateTSB && o !== converted) {
           // the most extra load this day can take while its OWN projected post-day TSB stays above the fill floor
           const tMax   = (ctlP * (1 - Lc) - atlP * (1 - La) - growFloorTSB) / (La - Lc);
-          const cur    = estimateDayTrimp(o.intensity, o.runMinutes);
-          const perMin = estimateDayTrimp(o.intensity, 100) / 100;   // per-minute load at this intensity
+          const cur    = estimateDayTrimp(o.intensity, o.runMinutes, walkRates);
+          const perMin = estimateDayTrimp(o.intensity, 100, walkRates) / 100;   // per-minute load at this intensity
           const addByFloor = perMin > 0 ? Math.max(0, Math.floor((tMax - cur) / perMin)) : 0;
           const cap    = isLong ? longTargetMin : Math.min(FILL_EASY_MAX, o.runMinutes + FILL_STEP);
           // ramp: no more than the load still missing to the CTL target (in this day's minutes)
@@ -1268,7 +1294,7 @@ export async function getWeekPlan(
             o.runMinutes = target; headroom -= add; grown.add(o);
           }
         }
-        const dt = estimateDayTrimp(o.intensity, o.runMinutes);      // roll the projection forward with the (grown) load
+        const dt = estimateDayTrimp(o.intensity, o.runMinutes, walkRates);   // roll the projection forward with the (grown) load
         atlP += La * (dt - atlP);
         ctlP += Lc * (dt - ctlP);
       }
@@ -1383,6 +1409,15 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // a 2nd run after you've done it: the ghost run). Same todayDone<8 guard shrink-to-fit uses.
   const raceForced  = !!raceSlot && raceSlot.intensity !== 'rest' && todayDone < 8;
   const honorDirect = honourSlot || raceForced;
+  // FITNESS RAMP: the 7-day plan grew today's EASY/LONG slot (or turned a cap-rest into a jog) toward the CTL target,
+  // up to +25 % minutes — beyond this daily +cap% budget. Honour the slot's minutes instead of re-capping it to rest /
+  // clipping it, else the ramp only ever exists on the 7-day screen and never reaches the watch. Readiness can still
+  // ease or rest it (the hard-rest floor + the !green ease below), and not after you've already run today.
+  // …only from a FRESH plan (made yesterday or the day before, not a week-old slot) and never when load is already
+  // spiking (ACWR > 1.45, the same backstop the fill itself uses).
+  const rampSlot    = (snap.ctlRampTarget ?? 0) > 0 && !!todaySlot && todaySlot.intensity !== 'rest'
+    && (todaySlot.kind === 'easy' || todaySlot.kind === 'long') && todayDone < 8 && !raceForced
+    && (snap.acwr == null || snap.acwr <= 1.45) && !!(await loadTodaysWeekPlanSlot(snap.date, 2));
   const strainLow   = clampScore(snap.advisableLow, 30);
   const strainHigh  = clampScore(snap.advisableHigh, 60);
   const strainReal  = snap.strainReal ?? null;
@@ -1392,9 +1427,9 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // "Next run" tracks the 7-DAY PLAN (may hold a reduced shrink-to-fit run tomorrow), not the raw
   // meaningful-run cap projection — so the daily card + home agree with the 7-day screen. Race mode is
   // suppressed (the race block, not the cap, decides the days → avoids "run 25m" + "next run Sat").
-  let nextRunLabel  = (cappedToday && !raceForced) ? snap.tofNextRunLabel : undefined;
-  let nextRunInDays = raceForced ? undefined : snap.tofNextRunInDays;
-  if (cappedToday && !raceForced) {
+  let nextRunLabel  = (cappedToday && !raceForced && !rampSlot) ? snap.tofNextRunLabel : undefined;
+  let nextRunInDays = raceForced || rampSlot ? undefined : snap.tofNextRunInDays;
+  if (cappedToday && !raceForced && !rampSlot) {
     const wp = await nextRunFromWeekPlan(snap);
     if (wp) { nextRunLabel = wp.label; nextRunInDays = wp.inDays; }
   }
@@ -1410,7 +1445,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
 
   // Cap reached → mandatory recovery day, unless a session is genuinely being force-placed today (shrink
   // or race — both now require you HAVEN'T run yet). Once you've run + are capped, this rests, whatever mode.
-  if (cappedToday && !honourSlot && !raceForced) {
+  if (cappedToday && !honourSlot && !raceForced && !rampSlot) {
     return {
       headline: 'At your volume cap — recovery day',
       session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${nextRunLabel ?? 'in a couple of days'}.`,
@@ -1510,7 +1545,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   }
   let heatCut = false;
   if (intensity === 'hard' && (apparentC ?? 0) >= 24) { intensity = 'moderate'; sk = 'tempo'; heatCut = true; }
-  if (intensity !== 'rest' && budget < 12 && !honorDirect) { intensity = 'rest'; sk = 'recovery'; base = 0; }
+  if (intensity !== 'rest' && budget < 12 && !honorDirect && !rampSlot) { intensity = 'rest'; sk = 'recovery'; base = 0; }
 
   // Rest day (scheduled or out of budget).
   if (intensity === 'rest') {
@@ -1528,13 +1563,13 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // PROGRESSIVE OVERLOAD: ramp this session's TYPE from its recent duration (+cap%/week) before capping to
   // budget — matches the 7-day plan's per-type ramp so a type climbs to target instead of jumping (the slot
   // path is already ramped, so this is idempotent there; it's the no-slot fallback that needs it).
-  if (!honorDirect) {   // intensity is already non-rest here (rest returned earlier)
+  if (!honorDirect && !rampSlot) {   // intensity is already non-rest here (rest returned earlier); a ramp slot is already sized
     const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, Math.max(snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT, SESSION_RAMP_MIN_PCT));
     base = typeRamp(new Date(snap.date + 'T00:00:00').getDay(), base, sk === 'long', sk as any);
   }
   // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
   // only today's heat eases it — so the daily card matches the 7-day plan instead of re-capping to rest.
-  const totalMin = Math.max(8, honorDirect ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));
+  const totalMin = Math.max(8, honorDirect || rampSlot ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));
 
   // SPLIT LONG RUN: on a long day, per the athlete's Long-run style, deliver the SAME long target as Part 1
   // (now) + Part 2 (later, easy Z2). This redistributes today's long — it does NOT add volume — so there's
@@ -1618,7 +1653,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
     session: `${label} — ${dose}${structure ? `, ${structure}` : ''}.${splitNote}`,
     strength: STRENGTH_DEFAULT, intensity, runMinutes, runKm,
     rationale: bandPhrase(strainReal, strainLow, strainHigh, driver) + heatNote,
-    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, shrinkForced: honorDirect,
+    cautions: recoveryStale ? STALE_CAUTION : undefined, workout, shrinkForced: honorDirect, ...(rampSlot ? { rampHeld: true } : {}),
     sessionKind: sk, secondSession, prescribedLoad, ...stamp,
   };
 }
@@ -1662,7 +1697,9 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     // which then fights the app: on 2026-07-22 it returned rest, the rest→easy floor made it `easy`, its
     // (absent) structure was rejected, and the card ended up "Z2 · Z4 259-265W · Cap hit — rest today".
     // Telling it about the force-placement removes the contradiction at SOURCE rather than papering over it.
-    const forced = basis.shrinkForced
+    const forced = basis.rampHeld && !basis.shrinkForced
+      ? `\n\nIMPORTANT — TODAY'S SESSION IS DELIBERATELY HELD OVER THE DAILY VOLUME BUDGET for the athlete's FITNESS RAMP TARGET (+${snap.ctlRampTarget} CTL/week): the 7-day plan grew this easy/long run (up to +25 % minutes on the week) so CTL climbs at that rate. A low tofBudgetTodayMin or a reached +cap% therefore does NOT mean rest: do NOT return intensity "rest" and do NOT write that the cap forces rest. Honour the prescribed minutes (ease only if today's recovery genuinely warrants).`
+      : basis.shrinkForced
       ? `\n\nIMPORTANT — TODAY'S SESSION IS DELIBERATELY FORCE-PLACED. The rolling volume cap is nearly spent, but the app has INTENTIONALLY held this shortened quality session on its scheduled day (shrink-to-fit) and banked budget elsewhere in the week. A low tofBudgetTodayMin therefore does NOT mean today is a rest day: do NOT return intensity "rest", and do NOT write that the cap forces rest today. Honour the prescribed session (you may still ease it slightly if today's recovery genuinely warrants).`
       : '';
     const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}${forced}`;
@@ -1671,7 +1708,7 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       system,
       // Feed the LLM the SAME next-run the basis resolved from the 7-day plan (may be tomorrow's shrink-to-fit
       // run), so its prose doesn't state the raw cap date (e.g. "run Saturday") while the card shows Friday.
-      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes, forcePlaced: !!basis.shrinkForced }, plannedSessionKind: basis.sessionKind }) }],
+      messages: [{ role: 'user', content: JSON.stringify({ ...snap, tofNextRunLabel: basis.nextRunLabel ?? snap.tofNextRunLabel, tofNextRunInDays: basis.nextRunInDays ?? snap.tofNextRunInDays, heatStrainFactor: heatFactor, prescribedCeiling: { intensity: basis.intensity, runMinutes: basis.runMinutes, forcePlaced: !!(basis.shrinkForced || basis.rampHeld) }, plannedSessionKind: basis.sessionKind }) }],
       maxTokens: 1200,
       temperature: 0.2,
     });
@@ -3131,10 +3168,10 @@ export async function saveWeekPlanCache(cache: WeekPlanCache): Promise<void> {
 // Read TODAY's slot from the most recent rolling 7-day plan generated on a PRIOR day (which therefore
 // contains today). This keeps the daily plan consistent with the SPREAD week instead of recomputing a
 // greedy single-day budget. Looks back up to 7 generation-days for a cached plan that covers `date`.
-export async function loadTodaysWeekPlanSlot(date: string): Promise<WeekPlanDay | null> {
+export async function loadTodaysWeekPlanSlot(date: string, maxBack = 7): Promise<WeekPlanDay | null> {
   const base = new Date(date + 'T00:00:00');
   const p = (n: number) => String(n).padStart(2, '0');
-  for (let back = 1; back <= 7; back++) {
+  for (let back = 1; back <= maxBack; back++) {
     const g = new Date(base); g.setDate(g.getDate() - back);
     const cache = await loadWeekPlanCache(`${g.getFullYear()}-${p(g.getMonth() + 1)}-${p(g.getDate())}`);
     const slot = cache?.days.find(d => d.date === date);

@@ -9,7 +9,7 @@ import { useThemedStyles, Palette } from '../src/theme';
 import { SubKPICard, buildHistories } from '../src/components/SubKPICard';
 import { fetchOurDailyComponents, fetchDailyDurationHistory, loadSnapshotCache } from '../src/services/healthkit';
 import { strainStatus, strainFromLoad, estimateWorkoutLoad, heatStrainFactor, prescribedTrimp, estimateDayTrimp } from '../src/services/trainingLoad';
-import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getLoadCapBasis, synthesizeWorkout, ensureBlockPower, addBlockPace, getTrailingPaceMinPerKm, getPrescribedMinutes, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, WatchWorkout, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
+import { getCoachPlan, deterministicCoachPlan, loadCachedPlan, saveCachedPlan, buildCapContext, CapContext, getLoadCapPct, getCtlRampTarget, getLoadCapBasis, synthesizeWorkout, ensureBlockPower, addBlockPace, getTrailingPaceMinPerKm, getPrescribedMinutes, mergeWorkoutPower, planNeedsRefresh, shrinkWantsQualityToday, getCoachingMode, getLongRunStyle, getLongSplitOptIn, setLongSplitOptIn, LongRunStyle, CoachPlan, WatchWorkout, cleanBlockLabel, formatWorkoutStructure, loadPendingPrescription, applyPendingPrescription, clearPendingPrescription, PendingPrescription, thresholdTestWorkout, thresholdTestTarget, THRESHOLD_TEST_MIN } from '../src/services/coach';
 import { useLLMReady } from '../src/hooks/useLLMReady';
 import { ensureZonesFile } from '../src/services/zones';
 import { weekdaySlot } from '../src/services/watchWorkout';
@@ -421,6 +421,7 @@ export default function DailyCoachScreen() {
         loadCapPct:        capCtx?.capPct,
         loadBudgetToday:   capCtx?.cap.budgetTodayMin,
         loadUnit:          capCtx?.loadUnit,
+        ctlRampTarget:     targetIsToday ? (await getCtlRampTarget().catch(() => null)) ?? undefined : undefined,   // honour ramp-grown week slots
         // Yesterday's strain by DATE (not strainHistUpTo[length-2], which reads the day-before-yesterday
         // whenever today's components aren't in `comps` yet — the "yesterday's intervals" ghost).
         yesterdayStrain:   comps[toDateKey(new Date(new Date(targetDate + 'T00:00:00').getTime() - 86_400_000))]?.strainScore,
