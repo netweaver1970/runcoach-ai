@@ -693,7 +693,7 @@ function qualityTargetLoad(snap: CoachSnapshot, sk: string, capPct: number): num
   if (snap.loadCapBasis !== 'trimp' || (sk !== 'intervals' && sk !== 'tempo')) return undefined;
   const recent = sk === 'intervals' ? snap.recentQualityTrimp?.intervals : snap.recentQualityTrimp?.tempo;
   const base = recent && recent > 0 ? recent : NOMINAL_QUALITY_LOAD[sk];
-  return Math.round(base * (1 + capPct / 100));
+  return Math.round(base * (1 + Math.max(capPct, SESSION_RAMP_MIN_PCT) / 100));   // quality dose keeps progressing under a low ramp cap
 }
 
 // Concise one-line structure for the daily plan, e.g. "3× 10min @ 180–205W + 2min jog" or "60min @ 205W".
@@ -930,7 +930,7 @@ export async function getWeekPlan(
   if (await raceActive()) { const rw = await getRaceWeekPlan(snap); if (rw) return rw.days; }
   const today = new Date(snap.date + 'T00:00:00');
   const capPct = snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT;
-  const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, capPct);   // per-type progressive-overload cap (no jumps)
+  const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, Math.max(capPct, SESSION_RAMP_MIN_PCT));   // per-type progressive-overload cap (no jumps; ≥5 % even under a low CTL-ramp week cap)
   const periodization = await getPeriodization();  // build/deload cycle modulates each week's cap multiplier
   const MEANINGFUL = 20;
   const shrink = await getShrinkToFit();  // ON → a cap-blocked quality SHRINKS to fit its day instead of deferring
@@ -1505,7 +1505,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // budget — matches the 7-day plan's per-type ramp so a type climbs to target instead of jumping (the slot
   // path is already ramped, so this is idempotent there; it's the no-slot fallback that needs it).
   if (!honorDirect) {   // intensity is already non-rest here (rest returned earlier)
-    const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT);
+    const typeRamp = buildTypeRamp(snap.recentTimeOnFeet, snap.recentRuns, Math.max(snap.loadCapPct ?? DEFAULT_LOAD_CAP_PCT, SESSION_RAMP_MIN_PCT));
     base = typeRamp(new Date(snap.date + 'T00:00:00').getDay(), base, sk === 'long', sk as any);
   }
   // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
@@ -2036,7 +2036,7 @@ async function saveCapPctSwitches(list: CapPctSwitch[]): Promise<void> {
   try { await SecureStore.setItemAsync(LOAD_CAP_PCT_SWITCHES_KEY, JSON.stringify(list)); } catch { /* ignore */ }
 }
 /** Invalidate the in-memory cache (call after a restore writes a new switch list). */
-export function clearCapPctCache(): void { capPctSwitchCache = null; }
+export function clearCapPctCache(): void { capPctSwitchCache = null; rampMemo = null; rampGen++; }
 
 /** The +cap% in force on a given date = the latest switch with since ≤ date. Pure (list passed in). */
 export function capPctForDate(date: string, list: CapPctSwitch[]): number {
@@ -2047,12 +2047,122 @@ export function capPctForDate(date: string, list: CapPctSwitch[]): number {
 }
 export async function getLoadCapPctList(): Promise<CapPctSwitch[]> { return [...(await loadCapPctSwitches())]; }
 
+// ── CTL ramp target (Geert, 2026-10-05: "set the coach to +1.5 per week") ─────────────────────────────────────
+// Instead of a fixed +cap%, steer by FITNESS: hold CTL growth at ~N points/week. CTL is a 42-day EWMA, so over the
+// next 7 days ΔCTL ≈ (avg daily load − CTL) × (1 − e^(−7/42)). The load that gives +N is therefore
+// 7 × (CTL + N / 0.1535); the cap % is that relative to the higher of the last two completed weeks (the 7-day plan's
+// weekCeiling reference). Bounded 0–10 %: an under-filled week lets it catch up (never past the classic +10 %),
+// over-delivery → 0 % (no growth beyond the recent best week; the freshness factor can still nudge it).
+// The derived % is NEVER written into the manual switch list (that list stays the athlete's own setting, so turning
+// the ramp off restores it). A small separate log keeps the % per week for the point-in-time Volume-vs-Budget
+// history, plus the last value as a fallback when the snapshot cache is stale.
+const CTL_RAMP_KEY = 'ctl_ramp_target';
+const CTL_RAMP_LOG_KEY = 'ctl_ramp_log';
+const RAMP_OPT = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK } as const;   // readable in the locked morning flow
+const CTL_WEEK_RESPONSE = 1 - Math.exp(-7 / 42);
+export const CTL_RAMP_MAX_PCT = 10;
+/** Per-session growth (long/tempo/quality dose) keeps its old 5 % floor — a 0–3 % weekly cap must not freeze it. */
+export const SESSION_RAMP_MIN_PCT = 5;
+interface RampLog { last?: { date: string; pct: number }; weeks: Record<string, number> }
+
+export async function getCtlRampTarget(): Promise<number | null> {
+  try { const v = parseFloat((await SecureStore.getItemAsync(CTL_RAMP_KEY)) ?? ''); return Number.isFinite(v) && v >= 0.1 && v <= 10 ? v : null; }
+  catch { return null; }
+}
+/** v = CTL points/week (0.1–10, one decimal), or null = off (back to the manual +cap%). */
+export async function setCtlRampTarget(v: number | null): Promise<void> {
+  rampMemo = null; rampGen++;
+  try {
+    // the fallback value belongs to the OLD target → drop it (the per-week history stays)
+    const log = await readRampLog();
+    if (log.last) { delete log.last; await SecureStore.setItemAsync(CTL_RAMP_LOG_KEY, JSON.stringify(log), RAMP_OPT); }
+  } catch { /* ignore */ }
+  try {
+    if (v == null) await SecureStore.deleteItemAsync(CTL_RAMP_KEY);
+    else await SecureStore.setItemAsync(CTL_RAMP_KEY, String(Math.min(10, Math.max(0.1, Math.round(v * 10) / 10))), RAMP_OPT);
+  } catch { /* ignore */ }
+}
+/** Steady-state weekly % a sustained +ramp implies at this CTL (for multi-week projections, e.g. the season plan). */
+export function steadyRampPct(ramp: number, ctl: number): number {
+  const w = ctl + ramp / CTL_WEEK_RESPONSE;
+  return w > 0 ? Math.round((100 * ramp / w) * 10) / 10 : 0;
+}
+/**
+ * Pure: the +cap% that steers CTL up by `ramp`/week. Completed days only, and only when the series is CURRENT
+ * (its last completed day is yesterday) — a cache from yesterday morning has a partial "yesterday" and would read
+ * the reference low. null = can't tell.
+ */
+export function capPctForCtlRamp(series: { date: string; load: number; ctl: number }[], ramp: number, todayKey: string, yesterdayKey: string): number | null {
+  const done = series.filter(d => d.date < todayKey);
+  if (done.length < 14 || done[done.length - 1].date !== yesterdayKey) return null;
+  const ctl = done[done.length - 1].ctl;
+  const sum = (a: typeof done) => a.reduce((s, d) => s + (Number.isFinite(d.load) ? d.load : 0), 0);
+  const ref = Math.max(sum(done.slice(-7)), sum(done.slice(-14, -7)));
+  if (!(ref > 0) || !Number.isFinite(ctl)) return null;
+  const target = 7 * (ctl + ramp / CTL_WEEK_RESPONSE);
+  return Math.max(0, Math.min(CTL_RAMP_MAX_PCT, Math.round((target / ref - 1) * 100)));
+}
+async function readRampLog(): Promise<RampLog> {
+  try { const j = JSON.parse((await SecureStore.getItemAsync(CTL_RAMP_LOG_KEY)) ?? ''); if (j && typeof j === 'object' && j.weeks) return j; } catch { /* none */ }
+  return { weeks: {} };
+}
+/** The ramp-derived % per Monday (overlays the manual list in the Volume-vs-Budget history). */
+export async function getCtlRampWeeks(): Promise<Record<string, number>> { return (await readRampLog()).weeks; }
+
+let rampMemo: { at: number; pct: number | null } | null = null;   // getLoadCapPct is hot → re-derive ≤ once a minute
+let rampGen = 0;                                                     // bumps on set/restore → drops in-flight results
+async function rampDerivedPct(): Promise<number | null> {
+  if (rampMemo && Date.now() - rampMemo.at < 60_000) return rampMemo.pct;
+  const gen = rampGen;
+  const ramp = await getCtlRampTarget();
+  let pct: number | null = null;
+  if (ramp != null) {
+    const today = capTodayKey();
+    const y = new Date(); y.setDate(y.getDate() - 1);
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    const yKey = `${y.getFullYear()}-${p2(y.getMonth() + 1)}-${p2(y.getDate())}`;
+    const snap = await loadSnapshotCache().catch(() => null);
+    // only a snapshot SCANNED TODAY: one from yesterday morning ends on a partial "yesterday" yet passes the
+    // series check (its last completed day IS yesterday by then) → the ≤2-day log fallback covers that case
+    const f = snap?.fetchedAt ? new Date(snap.fetchedAt) : null;
+    const fresh = !!f && `${f.getFullYear()}-${p2(f.getMonth() + 1)}-${p2(f.getDate())}` === today;
+    pct = fresh && snap?.trainingLoad?.length ? capPctForCtlRamp(snap.trainingLoad, ramp, today, yKey) : null;
+    const log = await readRampLog();
+    if (pct == null) {
+      // stale/short data → keep the last derived % for up to 2 days rather than snapping back to the manual one
+      if (log.last && (Date.parse(today) - Date.parse(log.last.date)) / 86_400_000 <= 2) pct = log.last.pct;
+    } else {
+      const mon = mondayOf(new Date()); const mKey = `${mon.getFullYear()}-${p2(mon.getMonth() + 1)}-${p2(mon.getDate())}`;
+      const changed = log.last?.pct !== pct || log.last?.date !== today || log.weeks[mKey] == null;
+      if (changed && gen === rampGen) {
+        if (log.weeks[mKey] == null) log.weeks[mKey] = pct;            // the week's % = its first derivation
+        const keys = Object.keys(log.weeks).sort();
+        for (const k of keys.slice(0, Math.max(0, keys.length - 30))) delete log.weeks[k];   // keep ~30 weeks
+        log.last = { date: today, pct };
+        try { await SecureStore.setItemAsync(CTL_RAMP_LOG_KEY, JSON.stringify(log), RAMP_OPT); } catch { /* ignore */ }
+      }
+    }
+  }
+  if (gen === rampGen) rampMemo = { at: Date.now(), pct };
+  return pct;
+}
+
+/** Today's CTL-ramp-derived % — null when no ramp target is set OR no fresh data yet (then the manual % applies). */
+export async function getCtlRampPctToday(): Promise<number | null> { return rampDerivedPct(); }
+
 export async function getLoadCapPct(): Promise<number> {
-  // The CURRENT (latest) cap % — what the forward plan + today's budget train against.
+  // The CURRENT cap % — what the forward plan + today's budget train against: the CTL-ramp-derived % when a ramp
+  // target is set, else the athlete's manual one.
+  const derived = await rampDerivedPct();
+  return derived ?? getManualLoadCapPct();
+}
+/** The athlete's own (manual) +cap% — what applies whenever no CTL ramp target is set. */
+export async function getManualLoadCapPct(): Promise<number> {
   const list = await loadCapPctSwitches();
   return list[list.length - 1]?.pct ?? DEFAULT_LOAD_CAP_PCT;
 }
-export async function setLoadCapPct(pct: number): Promise<void> {
+export async function setLoadCapPct(pct: number): Promise<void> { await storeCapPct(clampCapPct(pct)); }
+async function storeCapPct(pct: number): Promise<void> {
   // Append a DATED switch (effective today) instead of overwriting, so past weeks keep their in-force %.
   const p = clampCapPct(pct);
   const list = await loadCapPctSwitches();
@@ -2605,7 +2715,7 @@ export interface CapWeek {
  * anti-erosion cap visible: are you reaching the ceiling, and how much is heat costing you?
  */
 export async function computeCapHistory(weeks = 12, toDate = new Date()): Promise<CapWeek[]> {
-  const [periodization, capList] = await Promise.all([getPeriodization(), getLoadCapPctList()]);
+  const [periodization, capList, rampWeeks] = await Promise.all([getPeriodization(), getLoadCapPctList(), getCtlRampWeeks()]);
   const spanDays = weeks * 7 + 28;   // +28d so the earliest week's base lookback is covered
   const [dur, weatherHist] = await Promise.all([
     fetchDailyDurationHistory(toDate, spanDays),
@@ -2623,7 +2733,7 @@ export async function computeCapHistory(weeks = 12, toDate = new Date()): Promis
     const monday = new Date(thisMonday); monday.setDate(monday.getDate() - 7 * w);
     // POINT-IN-TIME cap %: use the +cap% that was in force ON THIS MONDAY (not the current one), so changing
     // the cap only affects budgets from its change date forward and past weeks keep the % they trained under.
-    const capPct = capPctForDate(iso(monday), capList);
+    const capPct = rampWeeks[iso(monday)] ?? capPctForDate(iso(monday), capList);   // a CTL-ramp week → its derived %
     // Ceiling ENTERING the week = the daily engine's cap7d computed as of that Monday (weekMult × the
     // max-of-N heat-credited base of the 3 weeks before it) — guaranteed identical to what the plan uses.
     const plan = computeTimeOnFeetPlan(dur, monday, { capPct, baseWindows: BASE_WINDOWS, heatCredit, heatCreditMax: HEAT_CREDIT_MAX, periodization });

@@ -19,6 +19,7 @@ export async function resolve(specifier, context, nextResolve) {
   // Heavy service modules that reach for device data — alias to light mocks so HealthKit/weather never load.
   if (/(^|\/)healthkit$/.test(specifier)) return alias('mocks/healthkit.mjs');
   if (/(^|\/)weather$/.test(specifier))   return alias('mocks/weather.mjs');
+  if (/(^|\/)modules\/runcoach-workout$/.test(specifier)) return alias('mocks/runcoach-workout.mjs');   // native dir import
   // Node ESM requires explicit extensions; the RN source imports './llm' etc. → append .ts.
   if (specifier.startsWith('.') && !extname(specifier)) {
     try { return await nextResolve(specifier + '.ts', context); } catch { /* fall through to default */ }

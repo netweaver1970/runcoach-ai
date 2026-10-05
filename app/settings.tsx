@@ -51,7 +51,7 @@ import { usageSince, clearUsage, UsageSummary, PRICES_AS_OF } from '../src/servi
 import { shareJson } from '../src/shareJson';
 import { connectDrive, disconnectDrive, isDriveConnected, uploadDebugSections } from '../src/services/googleDrive';
 import { isAutoDayViewEnabled, setAutoDayViewEnabled, maybeRunDayView } from '../src/services/dayUpdate';
-import { getLoadCapPct, setLoadCapPct, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure, getHeatSensitivity, setHeatSensitivity, getMaxRunDays, setMaxRunDays, DEFAULT_MAX_RUN_DAYS } from '../src/services/coach';
+import { getLoadCapPct, getManualLoadCapPct, getCtlRampPctToday, setLoadCapPct, getCtlRampTarget, setCtlRampTarget, getLoadCapBasis, setLoadCapBasis, DEFAULT_LOAD_CAP_PCT, LoadCapBasis, getMinTSB, setMinTSB, DEFAULT_MIN_TSB, getCoachingMode, setCoachingMode, CoachingMode, getPeriodization, setPeriodization, clearTodayPlanCache, assembleCoachSnapshot, loadCachedPlan, loadWeekPlanCache, getShrinkToFit, getLongRunStyle, setLongRunStyle, LongRunStyle, getWorkoutStructure, setWorkoutStructure, getHeatSensitivity, setHeatSensitivity, getMaxRunDays, setMaxRunDays, DEFAULT_MAX_RUN_DAYS } from '../src/services/coach';
 import { readKnowledgeContent } from '../src/services/coachFiles';
 import { getPlanMode, setPlanMode, getRaceConfig, setRaceConfig, PlanMode } from '../src/services/racePlan';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -109,6 +109,10 @@ export default function SettingsScreen() {
   const [longRunSaved, setLongRunSaved] = useState(false);
   const [capPct, setCapPct] = useState(String(DEFAULT_LOAD_CAP_PCT));
   const [capPctSaved, setCapPctSaved] = useState(false);
+  const [ctlRamp, setCtlRamp] = useState('');           // '' = off (manual +cap%)
+  const [ctlRampOn, setCtlRampOn] = useState(false);
+  const [ctlRampSaved, setCtlRampSaved] = useState(false);
+  const [rampPctToday, setRampPctToday] = useState<number | null>(null);   // the auto % in force today
   const [heatSens, setHeatSens] = useState('1.5');
   const [heatSensSaved, setHeatSensSaved] = useState(false);
   const [maxRunDays, setMaxRunDaysStr] = useState(String(DEFAULT_MAX_RUN_DAYS));
@@ -233,7 +237,11 @@ export default function SettingsScreen() {
     resolveBodyMassKg().then(kg => setBodyMass(String(kg)));
     getPowerZones().then(setPowerZones);
     getLongRunMinutes().then(m => setLongRunMin(String(m)));
-    getLoadCapPct().then(p => setCapPct(String(p)));
+    getManualLoadCapPct().then(p => setCapPct(String(p)));   // the field = YOUR %; the ramp's auto % is shown apart
+    getCtlRampTarget().then(r => {
+      setCtlRamp(r != null ? String(r) : ''); setCtlRampOn(r != null);
+      if (r != null) getCtlRampPctToday().then(setRampPctToday); else setRampPctToday(null);
+    });
     getHeatSensitivity().then(h => setHeatSens(String(h)));
     getMaxRunDays().then(d => setMaxRunDaysStr(String(d)));
     isDriveConnected().then(setDriveConnected).catch(() => {});
@@ -326,6 +334,25 @@ export default function SettingsScreen() {
     await clearWorkoutCache();  // force re-classify with new threshold
     setLongRunSaved(true);
     setTimeout(() => setLongRunSaved(false), 2000);
+  };
+
+  const handleSaveCtlRamp = async () => {
+    const t = ctlRamp.trim().replace(',', '.');
+    let v: number | null = null;                                      // empty → off (back to your own %)
+    if (t !== '') {
+      const n = Math.round(parseFloat(t) * 10) / 10;
+      if (!Number.isFinite(n) || n < 0.1 || n > 10) {
+        Alert.alert('Fitness ramp', 'Enter CTL points per week between 0.1 and 10 (e.g. 1.5), or leave it empty to use the fixed %.');
+        return;
+      }
+      v = n;
+    }
+    await setCtlRampTarget(v);
+    setCtlRamp(v != null ? String(v) : ''); setCtlRampOn(v != null);
+    await clearTodayPlanCache().catch(() => {});   // the budget changed → re-plan today
+    setRampPctToday(v != null ? await getCtlRampPctToday() : null);
+    setCtlRampSaved(true);
+    setTimeout(() => setCtlRampSaved(false), 2000);
   };
 
   const handleSaveCapPct = async () => {
@@ -1345,9 +1372,38 @@ export default function SettingsScreen() {
             classic guideline). Coming back from injury you can ramp faster — e.g. 20%. Only the REAL
             work + drills count, never warmup/cooldown/recovery or walks.
           </Text>
+          <Text style={styles.hint}>
+            Fitness ramp target: steer by CTL instead — e.g. 1.5 = grow fitness ~1.5 CTL per week. The % below is
+            then worked out for you each day (max +10%; 0% after an over-filled week = no growth beyond your best
+            recent week). Single sessions still progress. Leave empty to use your fixed % below.
+          </Text>
           <View style={styles.row}>
             <TextInput
               style={[styles.input, { flex: 1, marginBottom: 0 }]}
+              value={ctlRamp}
+              onChangeText={setCtlRamp}
+              placeholder="off"
+              placeholderTextColor="#bbb"
+              keyboardType="decimal-pad"
+              returnKeyType="done"
+            />
+            <Text style={styles.unitLabel}>CTL / wk</Text>
+            <TouchableOpacity
+              style={[styles.btn, ctlRampSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              onPress={handleSaveCtlRamp}
+            >
+              <Text style={styles.btnText}>{ctlRampSaved ? '✓ Saved' : 'Save'}</Text>
+            </TouchableOpacity>
+          </View>
+          {ctlRampOn && (
+            <Text style={styles.hint}>
+              Today's auto cap: {rampPctToday != null ? `+${rampPctToday}%` : 'waiting for fresh data (uses your fixed % meanwhile)'}. Your fixed % below is kept for when you switch the ramp off.
+            </Text>
+          )}
+          <View style={styles.row}>
+            <TextInput
+              style={[styles.input, { flex: 1, marginBottom: 0 }, ctlRampOn && { opacity: 0.5 }]}
+              editable={!ctlRampOn}
               value={capPct}
               onChangeText={setCapPct}
               placeholder="10"
@@ -1357,7 +1413,8 @@ export default function SettingsScreen() {
             />
             <Text style={styles.unitLabel}>% / wk</Text>
             <TouchableOpacity
-              style={[styles.btn, capPctSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }]}
+              disabled={ctlRampOn}
+              style={[styles.btn, capPctSaved && styles.btnSuccess, { flex: 0, paddingHorizontal: 16 }, ctlRampOn && { opacity: 0.4 }]}
               onPress={handleSaveCapPct}
             >
               <Text style={styles.btnText}>{capPctSaved ? '✓ Saved' : 'Save'}</Text>

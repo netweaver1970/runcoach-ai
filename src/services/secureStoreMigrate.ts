@@ -16,6 +16,7 @@ const KEYS = [
   'theme_mode_v1', 'font_scale_v1', 'accent_color_v1',   // appearance
   'onboarding_done_v1', 'user_profile_v1',               // setup state (age/sex)
   'user_max_hr', 'observed_max_hr', 'long_run_minutes', 'sync_months',   // profile-ish settings
+  'load_cap_pct_switches', 'load_cap_basis', 'ctl_ramp_target', 'ctl_ramp_log',   // read by the locked morning auto-plan
 ];
 
 const OPT = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK } as const;

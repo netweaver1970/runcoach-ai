@@ -11,7 +11,7 @@ import { getAccountingMode } from './accounting';
 import { getLongRunMinutes } from './claude';
 import { getPlanMode } from './racePlan';
 import {
-  getLoadCapPct, getLoadCapBasis, getMinTSB, getMaxRunDays, getWorkoutStructure,
+  getLoadCapPct, getCtlRampTarget, getLoadCapBasis, getMinTSB, getMaxRunDays, getWorkoutStructure,
   getHeatSensitivity, getPeriodization, getCoachingMode,
 } from './coach';
 import { activeTripSummary } from './travelStore';
@@ -38,9 +38,10 @@ export async function buildAppModelPrompt(): Promise<string> {
       activeTripSummary(todayISO).catch(() => null),
       computeAdherence(todayISO).then(adherenceForLLM).catch(() => null),
     ]);
-  const [fuelLongMin, foodDays] = await Promise.all([
+  const [fuelLongMin, foodDays, ctlRamp] = await Promise.all([
     getFuelLongMin().catch(() => 90),
     foodTotalsForExport(7).catch(() => []),
+    getCtlRampTarget().catch(() => null),
   ]);
   const full = foodDays.filter(d => d.complete);
   const foodLine = full.length
@@ -54,7 +55,7 @@ export async function buildAppModelPrompt(): Promise<string> {
   return [
     'APP MODEL (authoritative — how THIS app computes things; use it, do not guess):',
     `• TIME-ON-FEET (ToF): the running volume the cap tracks = WORK + DRILLS only. Warm-up, cool-down, recovery jogs and walks are EXCLUDED. A FLOAT between reps (easy running, Z2/Z3) counts as work; a walk/standing rest does NOT. Never say a warm-up or cool-down "added to time-on-feet". (Accounting regime: "${regime}" — 'work'=work+drills, 'full'=whole run.)`,
-    `• VOLUME CAP: at most +${capPct}% per rolling 7 days, measured on ${basisTxt}.`,
+    `• VOLUME CAP: at most +${capPct}% per rolling 7 days, measured on ${basisTxt}.${ctlRamp ? ` This % is AUTO-DERIVED each day from the athlete's FITNESS RAMP TARGET of +${ctlRamp} CTL per week (the load that grows CTL by that much, vs the higher of the last two weeks): it rises after an under-filled week (max +10 %) and drops to 0 % (no growth beyond the recent best week) after over-delivery; single sessions (long/tempo/quality dose) still progress ≥5 %. Explain volume limits in those terms.` : ''}`,
     `• LOAD: daily Banister TRIMP (HR-reserve). CTL=42-day EWMA (fitness), ATL=7-day EWMA (fatigue), TSB=CTL−ATL same-day (form). Strain = log-scaled daily TRIMP. ACWR=ATL/CTL (sweet spot 0.8–1.3).`,
     `• RECOVERY 1–100 (0 = NO DATA, real scores floor at 1). Readiness composites recovery+sleep+form+ACWR. Sessions are trimmed to hold projected TSB ≥ ${minTSB}; readiness < 35 forces a rest day.`,
     `• ATHLETE SETTINGS: ${planMode} mode · ${coachMode === 'coach' ? 'external-coach' : 'self-coached'} · ≤${maxRunDays} run days/wk · long run ${longMin} min · structure warm-up ${m(struct.warmupMeters)} / drills ${struct.drillsMinutes}min / cool-down ${m(struct.cooldownMeters)} · heat sensitivity ${heatSens} · periodization ${per.on ? `on (build ${per.buildWeeks}/deload ${per.deloadWeeks}wk, −${per.deloadDropPct}%${(per as any).restartAfterBreak !== false ? '; the cycle RESTARTS at Build 1 after time off — ≥7 days without running or ≥5 days sick/injured/on a break' : ''}${(per as any).restarts?.length ? `; last restart: back ${(per as any).restarts[(per as any).restarts.length - 1].from}` : ''})` : 'off'}.`,

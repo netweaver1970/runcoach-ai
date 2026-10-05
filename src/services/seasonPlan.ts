@@ -54,7 +54,7 @@ function onDate(series: DailyLoad[], iso: string): { ctl: number; atl: number; t
 export function buildSeasonPlan(
   hist: DailyLoad[],
   race: RaceConfig,
-  opts: { capPct: number; periodization: Periodization },
+  opts: { capPct: number; periodization: Periodization; steadyRamp?: boolean },   // steadyRamp: capPct came from a CTL ramp target
 ): SeasonPlan | null {
   if (!hist.length || !race.date) return null;
   const today = at0(hist[hist.length - 1].date);   // anchor the projection to the real data's last day
@@ -69,7 +69,8 @@ export function buildSeasonPlan(
   const raceMon = mondayOf(raceDate);
   const W = Math.max(0, Math.round((raceMon.getTime() - wkMon0.getTime()) / (7 * DAY)));
 
-  const rampPct   = Math.min(0.10, Math.max(0.04, opts.capPct / 100));   // safe multi-week weekly ramp
+  // safe multi-week weekly ramp; a CTL ramp target's steady % is honoured below the usual 4 % floor (≥1 %)
+  const rampPct   = Math.min(0.10, Math.max(opts.steadyRamp ? 0.01 : 0.04, opts.capPct / 100));
   const taperWeeks = W >= 4 ? 2 : (W >= 2 ? 1 : 0);
   const peakWeeks  = W >= 8 ? 2 : (W >= 5 ? 1 : 0);
   const baseWeeks  = W >= 12 ? Math.max(1, Math.floor((W - taperWeeks - peakWeeks) / 3)) : 0;

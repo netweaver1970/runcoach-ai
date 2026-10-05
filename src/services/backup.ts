@@ -10,6 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { exportKnowledgeBundle, importKnowledgeBundle, KnowledgeBundle } from './coachFiles';
 import { clearAccountingCache } from './accounting';
+import { clearCapPctCache } from './coach';
 import { PROVIDER_ORDER } from './llm';
 
 // Meaningful settings only — caches like `training_rec_v1` and the internal `scan_marker_v1`
@@ -25,6 +26,7 @@ const STATIC_SECURE_KEYS = [
   'accounting_switches',          // volume-accounting regime switch list (work↔full by date)
   'load_cap_pct_switches',        // +cap% by date (point-in-time history); 'load_cap_pct' kept as the legacy mirror
   'load_cap_pct', 'load_cap_basis', // progression cap settings
+  'ctl_ramp_target', 'ctl_ramp_log', // fitness ramp target (CTL/wk) → auto +cap%, + its per-week log
   'user_max_hr', 'max_hr_history_v1', 'body_mass_kg', // physiology (incl. date-keyed max-HR changes) that drives zones/strain/power. (observed_max_hr is a HK-derived cache → excluded, rebuilt on scan.)
   'dayview_auto_v1', 'watch_kpi_v1', // auto day-view toggle, watch complication choice
   'coaching_mode_v1',             // self (LLM) vs coach (cloud prescription) mode
@@ -145,5 +147,6 @@ export async function restoreAllSettings(json: string): Promise<RestoreResult> {
   }
   if (b.knowledge) res.knowledge = await importKnowledgeBundle(b.knowledge);
   clearAccountingCache(); // re-read the restored switch list
+  clearCapPctCache();     // …and the restored +cap% list / CTL-ramp memo
   return res;
 }

@@ -8,7 +8,7 @@ import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { seasonPlanToIcs } from '../src/services/planIcs';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
 import { getRaceConfig, RaceConfig, fmtTime } from '../src/services/racePlan';
-import { getLoadCapPct, getPeriodization, Periodization } from '../src/services/coach';
+import { getLoadCapPct, getCtlRampTarget, steadyRampPct, getPeriodization, Periodization } from '../src/services/coach';
 import { buildSeasonPlan, SeasonPlan, Phase, PHASE_COLOR, raceLabel } from '../src/services/seasonPlan';
 import { DailyLoad } from '../src/types';
 
@@ -23,24 +23,28 @@ export default function SeasonPlanScreen() {
 
   const [hist, setHist] = useState<DailyLoad[] | null>(null);
   const [race, setRace] = useState<RaceConfig | null>(null);
-  const [cfg, setCfg] = useState<{ capPct: number; per: Periodization } | null>(null);
+  const [cfg, setCfg] = useState<{ capPct: number; per: Periodization; steady?: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const [h, r, capPct, per] = await Promise.all([
-          fetchTrainingLoadHistory(4), getRaceConfig(), getLoadCapPct(), getPeriodization(),
+        const [h, r, dailyPct, per, ramp] = await Promise.all([
+          fetchTrainingLoadHistory(4), getRaceConfig(), getLoadCapPct(), getPeriodization(), getCtlRampTarget(),
         ]);
-        setHist(h); setRace(r); setCfg({ capPct, per });
+        // A CTL ramp target → project with the STEADY weekly % that ramp implies, not today's catch-up/hold value
+        // (which swings day to day and would make the race plan change every time it's opened).
+        const ctlNow = h.length ? h[h.length - 1].ctl : 0;
+        const capPct = ramp != null && ctlNow > 0 ? steadyRampPct(ramp, ctlNow) : dailyPct;
+        setHist(h); setRace(r); setCfg({ capPct, per, steady: ramp != null && ctlNow > 0 });
       } catch (e: any) { setErr(e?.message ?? 'Could not load training history.'); }
       finally { setLoading(false); }
     })();
   }, []);
 
   const plan: SeasonPlan | null = useMemo(
-    () => (hist && race && cfg ? buildSeasonPlan(hist, race, { capPct: cfg.capPct, periodization: cfg.per }) : null),
+    () => (hist && race && cfg ? buildSeasonPlan(hist, race, { capPct: cfg.capPct, periodization: cfg.per, steadyRamp: cfg.steady }) : null),
     [hist, race, cfg],
   );
 
