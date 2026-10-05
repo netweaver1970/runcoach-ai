@@ -14,6 +14,7 @@ import { fetchOurDailyComponents, fetchDailyDurationHistory, fetchDailyWorkDista
 import { getLocalWeather } from './weather';
 import { getPowerZones, getLongRunMinutes, getEffectiveMaxHr } from './claude';
 import { ensureZonesFile } from './zones';
+import type { TrimpRates } from './trainingLoad';
 import { activityCategory, heatStrainFactor, DEFAULT_HEAT_SENSITIVITY, setHeatSensitivityCache, prescribedTrimp, singleHrTrimp, isFloatZone, trainingDayKey, estimateDayTrimp } from './trainingLoad';
 import { getSwitchList, regimeForDate, getAccountingMode, DEFAULT_ACCOUNTING, AccountingMode } from './accounting';
 import { getAthleteStatus, loadEvents, buildTimelineContext } from './timelineEvents';
@@ -52,6 +53,8 @@ export interface CoachSnapshot {
   tofNextRunInDays?: number;   // days until that — 0 = today's budget already allows it
   loadCapBasis?:     'tof' | 'distance' | 'trimp'; // what the +X% cap is measured on
   loadCapPct?:       number;   // the rolling increase cap % (default 10)
+  ctlRampTarget?:    number;   // fitness ramp target, CTL points/week (null/undefined = off) — the week fill aims at it
+  trimpRates?:       TrimpRates; // the athlete's CALIBRATED TRIMP/min (CTL's own units) — prices the ramp target
   loadBudgetToday?:  number;   // remaining budget today in loadUnit
   loadUnit?:         'min' | 'km';
   paceMinPerKm?:     number;   // trailing real-work pace (min/km) — km↔min conversion when distance basis
@@ -1001,6 +1004,10 @@ export async function getWeekPlan(
   // base so it stays a controlled ramp; the TSB floor + freshness cut remain the safety backstops above it.
   const easyTpm  = estimateDayTrimp('easy', 100) / 100 || 1.3;       // easy TRIMP per minute
   const maintMin = (snap.ctl && snap.ctl > 0) ? Math.round(snap.ctl * 7 / easyTpm) : 0;   // ToF-min that hold CTL
+  // FITNESS RAMP target (CTL/wk): Geert chose (2026-10-05) that it WINS over the +cap% minutes guard, bounded at
+  // +25 % minutes over the recent base. Only the load-aware PROGRESSIVE FILL chases it (it stops at the target
+  // load, priced in the athlete's CALIBRATED TRIMP rates = CTL's own units); the main loop is untouched.
+  const rampT    = snap.ctlRampTarget && snap.ctlRampTarget > 0 ? snap.ctlRampTarget : 0;
   const maintFloor = (gross: number, recentBase: number, isBuild: boolean) =>
     (isBuild && !reentry && maintMin > 0) ? Math.max(gross, Math.min(maintMin, Math.round(recentBase * 1.25))) : gross;
   // Grow an easy day to spend the SPARE budget (after reserving for quality still to place) up to EASY_MAX,
@@ -1086,6 +1093,8 @@ export async function getWeekPlan(
       const w1 = tof.slice(j - 7, j).reduce((a, b) => a + (b || 0), 0);
       const w2 = tof.slice(j - 14, j - 7).reduce((a, b) => a + (b || 0), 0);
       weekCeiling = Math.max(restartFloor, Math.round(maintFloor(Math.max(w1, w2) * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, Math.max(w1, w2), buildWk)));
+      // ramp: the fill may grow up to +25 % minutes over the recent week (it stops once the CTL-target load is met)
+      if (rampT > 0 && !deloadDay) weekCeiling = Math.max(weekCeiling, Math.round(Math.max(w1, w2) * 1.25));
     }
 
     const kind = template[d.getDay()];
@@ -1215,7 +1224,13 @@ export async function getWeekPlan(
     let headroom = Math.round(weekCeiling - totalToF);
     if (headroom >= 8) {
       const grown = new Set<WeekPlanDay>();
-      const FILL_EASY_MAX = 50;                 // TENDON-SAFE: an easy day never grows past this via the fill…
+      // FITNESS RAMP target set → the fill aims at the weekly LOAD that grows CTL by it (Geert chose: the CTL target
+      // wins over the +cap% minutes guard, within the +25 % ceiling) and an easy day may reach 60 min. The fill
+      // stops once the projected week reaches that load, so it doesn't overshoot either.
+      const rates = snap.trimpRates;   // calibrated (CTL units); undefined → defaults
+      const rampLoad = rampT > 0 ? 7 * ((snap.ctl ?? 0) + rampT / CTL_WEEK_RESPONSE) : 0;
+      let weekLoad = rampT > 0 ? out.reduce((a, o) => a + estimateDayTrimp(o.intensity, o.intensity === 'rest' ? 0 : o.runMinutes, rates), 0) : 0;
+      const FILL_EASY_MAX = rampT > 0 ? 60 : 50; // TENDON-SAFE: an easy day never grows past this via the fill…
       const FILL_STEP     = 15;                 // …nor more than this above its pre-fill length in one week
       // Two TSB thresholds shape the trajectory. GATE: only START adding load to a day once its projected form
       // has recovered a little off the floor — this is what holds the fatigued FRONT of the week easy (TSB deep
@@ -1243,8 +1258,15 @@ export async function getWeekPlan(
           const perMin = estimateDayTrimp(o.intensity, 100) / 100;   // per-minute load at this intensity
           const addByFloor = perMin > 0 ? Math.max(0, Math.floor((tMax - cur) / perMin)) : 0;
           const cap    = isLong ? longTargetMin : Math.min(FILL_EASY_MAX, o.runMinutes + FILL_STEP);
-          const target = Math.min(cap, o.runMinutes + Math.min(addByFloor, headroom));
-          if (target > o.runMinutes) { const add = target - o.runMinutes; o.runMinutes = target; headroom -= add; grown.add(o); }
+          // ramp: no more than the load still missing to the CTL target (in this day's minutes)
+          const perMinC = estimateDayTrimp(o.intensity, 100, rates) / 100;
+          const addByRamp = rampT > 0 ? (perMinC > 0 ? Math.max(0, Math.ceil((rampLoad - weekLoad) / perMinC)) : 0) : Infinity;
+          const target = Math.min(cap, o.runMinutes + Math.min(addByFloor, headroom, addByRamp));
+          if (target > o.runMinutes) {
+            const add = target - o.runMinutes;
+            weekLoad += estimateDayTrimp(o.intensity, target, rates) - estimateDayTrimp(o.intensity, o.runMinutes, rates);
+            o.runMinutes = target; headroom -= add; grown.add(o);
+          }
         }
         const dt = estimateDayTrimp(o.intensity, o.runMinutes);      // roll the projection forward with the (grown) load
         atlP += La * (dt - atlP);
@@ -1252,7 +1274,9 @@ export async function getWeekPlan(
       }
       grown.forEach(o => {
         o.structure = `${o.runMinutes}min ${o.kind === 'long' ? 'long-ish aerobic' : 'easy @ Z2'}`;
-        o.note = `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown as your form recovers this week, toward the +${capPct}% ceiling (build)`;
+        o.note = rampT > 0
+          ? `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown toward your +${rampT} CTL/week fitness target`
+          : `${o.kind === 'long' ? 'Long aerobic' : 'Easy Z2'} — grown as your form recovers this week, toward the +${capPct}% ceiling (build)`;
       });
     }
   }
@@ -2792,7 +2816,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
   // Refresh the sync-readable workout-structure cache so synthesizeWorkout / parseWorkout (both sync) see
   // the athlete's current warm-up / cool-down / drills config before any plan or watch workout is built.
   // Awaited in parallel below (the throwaway slot) so it's settled before the caller builds a workout.
-  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps, maxHR, tlSeries] = await Promise.all([
+  const [comps, dur, weather, powerZones, capPct, capBasis, status, events, supps, maxHR, tlSeries, ctlRampT] = await Promise.all([
     fetchOurDailyComponents(1),
     fetchDailyDurationHistory(),
     getLocalWeather().catch(() => null),
@@ -2804,6 +2828,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     loadSupplements(),
     getEffectiveMaxHr().catch(() => 190),   // to normalise realised run HR → reserve for the quality LOAD ramp
     fetchTrainingLoadHistory(1).catch(() => [] as any[]),  // FRESH CTL/ATL/TSB (see below) — not the DC cache
+    getCtlRampTarget().catch(() => null),                   // fitness ramp → the week planner's fill target
     refreshWorkoutStructure().catch(() => DEFAULT_WORKOUT_STRUCTURE),
     refreshAccountingMode().catch(() => DEFAULT_ACCOUNTING),
     refreshHeatSensitivity().catch(() => DEFAULT_HEAT_SENSITIVITY),
@@ -2878,6 +2903,8 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     yesterdayTofMin:   tof.yesterdayMin,
     loadCapBasis:      capBasis,
     loadCapPct:        capPct,
+    ctlRampTarget:     ctlRampT ?? undefined,
+    trimpRates:        ctlRampT ? (await loadSnapshotCache().catch(() => null))?.trimpRates : undefined,
     loadBudgetToday:   cap.budgetTodayMin,   // in loadUnit
     loadUnit,
     paceMinPerKm,
@@ -3083,6 +3110,7 @@ export interface WeekPlanCache {
   date:        string;        // the day it was generated for (YYYY-MM-DD)
   generatedAt: string;        // ISO
   lastRunDate: string;        // most recent run date at generation — the staleness signature
+  capSig?:     string;        // the volume cap in force (basis:%) — a cap / fitness-ramp change re-plans the week
   days:        WeekPlanDay[];
 }
 

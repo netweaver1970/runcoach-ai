@@ -233,14 +233,17 @@ export default function WeekPlan() {
       const lastRunDate = (snap.runs ?? []).reduce((m, r) => (r.date > m ? r.date : m), '');
       let days: WeekPlanDay[];
       const cached = forceRegen ? null : await loadWeekPlanCache(todayKey);
+      // The volume cap in force — changing it (or the fitness ramp moving it) must re-plan, not serve today's freeze.
+      const capSig = `${coach.loadCapBasis ?? 'tof'}:${coach.loadCapPct ?? ''}:${coach.ctlRampTarget ?? ''}`;
       // Regenerate if the cache predates the type-aware `kind` (so the fixed structures show without ↻).
-      if (cached && cached.lastRunDate === lastRunDate && cached.days?.some(d => d.kind)) {
+      if (cached && cached.lastRunDate === lastRunDate && cached.days?.some(d => d.kind) && cached.capSig === capSig) {   // (no capSig = older cache → re-plan once)
         days = cached.days;
         setGenAt(cached.generatedAt);
       } else {
-        days = await getWeekPlan(coach, forecast);
+        // price the fitness-ramp target in the SAME calibrated rates this screen projects with
+        days = await getWeekPlan({ ...coach, trimpRates: coach.trimpRates ?? cal }, forecast);
         const generatedAt = new Date().toISOString();
-        await saveWeekPlanCache({ date: todayKey, generatedAt, lastRunDate, days });
+        await saveWeekPlanCache({ date: todayKey, generatedAt, lastRunDate, capSig, days });
         setGenAt(generatedAt);
       }
       // Surface the forward week's standing commitment (dance night etc.) + whether it's marked "skip this week"
