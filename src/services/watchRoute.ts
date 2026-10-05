@@ -40,6 +40,52 @@ export async function setVoiceNav(on: boolean): Promise<void> {
 
 const r5 = (n: number) => Math.round(n * 1e5) / 1e5;
 
+/**
+ * The watch line = a SHAPE-PRESERVING simplification of the full route (Douglas–Peucker, ≤ tolM off the true path)
+ * that also keeps a vertex at least every MAX_GAP_M (the watch's remaining-distance and off-route maths use the
+ * vertices). It used to be every n-th point (≤150), which cut corners: a short zig-zag between houses became a
+ * straight chord "over the houses" on the watch while the phone showed the real path (2026-10-05).
+ */
+const MAX_GAP_M = 60, MAX_WATCH_PTS = 450;   // the gap widens on very long routes (≥ total/400) so the cap holds
+function segOffM(p: number[], a: number[], b: number[]): number {
+  const k = 111320, cl = Math.cos(a[1] * Math.PI / 180);
+  const bx = (b[0] - a[0]) * cl * k, by = (b[1] - a[1]) * k, px = (p[0] - a[0]) * cl * k, py = (p[1] - a[1]) * k;
+  const L = bx * bx + by * by;
+  const t = L > 0 ? Math.max(0, Math.min(1, (px * bx + py * by) / L)) : 0;
+  return Math.hypot(px - t * bx, py - t * by);
+}
+const gapM = (a: number[], b: number[]) => {
+  const k = 111320, cl = Math.cos(a[1] * Math.PI / 180);
+  return Math.hypot((b[0] - a[0]) * cl * k, (b[1] - a[1]) * k);
+};
+export function simplifyForWatch(co: number[][]): number[][] {
+  if (co.length <= 2) return co;
+  let totalM = 0; for (let i = 1; i < co.length; i++) totalM += gapM(co[i - 1], co[i]);
+  const maxGap = Math.max(MAX_GAP_M, totalM / 400);
+  const run = (tolM: number): number[] => {
+    const keep = new Uint8Array(co.length); keep[0] = keep[co.length - 1] = 1;
+    const stack: [number, number][] = [[0, co.length - 1]];
+    while (stack.length) {                                  // iterative DP (no recursion depth issues on long routes)
+      const [a, b] = stack.pop()!;
+      let worst = -1, wd = tolM;
+      for (let i = a + 1; i < b; i++) { const d = segOffM(co[i], co[a], co[b]); if (d > wd) { wd = d; worst = i; } }
+      if (worst > 0) { keep[worst] = 1; stack.push([a, worst], [worst, b]); }
+    }
+    const idx: number[] = [];
+    let walked = 0;
+    for (let i = 0; i < co.length; i++) {
+      if (i > 0) walked += gapM(co[i - 1], co[i]);
+      // keep the vertex BEFORE the gap would exceed MAX_GAP_M (original vertices only — never invented points)
+      const nextGap = i + 1 < co.length ? walked + gapM(co[i], co[i + 1]) : 0;
+      if (keep[i] || nextGap > maxGap) { idx.push(i); walked = 0; }
+    }
+    return idx;
+  };
+  let tol = 3, idx = run(tol);
+  while (idx.length > MAX_WATCH_PTS && tol < 40) { tol *= 1.6; idx = run(tol); }
+  return idx.map(i => co[i]);
+}
+
 // A flat, ordered list of segments the watch engine steps through (Stage 2). Mirrors how RunCoachWorkoutModule
 // builds the WorkoutKit intervals: warmup → drills → per block reps×(work[,recover]) with NO trailing recover →
 // cooldown. dur (s) OR dist (m) → a goal; neither → an OPEN segment advanced by the lap button.
@@ -94,11 +140,13 @@ export async function sendRouteToWatch(loop: RouteLoop, name = 'Route', sport: '
   if (!WatchSync) return false;
   const co = loop.coords ?? [];
   if (co.length < 2) return false;
-  const step = Math.max(1, Math.ceil(co.length / 150));                       // ≤150 pts → small WC payload
-  const pts = co.filter((_, i) => i % step === 0 || i === co.length - 1)
-    .map(([lon, lat]) => ({ lat: r5(lat), lon: r5(lon) }));
+  const pts = simplifyForWatch(co).map(([lon, lat]) => ({ lat: r5(lat), lon: r5(lon) }));   // ≤450 pts, true shape
   // Turn points carry their own lat/lon (from the FULL-res geometry), so downsampling `pts` doesn't shift them.
+  // backstop for routes saved before the via-point fix: an "Arrive" cue that isn't at the END is a via point
+  const left: number[] = new Array(co.length).fill(0);
+  for (let i = co.length - 2; i >= 0; i--) left[i] = left[i + 1] + gapM(co[i], co[i + 1]);
   const turns = (loop.steps ?? [])
+    .filter(st => st.type !== 10 || (left[Math.min(st.i, co.length - 1)] ?? 0) <= 150)
     .map(st => { const c = co[st.i]; return c ? { lat: r5(c[1]), lon: r5(c[0]), text: st.text.slice(0, 90), dist: st.dist } : null; })
     .filter((t): t is { lat: number; lon: number; text: string; dist: number } => t != null);
   const payload = {

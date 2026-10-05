@@ -4,6 +4,7 @@ import AVFoundation
 import WatchKit
 import WatchConnectivity
 import CoreLocation
+import CoreMotion
 
 // Owns the run on the watch: an HKWorkoutSession + live builder so OUR app (not Apple's Workout app) records
 // the run. That gives us three things the companion-only route screen couldn't have: the app stays alive in
@@ -71,6 +72,13 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var lastMoveAt: Date?            // last time distance advanced → auto-pause when stationary
   private var autoPaused = false           // paused BY auto-pause (vs a manual pause) so we can auto-resume
   private var autoPauseHoldUntil: Date?    // no auto-pause until then (a MANUAL resume means "I'm going now")
+  // Auto-RESUME needs its own movement sensor: HealthKit collects NO distance while the session is paused, so the
+  // distance-based resume below never fired (2026-10-05: "auto resume didn't kick in"). While AUTO-paused only,
+  // the wrist accelerometer (no permission needed, 25 Hz, stopped on resume) watches for running/walking motion.
+  private let motion = CMMotionManager()
+  private var accBuf: [Double] = []
+  private var accWinStart: TimeInterval = 0   // sensor timestamp of the current 1-s window (time, not a sample count)
+  private var moveSecs = 0                 // consecutive seconds of clear wrist motion while auto-paused
   private var hkToggleAt: Date?            // pause()/resume() sent, HealthKit's state change not in yet (delegate clears it)
   // WHO paused (2026-09-25: real pauses kept appearing in runs with auto-pause OFF). The requester stamps its source
   // here; the delegate logs each actual running⇄paused transition with it ("system" = no request of ours pending).
@@ -288,6 +296,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private func teardown() {
     stopTicker()
     RouteStore.shared.stop()   // backstop: any end path (save/discard/failure/system-ended) stops GPS tracking
+    stopResumeWatch()
     session = nil; builder = nil; routeBuilder = nil; segs = []
   }
 
@@ -413,6 +422,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // save == false → discard the workout (nothing written to Health). The UI guards this behind a confirmation.
   func end(save: Bool = true) {
     guard let s = session, let b = builder else { return }
+    stopResumeWatch(); autoPaused = false   // don't rely on the .ended delegate (a quick re-Start can skip it)
     if segIndex < segs.count {   // log the final in-progress phase (run stopped before it completed)
       let seg = segs[segIndex]
       segLog.append(["label": seg.label, "kind": seg.kind, "zone": seg.zone ?? "", "startSec": segStartWall, "endSec": wallElapsed])
@@ -541,12 +551,47 @@ final class WorkoutEngine: NSObject, ObservableObject {
       pausedSince = date; pauseReminderAt = nil
       WKInterfaceDevice.current().play(.stop)
       SpeechCue.shared.say("Run paused")          // bypasses mute: recording has stopped
+      if autoPaused { startResumeWatch() }
     } else {
+      stopResumeWatch(); autoPaused = false   // ANY resume (ours, manual, system) ends the auto-pause episode
       if let ps = pausedSince { pausedTotal += max(0, date.timeIntervalSince(ps)) }   // the pause no longer counts as run time
       pausedSince = nil
       WKInterfaceDevice.current().play(.start)
       speak("Resumed")
     }
+  }
+
+  // Wrist motion while AUTO-paused: RMS of |acceleration| − 1 g per second. Standing (even catching breath, hands on
+  // knees) stays ≲ 0.1 g; walking ≈ 0.2–0.35 g; running ≥ 0.5 g. ≥ 0.25 g for 3 s in a row = moving again → resume.
+  // A false resume (tying a shoe) is harmless: no distance follows, so auto-pause fires again 12 s later.
+  private func startResumeWatch() {
+    guard motion.isAccelerometerAvailable, !motion.isAccelerometerActive else { return }
+    accBuf = []; moveSecs = 0; accWinStart = 0
+    motion.accelerometerUpdateInterval = 1.0 / 25
+    motion.startAccelerometerUpdates(to: .main) { [weak self] d, _ in
+      guard let self, let d else { return }
+      let a = d.acceleration
+      self.accBuf.append(sqrt(a.x * a.x + a.y * a.y + a.z * a.z) - 1)
+      if self.accWinStart == 0 { self.accWinStart = d.timestamp }
+      guard d.timestamp - self.accWinStart >= 1, self.accBuf.count >= 5 else { return }
+      self.accWinStart = d.timestamp
+      let rms = sqrt(self.accBuf.reduce(0) { $0 + $1 * $1 } / Double(self.accBuf.count))
+      self.accBuf = []
+      self.moveSecs = rms >= 0.25 ? self.moveSecs + 1 : 0
+      guard self.moveSecs >= 3 else { return }
+      // same guards as the distance path: only our own auto-pause, only once HealthKit is really paused, and never
+      // while a toggle is in flight (then the next second retries — moveSecs stays ≥ 3 while still moving)
+      guard self.autoPaused else { self.stopResumeWatch(); return }
+      if let s = self.session, s.state == .paused, self.hkCanToggle(s) {
+        self.autoPaused = false; self.lastMoveAt = Date(); self.hkToggleAt = Date()
+        self.pauseSrc = "auto"; self.pauseSrcAt = Date(); s.resume()
+        self.stopResumeWatch()
+      }
+    }
+  }
+  private func stopResumeWatch() {
+    if motion.isAccelerometerActive { motion.stopAccelerometerUpdates() }
+    accBuf = []; moveSecs = 0
   }
 
   private func logPause(_ e: [String: Any]) { if pauseLog.count < 100 { pauseLog.append(e) } }   // bounded payload

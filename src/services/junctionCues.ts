@@ -18,15 +18,19 @@ const ENDPOINT = 'https://overpass-api.de/api/interpreter';
 const UA = 'RunCoachAI/1.0 (running route guidance)';   // Overpass refuses requests without a User-Agent (406)
 const NOT_WALKABLE = '^(motorway|motorway_link|trunk|trunk_link|proposed|construction|raceway|bus_guideway|abandoned)$';
 
-export interface OsmNet { nodes: Map<number, number[]>; ways: number[][] }   // node coords [lon, lat]; way = node ids
+// node coords [lon, lat]; way = node ids; tags[i] = the tags of ways[i] (roundabout detection needs them)
+export interface OsmNet { nodes: Map<number, number[]>; ways: number[][]; tags?: Record<string, string>[] }
 
 export function parseOverpass(j: any): OsmNet {
-  const nodes = new Map<number, number[]>(), ways: number[][] = [];
+  const nodes = new Map<number, number[]>(), ways: number[][] = [], tags: Record<string, string>[] = [];
+  const seen = new Set<number>();
   for (const e of (j?.elements ?? [])) {
     if (e.type === 'node' && typeof e.lon === 'number') nodes.set(e.id, [e.lon, e.lat]);
-    else if (e.type === 'way' && Array.isArray(e.nodes) && e.tags?.area !== 'yes') ways.push(e.nodes);   // not area outlines
+    else if (e.type === 'way' && Array.isArray(e.nodes) && e.tags?.area !== 'yes' && !seen.has(e.id)) {   // not area outlines
+      seen.add(e.id); ways.push(e.nodes); tags.push(e.tags ?? {});
+    }
   }
-  return { nodes, ways };
+  return { nodes, ways, tags };
 }
 
 const PRIVACY_M = 150;   // leave the start/end (home) out of the query — cues skip the first/last 30 m anyway
@@ -43,7 +47,12 @@ export async function fetchOsmNet(coords: number[][], timeoutMs = 6_000): Promis
   for (const c of mid) if (distM(pts[pts.length - 1], c) >= spacing) pts.push(c);
   if (pts[pts.length - 1] !== mid[mid.length - 1]) pts.push(mid[mid.length - 1]);
   const line = pts.map(c => `${c[1].toFixed(6)},${c[0].toFixed(6)}`).join(',');
-  const q = `[out:json][timeout:20];way[highway][highway!~"${NOT_WALKABLE}"](around:20,${line});out body;>;out skel qt;`;
+  // + every ROUNDABOUT touching those ways, its other ring parts (a ring is often split into several ways) and ALL
+  // its arms — arms on the far side of the ring are > 20 m from the route but still count as exits for a car.
+  const RB = '["junction"~"^(roundabout|circular)$"]';
+  const q = `[out:json][timeout:20];way[highway][highway!~"${NOT_WALKABLE}"](around:20,${line})->.near;` +
+    `way.near${RB}->.rb1;node(w.rb1)->.n1;way(bn.n1)[highway]${RB}->.rb2;node(w.rb2)->.n2;way(bn.n2)[highway]->.arms;` +
+    `(.near;.arms;);out body;>;out skel qt;`;
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
@@ -152,13 +161,130 @@ export function junctionCues(coords: number[][], steps: RouteStep[], net: OsmNet
   return mergeCloseTurns([...out, ...added].sort((a, b) => a.i - b.i), coords);
 }
 
-/** Best-effort enrichment of a route with real-network fork cues (unchanged route on any failure). */
+// ── Roundabouts, the way a car would take them (Geert, 2026-10-05: the cues at a roundabout were confusing) ─────
+// A foot route goes AROUND a roundabout on the pavement, so ORS gives a string of turns/crossings there. Instead,
+// say what a driver hears: "At the roundabout, take the 2nd exit onto X". Exits are counted in the DRIVING
+// direction, read from the ring's own OSM node order (roundabouts are mapped one-way in the direction of traffic),
+// so it's right for the country's side of the road without a country table: anticlockwise in Belgium, clockwise
+// in the UK. Only car-drivable arms count, an entry-only one-way slip isn't an exit, and a split carriageway
+// (separate in/out ways) is ONE arm. Any doubt (route doesn't enter AND leave along two different arms) → no cue.
+const CAR = /^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road)(_link)?$/;
+const ORD = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
+
+export function roundaboutCues(coords: number[][], steps: RouteStep[], net: OsmNet): RouteStep[] {
+  const tags = net.tags;
+  if (!tags || coords.length < 3) return steps;
+  const isRb = (wi: number) => /^(roundabout|circular)$/.test(tags[wi]?.junction ?? '');
+  // 1. rings = roundabout ways joined by shared nodes
+  const rbWays = net.ways.map((_, wi) => wi).filter(isRb);
+  if (!rbWays.length) return steps;
+  const parent = new Map<number, number>(rbWays.map(w => [w, w]));
+  const find = (x: number): number => { while (parent.get(x) !== x) x = parent.get(x)!; return x; };
+  const nodeWay = new Map<number, number>();
+  for (const wi of rbWays) for (const n of net.ways[wi]) {
+    const o = nodeWay.get(n);
+    if (o != null) parent.set(find(wi), find(o)); else nodeWay.set(n, wi);
+  }
+  const rings = new Map<number, number[]>();
+  for (const wi of rbWays) { const r = find(wi); (rings.get(r) ?? rings.set(r, []).get(r)!).push(wi); }
+
+  const cum = cumDist(coords), total = cum[cum.length - 1];
+  const k = 111320;
+  const xy = (c: number[], o: number[]) => [(c[0] - o[0]) * Math.cos(o[1] * Math.PI / 180) * k, (c[1] - o[1]) * k];
+  const angDiff = (a: number, b: number) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
+  let out = steps.map(s => ({ ...s }));
+  const added: RouteStep[] = [];
+
+  for (const ws of rings.values()) {
+    const ringNodes = new Set<number>(ws.flatMap(wi => net.ways[wi]));
+    const pts = [...ringNodes].map(n => net.nodes.get(n)).filter((c): c is number[] => !!c);
+    if (pts.length < 3) continue;
+    const ctr = [pts.reduce((a, c) => a + c[0], 0) / pts.length, pts.reduce((a, c) => a + c[1], 0) / pts.length];
+    const radius = pts.reduce((a, c) => a + distM(c, ctr), 0) / pts.length;
+    if (radius < 4 || radius > 120) continue;                                   // not a usable roundabout ring
+    // 2. driving direction from the mapped node order: signed turning around the centre (+ = anticlockwise)
+    let turn = 0;
+    for (const wi of ws) {
+      const w = net.ways[wi];
+      for (let i = 1; i < w.length; i++) {
+        const a = net.nodes.get(w[i - 1]), b = net.nodes.get(w[i]); if (!a || !b) continue;
+        const [ax, ay] = xy(a, ctr), [bx, by] = xy(b, ctr);
+        turn += ax * by - ay * bx;
+      }
+    }
+    if (!turn) continue;
+    const anticlockwise = turn > 0;
+    // 3. arms: non-ring highway ways touching a ring node; their bearing from the centre ~40 m out along the arm
+    //    (split carriageways converge there → one cluster)
+    const arms: { b: number; exit: boolean; car: boolean; name?: string }[] = [];
+    net.ways.forEach((w, wi) => {
+      if (isRb(wi)) return;
+      w.forEach((n, pos) => {
+        if (!ringNodes.has(n)) return;
+        const t = tags[wi] ?? {};
+        for (const dir of [1, -1] as const) {
+          if (pos + dir < 0 || pos + dir >= w.length) continue;
+          let acc = 0, idx = pos, last = net.nodes.get(n);
+          if (!last) return;
+          while (idx + dir >= 0 && idx + dir < w.length && acc < 40) {
+            const p = net.nodes.get(w[idx + dir]); if (!p) break;
+            if (ringNodes.has(w[idx + dir])) break;                              // a chord back onto the ring
+            acc += distM(last, p); last = p; idx += dir;
+          }
+          if (acc < 3) continue;
+          const ow = t.oneway, intoRing = (ow === 'yes' || ow === '1' || ow === 'true') ? dir === -1 : ow === '-1' ? dir === 1 : false;
+          arms.push({ b: bearingDeg(ctr, last), exit: !intoRing, car: CAR.test(t.highway ?? '') && t.service !== 'parking_aisle' && t.access !== 'no' && t.motor_vehicle !== 'no', name: t.name });
+        }
+      });
+    });
+    // cluster arms within 25° (split carriageway halves, a road + its parallel footway)
+    arms.sort((a, b) => a.b - b.b);
+    const clusters: { b: number; exit: boolean; car: boolean; name?: string; members: number[] }[] = [];
+    for (const a of arms) {
+      const c = clusters.find(x => angDiff(x.b, a.b) < 25);
+      if (c) { c.members.push(a.b); c.exit ||= a.exit && a.car; c.car ||= a.car; c.name ??= a.car ? a.name : undefined; }
+      else clusters.push({ b: a.b, exit: a.exit && a.car, car: a.car, name: a.car ? a.name : undefined, members: [a.b] });
+    }
+    if (clusters.filter(c => c.car).length < 3) continue;                       // a ring with < 3 roads isn't a junction
+    // 4. route passes through the zone (ring + pavement + crossings set back from it)
+    const zone = radius + 25;
+    const inZone = coords.map(c => distM(c, ctr) <= zone);
+    for (let i = 0; i < coords.length; i++) {
+      if (!inZone[i]) continue;
+      let j = i; while (j + 1 < coords.length && inZone[j + 1]) j++;
+      const a = i, b = j; i = j;
+      if (cum[a] < 30 || total - cum[b] < 30 || cum[b] - cum[a] < 8) continue;
+      // which arm do we come in on / leave by: where the route is just outside the zone
+      const inB = bearingDeg(ctr, ptAlong(coords, a, -1, 15)), outB = bearingDeg(ctr, ptAlong(coords, b, 1, 15));
+      const near = (bb: number) => clusters.filter(c => c.car).reduce<{ c?: typeof clusters[number]; d: number }>((m, c) => {
+        const d = Math.min(...c.members.map(x => angDiff(x, bb))); return d < m.d ? { c, d } : m; }, { d: 35 }).c;
+      const cin = near(inB), cout = near(outB);
+      if (!cin || !cout || cin === cout || !cout.exit) continue;
+      // count exits passed in the driving direction, entry arm excluded, our exit included
+      const rel = (bb: number) => { const d = anticlockwise ? cin.b - bb : bb - cin.b; return ((d % 360) + 360) % 360; };
+      const relOut = rel(cout.b);
+      const nth = clusters.filter(c => c !== cin && c.exit && rel(c.b) > 0 && rel(c.b) <= relOut).length;
+      if (nth < 1 || nth > ORD.length) continue;
+      const onto = cout.name ? ` onto ${cout.name}` : '';
+      // the roundabout cue replaces whatever was said inside it (ORS turns, crossings, our fork cues)
+      out = out.filter(s => s.type === 11 || s.type === 10 || cum[Math.min(s.i, cum.length - 1)] < cum[a] - 20 || cum[Math.min(s.i, cum.length - 1)] > cum[b] + 10);
+      added.push({ i: a, text: `At the roundabout, take the ${ORD[nth - 1]} exit${onto}`, dist: Math.round(cum[b] - cum[a]), type: 7, syn: true });
+      // a long way round on the pavement → also mark where to leave it (only if it's well clear of the entry,
+      // else the watch's 40 m trigger would speak both back to back)
+      if (cum[b] - cum[a] >= 50 && distM(coords[a], coords[b]) >= 60) added.push({ i: b, text: `Take the exit${onto}`, dist: 0, type: 8, syn: true });
+    }
+  }
+  if (!added.length) return steps;
+  return [...out, ...added].sort((x, y) => x.i - y.i);
+}
+
+/** Best-effort enrichment of a route with real-network fork + roundabout cues (unchanged route on any failure). */
 export async function addJunctionCues(loop: RouteLoop): Promise<RouteLoop> {
   try {
     const coords = loop.coords as number[][];
     const net = await fetchOsmNet(coords);
     if (!net) return loop;
-    return { ...loop, steps: junctionCues(coords, loop.steps ?? [], net) };
+    return { ...loop, steps: roundaboutCues(coords, junctionCues(coords, loop.steps ?? [], net), net) };
   } catch { return loop; }
 }
 

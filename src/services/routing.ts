@@ -280,15 +280,30 @@ function trimSpurs(coords: number[][], stepsIn: RouteStep[], wt: number[][] = []
 
 // ORS GeoJSON carries turn-by-turn under properties.segments[].steps[] (instructions are on by default). Each
 // step's way_points index into the geometry, so the maneuver's coordinate = coords[step.way_points[0]].
+// A route through VIA points (directional loop, padded A→B) comes back as one segment per leg, and EVERY leg ends
+// with its own "Arrive at your destination" and starts with "Head …". The watch spoke the in-between arrival mid-run
+// (Geert, 2026-10-05: "you've reached your destination" at ~60 %). Keep only the first depart and the last arrive;
+// a via point where the path really turns becomes a plain turn cue instead.
 function stepsFromFeature(f: any): RouteStep[] {
   const out: RouteStep[] = [];
-  for (const seg of (f?.properties?.segments ?? [])) {
+  const segs: any[] = f?.properties?.segments ?? [];
+  const coords: number[][] = f?.geometry?.coordinates ?? [];
+  segs.forEach((seg, si) => {
     for (const st of (seg.steps ?? [])) {
       const text = String(st.instruction ?? '').trim();
       if (!text) continue;
-      out.push({ i: st.way_points?.[0] ?? 0, text, dist: Math.round(st.distance ?? 0), type: st.type ?? 0 });
+      const i = st.way_points?.[0] ?? 0, type = st.type ?? 0;
+      if (type === 10 && si < segs.length - 1) continue;              // arrival at a via point
+      if (type === 11 && si > 0) {                                     // departure from a via point
+        const d = coords.length > 2 ? turnDelta(coords, i, i) : null;
+        if (d == null || Math.abs(d) < 30) continue;                   // straight on through it → nothing to say
+        const name = typeof st.name === 'string' && st.name && st.name !== '-' ? ` onto ${st.name}` : '';
+        out.push({ i, text: `Turn ${d > 0 ? 'right' : 'left'}${name}`, dist: Math.round(st.distance ?? 0), type: d > 0 ? 1 : 0, syn: true });
+        continue;
+      }
+      out.push({ i, text, dist: Math.round(st.distance ?? 0), type });
     }
-  }
+  });
   return out;
 }
 

@@ -355,14 +355,26 @@ private func relStart(_ bearing: Double, _ heading: Double) -> String {
   return rel > 0 ? "Head right ↱" : "Head left ↰"
 }
 private struct DirArrow: Identifiable { let id: Int; let coord: CLLocationCoordinate2D; let deg: Double; let t: Double }
+// Spaced by DISTANCE along the route (the phone now sends a shape-preserving simplification: dense points in
+// curves, sparse on straights — index spacing would bunch the arrows in the bends).
 private func directionArrows(_ c: [CLLocationCoordinate2D]) -> [DirArrow] {
   guard c.count > 4 else { return [] }
-  let n = min(26, max(10, c.count / 5)), ahead = max(1, c.count / 40)
+  var cum: [Double] = [0]
+  for i in 1..<c.count {
+    let a = c[i - 1], b = c[i], k = 111_320.0, cl = cos(a.latitude * .pi / 180)
+    cum.append(cum[i - 1] + hypot((b.longitude - a.longitude) * cl * k, (b.latitude - a.latitude) * k))
+  }
+  let total = cum[cum.count - 1]
+  guard total > 0 else { return [] }
+  let n = min(26, max(10, Int(total / 400))), aheadM = max(15, total / 40)
   var out: [DirArrow] = []
+  var i = 0
   for k in 0..<n {
-    let i = Int(Double(k) / Double(n) * Double(c.count - 1))
-    let j = min(i + ahead, c.count - 1)
-    if i != j { out.append(DirArrow(id: k, coord: c[i], deg: geoBearing(c[i], c[j]), t: Double(k) / Double(max(1, n - 1)))) }
+    let at = Double(k) / Double(n) * total
+    while i < c.count - 2 && cum[i + 1] <= at { i += 1 }
+    var j = i + 1
+    while j < c.count - 1 && cum[j] - cum[i] < aheadM { j += 1 }
+    out.append(DirArrow(id: k, coord: c[i], deg: geoBearing(c[i], c[j]), t: Double(k) / Double(max(1, n - 1))))
   }
   return out
 }
@@ -699,26 +711,33 @@ struct RouteView: View {
         // Left the turn-approach band → hand the camera back to LIVE follow ONCE. Previously the 80–140 m band
         // matched neither branch, so the camera stayed frozen on the last fixed position mid-run (the "cached
         // segment" that only jumped later). Gating on zoomedForTurn also avoids re-arming follow every GPS tick.
-        cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
-                        : .userLocation(fallback: .automatic)
+        cam = followCam()
         zoomedForTurn = false
       }
     }
     .onChange(of: page) {
       // Returning to the map re-arms live follow, clearing any stale region MapKit was still showing.
       if page == 1 && midPage == 0 && !zoomedForTurn {
-        cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
-                        : .userLocation(fallback: .automatic)
+        cam = followCam()
       }
     }
     .onChange(of: midPage) {
       // Swiping UP from stats back to the map (inner pager, outer page unchanged) also re-arms live follow —
       // else the map showed a stale region for a GPS tick because the page-only handler above never fired.
       if page == 1 && midPage == 0 && !zoomedForTurn {
-        cam = headingUp ? .userLocation(followsHeading: true, fallback: .automatic)
-                        : .userLocation(fallback: .automatic)
+        cam = followCam()
       }
     }
+  }
+
+  // Live follow. The fallback (used while MapKit's own user location isn't known yet — after a page swipe or a
+  // turn zoom) was `.automatic`, which FITS THE WHOLE ROUTE: the "very zoomed-out overview" that appeared unprovoked
+  // mid-run until MapKit's fix came back. Fall back to a street-level camera on our own last GPS position instead.
+  private func followCam() -> MapCameraPosition {
+    let fb: MapCameraPosition = store.here.map {
+      .camera(MapCamera(centerCoordinate: $0, distance: 400, heading: headingUp ? store.heading : 0))
+    } ?? .automatic
+    return headingUp ? .userLocation(followsHeading: true, fallback: fb) : .userLocation(fallback: fb)
   }
 
   // An announcement fired → briefly SHOW the info strip (so the turn/segment/power detail is readable), then
