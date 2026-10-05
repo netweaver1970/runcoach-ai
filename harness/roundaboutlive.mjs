@@ -4,7 +4,7 @@
 import { parseOverpass, roundaboutCues } from '../src/services/junctionCues.ts';
 import { distM, bearingDeg } from '../src/services/routing.ts';
 const lon = +(process.argv[2] ?? 3.73593), lat = +(process.argv[3] ?? 51.03616);
-const r = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${lon - 0.0035},${lat - 0.0022},${lon + 0.0035},${lat + 0.0022}`, { headers: { 'User-Agent': 'RunCoachAI/1.0 (test)' } });
+const r = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${lon - 0.0025},${lat - 0.0016},${lon + 0.0025},${lat + 0.0016}`, { headers: { 'User-Agent': 'RunCoachAI/1.0 (test)' } });
 const j = await r.json();
 const net = parseOverpass({ elements: j.elements.filter(e => e.type === 'node' || (e.type === 'way' && e.tags?.highway)) });
 const rbIdx = net.ways.map((_, i) => i).filter(i => /^(roundabout|circular)$/.test(net.tags[i].junction ?? ''));

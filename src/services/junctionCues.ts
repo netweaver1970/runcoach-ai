@@ -239,11 +239,11 @@ export function roundaboutCues(coords: number[][], steps: RouteStep[], net: OsmN
     });
     // cluster arms within 25° (split carriageway halves, a road + its parallel footway)
     arms.sort((a, b) => a.b - b.b);
-    const clusters: { b: number; exit: boolean; car: boolean; name?: string; members: number[] }[] = [];
+    const clusters: { b: number; exit: boolean; car: boolean; members: typeof arms }[] = [];
     for (const a of arms) {
       const c = clusters.find(x => angDiff(x.b, a.b) < 25);
-      if (c) { c.members.push(a.b); c.exit ||= a.exit && a.car; c.car ||= a.car; c.name ??= a.car ? a.name : undefined; }
-      else clusters.push({ b: a.b, exit: a.exit && a.car, car: a.car, name: a.car ? a.name : undefined, members: [a.b] });
+      if (c) { c.members.push(a); c.exit ||= a.exit && a.car; c.car ||= a.car; }
+      else clusters.push({ b: a.b, exit: a.exit && a.car, car: a.car, members: [a] });
     }
     if (clusters.filter(c => c.car).length < 3) continue;                       // a ring with < 3 roads isn't a junction
     // 4. route passes through the zone (ring + pavement + crossings set back from it)
@@ -257,7 +257,7 @@ export function roundaboutCues(coords: number[][], steps: RouteStep[], net: OsmN
       // which arm do we come in on / leave by: where the route is just outside the zone
       const inB = bearingDeg(ctr, ptAlong(coords, a, -1, 15)), outB = bearingDeg(ctr, ptAlong(coords, b, 1, 15));
       const near = (bb: number) => clusters.filter(c => c.car).reduce<{ c?: typeof clusters[number]; d: number }>((m, c) => {
-        const d = Math.min(...c.members.map(x => angDiff(x, bb))); return d < m.d ? { c, d } : m; }, { d: 35 }).c;
+        const d = Math.min(...c.members.map(x => angDiff(x.b, bb))); return d < m.d ? { c, d } : m; }, { d: 35 }).c;
       const cin = near(inB), cout = near(outB);
       if (!cin || !cout || cin === cout || !cout.exit) continue;
       // count exits passed in the driving direction, entry arm excluded, our exit included
@@ -265,7 +265,9 @@ export function roundaboutCues(coords: number[][], steps: RouteStep[], net: OsmN
       const relOut = rel(cout.b);
       const nth = clusters.filter(c => c !== cin && c.exit && rel(c.b) > 0 && rel(c.b) <= relOut).length;
       if (nth < 1 || nth > ORD.length) continue;
-      const onto = cout.name ? ` onto ${cout.name}` : '';
+      // one exit can fork into two named roads a little further out → name the one the route actually takes
+      const named = cout.members.filter(x => x.car && x.exit && x.name).sort((x, y) => angDiff(x.b, outB) - angDiff(y.b, outB));
+      const onto = named.length ? ` onto ${named[0].name}` : '';
       // the roundabout cue replaces whatever was said inside it (ORS turns, crossings, our fork cues)
       out = out.filter(s => s.type === 11 || s.type === 10 || cum[Math.min(s.i, cum.length - 1)] < cum[a] - 20 || cum[Math.min(s.i, cum.length - 1)] > cum[b] + 10);
       added.push({ i: a, text: `At the roundabout, take the ${ORD[nth - 1]} exit${onto}`, dist: Math.round(cum[b] - cum[a]), type: 7, syn: true });
