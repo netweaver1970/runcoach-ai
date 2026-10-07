@@ -143,7 +143,7 @@ export default function FitnessMode() {
             <Text style={s.loadVal}>{g.ratio != null ? `×${g.ratio.toFixed(2)}` : `${g.days}/${g.key === 'body' ? 10 : 6} d`}</Text>
           </View>
         ))}
-        <Text style={s.meta}>Last 7 days vs your 6-week weekly average (hard-set units, runs included for the legs).{newStimulus ? ' Strength is a NEW stimulus — ratios run high for the first weeks until your 6-week average catches up.' : ''}</Text>
+        <Text style={s.meta}>Recent load vs your longer-term level — weighted averages (7 d / 42 d) like your cardio load, so a break doesn't make the return look like a spike. Runs count for the legs.{newStimulus ? ' Strength is a NEW stimulus — ratios run high for the first weeks until your 6-week average catches up.' : ''}</Text>
       </View>
 
       {/* Routines */}

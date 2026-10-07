@@ -435,7 +435,7 @@ export function sessionPRs(s: StrengthStore, sessionId: string): PrHit[] {
 export interface RunLike { date: string; duration: number; avgHeartRate?: number }
 export interface MuscleEvent { at: number; units: Partial<Record<Muscle, number>>; kind: 'strength' | 'run' }
 const RUN_LEGS: Partial<Record<Muscle, number>> = { calves: 0.5, quads: 0.4, hamstrings: 0.3, glutes: 0.3, adductors: 0.15 };
-export function muscleEvents(s: StrengthStore, runs: RunLike[], maxHr = 188, sinceMs = Date.now() - 50 * 86_400_000): MuscleEvent[] {
+export function muscleEvents(s: StrengthStore, runs: RunLike[], maxHr = 188, sinceMs = Date.now() - 150 * 86_400_000): MuscleEvent[] {
   const ev: MuscleEvent[] = [];
   for (const x of s.sessions) {
     if (!x.finishedAt || x.finishedAt < sinceMs) continue;
@@ -471,8 +471,9 @@ const TAU_H: Record<Muscle, number> = {
 };
 export type FreshState = 'Recovered' | 'Fatigued' | 'Depleted' | 'Calibrating';
 export interface MuscleFresh { muscle: Muscle; pct: number; state: FreshState; events: number }
-export function muscleFreshness(events: MuscleEvent[], now = Date.now()): MuscleFresh[] {
+export function muscleFreshness(allEvents: MuscleEvent[], now = Date.now()): MuscleFresh[] {
   const H = 3_600_000, from = now - 42 * 86_400_000;
+  const events = allEvents.filter(e => e.at >= from - 14 * 86_400_000);   // 6 weeks + the 14-day decay tail
   const fatigueAt = (m: Muscle, t: number) => events.reduce((a, e) => (e.at <= t && t - e.at < 14 * 86_400_000 ? a + (e.units[m] ?? 0) * Math.exp(-(t - e.at) / H / TAU_H[m]) : a), 0);
   return MUSCLES.map(m => {
     const evs = events.filter(e => e.at >= from && (e.units[m] ?? 0) >= 0.3);
@@ -500,22 +501,32 @@ export const LOAD_GROUPS: { key: string; label: string; muscles: Muscle[] }[] = 
 ];
 export type LoadStatus = 'Detraining' | 'Maintaining' | 'Productive' | 'Peaking' | 'Overtraining' | 'Calibrating';
 export interface GroupLoad { key: string; label: string; acute: number; chronicWk: number; ratio: number | null; status: LoadStatus; days: number }
+/**
+ * Acute vs chronic as EXPONENTIALLY-weighted daily load (τ 7 d / 42 d) — the same ATL/CTL method as the cardio load,
+ * so the two agree. A flat 6-week mean let a holiday (two ~zero weeks) drag the baseline down and read the RETURN to
+ * normal running as "Overtraining" (Geert, 2026-10-07: legs ×1.59 on an ordinary week). Needs ≥ 28 days of history
+ * and ≥ 10 (body) / 6 (group) training days in the last 6 weeks, else Calibrating.
+ */
 export function muscularLoad(events: MuscleEvent[], now = Date.now()): GroupLoad[] {
-  const D = 86_400_000;
+  const D = 86_400_000, La = 1 - Math.exp(-1 / 7), Lc = 1 - Math.exp(-1 / 42);
+  const dayIdx = (t: number) => Math.floor((now - t) / D);   // 0 = last 24 h
   return LOAD_GROUPS.map(g => {
     const u = (e: MuscleEvent) => g.muscles.reduce((a, m) => a + (e.units[m] ?? 0), 0);
-    const in42 = events.filter(e => now - e.at < 42 * D && u(e) > 0.3);
-    const acute = in42.filter(e => now - e.at < 7 * D).reduce((a, e) => a + u(e), 0);
-    // average over the weeks you ACTUALLY have (≤ 6) — dividing a 3-week history by 6 read every new start as overtraining
-    const first = in42.length ? Math.min(...in42.map(e => e.at)) : now;
-    const weeks = Math.max(1, Math.min(6, (now - first) / (7 * D)));
-    const chronicWk = in42.reduce((a, e) => a + u(e), 0) / weeks;
-    const days = new Set(in42.map(e => new Date(e.at).toDateString())).size;
-    const need = g.key === 'body' ? 10 : 6;   // Bevel calibrates on ≥10 training days in 6 weeks
-    if (days < need || chronicWk <= 0) return { key: g.key, label: g.label, acute: Math.round(acute), chronicWk: Math.round(chronicWk), ratio: null, status: 'Calibrating' as LoadStatus, days };
-    const ratio = Math.round((acute / chronicWk) * 100) / 100;
+    const mine = events.filter(e => e.at <= now && u(e) > 0.3);
+    const days = new Set(mine.filter(e => now - e.at < 42 * D).map(e => new Date(e.at).toDateString())).size;
+    const span = mine.length ? dayIdx(Math.min(...mine.map(e => e.at))) + 1 : 0;
+    const daily = new Array(Math.max(span, 1)).fill(0);
+    for (const e of mine) daily[dayIdx(e.at)] += u(e);
+    // seed both averages at the level of the OLDEST 4 weeks (not 0) — the 42-day EWMA would otherwise need ~4 months
+    // of warm-up and read every week as a spike
+    const seedDays = daily.slice(-28);
+    let atl = seedDays.reduce((a, b) => a + b, 0) / Math.max(1, seedDays.length), ctl = atl;
+    for (let d = daily.length - 1; d >= 0; d--) { atl += La * (daily[d] - atl); ctl += Lc * (daily[d] - ctl); }
+    const need = g.key === 'body' ? 10 : 6;
+    if (span < 28 || days < need || ctl <= 0) return { key: g.key, label: g.label, acute: Math.round(atl * 7), chronicWk: Math.round(ctl * 7), ratio: null, status: 'Calibrating' as LoadStatus, days };
+    const ratio = Math.round((atl / ctl) * 100) / 100;
     const status: LoadStatus = ratio < 0.8 ? 'Detraining' : ratio < 1.0 ? 'Maintaining' : ratio <= 1.3 ? 'Productive' : ratio <= 1.5 ? 'Peaking' : 'Overtraining';
-    return { key: g.key, label: g.label, acute: Math.round(acute), chronicWk: Math.round(chronicWk), ratio, status, days };
+    return { key: g.key, label: g.label, acute: Math.round(atl * 7), chronicWk: Math.round(ctl * 7), ratio, status, days };
   });
 }
 export const FRESH_COLOR: Record<FreshState, string> = { Recovered: '#2f9e44', Fatigued: '#e8a317', Depleted: '#e5484d', Calibrating: '#8a8f98' };
