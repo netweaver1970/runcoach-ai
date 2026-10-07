@@ -1025,7 +1025,7 @@ export default function HomeScreen() {
             <Text style={{ color: c.textFaint, fontSize: 12, marginBottom: 12 }}>Everything training lives in Home for now.</Text>
             {[
               { emoji: '🏠', label: 'Home', route: null, desc: 'Running coach, plans, recovery, load' },
-              { emoji: '🏋️', label: 'Fitness', route: '/fitness', desc: 'Strength & cross-training' },
+              { emoji: '🏋️', label: 'Strength', route: '/fitness', desc: 'Routines, session logging & muscle load' },
               { emoji: '🍽️', label: 'Food', route: '/food', desc: 'Fuelling & intake' },
               { emoji: '🧬', label: 'Biology', route: '/biology', desc: 'Body composition, BP & correlations' },
             ].map(m => {

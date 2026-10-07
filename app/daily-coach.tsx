@@ -16,6 +16,7 @@ import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
+import { StrengthToday } from '../src/components/StrengthToday';
 import { pushWorkoutToWatch, watchModuleAvailable, getWatchRecorder } from '../src/services/watchWorkout';
 import { sendWorkoutToWatch } from '../src/services/watchRoute';
 import { handOffRouteWorkout } from '../src/services/routeWorkoutHandoff';
@@ -532,6 +533,8 @@ export default function DailyCoachScreen() {
             </Text>
           </View>
         </View>
+
+        {targetIsToday && <StrengthToday />}
 
         {/* Readiness — multi-factor (recovery + sleep + form + ACWR + illness guards) */}
         {!loadingH && dates.length > 0 && (

@@ -18,6 +18,7 @@ import { activeTripSummary } from './travelStore';
 import { computeAdherence } from './adherenceRead';
 import { adherenceForLLM } from './adherence';
 import { fuelPreferenceLine, getFuelLongMin } from './foodFuel';
+import { strengthLineForLLM } from './strength';
 import { foodTotalsForExport } from './foodLog';
 
 export async function buildAppModelPrompt(): Promise<string> {
@@ -43,6 +44,7 @@ export async function buildAppModelPrompt(): Promise<string> {
     foodTotalsForExport(7).catch(() => []),
     getCtlRampTarget().catch(() => null),
   ]);
+  const strengthLine = await strengthLineForLLM().catch(() => '');
   const full = foodDays.filter(d => d.complete);
   const foodLine = full.length
     ? `• FOOD LOG (athlete-entered, last 7 days, ${full.length} fully-logged day${full.length === 1 ? '' : 's'}): avg ${Math.round(full.reduce((a, d) => a + d.kcal, 0) / full.length)} kcal · C ${Math.round(full.reduce((a, d) => a + d.carb, 0) / full.length)} g · P ${Math.round(full.reduce((a, d) => a + d.prot, 0) / full.length)} g · F ${Math.round(full.reduce((a, d) => a + d.fat, 0) / full.length)} g. Advisory context only — nutrition never changes the training plan.`
@@ -64,5 +66,6 @@ export async function buildAppModelPrompt(): Promise<string> {
     fuelPreferenceLine(fuelLongMin),
     '• WAYFINDER ROUTE RUNS: an easy/long/tempo session run on a route has a DISTANCE-based work step (it ends 200 m before the route finish), so its work minutes can differ from the prescribed minutes — judge the session by route completion and intensity, not by minutes over/under.',
     foodLine,
+    strengthLine,
   ].filter(Boolean).join('\n');
 }

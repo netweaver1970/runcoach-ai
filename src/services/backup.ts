@@ -11,6 +11,7 @@ import * as FileSystem from 'expo-file-system';
 import { exportKnowledgeBundle, importKnowledgeBundle, KnowledgeBundle } from './coachFiles';
 import { clearAccountingCache } from './accounting';
 import { clearCapPctCache } from './coach';
+import { clearStrengthCache } from './strength';
 import { PROVIDER_ORDER } from './llm';
 
 // Meaningful settings only — caches like `training_rec_v1` and the internal `scan_marker_v1`
@@ -64,6 +65,7 @@ const FILES = [
   'runcoach-timeline.json',         // timeline events (injuries / races / notes)
   'runcoach-travel-itinerary.json', // travel-mode trip itinerary (legs + climates)
   'runcoach-workout-library.json',  // reusable structured-workout library
+  'runcoach-strength.json',         // strength routines + logged sessions
   'runcoach-supplements.json',      // supplement list + daily intake log
   'runcoach-food-library.json',     // food library: custom foods, saved meals, favourites, recents
   'runcoach-labs.json',             // imported blood-test / clinical-lab history
@@ -148,5 +150,6 @@ export async function restoreAllSettings(json: string): Promise<RestoreResult> {
   if (b.knowledge) res.knowledge = await importKnowledgeBundle(b.knowledge);
   clearAccountingCache(); // re-read the restored switch list
   clearCapPctCache();     // …and the restored +cap% list / CTL-ramp memo
+  clearStrengthCache();   // …and the restored strength routines/sessions
   return res;
 }
