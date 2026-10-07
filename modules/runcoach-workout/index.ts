@@ -13,6 +13,21 @@ export interface RunCoachWorkoutNative {
   authorizeRmssd(): Promise<boolean>;
   /** iOS 27+: native RMSSD samples in [startMs,endMs] → [{t: epochMs, v: ms}]. [] pre-27 / no data. */
   queryRmssd(startMs: number, endMs: number): Promise<{ t: number; v: number }[]>;
+  /** Share auth for heart rate (+ workout effort on iOS 18+) so a saved strength workout can be enriched. */
+  authorizeStrengthExtras?(): Promise<boolean>;
+  /** Relate RPE (Effort score) + the window's heart-rate samples to the workout `uuid`. Per-part outcome strings. */
+  enrichStrengthWorkout?(uuid: string, effort: number): Promise<{ effort?: string; hr?: string; error?: string }>;
+}
+
+/** Ask once for the strength-workout extras (heart-rate association + effort). false when not built in. */
+export async function authorizeStrengthExtras(): Promise<boolean> {
+  if (!native?.authorizeStrengthExtras) return false;
+  try { return await native.authorizeStrengthExtras(); } catch { return false; }
+}
+/** Enrich a saved strength workout with Effort (RPE) + heart rate. null when the native module lacks it (old build). */
+export async function enrichStrengthWorkout(uuid: string, effort: number): Promise<{ effort?: string; hr?: string; error?: string } | null> {
+  if (!native?.enrichStrengthWorkout) return null;
+  try { return await native.enrichStrengthWorkout(uuid, effort); } catch (e: any) { return { error: e?.message ?? String(e) }; }
 }
 
 /** Request read authorization for Apple's native RMSSD HRV (iOS 27+). Safe no-op (false) otherwise. */

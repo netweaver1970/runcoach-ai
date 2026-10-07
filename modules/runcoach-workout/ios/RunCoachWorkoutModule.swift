@@ -68,6 +68,56 @@ public class RunCoachWorkoutModule: Module {
       return "{\"source\":\"unavailable\",\"zones\":[]}"
     }
 
+    // ── Strength workouts in Apple Health (2026-10-07) ─────────────────────────────────────────────────────────
+    // A strength session logged on the PHONE is saved (by the JS HealthKit lib) as a bare workout: time + kcal.
+    // Health shows heart rate and Effort only when they're RELATED to the workout, which the JS lib can't do.
+    // Share auth for heart rate (association) + workout effort (iOS 18+). Asked once, when strength sync first runs.
+    AsyncFunction("authorizeStrengthExtras") { () async -> Bool in
+      var share: Set<HKSampleType> = [HKQuantityType(.heartRate)]
+      if #available(iOS 18.0, *) { share.insert(HKQuantityType(.workoutEffortScore)) }
+      do {
+        try await sharedHealthStore.requestAuthorization(toShare: share, read: [HKQuantityType(.heartRate), HKObjectType.workoutType()])
+        return true
+      } catch { return false }
+    }
+
+    // Relate to the saved workout `uuid`: (1) the session RPE as Apple's Effort score (iOS 18+, 1–10), (2) the heart-rate
+    // samples recorded inside the workout window (from the watch). Resolves a dictionary of per-part outcomes — "ok…",
+    // "none", "unsupported" or the HealthKit error text — so the JS side can log exactly what Health accepted.
+    AsyncFunction("enrichStrengthWorkout") { (uuidStr: String, effort: Double, promise: Promise) in
+      guard let uuid = UUID(uuidString: uuidStr) else { promise.resolve(["error": "bad uuid"]); return }
+      let q = HKSampleQuery(sampleType: HKObjectType.workoutType(), predicate: HKQuery.predicateForObject(with: uuid), limit: 1, sortDescriptors: nil) { _, samples, _ in
+        guard let w = samples?.first as? HKWorkout else { promise.resolve(["error": "workout not found"]); return }
+        var result: [String: String] = [:]
+        let lock = NSLock()
+        let set = { (k: String, v: String) in lock.lock(); result[k] = v; lock.unlock() }
+        let group = DispatchGroup()
+        if effort > 0 {
+          if #available(iOS 18.0, *) {
+            group.enter()
+            let sample = HKQuantitySample(type: HKQuantityType(.workoutEffortScore),
+                                          quantity: HKQuantity(unit: .appleEffortScore(), doubleValue: min(10, max(1, effort))),
+                                          start: w.startDate, end: w.endDate)
+            sharedHealthStore.relateWorkoutEffortSample(sample, with: w, activity: nil) { ok, err in
+              set("effort", ok ? "ok" : (err?.localizedDescription ?? "failed")); group.leave()
+            }
+          } else { set("effort", "unsupported") }
+        }
+        group.enter()
+        let hrPred = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate, options: .strictStartDate)
+        let hq = HKSampleQuery(sampleType: HKQuantityType(.heartRate), predicate: hrPred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, hs, _ in
+          let hr = (hs as? [HKQuantitySample]) ?? []
+          if hr.isEmpty { set("hr", "none"); group.leave(); return }
+          sharedHealthStore.add(hr, to: w) { ok, err in
+            set("hr", ok ? "ok:\(hr.count)" : (err?.localizedDescription ?? "failed")); group.leave()
+          }
+        }
+        sharedHealthStore.execute(hq)
+        group.notify(queue: .main) { promise.resolve(result) }
+      }
+      sharedHealthStore.execute(q)
+    }
+
     // iOS 27 native RMSSD (HKQuantityTypeIdentifierHeartRateVariabilityRMSSD) — read auth + query. It lives HERE,
     // not in the JS HealthKit lib, because that lib validates identifiers against a pre-iOS-27 enum and throws
     // on this one. RMSSD is its OWN HK type (distinct from SDNN) so it needs its own read grant. Used as a

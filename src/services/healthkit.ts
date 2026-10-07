@@ -5310,13 +5310,16 @@ export async function findForeignStrengthWorkout(id: string, spanStart: number, 
  * the WHOLE logged span (startedAt…finishedAt), then link it. The save itself uses the (capped) [start, end]. If HK
  * refuses the calorie total (no active-energy write grant) it retries without it. SyncIdentifier = replace, not dupe.
  */
-export async function saveStrengthWorkout(o: { id: string; start: number; end: number; spanStart: number; spanEnd: number; kcal: number; name: string }):
+export async function saveStrengthWorkout(o: { id: string; start: number; end: number; spanStart: number; spanEnd: number; kcal: number; name: string; exercises?: string; version?: number }):
   Promise<{ status: 'saved' | 'exists' | 'failed'; uuid?: string; error?: string }> {
   if (Platform.OS !== 'ios') return { status: 'failed', error: 'iOS only' };
   try {
     const foreign = await findForeignStrengthWorkout(o.id, o.spanStart, o.spanEnd);
     if (foreign) return { status: 'exists', uuid: foreign };
-    const meta = { HKMetadataKeySyncIdentifier: strengthSyncId(o.id), HKMetadataKeySyncVersion: 1, HKMetadataKeyWorkoutBrandName: `RunCoach · ${o.name}` };
+    // the exercise list rides along as custom metadata: Apple's own screens don't render it, but it's stored with the
+    // workout and readable by other apps (Health Auto Export, Strava-style sync tools) and by us
+    const meta: Record<string, string | number> = { HKMetadataKeySyncIdentifier: strengthSyncId(o.id), HKMetadataKeySyncVersion: o.version ?? 1, HKMetadataKeyWorkoutBrandName: `RunCoach · ${o.name}` };
+    if (o.exercises) meta.RunCoachExercises = o.exercises.slice(0, 1500);
     let uuid: any;
     try {
       uuid = await (HealthKit as any).saveWorkoutSample(50, [], new Date(o.start), new Date(o.end), { energyBurned: Math.max(0, Math.round(o.kcal)) }, meta);

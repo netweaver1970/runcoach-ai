@@ -132,7 +132,7 @@ export default function StrengthSessionScreen() {
   });
   const toggle = (idx: number, restSec: number) => {
     const done = !sessRef.current!.sets[idx].done;
-    persist(x => ({ ...x, sets: x.sets.map((l, k) => k === idx ? { ...l, done } : l) }));
+    persist(x => ({ ...x, sets: x.sets.map((l, k) => k === idx ? { ...l, done, doneAt: done ? Date.now() : undefined } : l) }));
     if (done) startRest(restSec); else { cancelRestNotif(); setRestEnd(null); }
   };
   // switch to the alternative exercise for the sets NOT yet done
@@ -160,7 +160,7 @@ export default function StrengthSessionScreen() {
       const updLine = routineChanges.length ? `\n\n📈 Next time:\n${routineChanges.join('\n')}` : '';
       // never let a slow HealthKit hold the confirmation (Finish is already locked): ≤ 5 s, then the backfill finishes it
       const hk = await Promise.race([syncSessionToHealth(fin.id).catch(() => null), new Promise<null>(r => setTimeout(() => r(null), 5000))]);
-      const hkLine = !hk ? '' : hk.status === 'saved' ? '\n❤️ Saved to Apple Health' : hk.status === 'exists' ? '\n❤️ Linked to your watch workout in Health' : '\n⚠ Not saved to Apple Health';
+      const hkLine = !hk ? '' : hk.status === 'saved' ? '\n❤️ Saved to Apple Health (heart rate + effort attach in the background)' : hk.status === 'exists' ? '\n❤️ Linked to your watch workout in Health' : '\n⚠ Not saved to Apple Health';
       const sum = `${fin.sets.filter(isWorkSet).length} sets · ${sessionTonnage(st, fin).toLocaleString()} kg · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
       Alert.alert(prs.length ? '🏆 New personal records' : '✅ Session saved',
         (prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum) + hkLine + updLine,
