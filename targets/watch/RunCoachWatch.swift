@@ -67,6 +67,10 @@ final class KPIStore: NSObject, ObservableObject, WCSessionDelegate {
     // Same channel carries KPIs OR a Wayfinder route — try KPIs first, then a route.
     if let p = try? JSONDecoder().decode(KPIPayload.self, from: data) {
       DispatchQueue.main.async { self.payload = p; self.persist(data, p) }
+    } else if let sp = try? JSONDecoder().decode(StrengthPlan.self, from: data), sp.type == "strength" {
+      // Strength routines (Build 4). Sent by the phone WITHOUT the application context (that's the route's/KPIs'
+      // latest-state channel) and persisted here, so it never displaces a loaded route.
+      DispatchQueue.main.async { StrengthEngine.shared.setPlan(sp, raw: data) }
     } else if let r = try? JSONDecoder().decode(RoutePayload.self, from: data), r.type == "route" {
       // MAIN thread: if this is the first touch of RouteStore.shared, its CLLocationManager is created HERE — on the
       // WCSession queue (no run loop) it would never deliver a location/heading/permission callback all launch.
@@ -80,6 +84,7 @@ final class KPIStore: NSObject, ObservableObject, WCSessionDelegate {
   func session(_ s: WCSession, didReceiveMessage m: [String: Any]) { ingest(m) }
   func session(_ s: WCSession, activationDidCompleteWith a: WCSessionActivationState, error: Error?) {
     if let c = s.receivedApplicationContext as [String: Any]?, !c.isEmpty { ingest(c) }
+    if a == .activated { StrengthEngine.shared.flushOutbox() }   // strength logs saved while WC wasn't up yet
   }
 }
 

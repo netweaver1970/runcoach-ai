@@ -103,6 +103,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var hrDropoutSpoken = false     // "heart rate lost" spoken once per run; later dropouts → banner + haptic only
   private var routeFailed = false         // an insertRouteData batch failed this run → the map may have gaps
   private var starting = false            // a Start is in flight (auth sheet / session creation) → ignore repeat taps
+  var isStarting: Bool { starting }       // read by StrengthEngine (one HKWorkoutSession at a time)
   private var authCheckInFlight = false   // prepareAuth running (.task AND scenePhase .active both fire at launch)
   private var authRefusedAt: Date?        // Start refused for missing access → a 2nd Start within 60 s runs anyway
   private enum IssueKind { case none, auth, hr, start, save, route, location }
@@ -247,6 +248,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
     // One Start at a time: a second tap while the Health sheet is up used to queue a SECOND start → the second
     // tore down the first (orphaning a live HK session + wiping segs) and created another. Also ignore Start mid-run.
     guard !starting, !running else { return }
+    // One HKWorkoutSession at a time on the watch: a strength workout in progress must be ended first.
+    if StrengthEngine.shared.running {
+      flagIssue(.start, "A strength workout is in progress — end it first.", speak: nil)
+      return
+    }
     starting = true
     segs = r.workout ?? []
     let activity: HKWorkoutActivityType = (r.sport == "walking") ? .walking : .running
@@ -321,6 +327,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
   }
 
   func start(activity: HKWorkoutActivityType, indoor: Bool = false) {
+    if StrengthEngine.shared.running { return }    // a live strength workout owns the (single) workout session
     if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
     guard session == nil else { return }           // a genuinely running session → ignore a double-Start
     isIndoor = indoor

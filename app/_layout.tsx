@@ -11,6 +11,7 @@ import { migrateSecureStoreAccessibility } from '../src/services/secureStoreMigr
 import { ThemeProvider, useTheme } from '../src/theme';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import '../src/services/runKeepAlive';   // side effect: registers the background-location task + run-state listener at launch
+import '../src/services/watchStrength';  // side effect: imports strength sessions logged on the watch as they arrive
 
 // Route a tapped notification to the right screen based on its `data.screen`.
 function routeNotification(router: ReturnType<typeof useRouter>, data: any) {

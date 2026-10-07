@@ -53,17 +53,24 @@ struct ContentView: View {
   @EnvironmentObject var store: KPIStore
   @ObservedObject var routeStore = RouteStore.shared
   @ObservedObject var engine = WorkoutEngine.shared
+  @ObservedObject var strength = StrengthEngine.shared
   @Environment(\.scenePhase) private var scenePhase
   @State private var path = NavigationPath()
 
   var body: some View {
     NavigationStack(path: $path) {
-      if store.payload?.kpis.isEmpty == false || routeStore.route != nil {
+      if store.payload?.kpis.isEmpty == false || routeStore.route != nil || strength.plan != nil || strength.orphan != nil {
         List {
           if let r = routeStore.route {
             NavigationLink(value: RouteDest()) {
               Label("\(r.name) · \(String(format: "%.1f", r.distanceKm)) km", systemImage: "map.fill")
                 .foregroundColor(.pink)
+            }
+          }
+          if strength.running || strength.plan != nil || strength.orphan != nil {
+            NavigationLink(value: StrengthDest()) {
+              Label(strength.running ? "Strength · in progress" : strength.orphan != nil ? "Strength · unfinished" : strengthRowTitle, systemImage: "dumbbell.fill")
+                .foregroundColor(.green)
             }
           }
           if let p = store.payload {
@@ -80,6 +87,8 @@ struct ContentView: View {
         .navigationTitle("RunCoach")
         .navigationDestination(for: KPI.self) { KPIDetailView(kpi: $0) }
         .navigationDestination(for: RouteDest.self) { _ in RouteView() }
+        .navigationDestination(for: StrengthDest.self) { _ in StrengthView() }
+        .navigationDestination(for: StrengthRoutine.self) { RoutinePreview(r: $0) }
       } else {
         VStack(spacing: 6) {
           Image(systemName: "applewatch.radiowaves.left.and.right").font(.title2).foregroundColor(.secondary)
@@ -91,8 +100,11 @@ struct ContentView: View {
     .onChange(of: routeStore.jumpToMap) { path = NavigationPath([RouteDest()]) }
     // A run started, or the app was reopened mid-run → auto-show the map + follow (the watch backup).
     .onChange(of: engine.running) { if engine.running { path = NavigationPath([RouteDest()]) } }
+    // A strength workout started (from the routine preview) or the app was reopened mid-workout → its screen.
+    .onChange(of: strength.running) { if strength.running { path = NavigationPath([StrengthDest()]) } }
     .onChange(of: scenePhase) {
       if scenePhase == .active && engine.running { path = NavigationPath([RouteDest()]) }
+      if scenePhase == .active && strength.running { path = NavigationPath([StrengthDest()]) }
       // Re-check Health access every time the app comes forward outside a run (.task only fires on first appear).
       if scenePhase == .active && !engine.running { Task { await engine.prepareAuth() } }
     }
@@ -108,6 +120,14 @@ struct ContentView: View {
     // Ask for Health access as soon as the watch app opens — e.g. the first launch after a reinstall reset the
     // grant — instead of only when Start is tapped (where the sheet got missed on 2026-09-25).
     .task { await engine.prepareAuth() }
+  }
+
+  // "Strength · Push A" when a routine is planned today, else "Strength · 4 routines"
+  private var strengthRowTitle: String {
+    let rs = strength.plan?.routines ?? []
+    let today = rs.filter { $0.today == true }
+    if let t = today.first, strength.planIsToday { return "Strength · \(t.name)\(today.count > 1 ? " +\(today.count - 1)" : "")" }
+    return "Strength · \(rs.count) routine\(rs.count == 1 ? "" : "s")"
   }
 }
 

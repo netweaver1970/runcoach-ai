@@ -9,7 +9,8 @@ public class RunCoachWatchSyncModule: Module {
     // "start"/"end" when the watch begins/ends a run → JS starts/stops the background keep-alive.
     // "onRunBattery" carries the watch's post-run battery profiling (drain %/hr) → JS logs it for the debug export.
     // "onRunSegments" carries the executed phase boundaries → JS reconstructs the run's Warmup/Work/…/Cooldown structure.
-    Events("onRunState", "onRunBattery", "onRunSegments")
+    // "onStrengthLog" = a strength workout logged on the watch landed in the pending file → JS imports it.
+    Events("onRunState", "onRunBattery", "onRunSegments", "onStrengthLog")
 
     // Instantiate the WCSession delegate at launch so the phone is always ready to RECEIVE run cues from the
     // watch (not just to send). Without this it's created lazily on the first send() and could miss early cues.
@@ -22,6 +23,9 @@ public class RunCoachWatchSyncModule: Module {
       }
       WatchSync.shared.onRunSegments = { [weak self] info in
         self?.sendEvent("onRunSegments", info)
+      }
+      WatchSync.shared.onStrengthLog = { [weak self] in
+        self?.sendEvent("onStrengthLog", [:])
       }
     }
 
@@ -37,6 +41,21 @@ public class RunCoachWatchSyncModule: Module {
     AsyncFunction("sync") { (json: String) -> Bool in
       WatchSync.shared.send(json)
     }
+
+    // Like sync, but WITHOUT the application context (the latest-state channel the route and KPIs use): a strength
+    // plan sent this way can never displace a loaded route. Live message when reachable + a queued userInfo.
+    AsyncFunction("queue") { (json: String) -> Bool in
+      WatchSync.shared.queue(json)
+    }
+
+    // Strength workouts logged on the watch, persisted natively until JS acknowledges them (an event fired before
+    // the JS listener exists would be lost). JSON array of the watch's log objects.
+    AsyncFunction("pendingStrengthLogs") { () -> String in
+      WatchSync.shared.pendingStrengthJSON()
+    }
+    AsyncFunction("ackStrengthLogs") { (ids: [String]) in
+      WatchSync.shared.ackStrength(ids)
+    }
   }
 }
 
@@ -46,6 +65,8 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   var onRunState: ((String) -> Void)?   // "start"/"end" from the watch → JS keep-alive
   var onRunBattery: (([String: Any]) -> Void)?   // watch battery profiling from the run → JS debug log
   var onRunSegments: (([String: Any]) -> Void)?  // executed phase boundaries from the run → JS structure rebuild
+  var onStrengthLog: (() -> Void)?                // a watch strength workout was stored as pending → JS imports it
+  private let pendQ = DispatchQueue(label: "runcoach.strength.pending")   // serialises the pending-file read/writes
   private var resumeWork: DispatchWorkItem?       // pending resume-retry, cancelled when a new cue takes the session
   private var speakWatchdog: DispatchWorkItem?    // fires if an utterance never completes (stall) → force-recover the session
   private var phoneAudioTarget = false            // this run: is the PHONE the audible device (earbuds now)?
@@ -88,6 +109,51 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     if s.isReachable { s.sendMessage(ctx, replyHandler: nil, errorHandler: nil) }
     s.transferUserInfo(ctx)
     return true
+  }
+
+  func queue(_ json: String) -> Bool {
+    guard WCSession.isSupported() else { return false }
+    let s = WCSession.default
+    guard s.activationState == .activated else { return false }
+    let ctx: [String: Any] = ["json": json]
+    if s.isReachable { s.sendMessage(ctx, replyHandler: nil, errorHandler: nil) }
+    s.transferUserInfo(ctx)
+    return true
+  }
+
+  // ─── Strength logs from the watch ───────────────────────────────────────────────────────────────────────
+  private var pendURL: URL? {
+    FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("runcoach-watch-strength-pending.json")
+  }
+  private func readPending() -> [[String: Any]] {
+    guard let u = pendURL, FileManager.default.fileExists(atPath: u.path) else { return [] }
+    if let d = try? Data(contentsOf: u), let a = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]] { return a }
+    // unreadable/corrupt: set it ASIDE (never overwrite it with a shorter list) so no unacked log is lost silently
+    try? FileManager.default.moveItem(at: u, to: u.deletingLastPathComponent().appendingPathComponent("runcoach-watch-strength-pending.bad-\(Int(Date().timeIntervalSince1970)).json"))
+    return []
+  }
+  private func writePending(_ a: [[String: Any]]) {
+    guard let u = pendURL, let d = try? JSONSerialization.data(withJSONObject: a) else { return }
+    try? d.write(to: u, options: .atomic)
+  }
+  private func handleStrengthLog(_ dict: [String: Any]) {
+    guard let js = dict["strengthLog"] as? String, let data = js.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let id = obj["id"] as? String else { return }
+    pendQ.sync {
+      var a = readPending()
+      if !a.contains(where: { ($0["id"] as? String) == id }) { a.append(obj); writePending(a) }
+    }
+    DispatchQueue.main.async { self.onStrengthLog?() }
+  }
+  func pendingStrengthJSON() -> String {
+    pendQ.sync {
+      let a = readPending()
+      guard let d = try? JSONSerialization.data(withJSONObject: a), let s = String(data: d, encoding: .utf8) else { return "[]" }
+      return s
+    }
+  }
+  func ackStrength(_ ids: [String]) {
+    pendQ.sync { writePending(readPending().filter { !ids.contains(($0["id"] as? String) ?? "") }) }
   }
 
   // ─── Run-voice on the PHONE ─────────────────────────────────────────────────────────────────────────────
@@ -263,7 +329,7 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
   func session(_ s: WCSession, activationDidCompleteWith st: WCSessionActivationState, error: Error?) {}
   func sessionDidBecomeInactive(_ s: WCSession) {}
   func sessionDidDeactivate(_ s: WCSession) { WCSession.default.activate() }
-  func session(_ s: WCSession, didReceiveUserInfo u: [String: Any]) { handleRun(u); handleMedia(u); handleWatchBattery(u); handleExecSegments(u) }
+  func session(_ s: WCSession, didReceiveUserInfo u: [String: Any]) { handleRun(u); handleMedia(u); handleWatchBattery(u); handleExecSegments(u); handleStrengthLog(u) }
   func session(_ s: WCSession, didReceiveMessage m: [String: Any]) { handleRun(m); handleMedia(m); handleWatchBattery(m); handleExecSegments(m) }
 
   // Run cue from the watch, WITH a reply so the watch knows whether we took it (→ stay silent) or not (→

@@ -71,8 +71,11 @@ export interface StrengthSession {
   bodyKg?: number;         // body weight used for body-weight exercises
   sets: SetLog[];
   rpe?: number;            // session RPE 1–10 (scales muscular load + the Health calorie estimate)
+  // Apple Health: written by us ('saved') / linked to a watch workout ('exists'); `enriched` = heart rate + Effort
+  // related to our workout; `watch` = logged on the Apple Watch, `uuid` is the workout the WATCH recorded
   hk?: { status: 'saved' | 'exists' | 'failed'; uuid?: string; tries?: number; ver?: number;
-         enriched?: { uuid: string; hr?: string; effort?: string; at: number } };   // heart rate + Effort related to our workout   // Apple Health: written by us / linked to a watch workout
+         enriched?: { uuid: string; hr?: string; effort?: string; at: number };
+         watch?: boolean };   // heart rate + Effort related to our workout   // Apple Health: written by us / linked to a watch workout
   note?: string;
 }
 
@@ -316,13 +319,15 @@ export function lastSetsFor(s: StrengthStore, exerciseId: string): SetLog[] {
  *  · fell short of the BOTTOM of the range at failure (RIR 0) → −1 step;
  *  · otherwise repeat the weight and chase the top of the range.
  */
+/** Weight increment: dumbbell racks go in 2 kg steps; stacks/plates 2.5. */
+export const weightStep = (ex?: Exercise) => (ex && /\bDB\b|Dumbbell/i.test(ex.name) ? 2 : 2.5);
 export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: number; why?: string } {
   const last = lastSetsFor(s, item.exerciseId);
   if (!last.length) return item.weightKg != null ? { kg: item.weightKg } : {};
   const top = Math.max(...last.map(l => l.weightKg));
   const atTop = last.filter(l => l.weightKg === top);
   const ex = exerciseById(s, item.exerciseId);
-  const step = ex && /\bDB\b|Dumbbell/i.test(ex.name) ? 2 : 2.5;   // dumbbell racks go in 2 kg steps; stacks/plates 2.5
+  const step = weightStep(ex);
   const [lo, hi] = repRange(item);
   const r4 = (x: number) => Math.round(x * 4) / 4;
   const reps = atTop.map(l => `${l.reps}${l.rir != null ? `@${l.rir >= 3 ? '3+' : l.rir}` : ''}`).join('/');
@@ -692,7 +697,8 @@ async function enrichSessionOnce(sessionId: string): Promise<StrengthSession['hk
   const st = await loadStrength();
   const x = st.sessions.find(s => s.id === sessionId);
   const hk = x?.hk;
-  if (!x?.finishedAt || hk?.status !== 'saved' || !hk.uuid) return hk ?? null;
+  // our own saved workout, or the one our WATCH app recorded (a watch-logged session) — never someone else's
+  if (!x?.finishedAt || !hk?.uuid || !(hk.status === 'saved' || hk.watch)) return hk ?? null;
   const e = hk.enriched;
   const hrPending = e?.hr === 'none' && Date.now() - x.finishedAt < 12 * 3_600_000 && Date.now() - e.at > 10 * 60_000;
   if (e && e.uuid === hk.uuid && !hrPending) return hk;
@@ -705,7 +711,9 @@ async function enrichSessionOnce(sessionId: string): Promise<StrengthSession['hk
   // Effort is related ONCE per workout uuid; a heart-rate-only retry must not add another effort sample
   const effortDone = e?.uuid === hk.uuid && e.effort === 'ok';
   const res = await mod.enrichStrengthWorkout(hk.uuid, effortDone ? 0 : (x.rpe ?? 0));
-  if (!res) return hk;
+  // the workout isn't in this phone's Health yet (a watch workout syncs over later) → don't record a result; retried
+  // on the next focus (syncRecentSessionsToHealth) for a day instead of being marked done with nothing related
+  if (!res || (res.error && Date.now() - x.finishedAt < 24 * 3_600_000)) return hk;
   const next = { ...hk, enriched: { uuid: hk.uuid, hr: res.hr ?? res.error, effort: effortDone ? 'ok' : res.effort, at: Date.now() } };
   await updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(s => s.id === sessionId ? { ...s, hk: next } : s) }));
   return next;
@@ -724,6 +732,7 @@ export async function syncRecentSessionsToHealth(): Promise<void> {
     if (!x.hk || (x.hk.status === 'failed' && (x.hk.tries ?? 1) < 3) || (x.hk.status === 'saved' && (x.hk.ver ?? 1) < HK_SAVE_VER)) {
       await syncSessionToHealth(x.id).catch(() => {}); continue;
     }
+    if (x.hk.watch) { await enrichSession(x.id).catch(() => {}); continue; }   // the watch's own workout: Effort only to add
     if (x.hk.status === 'saved') await enrichSession(x.id).catch(() => {});   // heart rate synced late → relate it now
     if (x.hk.status === 'saved') {
       // our copy is found in Health by its SyncIdentifier (not the stored uuid, which a concurrent save could leave stale)

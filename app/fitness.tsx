@@ -9,6 +9,7 @@ import {
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
 } from '../src/services/strength';
 import { loadSnapshotCache } from '../src/services/healthkit';
+import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
 import { getEffectiveMaxHr } from '../src/services/claude';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { BodyMap } from '../src/components/BodyMap';
@@ -36,7 +37,9 @@ export default function FitnessMode() {
   useFocusEffect(useCallback(() => {
     opening.current = false;
     loadStrength().then(st => setStore({ ...st })).catch(() => {});
-    syncRecentSessionsToHealth().then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {});
+    // watch-logged sessions first (they arrive linked to the watch's workout), then the Health backfill/reconcile
+    importWatchStrengthLogs().catch(() => 0).then(() => syncRecentSessionsToHealth()).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {});
+    pushStrengthToWatch().catch(() => {});   // routines + today's weights → the watch app
     // runs load the legs too (freshness + load status) — from the cached health snapshot, no HealthKit query
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as RunLike[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -206,7 +209,7 @@ export default function FitnessMode() {
         <View key={x.id} style={s.histRow}>
           <Text style={s.histDate}>{x.date.slice(5)}</Text>
           <Text style={s.histName}>{x.routineName}</Text>
-          <Text style={s.meta}>{x.sets.filter(isWorkSet).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}{x.hk?.status === 'saved' || x.hk?.status === 'exists' ? ' · ❤️' : ''}</Text>
+          <Text style={s.meta}>{x.sets.filter(isWorkSet).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}{x.hk?.watch ? ' · ⌚' : ''}{x.hk?.status === 'saved' || x.hk?.status === 'exists' ? ' · ❤️' : ''}</Text>
         </View>
       ))}
     </ScrollView>

@@ -25,6 +25,10 @@ function Cell({ value, onCommit, decimal, style }: { value: number; onCommit: (n
     onBlur={() => { if (!Number.isFinite(parse(t))) setT(String(value)); }} />;
 }
 
+// Replace this session in the store — or put it back if something removed it meanwhile (a watch-logged workout of
+// the same routine drops an untouched phone session; ticking here afterwards must not log into nothing).
+const upsert = (list: StrengthSession[], x: StrengthSession) => (list.some(q => q.id === x.id) ? list.map(q => (q.id === x.id ? x : q)) : [...list, x]);
+
 export default function StrengthSessionScreen() {
   const { routine: routineId } = useLocalSearchParams<{ routine: string }>();
   const { c } = useTheme();
@@ -95,7 +99,7 @@ export default function StrengthSessionScreen() {
     if (!sessRef.current) return;
     const next = fn(sessRef.current);
     sessRef.current = next; setSess(next);
-    updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(x => x.id === next.id ? next : x) })).then(st => setStore({ ...st }));
+    updateStrength(cur => ({ ...cur, sessions: upsert(cur.sessions, next) })).then(st => setStore({ ...st }));
   };
 
   const startRest = async (sec: number) => {
@@ -150,7 +154,7 @@ export default function StrengthSessionScreen() {
     sessRef.current = fin;
     let routineChanges: string[] = [];
     updateStrength(st => {
-      const withFin = { ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) };
+      const withFin = { ...st, sessions: upsert(st.sessions, fin) };
       // Bevel-style auto-update: the routine's planned weights move to the suggested next ones (unless switched off)
       const upd = autoUpdatedRoutine(withFin, fin.id);
       routineChanges = upd?.changes ?? [];
