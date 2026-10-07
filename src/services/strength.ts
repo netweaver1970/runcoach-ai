@@ -557,9 +557,22 @@ export interface GroupLoad { key: string; label: string; acute: number; chronicW
  * and ≥ 10 (body) / 6 (group) training days in the last 6 weeks, else Calibrating.
  */
 export function muscularLoad(events: MuscleEvent[], now = Date.now()): GroupLoad[] {
+  // Areas first; WHOLE BODY then sums only the areas that have finished calibrating — a brand-new area (first upper-body
+  // sessions after months of running only) has no baseline yet, and adding its load to the total read the first gym
+  // session as whole-body "Overtraining" (×1.65 while legs were ×1.17). It joins once it has its own baseline.
+  const areas = LOAD_GROUPS.filter(g => g.key !== 'body').map(g => groupLoad(events, now, g));
+  const calibrated = new Set(areas.filter(a => a.status !== 'Calibrating').map(a => a.key));
+  const bodyMuscles = LOAD_GROUPS.filter(g => calibrated.has(g.key)).flatMap(g => g.muscles);
+  const body = LOAD_GROUPS.find(g => g.key === 'body')!;
+  const whole = bodyMuscles.length
+    ? { ...groupLoad(events, now, { ...body, muscles: bodyMuscles }), label: calibrated.size < areas.length ? 'Whole body*' : body.label }
+    : { key: 'body', label: body.label, acute: 0, chronicWk: 0, ratio: null, status: 'Calibrating' as LoadStatus, days: 0 };
+  return [whole, ...areas];
+}
+function groupLoad(events: MuscleEvent[], now: number, g: { key: string; label: string; muscles: Muscle[] }): GroupLoad {
   const D = 86_400_000, La = 1 - Math.exp(-1 / 7), Lc = 1 - Math.exp(-1 / 42);
   const dayIdx = (t: number) => Math.floor((now - t) / D);   // 0 = last 24 h
-  return LOAD_GROUPS.map(g => {
+  {
     const u = (e: MuscleEvent) => g.muscles.reduce((a, m) => a + (e.units[m] ?? 0), 0);
     const mine = events.filter(e => e.at <= now && u(e) > 0.3);
     const days = new Set(mine.filter(e => now - e.at < 42 * D).map(e => new Date(e.at).toDateString())).size;
@@ -571,12 +584,12 @@ export function muscularLoad(events: MuscleEvent[], now = Date.now()): GroupLoad
     const seedDays = daily.slice(-28);
     let atl = seedDays.reduce((a, b) => a + b, 0) / Math.max(1, seedDays.length), ctl = atl;
     for (let d = daily.length - 1; d >= 0; d--) { atl += La * (daily[d] - atl); ctl += Lc * (daily[d] - ctl); }
-    const need = g.key === 'body' ? 10 : 6;
+    const need = g.key === 'body' && g.muscles.length === MUSCLES.length ? 10 : 6;   // a partial whole body = an area
     if (span < 28 || days < need || ctl <= 0) return { key: g.key, label: g.label, acute: Math.round(atl * 7), chronicWk: Math.round(ctl * 7), ratio: null, status: 'Calibrating' as LoadStatus, days };
     const ratio = Math.round((atl / ctl) * 100) / 100;
     const status: LoadStatus = ratio < 0.8 ? 'Detraining' : ratio < 1.0 ? 'Maintaining' : ratio <= 1.3 ? 'Productive' : ratio <= 1.5 ? 'Peaking' : 'Overtraining';
     return { key: g.key, label: g.label, acute: Math.round(atl * 7), chronicWk: Math.round(ctl * 7), ratio, status, days };
-  });
+  }
 }
 export const FRESH_COLOR: Record<FreshState, string> = { Recovered: '#2f9e44', Fatigued: '#e8a317', Depleted: '#e5484d', Calibrating: '#8a8f98' };
 export const LOAD_COLOR: Record<LoadStatus, string> = { Detraining: '#5b8def', Maintaining: '#8a8f98', Productive: '#2f9e44', Peaking: '#e8a317', Overtraining: '#e5484d', Calibrating: '#8a8f98' };
