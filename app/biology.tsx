@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, PanResponder, Modal } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { requestBiologyPermissions } from '../src/services/healthkit';
 import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
@@ -315,7 +316,7 @@ export default function BiologyMode() {
         )}
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 40 }}>
+      <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 96 }}>
         {loading && <View style={s.loadCard}><ActivityIndicator color={c.accent} /><Text style={s.loadCardTxt}>Loading your full history from Apple Health…</Text></View>}
 
         {!loading && rep && !rep.hasAnyData && (
@@ -343,6 +344,7 @@ export default function BiologyMode() {
           </View>
         </View>
       </Modal>
+      <ModeSwitcher current="biology" />
     </View>
   );
 }

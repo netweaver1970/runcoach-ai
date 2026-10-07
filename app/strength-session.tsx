@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -148,11 +148,14 @@ export default function StrengthSessionScreen() {
     cancelRestNotif();
     const fin = { ...cur, finishedAt: Date.now(), rpe };
     sessRef.current = fin;
-    updateStrength(st => ({ ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) })).then(st => {
+    updateStrength(st => ({ ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) })).then(async st => {
       const prs = sessionPRs(st, fin.id);
+      // never let a slow HealthKit hold the confirmation (Finish is already locked): ≤ 5 s, then the backfill finishes it
+      const hk = await Promise.race([syncSessionToHealth(fin.id).catch(() => null), new Promise<null>(r => setTimeout(() => r(null), 5000))]);
+      const hkLine = !hk ? '' : hk.status === 'saved' ? '\n❤️ Saved to Apple Health' : hk.status === 'exists' ? '\n❤️ Linked to your watch workout in Health' : '\n⚠ Not saved to Apple Health';
       const sum = `${fin.sets.filter(l => l.done).length} sets · ${sessionTonnage(st, fin).toLocaleString()} kg · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
       Alert.alert(prs.length ? '🏆 New personal records' : '✅ Session saved',
-        prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum,
+        (prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum) + hkLine,
         [{ text: 'OK', onPress: () => router.back() }]);
     });
   };

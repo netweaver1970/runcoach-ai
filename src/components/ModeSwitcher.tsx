@@ -15,7 +15,7 @@ const AUTO_CLOSE_MS = 4000;
  * Floating mode switcher: the ☰ button slides open a compact 4-icon panel beside it (no full-screen sheet), which
  * closes by itself after a few seconds if nothing is tapped, or on a second ☰ tap.
  */
-export function ModeSwitcher({ current = 'home' }: { current?: string }) {
+export function ModeSwitcher({ current = 'home', side = 'right' }: { current?: string; side?: 'left' | 'right' }) {
   const { c } = useTheme();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -31,16 +31,17 @@ export function ModeSwitcher({ current = 'home' }: { current?: string }) {
 
   const go = (route: string | null) => {
     setOpen(false);
-    if (route) router.push(route as any);
-    else if (current !== 'home') router.dismissTo?.('/' as any);
+    if (!route) { if (current !== 'home') router.dismissTo?.('/' as any); return; }
+    // between modes: replace the current mode screen rather than stacking mode on mode
+    if (current !== 'home') router.replace(route as any); else router.push(route as any);
   };
 
   return (
-    <View pointerEvents="box-none" style={s.wrap}>
+    <View pointerEvents="box-none" style={[s.wrap, side === 'left' ? { left: 18, right: undefined, flexDirection: 'row-reverse' } : null]}>
       <Animated.View
         pointerEvents={open ? 'auto' : 'none'}
         style={[s.panel, { backgroundColor: c.surface, borderColor: c.border, opacity: anim,
-          transform: [{ translateX: anim.interpolate({ inputRange: [0, 1], outputRange: [36, 0] }) }, { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) }] }]}
+          transform: [{ translateX: anim.interpolate({ inputRange: [0, 1], outputRange: [side === 'left' ? -36 : 36, 0] }) }, { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) }] }]}
       >
         {MODES.map(m => {
           const here = m.key === current;

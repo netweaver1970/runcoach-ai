@@ -2,7 +2,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useThemedStyles, Palette } from '../theme';
-import { loadStrength, routinesForDate, sessionsOn, estimateMinutes, sessionTonnage, localDateKey, Routine, StrengthStore } from '../services/strength';
+import { syncRecentSessionsToHealth, loadStrength, routinesForDate, sessionsOn, estimateMinutes, sessionTonnage, localDateKey, Routine, StrengthStore } from '../services/strength';
 
 /** Daily Coach card: today's planned strength routine(s) → Start, or ✅ once logged. Hidden when nothing is planned/done. */
 export function StrengthToday() {
@@ -10,7 +10,11 @@ export function StrengthToday() {
   const router = useRouter();
   const [st, setSt] = useState<StrengthStore | null>(null);
   const opening = useRef(false);
-  useFocusEffect(useCallback(() => { opening.current = false; loadStrength().then(x => setSt({ ...x })).catch(() => {}); }, []));
+  useFocusEffect(useCallback(() => {
+    opening.current = false;
+    loadStrength().then(x => setSt({ ...x })).catch(() => {});
+    syncRecentSessionsToHealth().catch(() => {});   // quiet: save/link recent sessions in Apple Health
+  }, []));
   if (!st) return null;
   const planned = routinesForDate(st);
   const done = sessionsOn(st, localDateKey());

@@ -62,7 +62,8 @@ export interface StrengthSession {
   finishedAt?: number;
   bodyKg?: number;         // body weight used for body-weight exercises
   sets: SetLog[];
-  rpe?: number;            // session RPE 1–10 (feeds strength load into training load in a later build)
+  rpe?: number;            // session RPE 1–10 (scales muscular load + the Health calorie estimate)
+  hk?: { status: 'saved' | 'exists' | 'failed'; uuid?: string; tries?: number };   // Apple Health: written by us / linked to a watch workout
   note?: string;
 }
 
@@ -197,7 +198,7 @@ export const STARTER_ROUTINES: Routine[] = [
 
 // ── Storage ──────────────────────────────────────────────────────────────────────────────────────────────────
 export const STRENGTH_FILE = `${FileSystem.documentDirectory}runcoach-strength.json`;
-export interface StrengthStore { v: 1; starterRev?: number; routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
+export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boolean; routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
 
 let cache: StrengthStore | null = null;
 let loading: Promise<StrengthStore> | null = null;   // one in-flight read shared by concurrent callers
@@ -221,7 +222,7 @@ export function loadStrength(): Promise<StrengthStore> {
         let j: any = null;
         try { j = JSON.parse(raw); } catch { j = null; }
         if (j && Array.isArray(j.routines)) {
-          cache = { v: 1, starterRev: j.starterRev ?? 1, routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
+          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
           if ((cache.starterRev ?? 1) < STARTER_REV) {
             // The starter programs changed (rev 2 = adapted to the Marcy home gym): swap the EXERCISES of the stored
             // starter routines; keep their name, planned days and source, and every logged session.
@@ -529,4 +530,58 @@ export function legHardSets(s: StrengthStore, r: Routine): number {
     n += it.sets * ((ex?.muscles.quads ?? 0) + (ex?.muscles.glutes ?? 0) * 0.5 + (ex?.muscles.hamstrings ?? 0));
   }
   return Math.round(n * 10) / 10;
+}
+
+// ── Apple Health (build 2b) ───────────────────────────────────────────────────────────────────────────────────
+/** Active kcal estimate for a strength session: (MET − 1) × kg × h, MET 3.5 + 0.25 × RPE (RPE 8 ≈ 5.5 METs). */
+export function strengthKcal(x: StrengthSession, minutes: number): number {
+  const met = 3.5 + 0.25 * (x.rpe ?? 7);
+  return Math.round((met - 1) * (x.bodyKg ?? 80) * (minutes / 60));
+}
+/** Save a finished session to Apple Health (unless switched off) and remember the outcome on the session. */
+const hkInFlight = new Map<string, Promise<StrengthSession['hk'] | null>>();   // concurrent callers share ONE save
+export function syncSessionToHealth(sessionId: string): Promise<StrengthSession['hk'] | null> {
+  const running = hkInFlight.get(sessionId);
+  if (running) return running;
+  const p = syncSessionToHealthOnce(sessionId).finally(() => hkInFlight.delete(sessionId));
+  hkInFlight.set(sessionId, p);
+  return p;
+}
+async function syncSessionToHealthOnce(sessionId: string): Promise<StrengthSession['hk'] | null> {
+  const st = await loadStrength();
+  const x = st.sessions.find(s => s.id === sessionId);
+  if (!x?.finishedAt || st.saveToHealth === false) return x?.hk ?? null;
+  if (x.hk && (x.hk.status !== 'failed' || (x.hk.tries ?? 1) >= 3)) return x.hk;   // done, or gave up after 3 tries
+  const r = st.routines.find(q => q.id === x.routineId);
+  // the workout runs from when you STARTED; a session left open (or Finish tapped hours later) is capped at 2× the
+  // routine estimate (≥ 20 min) so it can't become a 5-hour workout or slide onto a later run
+  const capMin = Math.max(20, (r ? estimateMinutes(r) : 45) * 2);
+  const mins = Math.max(5, Math.min((x.finishedAt - x.startedAt) / 60000, capMin));
+  const { saveStrengthWorkout } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
+  const res = await saveStrengthWorkout({ id: x.id, start: x.startedAt, end: x.startedAt + mins * 60000,
+    spanStart: x.startedAt, spanEnd: x.finishedAt, kcal: strengthKcal(x, mins), name: x.routineName });
+  const hk = { status: res.status, ...(res.uuid ? { uuid: res.uuid } : {}), tries: (x.hk?.tries ?? 0) + 1 };
+  await updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(s => s.id === sessionId ? { ...s, hk } : s) }));
+  return hk;
+}
+/**
+ * Backfill + reconcile, quiet (Strength screen / Daily Coach focus): sessions of the last 3 days not yet in Health
+ * (or failed, < 3 tries) are saved; a copy WE saved that now overlaps a watch workout synced later is deleted and the
+ * session linked to the watch one instead — so Health (and this app's load) never counts it twice.
+ */
+export async function syncRecentSessionsToHealth(): Promise<void> {
+  const st = await loadStrength();
+  if (st.saveToHealth === false) return;
+  const since = Date.now() - 3 * 86_400_000;
+  const hkMod = require('./healthkit') as typeof import('./healthkit');
+  for (const x of st.sessions.filter(s => s.finishedAt && s.finishedAt >= since)) {
+    if (!x.hk || (x.hk.status === 'failed' && (x.hk.tries ?? 1) < 3)) { await syncSessionToHealth(x.id).catch(() => {}); continue; }
+    if (x.hk.status === 'saved') {
+      // our copy is found in Health by its SyncIdentifier (not the stored uuid, which a concurrent save could leave stale)
+      const { foreign, own } = await hkMod.strengthWorkoutsNear(x.id, x.startedAt, x.finishedAt!).catch(() => ({ foreign: null, own: null }));
+      if (foreign && (!own || await hkMod.deleteOwnWorkout(own))) {
+        await updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(s => s.id === x.id ? { ...s, hk: { status: 'exists', uuid: foreign } } : s) }));
+      }
+    }
+  }
 }

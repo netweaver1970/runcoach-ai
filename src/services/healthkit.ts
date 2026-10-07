@@ -5281,3 +5281,54 @@ function computeWeeklyMileage(runs: RunWorkout[], switches?: SwitchPoint[]): Wee
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([week, km]) => ({ week, km: Math.round(km * 10) / 10 }));
 }
+
+// ── Strength session → Apple Health (strength build 2b) ──────────────────────────────────────────────────────
+// Saves a finished gym session as a Traditional Strength Training workout so it shows in Health / Fitness and in
+// this app's own activity list. No duplicates: if the watch (or anything) already recorded a strength / functional
+// / HIIT / cross-training workout overlapping the session, we LINK to it instead of writing a second one; the
+// HKMetadataKeySyncIdentifier (session id) makes a retried save replace rather than duplicate. Needs only the
+// workout WRITE grant the app already requests (HKWorkoutTypeIdentifier, for the watch app).
+const HK_STRENGTH_TYPES = new Set([50, 20, 11, 63, 73]);   // traditional / functional strength, cross-training, HIIT, mixed cardio
+const strengthSyncId = (id: string) => `runcoach-strength-${id}`;
+/** Workouts around a session: a strength-like one that ISN'T ours (e.g. the watch's) and OUR own saved copy (by SyncIdentifier). */
+export async function strengthWorkoutsNear(id: string, spanStart: number, spanEnd: number): Promise<{ foreign: string | null; own: string | null }> {
+  const pad = 15 * 60_000;
+  const near: any[] = await (HealthKit.queryWorkoutSamples as any)({
+    filter: { startDate: new Date(spanStart - pad), endDate: new Date(spanEnd + pad) }, limit: 20, ascending: false,
+    energyUnit: 'kcal', distanceUnit: 'm',
+  }).catch(() => []);
+  const ours = (w: any) => w.metadata?.HKMetadataKeySyncIdentifier === strengthSyncId(id);
+  const dup = (near ?? []).find((w: any) => HK_STRENGTH_TYPES.has(w.workoutActivityType) && !ours(w)
+    && new Date(w.startDate).getTime() < spanEnd && new Date(w.endDate).getTime() > spanStart);
+  return { foreign: dup?.uuid ?? null, own: (near ?? []).find(ours)?.uuid ?? null };
+}
+export async function findForeignStrengthWorkout(id: string, spanStart: number, spanEnd: number): Promise<string | null> {
+  return (await strengthWorkoutsNear(id, spanStart, spanEnd)).foreign;
+}
+/**
+ * Save a finished gym session as a Traditional Strength Training workout — unless a foreign one already overlaps
+ * the WHOLE logged span (startedAt…finishedAt), then link it. The save itself uses the (capped) [start, end]. If HK
+ * refuses the calorie total (no active-energy write grant) it retries without it. SyncIdentifier = replace, not dupe.
+ */
+export async function saveStrengthWorkout(o: { id: string; start: number; end: number; spanStart: number; spanEnd: number; kcal: number; name: string }):
+  Promise<{ status: 'saved' | 'exists' | 'failed'; uuid?: string; error?: string }> {
+  if (Platform.OS !== 'ios') return { status: 'failed', error: 'iOS only' };
+  try {
+    const foreign = await findForeignStrengthWorkout(o.id, o.spanStart, o.spanEnd);
+    if (foreign) return { status: 'exists', uuid: foreign };
+    const meta = { HKMetadataKeySyncIdentifier: strengthSyncId(o.id), HKMetadataKeySyncVersion: 1, HKMetadataKeyWorkoutBrandName: `RunCoach · ${o.name}` };
+    let uuid: any;
+    try {
+      uuid = await (HealthKit as any).saveWorkoutSample(50, [], new Date(o.start), new Date(o.end), { energyBurned: Math.max(0, Math.round(o.kcal)) }, meta);
+    } catch {
+      uuid = await (HealthKit as any).saveWorkoutSample(50, [], new Date(o.start), new Date(o.end), {}, meta);   // without the calorie total
+    }
+    return { status: 'saved', uuid: typeof uuid === 'string' ? uuid : undefined };
+  } catch (e: any) {
+    return { status: 'failed', error: e?.message ?? String(e) };
+  }
+}
+/** Our saved copy turned out to duplicate a (late-synced) watch workout → delete ours (an app may delete only its own). */
+export async function deleteOwnWorkout(uuid: string): Promise<boolean> {
+  try { return (await (HealthKit as any).deleteObjects('HKWorkoutTypeIdentifier', { uuid })) > 0; } catch { return false; }
+}

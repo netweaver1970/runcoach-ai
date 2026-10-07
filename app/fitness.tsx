@@ -1,15 +1,17 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Switch } from 'react-native';
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, updateStrength, routinesForDate, sessionsOn, estimateMinutes, muscleLoad,
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
-  muscleEvents, muscleFreshness, muscularLoad, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
+  muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
 } from '../src/services/strength';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { getEffectiveMaxHr } from '../src/services/claude';
+import { ModeSwitcher } from '../src/components/ModeSwitcher';
+import { BodyMap } from '../src/components/BodyMap';
 
 // Muscle-map layout for the freshness panel (front / back / legs), Bevel-style colour bands.
 const FRESH_ROWS: { label: string; muscles: Muscle[] }[] = [
@@ -28,11 +30,13 @@ export default function FitnessMode() {
   const [win, setWin] = useState<7 | 28>(7);
   const [runs, setRuns] = useState<{ runs: RunLike[]; maxHr: number } | null>(null);
   const [showEx, setShowEx] = useState(false);
+  const [selMuscle, setSelMuscle] = useState<Muscle | null>(null);
 
   const opening = useRef(false);   // a double-tapped Start must not open (and create) two sessions
   useFocusEffect(useCallback(() => {
     opening.current = false;
     loadStrength().then(st => setStore({ ...st })).catch(() => {});
+    syncRecentSessionsToHealth().then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {});
     // runs load the legs too (freshness + load status) — from the cached health snapshot, no HealthKit query
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as RunLike[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -69,7 +73,8 @@ export default function FitnessMode() {
   };
 
   return (
-    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12, paddingBottom: 48 }}>
+    <View style={s.screen}>
+    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12, paddingBottom: 96 }}>
       <Stack.Screen options={{ headerShown: false }} />
       <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
       <Text style={s.h1}>🏋️ Strength</Text>
@@ -103,6 +108,11 @@ export default function FitnessMode() {
       {/* Muscle freshness (Bevel-style): per muscle, recovered / fatigued / depleted — runs count for the legs */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Muscle freshness</Text>
+        <BodyMap fresh={fresh} selected={selMuscle} onSelect={m => setSelMuscle(cur => (cur === m ? null : m))} />
+        {selMuscle && (() => { const f = fresh.get(selMuscle); return (
+          <Text style={[s.selLine, { color: FRESH_COLOR[f?.state ?? 'Calibrating'] }]}>
+            {MUSCLE_LABEL[selMuscle]}: {f?.state === 'Calibrating' ? 'calibrating (needs 3 sessions)' : `${f?.pct}% · ${f?.state}`}
+          </Text>); })()}
         {FRESH_ROWS.map(row => (
           <View key={row.label} style={{ marginBottom: 6 }}>
             <Text style={s.freshRowLbl}>{row.label}</Text>
@@ -181,16 +191,27 @@ export default function FitnessMode() {
         </TouchableOpacity>
       ))}
 
+      {/* Apple Health */}
+      <View style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.todayName}>Save sessions to Apple Health</Text>
+          <Text style={s.meta}>As a Traditional Strength Training workout. If your watch already recorded one at the same time, it's linked instead (no duplicate).</Text>
+        </View>
+        <Switch value={store.saveToHealth !== false} onValueChange={v => updateStrength(st => ({ ...st, saveToHealth: v })).then(st => setStore({ ...st }))} />
+      </View>
+
       {/* History */}
       {recent.length > 0 && <Text style={s.section}>Recent sessions</Text>}
       {recent.map(x => (
         <View key={x.id} style={s.histRow}>
           <Text style={s.histDate}>{x.date.slice(5)}</Text>
           <Text style={s.histName}>{x.routineName}</Text>
-          <Text style={s.meta}>{x.sets.filter(l => l.done).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}</Text>
+          <Text style={s.meta}>{x.sets.filter(l => l.done).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}{x.hk?.status === 'saved' || x.hk?.status === 'exists' ? ' · ❤️' : ''}</Text>
         </View>
       ))}
     </ScrollView>
+    <ModeSwitcher current="strength" />
+    </View>
   );
 }
 
@@ -226,6 +247,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   histDate:  { color: c.textFaint, fontSize: 13, width: 44, fontVariant: ['tabular-nums'] },
   histName:  { color: c.text, fontSize: 14, fontWeight: '600', flex: 1 },
   link:      { color: c.accent, fontWeight: '700', fontSize: 13 },
+  selLine:   { fontSize: 15, fontWeight: '800', textAlign: 'center', marginVertical: 6 },
   freshRowLbl:{ color: c.textFaint, fontSize: 11, fontWeight: '700', marginBottom: 4, textTransform: 'uppercase' },
   freshRow:  { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   freshCell: { width: '31.5%', borderWidth: 1, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 8 },

@@ -17,6 +17,7 @@ import {
   Image, ActivityIndicator, Linking, KeyboardAvoidingView,
 } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
@@ -319,6 +320,7 @@ export default function FoodMode() {
         <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)} own={lib?.custom.find(x => x.key === editing.key)}
           onClose={() => { Keyboard.dismiss(); setEditing(null); reload(); }} />
       )}
+      {!adding && !editing && <ModeSwitcher current="food" side="left" />}
     </View>
   );
 }
