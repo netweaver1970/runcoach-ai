@@ -104,6 +104,7 @@ final class StrengthEngine: NSObject, ObservableObject {
 
   // ─── Start ──────────────────────────────────────────────────────────────────────────────────────────────
   func start(_ r: StrengthRoutine) {
+    if phase == .saving { issue = "Still saving the last workout — a moment."; return }
     guard session == nil, phase == .idle || phase == .done else { return }
     if WorkoutEngine.shared.running || WorkoutEngine.shared.isStarting { issue = "A run is in progress — end it first."; return }
     if orphan != nil { issue = "Send or discard the unfinished workout first."; return }
@@ -122,7 +123,8 @@ final class StrengthEngine: NSObject, ObservableObject {
       s.delegate = self; b.delegate = self
       session = s; builder = b
       let now = Date(); startDate = now
-      sid = "sw-\(Int(now.timeIntervalSince1970 * 1000))"
+      // Int64: the watch is arm64_32 — a plain Int is 32-bit and epoch-ms overflowed it → trap on Start (2026-10-07)
+      sid = "sw-\(Int64(now.timeIntervalSince1970 * 1000))"
       issue = ""; doneNote = ""; heartRate = 0; kcal = 0; elapsed = 0; rpe = 7; canResume = true
       routine = r; logged = []; exIdx = 0; restEnd = nil; restLeft = 0
       loadSet(0, 0)

@@ -75,7 +75,8 @@ export interface StrengthSession {
   // related to our workout; `watch` = logged on the Apple Watch, `uuid` is the workout the WATCH recorded
   hk?: { status: 'saved' | 'exists' | 'failed'; uuid?: string; tries?: number; ver?: number;
          enriched?: { uuid: string; hr?: string; effort?: string; at: number };
-         watch?: boolean };   // heart rate + Effort related to our workout   // Apple Health: written by us / linked to a watch workout
+         watch?: boolean;
+         kcalSrc?: 'watch' | 'est'; resaveFails?: number };   // calories saved: the watch's measured active energy, or the MET estimate   // heart rate + Effort related to our workout   // Apple Health: written by us / linked to a watch workout
   note?: string;
 }
 
@@ -610,6 +611,21 @@ export function legHardSets(s: StrengthStore, r: Routine): number {
   return Math.round(n * 10) / 10;
 }
 
+// ── Strain (2026-10-07) ─────────────────────────────────────────────────────────────────────────────────────
+/**
+ * The MUSCULAR part of a day's strain, from the sets actually logged that day. The CARDIO part of a strength workout
+ * comes from its heart rate like any other activity (as Bevel does). The old rule — 1 load unit per workout MINUTE,
+ * whatever the effort — scored a 76-min session at avg HR 67 as strain 45 where Bevel gave 21.
+ * 0.3 load per hard set at RPE 7 (scaled by session RPE): 19 sets @ RPE 5 ≈ 4 load ≈ +4 strain on top of the HR part.
+ */
+export const MUSC_LOAD_PER_SET = 0.3;
+export function strengthStrainLoad(s: StrengthStore, dayKey: string): number {
+  // dayKey = the STRAIN day (trainingDayKey: 04:00 → 04:00), so a session after midnight lands on the same day as its HR
+  const { trainingDayKey } = require('./trainingLoad') as typeof import('./trainingLoad');
+  return s.sessions.filter(x => x.finishedAt && trainingDayKey(x.startedAt) === dayKey)
+    .reduce((a, x) => a + x.sets.filter(isWorkSet).length * MUSC_LOAD_PER_SET * ((x.rpe ?? 7) / 7), 0);
+}
+
 // ── Apple Health (build 2b) ───────────────────────────────────────────────────────────────────────────────────
 /** Active kcal estimate for a strength session: (MET − 1) × kg × h, MET 3.5 + 0.25 × RPE (RPE 8 ≈ 5.5 METs). */
 export function strengthKcal(x: StrengthSession, minutes: number): number {
@@ -643,36 +659,49 @@ export function exerciseSummary(s: StrengthStore, x: StrengthSession): string {
 }
 /** Save a finished session to Apple Health (unless switched off) and remember the outcome on the session. */
 const hkInFlight = new Map<string, Promise<StrengthSession['hk'] | null>>();   // concurrent callers share ONE save
-export function syncSessionToHealth(sessionId: string): Promise<StrengthSession['hk'] | null> {
+export function syncSessionToHealth(sessionId: string, measuredKcal?: number): Promise<StrengthSession['hk'] | null> {
   const running = hkInFlight.get(sessionId);
   if (running) return running;
-  const p = syncSessionToHealthOnce(sessionId).finally(() => hkInFlight.delete(sessionId));
+  const p = syncSessionToHealthOnce(sessionId, measuredKcal).finally(() => hkInFlight.delete(sessionId));
   hkInFlight.set(sessionId, p);
   return p;
 }
 // Bump when what we WRITE changes: a saved session with an older version is re-saved with the higher SyncVersion, which
 // makes HealthKit REPLACE our workout (same SyncIdentifier) — v2 adds the exercise list + exact first→last-set window.
-export const HK_SAVE_VER = 2;
-async function syncSessionToHealthOnce(sessionId: string): Promise<StrengthSession['hk'] | null> {
+export const HK_SAVE_VER = 3;   // v3 (2026-10-07): measured watch active energy instead of the MET estimate
+async function syncSessionToHealthOnce(sessionId: string, measuredKcal?: number): Promise<StrengthSession['hk'] | null> {
   const st = await loadStrength();
   const x = st.sessions.find(s => s.id === sessionId);
   if (!x?.finishedAt || st.saveToHealth === false) return x?.hk ?? null;
-  const stale = x.hk?.status === 'saved' && (x.hk.ver ?? 1) < HK_SAVE_VER;
+  // stale = an older save format, or saved with the ESTIMATE and the watch's measured kcal has synced since
+  const stale = x.hk?.status === 'saved' && (x.hk.resaveFails ?? 0) < 3
+    && ((x.hk.ver ?? 1) < HK_SAVE_VER || (measuredKcal != null && x.hk.kcalSrc === 'est'));
   if (x.hk && !stale && (x.hk.status !== 'failed' || (x.hk.tries ?? 1) >= 3)) return x.hk;   // done, or gave up after 3 tries
   const r = st.routines.find(q => q.id === x.routineId);
   const win = strengthWindow(x, r);
   const mins = (win.end - win.start) / 60000;
-  const { saveStrengthWorkout } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
+  const { saveStrengthWorkout, watchActiveEnergy } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
+  // the watch's MEASURED active energy in the window; the MET estimate only when the watch wasn't worn (it was
+  // generous: 363 kcal for a session the watch measured at an average HR of 67)
+  const measured = measuredKcal ?? await watchActiveEnergy(win.start, win.end).catch(() => null);
+  // SyncVersion must RISE for HealthKit to replace our workout: format version × 100, +1 once the kcal is measured
   const res = await saveStrengthWorkout({ id: x.id, start: win.start, end: win.end,
-    spanStart: x.startedAt, spanEnd: x.finishedAt, kcal: strengthKcal(x, mins), name: x.routineName, exercises: exerciseSummary(st, x),
-    version: HK_SAVE_VER });
+    spanStart: x.startedAt, spanEnd: x.finishedAt, kcal: measured ?? strengthKcal(x, mins), name: x.routineName, exercises: exerciseSummary(st, x),
+    version: HK_SAVE_VER * 100 + (measured != null ? 1 : 0) });
   // a stale (v1) copy that now overlaps a watch workout: the re-save links the watch one — delete our old copy
   if (stale && res.status === 'exists') {
     const hkMod = require('./healthkit') as typeof import('./healthkit');
     const near = await hkMod.strengthWorkoutsNear(x.id, x.startedAt, x.finishedAt).catch(() => ({ foreign: null, own: null }));
     if (near.own) await hkMod.deleteOwnWorkout(near.own).catch(() => false);
   }
-  const hk: NonNullable<StrengthSession['hk']> = { status: res.status, ...(res.uuid ? { uuid: res.uuid } : {}), tries: stale ? 1 : (x.hk?.tries ?? 0) + 1, ver: HK_SAVE_VER };
+  // a failed RE-save keeps the earlier saved workout's record (it's still in Health; dedupe/enrich keep working on it)
+  if (stale && res.status === 'failed') {   // …and counts the failure: 3 strikes → stop retrying the re-save
+    const kept = { ...x.hk!, resaveFails: (x.hk!.resaveFails ?? 0) + 1 };
+    await updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(s => s.id === sessionId ? { ...s, hk: kept } : s) }));
+    return kept;
+  }
+  const hk: NonNullable<StrengthSession['hk']> = { status: res.status, ...(res.uuid ? { uuid: res.uuid } : {}), tries: stale ? 1 : (x.hk?.tries ?? 0) + 1, ver: HK_SAVE_VER,
+    ...(res.status === 'saved' ? { kcalSrc: measured != null ? 'watch' as const : 'est' as const } : {}) };
   await updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(s => s.id === sessionId ? { ...s, hk } : s) }));
   // heart rate + Effort attach in the BACKGROUND (may show a one-time permission sheet) — Finish never waits on it
   if (hk.status === 'saved' && hk.uuid) enrichSession(sessionId).catch(() => {});
@@ -701,7 +730,11 @@ async function enrichSessionOnce(sessionId: string): Promise<StrengthSession['hk
   if (!x?.finishedAt || !hk?.uuid || !(hk.status === 'saved' || hk.watch)) return hk ?? null;
   const e = hk.enriched;
   const hrPending = e?.hr === 'none' && Date.now() - x.finishedAt < 12 * 3_600_000 && Date.now() - e.at > 10 * 60_000;
-  if (e && e.uuid === hk.uuid && !hrPending) return hk;
+  // Effort waits while the workout still carries the calorie ESTIMATE (≤ 6 h): the measured re-save replaces it with a
+  // new uuid, and the effort sample related to the old one would stay behind in Health as a duplicate
+  const deferEffort = hk.kcalSrc === 'est' && Date.now() - x.finishedAt < 6 * 3_600_000;
+  const effortPending = !deferEffort && (x.rpe ?? 0) > 0 && e?.uuid === hk.uuid && e.effort === undefined;   // never attempted yet
+  if (e && e.uuid === hk.uuid && !hrPending && !effortPending) return hk;
   const mod = require('../../modules/runcoach-workout') as typeof import('../../modules/runcoach-workout');
   if (!mod.default?.enrichStrengthWorkout) return hk;   // old binary without the native functions → nothing to ask/do
   if (!st.hkExtrasAsked) {
@@ -710,7 +743,7 @@ async function enrichSessionOnce(sessionId: string): Promise<StrengthSession['hk
   }
   // Effort is related ONCE per workout uuid; a heart-rate-only retry must not add another effort sample
   const effortDone = e?.uuid === hk.uuid && e.effort === 'ok';
-  const res = await mod.enrichStrengthWorkout(hk.uuid, effortDone ? 0 : (x.rpe ?? 0));
+  const res = await mod.enrichStrengthWorkout(hk.uuid, effortDone || deferEffort ? 0 : (x.rpe ?? 0));
   // the workout isn't in this phone's Health yet (a watch workout syncs over later) → don't record a result; retried
   // on the next focus (syncRecentSessionsToHealth) for a day instead of being marked done with nothing related
   if (!res || (res.error && Date.now() - x.finishedAt < 24 * 3_600_000)) return hk;
@@ -729,10 +762,16 @@ export async function syncRecentSessionsToHealth(): Promise<void> {
   const since = Date.now() - 3 * 86_400_000;
   const hkMod = require('./healthkit') as typeof import('./healthkit');
   for (const x of st.sessions.filter(s => s.finishedAt && s.finishedAt >= since)) {
-    if (!x.hk || (x.hk.status === 'failed' && (x.hk.tries ?? 1) < 3) || (x.hk.status === 'saved' && (x.hk.ver ?? 1) < HK_SAVE_VER)) {
+    if (!x.hk || (x.hk.status === 'failed' && (x.hk.tries ?? 1) < 3) || (x.hk.status === 'saved' && (x.hk.ver ?? 1) < HK_SAVE_VER && (x.hk.resaveFails ?? 0) < 3)) {
       await syncSessionToHealth(x.id).catch(() => {}); continue;
     }
     if (x.hk.watch) { await enrichSession(x.id).catch(() => {}); continue; }   // the watch's own workout: Effort only to add
+    // saved with the calorie ESTIMATE because the watch's samples hadn't synced yet → re-save once they have
+    if (x.hk.status === 'saved' && x.hk.kcalSrc === 'est' && (x.hk.resaveFails ?? 0) < 3) {
+      const win = strengthWindow(x, st.routines.find(q => q.id === x.routineId));
+      const m = await hkMod.watchActiveEnergy(win.start, win.end).catch(() => null);
+      if (m != null) { await syncSessionToHealth(x.id, m).catch(() => {}); continue; }
+    }
     if (x.hk.status === 'saved') await enrichSession(x.id).catch(() => {});   // heart rate synced late → relate it now
     if (x.hk.status === 'saved') {
       // our copy is found in Health by its SyncIdentifier (not the stored uuid, which a concurrent save could leave stale)

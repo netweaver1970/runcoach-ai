@@ -1359,6 +1359,21 @@ function metaGet(m: any, key: string): any {
 }
 
 /**
+ * OUR phone-saved strength copy (SyncIdentifier runcoach-strength-…) that another workout overlaps — the watch's own,
+ * synced after the phone saved — until the reconcile deletes ours. Strain skips it so the same heart rate isn't
+ * scored twice (strength is scored from HR per activity since 2026-10-07, and per-activity strain is additive).
+ */
+function shadowedOwnStrength(w: any, all: any[]): boolean {
+  if (!String(metaGet(w?.metadata, 'HKMetadataKeySyncIdentifier') ?? '').startsWith('runcoach-strength-')) return false;
+  const s = new Date(toISOStr(w.startDate)).getTime(), e = s + workoutDurationSec(w) * 1000;
+  return all.some(o => {
+    if (o === w || String(metaGet(o?.metadata, 'HKMetadataKeySyncIdentifier') ?? '').startsWith('runcoach-strength-')) return false;
+    const os = new Date(toISOStr(o.startDate)).getTime(), oe = os + workoutDurationSec(o) * 1000;
+    return Math.min(e, oe) - Math.max(s, os) >= 0.5 * (e - s);   // the SAME session (≥ half ours), not a walk that ends in our lead-in
+  });
+}
+
+/**
  * Read the weather temperature (°C) Apple Watch records in a workout's metadata
  * (HKWeatherTemperature). Returns undefined when absent (e.g. indoor runs).
  * Converts Fahrenheit → Celsius when the unit string indicates °F.
@@ -2240,8 +2255,9 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   // Fallback = durationMin × activityFactor(type), the SAME per-activity-type intensity constant
   // computeWorkoutLoad uses when kcal is missing — no new magic number. Scale check: for a Z2 run the
   // fallback (min × 1.0) equals what the HR path yields (min × Z2 weight 1), so the two agree.
-  // Strength types are EXCLUDED here — they're already counted in muscularLoad below (no double-count).
-  const STRENGTH_TYPES = new Set([20, 50]);
+  // Strength workouts are scored like any activity here — from their HEART RATE (Bevel does the same); the logged
+  // sets add a small muscular part below. (Until 2026-10-07 strength was 1 load/minute whatever the effort: a 76-min
+  // session at avg HR 67 scored strain 45 vs Bevel's 21.)
   const hrPts = (todayHr as any[]).map((s: any) => ({ t: new Date(toISOStr(s.startDate)).getTime(), hr: s.quantity as number }));
   // PER-ACTIVITY loads — strain is now summed per activity (see computeDayStrain), so each workout needs
   // its OWN zone load rather than one lumped total. Falls back to duration × activityFactor when the
@@ -2250,7 +2266,7 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
   let noHrWorkoutLoad = 0;
   for (const w of (loadWorkoutsRaw as any[])) {
     if (trainingDayKey(toISOStr(w.startDate)) !== trainingDayKey(now)) continue;
-    if (STRENGTH_TYPES.has(w.workoutActivityType)) continue;
+    if (shadowedOwnStrength(w, loadWorkoutsRaw as any[])) continue;
     const ws = new Date(toISOStr(w.startDate)).getTime();
     const we = ws + workoutDurationSec(w) * 1000;
     const hasHr = hrPts.some(p => p.t >= ws && p.t <= we && p.hr > restHRForTrimp);
@@ -2263,12 +2279,9 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
     }
   }
 
-  let muscularLoad = 0;
-  for (const w of (loadWorkoutsRaw as any[])) {
-    if (!STRENGTH_TYPES.has(w.workoutActivityType)) continue;
-    if (trainingDayKey(toISOStr(w.startDate)) !== trainingDayKey(now)) continue;
-    muscularLoad += workoutDurationSec(w) / 60; // ~1 TRIMP-equiv per active minute
-  }
+  // muscular part: the sets logged in the Strength module today (hard sets × session RPE)
+  const strengthMod = require('./strength') as typeof import('./strength');   // lazy (strength lazily requires this file)
+  const muscularLoad = await strengthMod.loadStrength().then(st => strengthMod.strengthStrainLoad(st, trainingDayKey(now))).catch(() => 0);
   const latestLoad = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1] : null;
   const latestTsb = latestLoad?.tsb ?? 0;
   // 14-day strain BASELINE (mean of completed days) — personalizes the target range to the athlete's
@@ -3898,8 +3911,9 @@ export async function fetchStrainHistory(
     if (!byDay.has(s.day)) byDay.set(s.day, []);
     byDay.get(s.day)!.push({ t: s.t, hr: s.hr });
   }
-  const STRENGTH = new Set([20, 50]);
-  const muscularByDay = new Map<string, number>();
+  // muscular part per day = the logged strength sets (strength WORKOUTS are scored from their HR like any activity)
+  const strengthMod = require('./strength') as typeof import('./strength');
+  const strengthSt = await strengthMod.loadStrength().catch(() => null);
   const windowsByDay  = new Map<string, { s: number; e: number }[]>();
   // Same windows, but keeping TYPE + duration so a no-HR workout can fall back to duration × activityFactor
   // (see the no-HR fallback on the live path). History MUST use the identical model, or the 14-day strain
@@ -3911,13 +3925,9 @@ export async function fetchStrainHistory(
     const win = { s: ws, e: ws + workoutDurationSec(w) * 1000 };
     if (!windowsByDay.has(day)) windowsByDay.set(day, []);
     windowsByDay.get(day)!.push(win);
-    if (!STRENGTH.has(w.workoutActivityType)) {   // strength is counted via muscularByDay — no double-count
-      if (!actWinsByDay.has(day)) actWinsByDay.set(day, []);
-      actWinsByDay.get(day)!.push({ ...win, min: workoutDurationSec(w) / 60, type: w.workoutActivityType });
-    }
-    if (STRENGTH.has(w.workoutActivityType)) {
-      muscularByDay.set(day, (muscularByDay.get(day) ?? 0) + workoutDurationSec(w) / 60);
-    }
+    if (shadowedOwnStrength(w, workouts as any[])) continue;
+    if (!actWinsByDay.has(day)) actWinsByDay.set(day, []);
+    actWinsByDay.get(day)!.push({ ...win, min: workoutDurationSec(w) / 60, type: w.workoutActivityType });
   }
 
   const [stepSamples, stepsDedup] = await Promise.all([
@@ -3940,7 +3950,7 @@ export async function fetchStrainHistory(
       actLoads.push(hasHr ? zoneStrainLoad(samples, restHR, dayMax, [{ s: w.s, e: w.e }])
                           : w.min * activityFactor(w.type));
     }
-    const musc = muscularByDay.get(day) ?? 0;
+    const musc = strengthSt ? strengthMod.strengthStrainLoad(strengthSt, day) : 0;
     const actStrain = actLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L)), 0)
                     + (musc > 0 ? strainFromLoad(musc) : 0);
     const passiveStrain = strainFromLoad(stepStrainLoad(nwStepsByDay.get(day) ?? 0));
@@ -5330,6 +5340,36 @@ export async function saveStrengthWorkout(o: { id: string; start: number; end: n
   } catch (e: any) {
     return { status: 'failed', error: e?.message ?? String(e) };
   }
+}
+/**
+ * Active energy the WATCH measured in [start, end] (kcal), prorated for samples straddling the edges. Only Apple Watch
+ * samples (the iPhone's motion estimate overlaps them) and never this phone app's own (a workout we saved earlier
+ * carries our estimate). null when the watch recorded too little to trust (not worn).
+ */
+export async function watchActiveEnergy(start: number, end: number): Promise<number | null> {
+  const rows: any[] = await (HealthKit.queryQuantitySamples as any)(HKQuantityTypeIdentifier.activeEnergyBurned, {
+    filter: { startDate: new Date(start), endDate: new Date(end) }, unit: 'kcal', ascending: true, limit: 5000,
+  }).catch(() => []);
+  // per SOURCE (Apple's own vs a third-party watch app can both write the same minutes) → the single fullest source
+  const bySrc = new Map<string, { kcal: number; covMs: number; lastEnd: number }>();
+  for (const r of rows ?? []) {
+    if (!String(r?.sourceRevision?.productType ?? '').startsWith('Watch')) continue;
+    const bundle = String(r?.sourceRevision?.source?.bundleIdentifier ?? '');
+    if (bundle === 'com.netweaver1970.runcoachai') continue;
+    const s = new Date(toISOStr(r.startDate)).getTime(), e = new Date(toISOStr(r.endDate)).getTime();
+    const ov = Math.min(e, end) - Math.max(s, start);
+    if (ov <= 0) continue;
+    const g = bySrc.get(bundle) ?? { kcal: 0, covMs: 0, lastEnd: 0 };
+    g.kcal += (r.quantity as number) * (e > s ? ov / (e - s) : 1);
+    g.covMs += ov; g.lastEnd = Math.max(g.lastEnd, e);
+    bySrc.set(bundle, g);
+  }
+  const best = [...bySrc.values()].sort((a, b) => b.kcal - a.kcal)[0];
+  // trust it only once the watch's samples have SYNCED for the whole window (they reach the phone minutes late):
+  // ≥ 50 % of the window covered (idle minutes between sets can go unsampled) and samples up to ≤ 5 min before its
+  // end — else null (estimate now, re-save once synced)
+  if (!best || best.covMs < 0.5 * (end - start) || best.lastEnd < end - 5 * 60_000) return null;
+  return Math.round(best.kcal);
 }
 /** Our saved copy turned out to duplicate a (late-synced) watch workout → delete ours (an app may delete only its own). */
 export async function deleteOwnWorkout(uuid: string): Promise<boolean> {

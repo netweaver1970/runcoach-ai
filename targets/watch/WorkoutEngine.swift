@@ -327,7 +327,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
   }
 
   func start(activity: HKWorkoutActivityType, indoor: Bool = false) {
-    if StrengthEngine.shared.running { return }    // a live strength workout owns the (single) workout session
+    if StrengthEngine.shared.running {             // a live strength workout owns the (single) workout session
+      flagIssue(.start, "A strength workout is in progress — end it first.", speak: nil); return
+    }
     if session != nil && !running { teardown() }   // a stale/dead session is lingering → clear it and retry
     guard session == nil else { return }           // a genuinely running session → ignore a double-Start
     isIndoor = indoor
