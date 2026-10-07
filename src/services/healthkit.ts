@@ -3954,7 +3954,7 @@ export async function fetchStrainHistory(
     const actStrain = actLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L)), 0)
                     + (musc > 0 ? strainFromLoad(musc) : 0);
     const passiveStrain = strainFromLoad(stepStrainLoad(nwStepsByDay.get(day) ?? 0));
-    out.push({ date: day, value: Math.round(Math.max(actStrain, passiveStrain)) }); // Bevel % — UNCAPPED (a huge day may exceed 100)
+    out.push({ date: day, value: Math.round(actStrain + passiveStrain) }); // Bevel % — UNCAPPED; passive ADDED like the live path
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -4961,8 +4961,12 @@ interface DcStore { updatedAt: number; coveredFrom: string; days: Record<string,
 // v6: heals the strain/recovery/sleep-null band (Aug-2026 "watch not worn overnight" bug) — the old
 // store was corrupted by refreshRecent's whole-row replace + the un-chunked strain HR query throwing.
 // Bumping forces one clean full recompute with the merge + chunked-fetch fixes in place.
-const DC_FILE = FileSystem.documentDirectory + 'daily-components-v7.json';   // v7: + hrvCv / hrvLn7 (full backfill)
-// The superseded v6 store is never read again — remove it once (best-effort) so it doesn't linger in Documents.
+// v7: + hrvCv / hrvLn7 (full backfill).
+// v8 (2026-10-07): strain re-based — strength scored from HR + logged sets (was 1 load/min), and the day's passive
+// strain ADDED instead of a floor (Bevel: strength 21 + passive 3 = 24). Older cached strains used the old model.
+const DC_FILE = FileSystem.documentDirectory + 'daily-components-v8.json';
+// The superseded v7 store is never read again — remove it once (best-effort) so it doesn't linger in Documents.
+FileSystem.deleteAsync(FileSystem.documentDirectory + 'daily-components-v7.json', { idempotent: true }).catch(() => {});
 FileSystem.deleteAsync(FileSystem.documentDirectory + 'daily-components-v6.json', { idempotent: true }).catch(() => {});
 const DC_EMPTY = (): DcStore => ({ updatedAt: 0, coveredFrom: '9999-99-99', days: {} });
 let dcMem: DcStore | null = null;

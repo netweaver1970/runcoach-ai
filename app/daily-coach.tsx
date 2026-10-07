@@ -294,7 +294,8 @@ export default function DailyCoachScreen() {
   const planHeatFactor = heatStrainFactor(targetIsToday && weather
     ? { tempC: weather.tempC, apparentC: weather.apparentC, humidity: weather.humidity } : null);
   const runLoad         = watchWorkout ? estimateWorkoutLoad(watchWorkout) : 0;
-  const projectedStrain = watchWorkout ? strainFromLoad((strainObj?.trimp ?? 0) + runLoad * planHeatFactor) : real;
+  // additive like computeDayStrain (per-activity strains + passive are SUMMED): today so far + the run's own strain
+  const projectedStrain = watchWorkout ? real + strainFromLoad(runLoad * planHeatFactor) : real;
   const runStrain       = Math.max(0, projectedStrain - real);
   // Derived IMPACT readout: the session's prescribed Banister TRIMP (recomputed from the EDITED workout so it
   // tracks the reps ± control live). This is the load currency — the tunable number that equalises varied

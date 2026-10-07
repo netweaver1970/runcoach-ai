@@ -861,15 +861,17 @@ export function computeDayStrain(
   // Bevel's own per-activity breakdown for 19 Jul settles it: Walk 14 + Run 29 + Run 10 = **53, its exact
   // total** → Bevel is ADDITIVE. And our per-activity numbers already match it (15/14, 27/29, 8/10, sum 50
   // vs 53) — so the PARTS were right and only the aggregation was wrong. Curving the total gave 43.
-  // PASSIVE is a FLOOR, not an addend: Bevel's total equals the activity sum exactly (no separate passive
-  // term on an activity day), while a rest day should still score its non-workout movement.
+  // PASSIVE is ADDED too (2026-10-07, Geert): Bevel lists the day's non-workout movement as its own line and sums
+  // it — strength 21 + "normal day, computer work" 3 = its total 24 (and earlier: walk 12 + passive 3 = 15). The
+  // 19 Jul "activity sum exactly" day just had ~no passive. It used to be a FLOOR here (max), which dropped it on
+  // any workout day.
   const rawLoad = (Math.max(0, activeLoad) + Math.max(0, passiveLoad) + Math.max(0, muscularLoad)) * heatFactor;
   let real: number;
   if (activityLoads && activityLoads.length > 0) {
     const actStrain = activityLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L) * heatFactor), 0);
     const muscStrain = muscularLoad > 0 ? strainFromLoad(Math.max(0, muscularLoad) * heatFactor) : 0;
     const passiveStrain = passiveLoad > 0 ? strainFromLoad(Math.max(0, passiveLoad) * heatFactor) : 0;
-    real = Math.round(Math.max(actStrain + muscStrain, passiveStrain));   // uncapped — see strainFromLoad
+    real = Math.round(actStrain + muscStrain + passiveStrain);   // uncapped — see strainFromLoad
   } else {
     real = strainFromLoad(rawLoad);   // legacy: no per-activity breakdown available
   }
