@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { StrengthStore, loadStrength, legHardSets } from '../src/services/strength';
 import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchTrainingLoadHistory } from '../src/services/healthkit';
@@ -153,6 +154,9 @@ export default function WeekPlan() {
   const [rates, setRates] = useState<TrimpRates | null>(null);
   const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number; floorRestDays: number; taperDays: number; minTSB: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
+  // Strength routines planned on weekdays (+ logged sessions) → shown on each day of the plan (training calendar).
+  const [strength, setStrength] = useState<StrengthStore | null>(null);
+  useFocusEffect(React.useCallback(() => { loadStrength().then(x => setStrength({ ...x })).catch(() => {}); }, []));
   const [periodLabel, setPeriodLabel] = useState('');
   const [raceWeek, setRaceWeek] = useState<RaceWeek | null>(null);
   const [shrink, setShrink] = useState(false);
@@ -569,8 +573,19 @@ export default function WeekPlan() {
             </Text>
           </View>
 
-          {rows.map((r) => {
+          {rows.map((r, ri) => {
             const day = Number(r.date.slice(8, 10));
+            // strength on this day: planned routines (by weekday) + any session already logged on the date
+            const dow = new Date(r.date + 'T00:00:00').getDay();
+            const sPlanned = strength ? strength.routines.filter(x => x.days.includes(dow)) : [];
+            const sDone = strength ? strength.sessions.filter(x => x.finishedAt && x.date === r.date) : [];
+            const QUALITY = ['long', 'tempo', 'intervals'];
+            const legsHeavy = strength ? sPlanned.filter(x => legHardSets(strength, x) >= 6) : [];
+            const next = rows[ri + 1];
+            const legWarn = legsHeavy.length
+              ? (QUALITY.includes(r.kind ?? '') && r.intensity !== 'rest' ? `same day as the ${r.kind}` :
+                 next && QUALITY.includes(next.kind ?? '') && next.intensity !== 'rest' ? `the day before the ${next.kind}` : '')
+              : '';
             const it  = INTENSITY[r.intensity] ?? INTENSITY.rest;
             const col = LABEL_COLOR[r.label] ?? it.color;
             const reduced = r.intensity !== 'rest' && r.adjMin < r.runMinutes;
@@ -592,6 +607,12 @@ export default function WeekPlan() {
                     {r.adjKm != null && r.intensity !== 'rest' ? `  ·  ${r.adjKm} km` : ''}
                     {reduced ? `  → ${r.adjMin}min ${r.tsbTrim ? '(form)' : r.capped ? '(cap)' : r.travel ? '(travel heat)' : '(heat)'}` : ''}
                   </Text>
+                  {(sPlanned.length > 0 || sDone.length > 0) && (
+                    <Text style={s.struct} numberOfLines={2}>
+                      🏋️ {[...sDone.map(x => `✅ ${x.routineName}`), ...sPlanned.filter(x => !sDone.some(d => d.routineId === x.id)).map(x => x.name)].join(' · ')}
+                      {legWarn ? <Text style={{ color: '#e67e22' }}>{`  ⚠ leg day ${legWarn} — keep it light or move it`}</Text> : null}
+                    </Text>
+                  )}
                 </View>
                 <Text style={[s.numS, s.strain, { color: col }]}>{r.strain}</Text>
                 <Text style={[s.num, s.val]}>{r.ctl.toFixed(0)}</Text>
@@ -667,8 +688,8 @@ export default function WeekPlan() {
         </TouchableOpacity>
       )}
 
-      <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/workout-library' as any)}>
-        <Text style={s.travelBtnText}>🏋  Workout library — reusable sessions</Text>
+      <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/routines' as any)}>
+        <Text style={s.travelBtnText}>🗂  Routines — running & strength</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={s.travelBtn} onPress={() => router.push('/travel-projection' as any)}>

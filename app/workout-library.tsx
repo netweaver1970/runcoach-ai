@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Modal, ActivityIndicator, Keyboard } from 'react-native';
-import { Stack, useNavigation } from 'expo-router';
+import { Stack, useNavigation, useLocalSearchParams } from 'expo-router';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import {
   LibraryWorkout, WorkoutKind, WORKOUT_KINDS, KIND_COLOR, describeWorkout, workoutMinutes,
@@ -17,7 +17,8 @@ export default function WorkoutLibraryScreen() {
   const navigation = useNavigation();
 
   const [list, setList] = useState<LibraryWorkout[] | null>(null);
-  const [editId, setEditId] = useState<string | null>(null);
+  const { edit } = useLocalSearchParams<{ edit?: string }>();   // deep link from the Routines screen
+  const [editId, setEditId] = useState<string | null>(edit ?? null);
   const saveTimer = useRef<any>(null);
 
   useEffect(() => { loadLibrary().then(setList); }, []);

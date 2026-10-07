@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -40,6 +40,7 @@ export default function StrengthSessionScreen() {
   const notifGen = useRef(0);      // bumps on every start/cancel → a schedule that resolves late is cancelled
   const buzzed = useRef(false);
   const sessRef = useRef<StrengthSession | null>(null);   // the LIVE session — every update applies to this
+  const finishing = useRef(false);                          // a double-tapped Finish saves + alerts once
 
   // Load the store, then resume today's unfinished session of this routine or start a fresh one.
   useEffect(() => {
@@ -137,15 +138,23 @@ export default function StrengthSessionScreen() {
   // switch to the alternative exercise for the sets NOT yet done
   const swap = (fromId: string, toId: string) => persist(x => ({ ...x, sets: x.sets.map(l => l.exerciseId === fromId && !l.done ? { ...l, exerciseId: toId } : l) }));
   const finish = () => {
+    if (finishing.current) return;
     const cur = sessRef.current!;
     if (!cur.sets.some(l => l.done)) {
       Alert.alert('No sets ticked', 'Discard this session instead?', [{ text: 'Keep logging', style: 'cancel' }, { text: 'Discard', style: 'destructive', onPress: discard }]);
       return;
     }
+    finishing.current = true;
     cancelRestNotif();
     const fin = { ...cur, finishedAt: Date.now(), rpe };
     sessRef.current = fin;
-    updateStrength(st => ({ ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) })).then(() => router.back());
+    updateStrength(st => ({ ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) })).then(st => {
+      const prs = sessionPRs(st, fin.id);
+      const sum = `${fin.sets.filter(l => l.done).length} sets · ${sessionTonnage(st, fin).toLocaleString()} kg · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
+      Alert.alert(prs.length ? '🏆 New personal records' : '✅ Session saved',
+        prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum,
+        [{ text: 'OK', onPress: () => router.back() }]);
+    });
   };
   const discard = () => {
     cancelRestNotif();
@@ -181,7 +190,9 @@ export default function StrengthSessionScreen() {
           return (
             <View key={exId} style={s.ex}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId}</Text>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: exId } })}>
+                  <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId} ›</Text>
+                </TouchableOpacity>
                 {ex?.video && <TouchableOpacity onPress={() => Linking.openURL(ex.video!.url)} hitSlop={8}><Text style={s.link}>▶ video</Text></TouchableOpacity>}
               </View>
               <Text style={s.meta}>

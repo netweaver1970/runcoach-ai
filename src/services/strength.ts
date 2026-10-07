@@ -363,5 +363,170 @@ export async function strengthLineForLLM(): Promise<string> {
   const week = sessionsWithinDays(st, 7);
   if (!planned.length && !week.length) return '';
   const top = muscleLoad(st, week).slice(0, 6).map(l => `${MUSCLE_LABEL[l.muscle]} ${l.hardSets}`).join(', ');
-  return `• STRENGTH (athlete-logged gym sessions, separate from running): planned ${planned.join(', ') || 'none'}; last 7 days ${week.length} session${week.length === 1 ? '' : 's'}${week.length ? ` (${week.map(x => `${x.date.slice(5)} ${x.routineName}${x.rpe ? ` RPE ${x.rpe}` : ''}`).join('; ')})` : ''}${top ? `; hard sets/muscle: ${top}` : ''}. Strength load is NOT yet in CTL/ATL — account for heavy LEG days (quads/glutes/hamstrings) before quality runs and long runs.`;
+  // leg freshness (strength + runs) — the part that matters for tomorrow's run
+  // lazy require: keeps strength.ts out of the healthkit ↔ claude ↔ appModel import cycle
+  const { loadSnapshotCache } = require('./healthkit') as typeof import('./healthkit');
+  const runs = ((await loadSnapshotCache().catch(() => null))?.runs ?? []) as RunLike[];
+  const legs = muscleFreshness(muscleEvents(st, runs)).filter(f => ['quads', 'glutes', 'hamstrings', 'calves'].includes(f.muscle))
+    .map(f => `${MUSCLE_LABEL[f.muscle]} ${f.state === 'Calibrating' ? 'calibrating' : `${f.pct}% ${f.state.toLowerCase()}`}`).join(', ');
+  return `• STRENGTH (athlete-logged sessions on a Marcy home gym, separate from running): planned ${planned.join(', ') || 'none'}; last 7 days ${week.length} session${week.length === 1 ? '' : 's'}${week.length ? ` (${week.map(x => `${x.date.slice(5)} ${x.routineName}${x.rpe ? ` RPE ${x.rpe}` : ''}`).join('; ')})` : ''}${top ? `; hard sets/muscle: ${top}` : ''}; leg freshness now: ${legs}. Strength load is NOT in CTL/ATL (it has its own muscular load) — account for heavy LEG days and low leg freshness before quality and long runs.`;
+}
+
+// ════ Build 2 (2026-10-07): records, muscle freshness, muscular-load status — Bevel 2026 Fall-release parity ════
+
+// ── Personal records / estimated 1RM ─────────────────────────────────────────────────────────────────────────
+/** Load actually moved on a set: external kg + the body-weight share (dips, split squats, push-ups…). */
+export function setLoadKg(ex: Exercise | undefined, l: SetLog, bodyKg?: number): number {
+  return Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (bodyKg ?? 80) : 0));
+}
+/** Epley e1RM; reps > 12 are too far from a single to extrapolate → null. */
+export function e1rm(loadKg: number, reps: number): number | null {
+  if (loadKg <= 0 || reps <= 0 || reps > 12) return null;
+  return reps === 1 ? loadKg : Math.round(loadKg * (1 + reps / 30) * 10) / 10;
+}
+export interface ExerciseSessionStat { sessionId: string; date: string; at: number; topKg: number; bestE1rm: number | null; bestSetVol: number; volume: number; sets: number }
+/** Per finished session: the exercise's top weight, best e1RM, best single-set volume and total volume. */
+export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseSessionStat[] {
+  const ex = exerciseById(s, exerciseId);
+  const out: ExerciseSessionStat[] = [];
+  for (const x of s.sessions) {
+    if (!x.finishedAt) continue;
+    const sets = x.sets.filter(l => l.exerciseId === exerciseId && l.done && l.reps > 0);
+    if (!sets.length) continue;
+    let topKg = -Infinity, bestE = 0, bestV = 0, vol = 0;
+    for (const l of sets) {
+      const kg = setLoadKg(ex, l, x.bodyKg);
+      topKg = Math.max(topKg, ex?.bodyweightFrac ? l.weightKg : kg);   // body-weight moves: "heaviest" = added kg (−20 → −15 = less assistance)
+      bestE = Math.max(bestE, e1rm(kg, l.reps) ?? 0);
+      bestV = Math.max(bestV, kg * l.reps);
+      vol += kg * l.reps;
+    }
+    out.push({ sessionId: x.id, date: x.date, at: x.finishedAt, topKg, bestE1rm: bestE || null, bestSetVol: Math.round(bestV), volume: Math.round(vol), sets: sets.length });
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+export interface PrHit { exerciseId: string; name: string; kind: 'e1RM' | 'Heaviest' | 'Set volume' | 'Volume'; value: number; prev: number }
+/** PRs this (finished) session set vs every EARLIER session — first-ever sessions don't count as PRs. */
+export function sessionPRs(s: StrengthStore, sessionId: string): PrHit[] {
+  const sess = s.sessions.find(x => x.id === sessionId);
+  if (!sess?.finishedAt) return [];
+  const ids = [...new Set(sess.sets.filter(l => l.done).map(l => l.exerciseId))];
+  const hits: PrHit[] = [];
+  for (const id of ids) {
+    const h = exerciseHistory(s, id);
+    const cur = h.find(x => x.sessionId === sessionId);
+    const prior = h.filter(x => x.at < sess.finishedAt!);
+    if (!cur || !prior.length) continue;
+    const name = exerciseById(s, id)?.name ?? id;
+    const best = (f: (x: ExerciseSessionStat) => number) => Math.max(...prior.map(f));
+    const e = best(x => x.bestE1rm ?? 0);
+    if ((cur.bestE1rm ?? 0) > e && e > 0) hits.push({ exerciseId: id, name, kind: 'e1RM', value: cur.bestE1rm!, prev: e });
+    else if (cur.topKg > best(x => x.topKg)) hits.push({ exerciseId: id, name, kind: 'Heaviest', value: cur.topKg, prev: best(x => x.topKg) });
+    else if (cur.bestSetVol > best(x => x.bestSetVol)) hits.push({ exerciseId: id, name, kind: 'Set volume', value: cur.bestSetVol, prev: best(x => x.bestSetVol) });
+  }
+  return hits;
+}
+
+// ── Muscle load units over time (strength sets + runs) ────────────────────────────────────────────────────────
+// One "unit" = one hard set for that muscle. Strength: Σ involvement per completed set × session effort (RPE/8,
+// 0.75–1.25). Runs load the legs too (Bevel: cardio contributes muscular load): per 10 min, calves 0.5, quads 0.4,
+// hamstrings 0.3, glutes 0.3, adductors 0.15, × intensity (avg HR / max HR: 70 % → 1.0 rising smoothly to 1.6 at 90 %).
+export interface RunLike { date: string; duration: number; avgHeartRate?: number }
+export interface MuscleEvent { at: number; units: Partial<Record<Muscle, number>>; kind: 'strength' | 'run' }
+const RUN_LEGS: Partial<Record<Muscle, number>> = { calves: 0.5, quads: 0.4, hamstrings: 0.3, glutes: 0.3, adductors: 0.15 };
+export function muscleEvents(s: StrengthStore, runs: RunLike[], maxHr = 188, sinceMs = Date.now() - 50 * 86_400_000): MuscleEvent[] {
+  const ev: MuscleEvent[] = [];
+  for (const x of s.sessions) {
+    if (!x.finishedAt || x.finishedAt < sinceMs) continue;
+    const eff = x.rpe ? Math.max(0.75, Math.min(1.25, x.rpe / 8)) : 1;
+    const u: Partial<Record<Muscle, number>> = {};
+    for (const l of x.sets) {
+      if (!l.done || l.reps <= 0) continue;
+      const ex = exerciseById(s, l.exerciseId);
+      for (const [m, inv] of Object.entries(ex?.muscles ?? {}) as [Muscle, number][]) u[m] = (u[m] ?? 0) + inv * eff;
+    }
+    ev.push({ at: x.finishedAt, units: u, kind: 'strength' });
+  }
+  for (const r of runs) {
+    const end = new Date(r.date).getTime() + (r.duration || 0) * 1000;
+    if (!(end >= sinceMs) || !(r.duration > 0)) continue;
+    const rel = r.avgHeartRate && maxHr ? r.avgHeartRate / maxHr : 0.7;
+    const f = (r.duration / 600) * (1 + 0.6 * Math.max(0, Math.min(1, (rel - 0.7) / 0.2)));   // 70 % HRmax → ×1.0 … 90 % → ×1.6, smooth
+    const u: Partial<Record<Muscle, number>> = {};
+    for (const [m, w] of Object.entries(RUN_LEGS) as [Muscle, number][]) u[m] = w * f;
+    ev.push({ at: end, units: u, kind: 'run' });
+  }
+  return ev.sort((a, b) => a.at - b.at);
+}
+
+// ── Muscle freshness (per muscle, 0–100 %) ────────────────────────────────────────────────────────────────────
+// Fatigue = Σ units × e^(−hours/τ), τ by muscle size (small ~20 h, upper-body large ~28 h, legs ~34 h → ~90 %
+// recovered after ~2 / 2.5 / 3 days). Referenced to the athlete's OWN normal: F_ref = max(5 × their time-averaged
+// fatigue over 6 weeks (so habitual load reads ~80 %), 1.2 × the biggest single session, 3). Bands as Bevel: ≥75 Recovered, 35–75 Fatigued, <35
+// Depleted; < 3 loading events in 6 weeks → Calibrating.
+const TAU_H: Record<Muscle, number> = {
+  biceps: 20, triceps: 20, forearms: 20, side_delts: 20, rear_delts: 20, front_delts: 22, calves: 22, abs: 20,
+  chest: 28, lats: 28, upper_back: 28, traps: 26, lower_back: 34, quads: 34, glutes: 34, hamstrings: 34, adductors: 30,
+};
+export type FreshState = 'Recovered' | 'Fatigued' | 'Depleted' | 'Calibrating';
+export interface MuscleFresh { muscle: Muscle; pct: number; state: FreshState; events: number }
+export function muscleFreshness(events: MuscleEvent[], now = Date.now()): MuscleFresh[] {
+  const H = 3_600_000, from = now - 42 * 86_400_000;
+  const fatigueAt = (m: Muscle, t: number) => events.reduce((a, e) => (e.at <= t && t - e.at < 14 * 86_400_000 ? a + (e.units[m] ?? 0) * Math.exp(-(t - e.at) / H / TAU_H[m]) : a), 0);
+  return MUSCLES.map(m => {
+    const evs = events.filter(e => e.at >= from && (e.units[m] ?? 0) >= 0.3);
+    const cur = fatigueAt(m, now);
+    if (evs.length < 3) return { muscle: m, pct: Math.round(100 * Math.max(0, Math.min(1, 1 - cur / 6))), state: 'Calibrating' as FreshState, events: evs.length };
+    // your HABITUAL fatigue: time-averaged over 6 weeks (every 3 h — independent of when you train)
+    let sum = 0, n = 0;
+    for (let t = now - 42 * 86_400_000; t < now; t += 3 * H) { sum += fatigueAt(m, t); n++; }
+    const habitual = sum / Math.max(1, n);
+    const biggest = Math.max(...evs.map(e => e.units[m] ?? 0));   // your biggest single dose (runs are many small ones)
+    // habitual load reads ~80 % (Recovered); only ABOVE-normal load reads Fatigued/Depleted
+    const ref = Math.max(5 * habitual, 1.2 * biggest, 3);
+    const pct = Math.round(100 * Math.max(0, Math.min(1, 1 - cur / ref)));
+    return { muscle: m, pct, state: (pct >= 75 ? 'Recovered' : pct >= 35 ? 'Fatigued' : 'Depleted') as FreshState, events: evs.length };
+  });
+}
+
+// ── Muscular load status (7 d vs 6-week average) ──────────────────────────────────────────────────────────────
+export const LOAD_GROUPS: { key: string; label: string; muscles: Muscle[] }[] = [
+  { key: 'body', label: 'Whole body', muscles: MUSCLES },
+  { key: 'push', label: 'Upper — push', muscles: ['chest', 'front_delts', 'side_delts', 'triceps'] },
+  { key: 'pull', label: 'Upper — pull', muscles: ['lats', 'upper_back', 'rear_delts', 'traps', 'biceps', 'forearms'] },
+  { key: 'legs', label: 'Legs', muscles: ['quads', 'glutes', 'hamstrings', 'adductors', 'calves'] },
+  { key: 'core', label: 'Core', muscles: ['abs', 'lower_back'] },
+];
+export type LoadStatus = 'Detraining' | 'Maintaining' | 'Productive' | 'Peaking' | 'Overtraining' | 'Calibrating';
+export interface GroupLoad { key: string; label: string; acute: number; chronicWk: number; ratio: number | null; status: LoadStatus; days: number }
+export function muscularLoad(events: MuscleEvent[], now = Date.now()): GroupLoad[] {
+  const D = 86_400_000;
+  return LOAD_GROUPS.map(g => {
+    const u = (e: MuscleEvent) => g.muscles.reduce((a, m) => a + (e.units[m] ?? 0), 0);
+    const in42 = events.filter(e => now - e.at < 42 * D && u(e) > 0.3);
+    const acute = in42.filter(e => now - e.at < 7 * D).reduce((a, e) => a + u(e), 0);
+    // average over the weeks you ACTUALLY have (≤ 6) — dividing a 3-week history by 6 read every new start as overtraining
+    const first = in42.length ? Math.min(...in42.map(e => e.at)) : now;
+    const weeks = Math.max(1, Math.min(6, (now - first) / (7 * D)));
+    const chronicWk = in42.reduce((a, e) => a + u(e), 0) / weeks;
+    const days = new Set(in42.map(e => new Date(e.at).toDateString())).size;
+    const need = g.key === 'body' ? 10 : 6;   // Bevel calibrates on ≥10 training days in 6 weeks
+    if (days < need || chronicWk <= 0) return { key: g.key, label: g.label, acute: Math.round(acute), chronicWk: Math.round(chronicWk), ratio: null, status: 'Calibrating' as LoadStatus, days };
+    const ratio = Math.round((acute / chronicWk) * 100) / 100;
+    const status: LoadStatus = ratio < 0.8 ? 'Detraining' : ratio < 1.0 ? 'Maintaining' : ratio <= 1.3 ? 'Productive' : ratio <= 1.5 ? 'Peaking' : 'Overtraining';
+    return { key: g.key, label: g.label, acute: Math.round(acute), chronicWk: Math.round(chronicWk), ratio, status, days };
+  });
+}
+export const FRESH_COLOR: Record<FreshState, string> = { Recovered: '#2f9e44', Fatigued: '#e8a317', Depleted: '#e5484d', Calibrating: '#8a8f98' };
+export const LOAD_COLOR: Record<LoadStatus, string> = { Detraining: '#5b8def', Maintaining: '#8a8f98', Productive: '#2f9e44', Peaking: '#e8a317', Overtraining: '#e5484d', Calibrating: '#8a8f98' };
+
+// ── 7-day plan helpers ────────────────────────────────────────────────────────────────────────────────────────
+/** Leg-heavy routine: ≥ 6 hard sets across quads/glutes/hamstrings — worth keeping off the day before a long/quality run. */
+export function legHardSets(s: StrengthStore, r: Routine): number {
+  let n = 0;
+  for (const it of r.items) {
+    const ex = exerciseById(s, it.exerciseId);
+    n += it.sets * ((ex?.muscles.quads ?? 0) + (ex?.muscles.glutes ?? 0) * 0.5 + (ex?.muscles.hamstrings ?? 0));
+  }
+  return Math.round(n * 10) / 10;
 }

@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -6,7 +6,17 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, updateStrength, routinesForDate, sessionsOn, estimateMinutes, muscleLoad,
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
+  muscleEvents, muscleFreshness, muscularLoad, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
 } from '../src/services/strength';
+import { loadSnapshotCache } from '../src/services/healthkit';
+import { getEffectiveMaxHr } from '../src/services/claude';
+
+// Muscle-map layout for the freshness panel (front / back / legs), Bevel-style colour bands.
+const FRESH_ROWS: { label: string; muscles: Muscle[] }[] = [
+  { label: 'Front', muscles: ['chest', 'front_delts', 'side_delts', 'biceps', 'forearms', 'abs'] },
+  { label: 'Back', muscles: ['lats', 'upper_back', 'traps', 'rear_delts', 'triceps', 'lower_back'] },
+  { label: 'Legs', muscles: ['quads', 'glutes', 'hamstrings', 'adductors', 'calves'] },
+];
 
 // Fitness mode = the strength module (Build 1): today's planned routine, routines, per-muscle load, history.
 export default function FitnessMode() {
@@ -16,9 +26,23 @@ export default function FitnessMode() {
   const insets = useSafeAreaInsets();
   const [store, setStore] = useState<StrengthStore | null>(null);
   const [win, setWin] = useState<7 | 28>(7);
+  const [runs, setRuns] = useState<{ runs: RunLike[]; maxHr: number } | null>(null);
+  const [showEx, setShowEx] = useState(false);
 
   const opening = useRef(false);   // a double-tapped Start must not open (and create) two sessions
-  useFocusEffect(useCallback(() => { opening.current = false; loadStrength().then(st => setStore({ ...st })).catch(() => {}); }, []));
+  useFocusEffect(useCallback(() => {
+    opening.current = false;
+    loadStrength().then(st => setStore({ ...st })).catch(() => {});
+    // runs load the legs too (freshness + load status) — from the cached health snapshot, no HealthKit query
+    Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
+      .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as RunLike[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
+  }, []));
+
+  // freshness walks 42 days × events × muscles — compute once per data change, not on every render
+  const model = useMemo(() => {
+    const events = store ? muscleEvents(store, runs?.runs ?? [], runs?.maxHr ?? 188) : [];
+    return { fresh: new Map<Muscle, MuscleFresh>(muscleFreshness(events).map(f => [f.muscle, f])), groups: muscularLoad(events) as GroupLoad[] };
+  }, [store, runs]);
 
   if (!store) return <View style={[s.screen, { justifyContent: 'center' }]}><ActivityIndicator color={c.accent} /></View>;
 
@@ -27,6 +51,9 @@ export default function FitnessMode() {
   const doneToday = sessionsOn(store, today);
   const load = muscleLoad(store, sessionsWithinDays(store, win));
   const maxSets = Math.max(1, ...load.map(l => l.hardSets));
+  const { fresh, groups } = model;
+  const firstStrength = Math.min(...store.sessions.filter(x => x.finishedAt).map(x => x.finishedAt!), Infinity);
+  const newStimulus = firstStrength !== Infinity && Date.now() - firstStrength < 21 * 86_400_000;
   const recent = store.sessions.filter(x => x.finishedAt).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0)).slice(0, 8);
   const start = (r: Routine) => {
     if (opening.current) return;
@@ -73,8 +100,47 @@ export default function FitnessMode() {
         )}
       </View>
 
+      {/* Muscle freshness (Bevel-style): per muscle, recovered / fatigued / depleted — runs count for the legs */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Muscle freshness</Text>
+        {FRESH_ROWS.map(row => (
+          <View key={row.label} style={{ marginBottom: 6 }}>
+            <Text style={s.freshRowLbl}>{row.label}</Text>
+            <View style={s.freshRow}>
+              {row.muscles.map(m => {
+                const f = fresh.get(m);
+                const col = FRESH_COLOR[f?.state ?? 'Calibrating'];
+                return (
+                  <View key={m} style={[s.freshCell, { borderColor: col, backgroundColor: col + '22' }]}>
+                    <Text style={s.freshName} numberOfLines={1}>{MUSCLE_LABEL[m]}</Text>
+                    <Text style={[s.freshPct, { color: col }]}>{f?.state === 'Calibrating' ? '…' : `${f?.pct ?? 100}%`}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        ))}
+        <Text style={s.meta}>🟢 recovered ≥75% · 🟡 fatigued · 🔴 depleted &lt;35% · … calibrating (needs 3 sessions in 6 weeks). Runs load calves, quads, hamstrings &amp; glutes.</Text>
+      </View>
+
+      {/* Muscular load status: last 7 days vs your 6-week average */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Muscular load</Text>
+        {groups.map(g => (
+          <View key={g.key} style={s.loadRow}>
+            <Text style={s.loadLbl}>{g.label}</Text>
+            <View style={[s.pill, { backgroundColor: LOAD_COLOR[g.status] }]}><Text style={s.pillTxt}>{g.status}</Text></View>
+            <Text style={s.loadVal}>{g.ratio != null ? `×${g.ratio.toFixed(2)}` : `${g.days}/${g.key === 'body' ? 10 : 6} d`}</Text>
+          </View>
+        ))}
+        <Text style={s.meta}>Last 7 days vs your 6-week weekly average (hard-set units, runs included for the legs).{newStimulus ? ' Strength is a NEW stimulus — ratios run high for the first weeks until your 6-week average catches up.' : ''}</Text>
+      </View>
+
       {/* Routines */}
-      <Text style={s.section}>Routines</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+        <Text style={[s.section, { flex: 1 }]}>Routines</Text>
+        <TouchableOpacity onPress={() => router.push('/routines' as any)}><Text style={s.link}>All routines (run + strength) ›</Text></TouchableOpacity>
+      </View>
       {store.routines.map(r => (
         <TouchableOpacity key={r.id} style={s.card} activeOpacity={0.7} onPress={() => router.push({ pathname: '/strength-routine' as any, params: { id: r.id } })}>
           <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
@@ -105,6 +171,15 @@ export default function FitnessMode() {
           </View>
         )) : <Text style={s.meta}>No sessions in the last {win} days yet.</Text>}
       </View>
+
+      {/* Exercise library → per-exercise records + e1RM chart */}
+      <TouchableOpacity onPress={() => setShowEx(v => !v)}><Text style={s.section}>Exercises ({allExercises(store).length}) {showEx ? '▾' : '▸'}</Text></TouchableOpacity>
+      {showEx && allExercises(store).map(e => (
+        <TouchableOpacity key={e.id} style={s.histRow} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.id } })}>
+          <Text style={s.histName}>{e.name}</Text>
+          <Text style={s.meta}>{e.video ? '▶ ' : ''}records ›</Text>
+        </TouchableOpacity>
+      ))}
 
       {/* History */}
       {recent.length > 0 && <Text style={s.section}>Recent sessions</Text>}
@@ -150,4 +225,15 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   histRow:   { flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   histDate:  { color: c.textFaint, fontSize: 13, width: 44, fontVariant: ['tabular-nums'] },
   histName:  { color: c.text, fontSize: 14, fontWeight: '600', flex: 1 },
+  link:      { color: c.accent, fontWeight: '700', fontSize: 13 },
+  freshRowLbl:{ color: c.textFaint, fontSize: 11, fontWeight: '700', marginBottom: 4, textTransform: 'uppercase' },
+  freshRow:  { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  freshCell: { width: '31.5%', borderWidth: 1, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 8 },
+  freshName: { color: c.text, fontSize: 12, fontWeight: '600' },
+  freshPct:  { fontSize: 15, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  loadRow:   { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },
+  loadLbl:   { color: c.text, fontSize: 14, flex: 1 },
+  pill:      { paddingVertical: 3, paddingHorizontal: 9, borderRadius: 10 },
+  pillTxt:   { color: '#fff', fontWeight: '800', fontSize: 12 },
+  loadVal:   { color: c.textSub, fontSize: 12, width: 58, textAlign: 'right', fontVariant: ['tabular-nums'] },
 });
