@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, updateStrength, routinesForDate, sessionsOn, estimateMinutes, muscleLoad,
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
-  muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
+  muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
 } from '../src/services/strength';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { getEffectiveMaxHr } from '../src/services/claude';
@@ -206,7 +206,7 @@ export default function FitnessMode() {
         <View key={x.id} style={s.histRow}>
           <Text style={s.histDate}>{x.date.slice(5)}</Text>
           <Text style={s.histName}>{x.routineName}</Text>
-          <Text style={s.meta}>{x.sets.filter(l => l.done).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}{x.hk?.status === 'saved' || x.hk?.status === 'exists' ? ' · ❤️' : ''}</Text>
+          <Text style={s.meta}>{x.sets.filter(isWorkSet).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}{x.hk?.status === 'saved' || x.hk?.status === 'exists' ? ' · ❤️' : ''}</Text>
         </View>
       ))}
     </ScrollView>

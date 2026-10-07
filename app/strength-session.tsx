@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -126,7 +126,7 @@ export default function StrengthSessionScreen() {
     const old = x.sets[idx];
     return { ...x, sets: x.sets.map((l, k) => {
       if (k === idx) return { ...l, ...p };
-      if (p.weightKg != null && k > idx && !l.done && l.exerciseId === old.exerciseId && l.weightKg === old.weightKg) return { ...l, weightKg: p.weightKg };
+      if (p.weightKg != null && k > idx && !l.done && !l.warmup && !old.warmup && l.exerciseId === old.exerciseId && l.weightKg === old.weightKg) return { ...l, weightKg: p.weightKg };
       return l;
     }) };
   });
@@ -148,14 +148,22 @@ export default function StrengthSessionScreen() {
     cancelRestNotif();
     const fin = { ...cur, finishedAt: Date.now(), rpe };
     sessRef.current = fin;
-    updateStrength(st => ({ ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) })).then(async st => {
+    let routineChanges: string[] = [];
+    updateStrength(st => {
+      const withFin = { ...st, sessions: st.sessions.map(x => x.id === fin.id ? fin : x) };
+      // Bevel-style auto-update: the routine's planned weights move to the suggested next ones (unless switched off)
+      const upd = autoUpdatedRoutine(withFin, fin.id);
+      routineChanges = upd?.changes ?? [];
+      return upd ? { ...withFin, routines: withFin.routines.map(r => r.id === upd.routine.id ? upd.routine : r) } : withFin;
+    }).then(async st => {
       const prs = sessionPRs(st, fin.id);
+      const updLine = routineChanges.length ? `\n\n📈 Next time:\n${routineChanges.join('\n')}` : '';
       // never let a slow HealthKit hold the confirmation (Finish is already locked): ≤ 5 s, then the backfill finishes it
       const hk = await Promise.race([syncSessionToHealth(fin.id).catch(() => null), new Promise<null>(r => setTimeout(() => r(null), 5000))]);
       const hkLine = !hk ? '' : hk.status === 'saved' ? '\n❤️ Saved to Apple Health' : hk.status === 'exists' ? '\n❤️ Linked to your watch workout in Health' : '\n⚠ Not saved to Apple Health';
-      const sum = `${fin.sets.filter(l => l.done).length} sets · ${sessionTonnage(st, fin).toLocaleString()} kg · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
+      const sum = `${fin.sets.filter(isWorkSet).length} sets · ${sessionTonnage(st, fin).toLocaleString()} kg · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
       Alert.alert(prs.length ? '🏆 New personal records' : '✅ Session saved',
-        (prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum) + hkLine,
+        (prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum) + hkLine + updLine,
         [{ text: 'OK', onPress: () => router.back() }]);
     });
   };
@@ -182,7 +190,7 @@ export default function StrengthSessionScreen() {
         </View>
       )}
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 60 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-        <Text style={s.meta}>{sess.sets.filter(l => l.done).length}/{sess.sets.length} sets · {elapsedMin} min · {sessionTonnage(store, sess).toLocaleString()} kg lifted</Text>
+        <Text style={s.meta}>{sess.sets.filter(isWorkSet).length}/{sess.sets.length} sets · {elapsedMin} min · {sessionTonnage(store, sess).toLocaleString()} kg lifted</Text>
 
         {order.map((exId, ei) => {
           const ex = exerciseById(store, exId);
@@ -206,24 +214,54 @@ export default function StrengthSessionScreen() {
               {alts.map(a => (
                 <TouchableOpacity key={a} onPress={() => swap(exId, a)}><Text style={s.link}>⇄ switch to {exerciseById(store, a)?.name ?? a}</Text></TouchableOpacity>
               ))}
-              <View style={s.hdrRow}><Text style={[s.hdr, { width: 34 }]}>Set</Text><Text style={[s.hdr, { flex: 1 }]}>kg</Text><Text style={[s.hdr, { flex: 1 }]}>Reps</Text><View style={{ width: 52 }} /></View>
-              {sess.sets.map((l, idx) => l.exerciseId !== exId ? null : (
-                <View key={idx} style={[s.setRow, l.done && s.setDone]}>
-                  <Text style={[s.setNo, { width: 34 }]}>{l.set}</Text>
-                  <Cell decimal style={[s.cell, { flex: 1 }]} value={l.weightKg} onCommit={n => setAt(idx, { weightKg: n })} />
-                  <Cell style={[s.cell, { flex: 1 }]} value={l.reps} onCommit={n => setAt(idx, { reps: Math.max(0, n) })} />
-                  <TouchableOpacity style={[s.tick, l.done && s.tickOn]} onPress={() => { Keyboard.dismiss(); toggle(idx, restSec); }}>
-                    <Text style={[s.tickTxt, l.done && { color: '#fff' }]}>✓</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-              <TouchableOpacity onPress={() => persist(x => {
-                let at = -1;
-                x.sets.forEach((l, k) => { if (l.exerciseId === exId) at = k; });
-                if (at < 0) return x;
-                const sets = [...x.sets]; sets.splice(at + 1, 0, { ...x.sets[at], set: x.sets[at].set + 1, done: false });
-                return { ...x, sets };
-              })}><Text style={s.addSet}>＋ set</Text></TouchableOpacity>
+              <View style={s.hdrRow}><Text style={[s.hdr, { width: 34 }]}>Set</Text><Text style={[s.hdr, { flex: 1 }]}>kg</Text><Text style={[s.hdr, { flex: 1 }]}>Reps</Text><Text style={[s.hdr, { width: 44 }]}>RIR</Text><View style={{ width: 52 }} /></View>
+              {(() => {
+                const prev = lastSetsFor(store, exId);   // last session's WORK sets → shown inline per set
+                let work = 0;
+                return sess.sets.map((l, idx) => {
+                  if (l.exerciseId !== exId) return null;
+                  const wi = l.warmup ? -1 : work++;
+                  const p = wi >= 0 ? prev[wi] : undefined;
+                  return (
+                    <View key={idx}>
+                      <View style={[s.setRow, l.done && s.setDone]}>
+                        {/* tap the set number to mark / unmark it as a WARM-UP (excluded from load, records, progression) */}
+                        <TouchableOpacity style={{ width: 34 }} onPress={() => setAt(idx, { warmup: !l.warmup })} hitSlop={6}>
+                          <Text style={[s.setNo, l.warmup && { color: c.accent }]}>{l.warmup ? 'W' : wi + 1}</Text>
+                        </TouchableOpacity>
+                        <Cell decimal style={[s.cell, { flex: 1 }]} value={l.weightKg} onCommit={n => setAt(idx, { weightKg: n })} />
+                        <Cell style={[s.cell, { flex: 1 }]} value={l.reps} onCommit={n => setAt(idx, { reps: Math.max(0, n) })} />
+                        {/* reps in reserve: – → 0 → 1 → 2 → 3+ → – (optional effort) */}
+                        <TouchableOpacity style={[s.rir, l.rir != null && s.rirOn]} disabled={!!l.warmup}
+                          onPress={() => setAt(idx, { rir: l.rir == null ? 0 : l.rir >= 3 ? undefined : l.rir + 1 })}>
+                          <Text style={[s.rirTxt, l.rir != null && { color: c.onAccent }]}>{l.warmup ? '' : l.rir == null ? '–' : l.rir >= 3 ? '3+' : l.rir}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[s.tick, l.done && s.tickOn]} onPress={() => { Keyboard.dismiss(); toggle(idx, l.warmup ? Math.min(60, restSec) : restSec); }}>
+                          <Text style={[s.tickTxt, l.done && { color: '#fff' }]}>✓</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {p ? <Text style={s.prev}>last {p.weightKg} kg × {p.reps}{p.rir != null ? ` @ RIR ${p.rir >= 3 ? '3+' : p.rir}` : ''}</Text> : null}
+                    </View>
+                  );
+                });
+              })()}
+              <View style={{ flexDirection: 'row', gap: 18 }}>
+                <TouchableOpacity onPress={() => persist(x => {
+                  let at = -1;
+                  x.sets.forEach((l, k) => { if (l.exerciseId === exId) at = k; });
+                  if (at < 0) return x;
+                  const sets = [...x.sets]; sets.splice(at + 1, 0, { ...x.sets[at], set: x.sets[at].set + 1, done: false, warmup: false, rir: undefined });
+                  return { ...x, sets };
+                })}><Text style={s.addSet}>＋ set</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => persist(x => {
+                  const first = x.sets.findIndex(l => l.exerciseId === exId);
+                  if (first < 0) return x;
+                  const w = x.sets.find(l => l.exerciseId === exId && !l.warmup)?.weightKg ?? x.sets[first].weightKg;
+                  const sets = [...x.sets];
+                  sets.splice(first, 0, { exerciseId: exId, set: 0, reps: 10, weightKg: w > 0 ? Math.round(w * 0.5 * 2) / 2 : w - 10, done: false, warmup: true });   // assisted: MORE assistance
+                  return { ...x, sets };
+                })}><Text style={s.addSet}>＋ warm-up set</Text></TouchableOpacity>
+              </View>
             </View>
           );
         })}
@@ -267,6 +305,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   tick:    { width: 52, height: 40, borderRadius: 10, borderWidth: 1.5, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
   tickOn:  { backgroundColor: '#2f9e44', borderColor: '#2f9e44' },
   tickTxt: { color: c.textSub, fontSize: 20, fontWeight: '800' },
+  rir:     { width: 44, height: 40, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
+  rirOn:   { backgroundColor: c.accent, borderColor: c.accent },
+  rirTxt:  { color: c.textSub, fontSize: 15, fontWeight: '800' },
+  prev:    { color: c.textFaint, fontSize: 11, marginLeft: 42, marginTop: -2, marginBottom: 2 },
   addSet:  { color: c.textSub, fontWeight: '700', marginTop: 8 },
   rpeRow:  { flexDirection: 'row', gap: 8, marginTop: 10 },
   rpe:     { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center' },

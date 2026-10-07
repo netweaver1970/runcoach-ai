@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Modal, ActivityIndicator, Keyboard, Alert, Linking } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Modal, ActivityIndicator, Keyboard, Alert, Linking, Switch } from 'react-native';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
@@ -94,6 +94,13 @@ export default function StrengthRoutineScreen() {
             </TouchableOpacity>
           );
         })}
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 6 }}>
+        <View style={{ flex: 1 }}>
+          <Text style={[s.itemName, { fontSize: 14 }]}>Auto-update weights</Text>
+          <Text style={s.meta}>After each session, set the next target weights from how it went.</Text>
+        </View>
+        <Switch value={r.autoUpdate !== false} onValueChange={v => patch({ autoUpdate: v })} />
       </View>
       <Text style={s.meta}>{r.items.length} exercises · ~{estimateMinutes(r)} min</Text>
 

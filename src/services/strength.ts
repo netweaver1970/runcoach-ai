@@ -49,10 +49,17 @@ export interface Routine {
   source?: string;         // who/where it comes from
   sourceUrl?: string;
   days: number[];          // planned weekdays, 0 = Sun … 6 = Sat
+  autoUpdate?: boolean;    // after a session, move the planned weights to the suggested next ones (default on)
   items: RoutineItem[];
   updatedAt: number;
 }
-export interface SetLog { exerciseId: string; set: number; reps: number; weightKg: number; done: boolean }
+export interface SetLog {
+  exerciseId: string; set: number; reps: number; weightKg: number; done: boolean;
+  warmup?: boolean;        // warm-up set: logged, but excluded from muscle load, records and progression
+  rir?: number;            // reps in reserve after the set (0 = failure … 3 = "3+"), optional effort
+}
+/** A set that counts: done, not a warm-up, with reps. */
+export const isWorkSet = (l: SetLog) => l.done && !l.warmup && l.reps > 0;
 export interface StrengthSession {
   id: string;
   date: string;            // local YYYY-MM-DD
@@ -295,27 +302,62 @@ export const repRange = (i: RoutineItem): [number, number] => [Math.min(i.repsLo
 export function lastSetsFor(s: StrengthStore, exerciseId: string): SetLog[] {
   const done = s.sessions.filter(x => x.finishedAt).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0));
   for (const x of done) {
-    const sets = x.sets.filter(l => l.exerciseId === exerciseId && l.done);
+    const sets = x.sets.filter(l => l.exerciseId === exerciseId && isWorkSet(l));
     if (sets.length) return sets;
   }
   return [];
 }
 /**
- * Suggested working weight: every set of last time reached the TOP of the rep range at the same weight → add a
- * step (2.5 kg for compounds/upper body machines, 1 kg for small isolation dumbbells); else repeat last weight.
+ * Suggested working weight (double progression, effort-aware when RIR was logged):
+ *  · every work set reached the TOP of the rep range at the same weight → +1 step (2 kg dumbbells, 2.5 kg else);
+ *    +2 steps if every one of those sets still had ≥ 3 reps in reserve (clearly too light);
+ *  · fell short of the BOTTOM of the range at failure (RIR 0) → −1 step;
+ *  · otherwise repeat the weight and chase the top of the range.
  */
 export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: number; why?: string } {
   const last = lastSetsFor(s, item.exerciseId);
   if (!last.length) return item.weightKg != null ? { kg: item.weightKg } : {};
   const top = Math.max(...last.map(l => l.weightKg));
   const atTop = last.filter(l => l.weightKg === top);
-  const ex = BUILTIN_EXERCISES.find(e => e.id === item.exerciseId);
+  const ex = exerciseById(s, item.exerciseId);
   const step = ex && /\bDB\b|Dumbbell/i.test(ex.name) ? 2 : 2.5;   // dumbbell racks go in 2 kg steps; stacks/plates 2.5
-  const hi = repRange(item)[1];
+  const [lo, hi] = repRange(item);
+  const r4 = (x: number) => Math.round(x * 4) / 4;
+  const reps = atTop.map(l => `${l.reps}${l.rir != null ? `@${l.rir >= 3 ? '3+' : l.rir}` : ''}`).join('/');
   if (atTop.length >= item.sets && atTop.every(l => l.reps >= hi)) {
-    return { kg: Math.round((top + step) * 4) / 4, why: `all ${item.sets} sets hit ${hi} reps at ${top} kg last time → +${step} kg` };
+    const easy = atTop.every(l => l.rir != null && l.rir >= 3);
+    const add = easy ? 2 * step : step;
+    return { kg: r4(top + add), why: `all ${item.sets} sets hit ${hi} reps at ${top} kg${easy ? ' with 3+ reps to spare' : ''} → +${add} kg` };
   }
-  return { kg: top, why: `last time ${atTop.map(l => l.reps).join('/')} reps at ${top} kg — aim for ${hi} on every set` };
+  // ≥ half the sets fell short of the range AT FAILURE → lighter. Body-weight moves store ASSISTANCE as negative kg,
+  // so "lighter" = more assistance (−20 → −22.5), never clamped to 0 (which would remove the assistance).
+  if (atTop.filter(l => l.reps < lo && l.rir === 0).length * 2 >= atTop.length) {
+    const next = ex?.bodyweightFrac ? top - step : Math.max(0, top - step);
+    return { kg: r4(next), why: `missed ${lo} reps at failure last time (${reps} at ${top} kg) → ${ex?.bodyweightFrac ? `${step} kg more assistance` : `−${step} kg`}` };
+  }
+  return { kg: top, why: `last time ${reps} reps at ${top} kg — aim for ${hi} on every set` };
+}
+
+/**
+ * Auto-update (Bevel "Auto Update Template"): after a finished session, each item of the routine that was performed
+ * gets its planned weight moved to the suggested next weight. Returns what changed (for the finish summary).
+ */
+export function autoUpdatedRoutine(s: StrengthStore, sessionId: string): { routine: Routine; changes: string[] } | null {
+  const x = s.sessions.find(q => q.id === sessionId);
+  const r = x && s.routines.find(q => q.id === x.routineId);
+  if (!x?.finishedAt || !r || r.autoUpdate === false) return null;
+  const changes: string[] = [];
+  const items = r.items.map(it => {
+    // the exercise actually done for this slot (it may have been swapped to an alternative)
+    // only the slot's OWN exercise moves its target — a swapped-in alternative has its own history and weights
+    const id = x.sets.some(l => l.exerciseId === it.exerciseId && isWorkSet(l)) ? it.exerciseId : undefined;
+    if (!id) return it;
+    const sug = suggestWeight(s, { ...it, exerciseId: id });
+    if (sug.kg == null || sug.kg === it.weightKg) return it;
+    changes.push(`${exerciseById(s, id)?.name ?? id}: ${it.weightKg ?? '–'} → ${sug.kg} kg`);
+    return { ...it, weightKg: sug.kg };
+  });
+  return changes.length ? { routine: { ...r, items, updatedAt: Date.now() }, changes } : null;
 }
 
 // ── Muscle load ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -325,7 +367,7 @@ export function muscleLoad(s: StrengthStore, sessions: StrengthSession[], fallba
   const acc = new Map<Muscle, { t: number; h: number }>();
   for (const x of sessions) {
     for (const l of x.sets) {
-      if (!l.done || l.reps <= 0) continue;
+      if (!isWorkSet(l)) continue;
       const ex = exerciseById(s, l.exerciseId);
       if (!ex) continue;
       const load = Math.max(0, (l.weightKg || 0) + (ex.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0));
@@ -349,7 +391,7 @@ export function sessionsWithinDays(s: StrengthStore, days: number, now = new Dat
 export function sessionTonnage(s: StrengthStore, x: StrengthSession, fallbackBodyKg = 80): number {
   let t = 0;
   for (const l of x.sets) {
-    if (!l.done) continue;
+    if (!isWorkSet(l)) continue;
     const ex = exerciseById(s, l.exerciseId);
     t += Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0)) * l.reps;
   }
@@ -380,10 +422,15 @@ export async function strengthLineForLLM(): Promise<string> {
 export function setLoadKg(ex: Exercise | undefined, l: SetLog, bodyKg?: number): number {
   return Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (bodyKg ?? 80) : 0));
 }
-/** Epley e1RM; reps > 12 are too far from a single to extrapolate → null. */
-export function e1rm(loadKg: number, reps: number): number | null {
-  if (loadKg <= 0 || reps <= 0 || reps > 12) return null;
-  return reps === 1 ? loadKg : Math.round(loadKg * (1 + reps / 30) * 10) / 10;
+/**
+ * Epley e1RM. With effort logged it's effort-adjusted (Bevel-style): reps + reps-in-reserve = reps to failure, so a
+ * set of 8 with 2 in reserve counts like 10. Beyond 12 (or 15 effort-adjusted) reps to failure → null (too far to
+ * extrapolate to a single).
+ */
+export function e1rm(loadKg: number, reps: number, rir?: number): number | null {
+  const toFail = reps + (rir != null ? Math.min(rir, 3) : 0);
+  if (loadKg <= 0 || reps <= 0 || toFail > (rir != null ? 15 : 12)) return null;
+  return toFail === 1 ? loadKg : Math.round(loadKg * (1 + toFail / 30) * 10) / 10;
 }
 export interface ExerciseSessionStat { sessionId: string; date: string; at: number; topKg: number; bestE1rm: number | null; bestSetVol: number; volume: number; sets: number }
 /** Per finished session: the exercise's top weight, best e1RM, best single-set volume and total volume. */
@@ -392,13 +439,13 @@ export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseS
   const out: ExerciseSessionStat[] = [];
   for (const x of s.sessions) {
     if (!x.finishedAt) continue;
-    const sets = x.sets.filter(l => l.exerciseId === exerciseId && l.done && l.reps > 0);
+    const sets = x.sets.filter(l => l.exerciseId === exerciseId && isWorkSet(l));
     if (!sets.length) continue;
     let topKg = -Infinity, bestE = 0, bestV = 0, vol = 0;
     for (const l of sets) {
       const kg = setLoadKg(ex, l, x.bodyKg);
       topKg = Math.max(topKg, ex?.bodyweightFrac ? l.weightKg : kg);   // body-weight moves: "heaviest" = added kg (−20 → −15 = less assistance)
-      bestE = Math.max(bestE, e1rm(kg, l.reps) ?? 0);
+      bestE = Math.max(bestE, e1rm(kg, l.reps, l.rir) ?? 0);
       bestV = Math.max(bestV, kg * l.reps);
       vol += kg * l.reps;
     }
@@ -411,7 +458,7 @@ export interface PrHit { exerciseId: string; name: string; kind: 'e1RM' | 'Heavi
 export function sessionPRs(s: StrengthStore, sessionId: string): PrHit[] {
   const sess = s.sessions.find(x => x.id === sessionId);
   if (!sess?.finishedAt) return [];
-  const ids = [...new Set(sess.sets.filter(l => l.done).map(l => l.exerciseId))];
+  const ids = [...new Set(sess.sets.filter(isWorkSet).map(l => l.exerciseId))];
   const hits: PrHit[] = [];
   for (const id of ids) {
     const h = exerciseHistory(s, id);
@@ -442,7 +489,7 @@ export function muscleEvents(s: StrengthStore, runs: RunLike[], maxHr = 188, sin
     const eff = x.rpe ? Math.max(0.75, Math.min(1.25, x.rpe / 8)) : 1;
     const u: Partial<Record<Muscle, number>> = {};
     for (const l of x.sets) {
-      if (!l.done || l.reps <= 0) continue;
+      if (!isWorkSet(l)) continue;
       const ex = exerciseById(s, l.exerciseId);
       for (const [m, inv] of Object.entries(ex?.muscles ?? {}) as [Muscle, number][]) u[m] = (u[m] ?? 0) + inv * eff;
     }
