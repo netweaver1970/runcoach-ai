@@ -4,6 +4,7 @@ import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-rout
 import * as Notifications from 'expo-notifications';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
+import { ExerciseThumb, ExercisePeek } from '../src/components/ExercisePeek';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
   localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit,
@@ -64,6 +65,7 @@ export default function StrengthSessionScreen() {
   const [restEnd, setRestEnd] = useState<number | null>(null);   // epoch ms the current rest ends
   const [now, setNow] = useState(Date.now());
   const [rpe, setRpe] = useState<number | undefined>();
+  const [peek, setPeek] = useState<string | null>(null);   // exercise whose picture is open (tap the thumbnail)
   const focusEx = useRef<string | null>(null);   // exercise of the set ticked last → its next set comes first
   // TIMED holds (planks): the running hold → countdown + spoken cues ("Hold, 30 seconds … 10 seconds … 3, 2, 1 … Done")
   // the held set is identified by exercise + set number (Do next / Later can MOVE indices during a hold)
@@ -352,11 +354,13 @@ export default function StrengthSessionScreen() {
           return (
             <View key={exId} style={s.ex}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <ExerciseThumb ex={ex} open={peek === exId} onToggle={() => setPeek(p => (p === exId ? null : exId))} />
                 <TouchableOpacity style={{ flex: 1 }} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: exId } })}>
                   <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId} ›{exId === nextEx ? <Text style={s.nextTag}>  NEXT</Text> : null}</Text>
                 </TouchableOpacity>
                 {ex?.video && <TouchableOpacity onPress={() => Linking.openURL(ex.video!.url)} hitSlop={8}><Text style={s.link}>▶ video</Text></TouchableOpacity>}
               </View>
+              {peek === exId && <ExercisePeek ex={ex} onClose={() => setPeek(null)} />}
               <Text style={s.meta}>
                 {item ? `${item.sets} × ${repRange(item).join('–')}` : ''}{item?.tempo ? ` · tempo ${item.tempo}` : ''} · rest {fmt(restSec)}{ex?.bodyweightFrac ? ' · kg = added (− = assist)' : ''}
               </Text>

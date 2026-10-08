@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import { ExercisePeek } from '../src/components/ExercisePeek';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Linking, useWindowDimensions } from 'react-native';
 import { Stack, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { TChart, trendDelta, signed } from '../src/components/TimeChart';
@@ -36,6 +37,7 @@ export default function StrengthExerciseScreen() {
           {ex.video.channel ? <Text style={s.meta}>{ex.video.channel} · YouTube</Text> : null}
         </TouchableOpacity>
       )}
+      <ExercisePeek ex={ex} onClose={() => {}} />
       {ex.cue ? <Text style={s.cue}>{ex.cue}</Text> : null}
       <View style={s.chips}>
         {(Object.entries(ex.muscles) as [Muscle, number][]).sort((a, b) => b[1] - a[1]).map(([m, v]) => (

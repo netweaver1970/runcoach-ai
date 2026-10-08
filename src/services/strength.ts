@@ -263,6 +263,69 @@ const VIDEOS: Record<string, ExerciseVideo> = {
   front_plank: { url: 'https://www.youtube.com/watch?v=6LqqeBtFn9M', title: 'How to do the perfect PLANK: technique and common mistakes', channel: 'Get Exercise Confident' },
 };
 
+// Pictures of each exercise (start + end position) from free-exercise-db (github.com/yuhonas/free-exercise-db,
+// Unlicense = public domain; matched by hand 2026-10-08). Unmatched ones fall back to their technique video's thumbnail.
+const IMG_BASE = 'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/';
+const IMAGES: Record<string, string> = {
+  incline_db_press: 'Incline_Dumbbell_Press',
+  flat_db_press: 'Dumbbell_Bench_Press',
+  chest_press_machine: 'Machine_Bench_Press',
+  cable_chest_fly: 'Cable_Crossover',
+  machine_shoulder_press: 'Machine_Shoulder_Military_Press',
+  db_lateral_raise: 'Side_Lateral_Raise',
+  cable_triceps_pushdown: 'Triceps_Pushdown',
+  overhead_rope_extension: 'Cable_Rope_Overhead_Triceps_Extension',
+  triceps_dips: 'Bench_Dips',
+  lat_pulldown: 'Wide-Grip_Lat_Pulldown',
+  lat_pulldown_neutral: 'V-Bar_Pulldown',
+  chest_supported_row: 'Dumbbell_Incline_Row',
+  seated_row: 'Seated_Cable_Rows',
+  rear_delt_fly: 'Reverse_Flyes',
+  db_curl: 'Dumbbell_Bicep_Curl',
+  incline_db_curl: 'Incline_Dumbbell_Curl',
+  cable_biceps_curl: 'Standing_Biceps_Cable_Curl',
+  back_squat: 'Barbell_Squat',
+  hack_squat: 'Hack_Squat',
+  leg_press: 'Leg_Press',
+  leg_extension: 'Leg_Extensions',
+  hamstring_curl: 'Seated_Leg_Curl',
+  calf_raise: 'Standing_Calf_Raises',
+  pec_deck: 'Butterfly',
+  seated_db_shoulder_press: 'Seated_Dumbbell_Press',
+  cable_lateral_raise: 'Cable_Seated_Lateral_Raise',
+  single_arm_cable_row: 'Seated_One-arm_Cable_Pulley_Rows',
+  face_pull: 'Face_Pull',
+  bulgarian_split_squat: 'Split_Squat_with_Dumbbells',
+  goblet_squat: 'Goblet_Squat',
+  close_grip_pushup: 'Push-Ups_-_Close_Triceps_Position',
+  overhead_cable_triceps_extension: 'Cable_Rope_Overhead_Triceps_Extension',
+  forward_lunge: 'Bodyweight_Walking_Lunge',
+  heel_drop: 'Standing_Calf_Raises',
+  single_leg_squat: 'Single-Leg_High_Box_Squat',
+  glute_bridge: 'Butt_Lift_Bridge',
+  nordic_curl: 'Natural_Glute_Ham_Raise',
+  side_plank: 'Side_Bridge',
+  front_plank: 'Plank',
+  pushup: 'Pushups',
+  inverted_row: 'Inverted_Row',
+  superman: 'Superman',
+  dead_bug: 'Dead_Bug',
+  db_row: 'One-Arm_Dumbbell_Row',
+  db_rdl: 'Stiff-Legged_Dumbbell_Deadlift',
+  db_floor_press: 'Dumbbell_Floor_Press',
+  db_reverse_fly: 'Reverse_Flyes',
+  db_overhead_triceps: 'Standing_Dumbbell_Triceps_Extension',
+  hammer_curl: 'Hammer_Curls',
+};
+/** Pictures that show the exercise (start → end position), or the video thumbnail; [] = none. */
+export function exerciseImages(ex: Exercise | undefined): string[] {
+  if (!ex) return [];
+  const id = IMAGES[ex.id];
+  if (id) return [`${IMG_BASE}${id}/0.jpg`, `${IMG_BASE}${id}/1.jpg`];
+  const yt = ex.video?.url.match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/)?.[1];
+  return yt ? [`https://img.youtube.com/vi/${yt}/hqdefault.jpg`] : [];
+}
+
 export const BUILTIN_EXERCISES: Exercise[] = EX.map(e => ({ ...e, ...(VIDEOS[e.id] ? { video: VIDEOS[e.id] } : {}), ...(NEEDS[e.id] ? { needs: NEEDS[e.id] } : {}) }));
 
 /**
