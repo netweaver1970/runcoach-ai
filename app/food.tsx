@@ -19,6 +19,8 @@ import {
 import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
+import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
+import { startRecording, stopRecording, cancelRecording, ensureMicPermission } from '../src/services/voiceRecorder';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
@@ -30,6 +32,7 @@ import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
+  updateMealItems, SavedMealItem,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -79,7 +82,7 @@ export default function FoodMode() {
   const [runs, setRuns] = useState<RunMark[]>([]);
   const [fuel, setFuel] = useState<FuelAdvice | null>(null);
   const [burn, setBurn] = useState<{ kcal: number; at: number } | null>(null);   // watch active + basal kcal (stored, not recomputed)
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<boolean | SavedMeal>(false);   // a SavedMeal = open straight in its preview
   const [editing, setEditing] = useState<FoodEntry | null>(null);
   const [photoTest, setPhotoTest] = useState(false);
   const [undo, setUndo] = useState<Undo>(null);
@@ -165,8 +168,7 @@ export default function FoodMode() {
 
   const onSuggestion = (sg: ReturnType<typeof usualNow>[number]) => once(async () => {
     if (sg.kind === 'meal') {
-      const es = await logMeal(sg.meal, date, 'suggest');
-      showUndo({ msg: `Logged ${sg.meal.name}`, date: foodDayOf(es[0]?.t ?? timeForDay(date)), ids: es.map(e => e.id) });
+      setAdding(sg.meal);   // preview first: untick what you don't have before it's logged
     } else {
       const e = await logRecent(sg.recent, date, 'suggest');
       showUndo({ msg: `Logged ${e.name.split(',')[0]}${e.grams ? ` · ${amt(e.grams, e.unit)}` : ''}`, date: foodDayOf(e.t), ids: [e.id] });
@@ -317,7 +319,7 @@ export default function FoodMode() {
       </TouchableOpacity>
 
       {photoTest && <PhotoTest onClose={() => setPhotoTest(false)} />}
-      {adding && lib && <AddSheet date={date} lib={lib} onClose={() => { Keyboard.dismiss(); setAdding(false); reload(); }} />}
+      {adding && lib && <AddSheet date={date} lib={lib} startMeal={typeof adding === 'object' ? adding : undefined} onClose={() => { Keyboard.dismiss(); setAdding(false); reload(); }} />}
       {editing && (
         <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)} own={lib?.custom.find(x => x.key === editing.key)}
           onClose={() => { Keyboard.dismiss(); setEditing(null); reload(); }} />
@@ -335,15 +337,18 @@ type Mode =
   | { m: 'quick'; name?: string; ean?: string }
   | { m: 'label'; ean?: string; name?: string }
   | { m: 'editItem'; entry: FoodEntry }
-  | { m: 'online'; query: string; results: OffProduct[] | null; error?: string };
+  | { m: 'online'; query: string; results: OffProduct[] | null; error?: string }
+  | { m: 'meal'; meal: SavedMeal };   // a saved meal, previewed: untick / re-weigh / add components before logging
 
-function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary; onClose: () => void }) {
+function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: FoodLibrary; onClose: () => void; startMeal?: SavedMeal }) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const [lib, setLib] = useState(lib0);
   const [q, setQ] = useState('');
   const [tab, setTab] = useState<Tab>('recent');
-  const [mode, setMode] = useState<Mode>({ m: 'search' });
+  const [mode, setMode] = useState<Mode>(startMeal ? { m: 'meal', meal: startMeal } : { m: 'search' });
+  // 🎤 dictate a meal ("two eggs, toast with butter and a coffee") → the same live parser as typing
+  const dict = useDictation(text => { const t = cleanDictation(text); setAsOne(false); setQ(t); setDq(t); setMode({ m: 'search' }); });
   const [batches, setBatches] = useState<FoodEntry[][]>([]);   // each log action = one batch → Undo removes a batch
   const [offCache, setOffCache] = useState<OffProduct[]>([]);
   const [lookingUp, setLookingUp] = useState(false);
@@ -449,7 +454,8 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
     Keyboard.dismiss();
     setMode({ m: 'portion', item: { key: r.key, src: r.src, id: idOf(r.key), name: r.name, per100: r.per100, ...ownExtras(r.key, r) }, grams: r.grams });
   });
-  const pickMeal = (m: SavedMeal) => guard(async () => { await logged(await logMeal(m, date)); });
+  // a saved meal opens as a PREVIEW: untick what you don't have / eat later, adjust grams, add by voice — then log
+  const pickMeal = (m: SavedMeal) => { Keyboard.dismiss(); setMode({ m: 'meal', meal: m }); };
   const undoLast = () => guard(async () => {
     const cur = batchesRef.current;
     const last = cur[cur.length - 1]; if (!last) return;
@@ -658,6 +664,10 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             onCancel={() => setMode({ m: 'search' })}
             onDelete={() => { removeItem(mode.entry); setMode({ m: 'search' }); }}
             onConfirm={g => editItem(mode.entry, g)} />
+        ) : mode.m === 'meal' ? (
+          <MealPanel meal={mode.meal} onCancel={() => setMode({ m: 'search' })}
+            onSaveItems={items => guard(async () => { await updateMealItems(mode.meal.id, items); await refreshLib(); })}
+            onConfirm={items => guard(async () => { await logged(await logMeal({ ...mode.meal, items }, date)); })} />
         ) : mode.m === 'online' ? (
           <OnlinePanel query={mode.query} results={mode.results} error={mode.error} onCancel={() => setMode({ m: 'search' })}
             onPick={p => { setMode({ m: 'portion', item: p, grams: chipGrams() ?? recentOf(p.key)?.grams }); }} />
@@ -673,7 +683,12 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             <TouchableOpacity style={s.scanBtn} onPress={() => { scan().catch(e => { setLookingUp(false); Alert.alert('Scan failed', String(e?.message ?? e)); }); }}>
               <Text style={s.scanIcon}>▥</Text><Text style={s.scanTxt}>Scan</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={[s.scanBtn, dict.state === 'recording' && { backgroundColor: '#ef4444', borderColor: '#ef4444' }]} onPress={() => { Keyboard.dismiss(); dict.toggle(); }}>
+              <Text style={s.scanIcon}>{dict.state === 'recording' ? '⏹' : dict.state === 'transcribing' ? '…' : '🎤'}</Text>
+              <Text style={[s.scanTxt, dict.state === 'recording' && { color: '#fff' }]}>{dict.state === 'recording' ? 'Stop' : 'Say it'}</Text>
+            </TouchableOpacity>
             </View>
+            {dict.state !== 'idle' && <Text style={s.hint}>{dict.state === 'recording' ? '● Listening — name every component ("2 eggs, toast with butter, 200 ml milk…"), then tap Stop' : 'Transcribing…'}</Text>}
             <View style={s.actions}>
               <TouchableOpacity style={s.action} onPress={() => { Keyboard.dismiss(); setMode({ m: 'quick', name: digits ? undefined : qt || undefined }); }}><Text style={s.actionTxt}>✏️ Add your own</Text></TouchableOpacity>
               {[250, 500].map(ml => (
@@ -712,11 +727,12 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             {showParse && (
               <ParsePanel key={dqt} items={parsed}
                 onAsOne={() => setAsOne(true)}
-                onConfirm={(items, missing) => guard(async () => {
+                onConfirm={(items, missing, saveAs) => guard(async () => {
                   // one atomic write for the matched items; every unmatched part becomes a "still to find" chip
                   // (with its typed grams) and the search jumps to the first one — nothing is dropped
                   const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId }) : [];
                   if (es.length) pushBatch(es);
+                  if (saveAs && es.length) await saveMeal(saveAs, es);   // …and kept as a saved meal to re-use
                   // keep typed grams only when the unit has a fixed weight (g, ml, tbsp, glass…) — "2 sneetjes xyz" has none
                   const add = missing.map(m => ({ query: m.query, ...(m.unit && FIXED_UNITS.has(m.unit) ? { grams: m.grams } : {}) }));
                   const all = [...add, ...pendingRef.current.filter(p => !add.some(a => a.query === p.query))];
@@ -920,7 +936,7 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
 
 // ─── Typed meal → inline preview ──────────────────────────────────────────────────────────────────
 function ParsePanel({ items: items0, onConfirm, onAsOne }: {
-  items: ParsedItem[]; onConfirm: (items: ParsedItem[], missing: ParsedItem[]) => void; onAsOne: () => void;
+  items: ParsedItem[]; onConfirm: (items: ParsedItem[], missing: ParsedItem[], saveAs?: string) => void; onAsOne: () => void;
 }) {
   const s = useThemedStyles(makeStyles);
   const [items, setItems] = useState(items0.map(it => ({ ...it, on: !!it.food, gTxt: String(it.grams) })));
@@ -968,10 +984,107 @@ function ParsePanel({ items: items0, onConfirm, onAsOne }: {
           : final.length ? `Add ${final.length} item${final.length === 1 ? '' : 's'} · ${r0(kcal)} kcal${missing.length ? ` — then find ${missing.length} more` : ''}`
           : `Search the ${missing.length} part${missing.length === 1 ? '' : 's'} one by one`}</Text>
       </TouchableOpacity>
+      {final.length >= 2 && !bad && (
+        // a dictated / typed meal of many components → log it AND keep it as a saved meal to re-use
+        <TouchableOpacity hitSlop={8} onPress={() => { Keyboard.dismiss();
+          Alert.prompt('Save as a meal', 'Name it to re-use it later (Meals tab):', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Add + save', onPress: (name?: string) => onConfirm(final, missing, (name ?? '').trim() || 'My meal') },
+          ], 'plain-text', '');
+        }}>
+          <Text style={[s.asOne, { fontWeight: '700' }]}>＋ Add and save as a meal…</Text>
+        </TouchableOpacity>
+      )}
       <TouchableOpacity onPress={() => { Keyboard.dismiss(); onAsOne(); }} hitSlop={8}>
         <Text style={s.asOne}>It's one dish — search the whole text as one food</Text>
       </TouchableOpacity>
     </View>
+  );
+}
+
+// ─── Voice: dictate a meal ────────────────────────────────────────────────────────────────────────
+/** Record → transcribe (the app's Voice-input key) → onText. One button: tap = start, tap again = stop. */
+function useDictation(onText: (text: string) => void) {
+  const [state, setState] = useState<'idle' | 'recording' | 'transcribing'>('idle');
+  const cb = useRef(onText); cb.current = onText;
+  const stRef = useRef(state); stRef.current = state;
+  const toggle = async () => {
+    if (state === 'transcribing') return;
+    if (state === 'recording') {
+      setState('transcribing');
+      try {
+        const uri = await stopRecording();
+        const text = uri ? (await transcribeAudio(uri)).trim() : '';
+        setState('idle');
+        if (text) cb.current(text); else Alert.alert('Voice input', 'No speech detected — try again.');
+      } catch (e: any) { setState('idle'); Alert.alert('Voice input', e?.message ?? 'Could not transcribe.'); }
+      return;
+    }
+    if (!(await transcriptionReady())) { Alert.alert('Voice input not set up', "Add a transcription key in Settings → Voice input first — it's free with Groq."); return; }
+    if (!(await ensureMicPermission())) { Alert.alert('Microphone needed', 'Enable microphone access for RunCoachAI in iOS Settings to use voice input.'); return; }
+    try { await startRecording(); setState('recording'); } catch (e: any) { Alert.alert('Voice input', e?.message ?? 'Could not start recording.'); }
+  };
+  // leaving mid-recording must not leave the mic running (only THIS recorder's — the recorder is app-global)
+  useEffect(() => () => { if (stRef.current === 'recording') cancelRecording().catch(() => {}); }, []);
+  return { state, toggle };
+}
+/** Speech → the parser's list: sentence ends and "then" become separators, filler words go. */
+function cleanDictation(t: string): string {
+  return t.replace(/[.!?]+(\s|$)/g, ', ').replace(/\b(and then|then|daarna|dan|ook|also|uh+|euh+|ehm+)\b/gi, ', ')
+    .replace(/\s*,\s*(,\s*)+/g, ', ').replace(/^[\s,]+|[\s,]+$/g, '').trim();
+}
+
+// ─── Saved meal → preview (untick / re-weigh / add by voice) ─────────────────────────────────────
+function MealPanel({ meal, onCancel, onConfirm, onSaveItems }: {
+  meal: SavedMeal; onCancel: () => void; onConfirm: (items: SavedMealItem[]) => void; onSaveItems: (items: SavedMealItem[]) => void;
+}) {
+  const { c } = useTheme();
+  const s = useThemedStyles(makeStyles);
+  const [rows, setRows] = useState(meal.items.map(it => ({ it, on: true, gTxt: it.grams != null ? String(r0(it.grams)) : '' })));
+  const [dirty, setDirty] = useState(false);   // components added / removed / re-weighed vs the saved meal
+  const upd = (i: number, p: Partial<typeof rows[number]>) => { setRows(prev => prev.map((x, j) => (j === i ? { ...x, ...p } : x))); setDirty(true); };
+  const gOf = (t: string) => parseFloat(t.replace(',', '.'));
+  // 🎤 add components by voice → parsed against the food table; unmatched parts are reported
+  const dict = useDictation(text => {
+    const parsed = parseMeal(cleanDictation(text));
+    const add = parsed.filter(p => p.food).map(p => ({ it: { key: p.food!.key, name: p.food!.name, src: p.food!.src, grams: p.grams, per100: p.food!.per100, ...(p.food!.unit === 'ml' ? { unit: 'ml' as const } : {}) } as SavedMealItem, on: true, gTxt: String(r0(p.grams)) }));
+    if (add.length) { setRows(prev => [...prev, ...add]); setDirty(true); }
+    const miss = parsed.filter(p => !p.food).map(p => p.query);
+    if (miss.length) Alert.alert('Not found', `No match for: ${miss.join(', ')} — add those from the search after logging.`);
+  });
+  const final: SavedMealItem[] = rows.filter(r => r.on).map(r => (r.it.per100 && r.gTxt && gOf(r.gTxt) > 0 ? { ...r.it, grams: gOf(r.gTxt) } : r.it));
+  const kcal = final.reduce((a, it) => a + ((it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams).kcal : it.n?.kcal) ?? 0), 0);
+  return (
+    <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 40 }}>
+      <Text style={s.portionName}>🍽️ {meal.name}</Text>
+      <Text style={s.hint}>Untick what you don't have or eat later, adjust grams, or 🎤 add components — then add it to {mealLabel(timeForDay(todayFoodDay())).toLowerCase()}.</Text>
+      {rows.map((r, i) => (
+        <View key={`${r.it.key}-${i}`} style={[s.parseRow, !r.on && { opacity: 0.45 }]}>
+          <TouchableOpacity onPress={() => upd(i, { on: !r.on })} hitSlop={8}><Text style={s.check}>{r.on ? '☑' : '☐'}</Text></TouchableOpacity>
+          <Text style={[s.resultTitle, { flex: 1 }]} numberOfLines={2}>{r.it.name}</Text>
+          {r.it.per100 ? (
+            <>
+              <TextInput style={s.parseGrams} value={r.gTxt} onChangeText={v => upd(i, { gTxt: v })} keyboardType="decimal-pad" selectTextOnFocus />
+              <Text style={s.gramsUnitSm}>{r.it.unit === 'ml' ? 'ml' : 'g'}</Text>
+            </>
+          ) : <Text style={s.resultSub}>{r0(r.it.n?.kcal)} kcal</Text>}
+        </View>
+      ))}
+      <TouchableOpacity style={[s.action, { alignSelf: 'flex-start', marginTop: 8 }, dict.state === 'recording' && { backgroundColor: '#ef4444', borderColor: '#ef4444' }]} onPress={() => { Keyboard.dismiss(); dict.toggle(); }}>
+        <Text style={[s.actionTxt, dict.state === 'recording' && { color: '#fff' }]}>{dict.state === 'recording' ? '⏹ Stop — add these' : dict.state === 'transcribing' ? 'Transcribing…' : '🎤 Add components by voice'}</Text>
+      </TouchableOpacity>
+      <View style={s.btnRow}>
+        <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => { Keyboard.dismiss(); onCancel(); }}><Text style={s.btnGhostTxt}>Cancel</Text></TouchableOpacity>
+        <TouchableOpacity style={[s.btn, !final.length && { opacity: 0.4 }]} disabled={!final.length} onPress={() => { Keyboard.dismiss(); onConfirm(final); }}>
+          <Text style={s.btnTxt}>Add {final.length} · {r0(kcal)} kcal</Text>
+        </TouchableOpacity>
+      </View>
+      {dirty && final.length > 0 && (
+        <TouchableOpacity onPress={() => { Keyboard.dismiss(); onSaveItems(final); setDirty(false); Alert.alert('Saved', `"${meal.name}" now has ${final.length} component${final.length === 1 ? '' : 's'}.`); }} hitSlop={8}>
+          <Text style={[s.asOne, { fontWeight: '700' }]}>💾 Save these changes to "{meal.name}"</Text>
+        </TouchableOpacity>
+      )}
+    </ScrollView>
   );
 }
 

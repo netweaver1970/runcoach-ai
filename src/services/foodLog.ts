@@ -455,6 +455,10 @@ export function searchCustom(l: FoodLibrary, query: string, normFn: (s: string) 
   return l.custom.filter(c => { const w = normFn(`${c.name} ${c.brand ?? ''}`).split(' '); return q.every(t => w.some(x => x.startsWith(t))); }).slice(0, 5);
 }
 
+/** Replace a saved meal's items (the meal preview's "Save changes": removed / added / re-weighed components). */
+export async function updateMealItems(id: string, items: SavedMealItem[]): Promise<void> {
+  await mutateLib(l => { l.meals = l.meals.map(m => (m.id === id ? { ...m, items } : m)); });
+}
 export async function deleteMeal(id: string): Promise<void> { await mutateLib(l => { l.meals = l.meals.filter(m => m.id !== id); }); }
 
 export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal'): Promise<FoodEntry[]> {
