@@ -77,6 +77,17 @@ export function servingFromText(t: unknown): number | undefined {
   return isFinite(v) && v > 0 ? v : undefined;
 }
 
+/**
+ * OFF's "serving 100 g" with nothing else ("100 g") is usually just the per-100 figure echoed into the serving field,
+ * not a real portion (Boni high-protein yoghurt drink: no pack size, serving_size "100 g" — it's a 240 g bottle).
+ * Treat it as UNKNOWN so the app asks for the real size instead of offering "1 serving = 100 g".
+ */
+export function isEcho100(g: number | undefined, text?: unknown): boolean {
+  return g === 100 && (typeof text !== 'string' || /^\s*100\s*(g|gr|ml)\s*$/i.test(text));
+}
+/** Names of drinks (also those sold by weight: yoghurt drinks, shakes, kefir). */
+export const DRINK_NAME = /drink|drank|boisson|à boire|a boire|trinkjoghurt|shake|smoothie|k[eé]fir|lassi|ayran|actimel|yakult/i;
+
 function toItem(p: any): OffProduct | null {
   if (!p) return null;
   const code = String(p.code ?? '');
@@ -94,7 +105,7 @@ function toItem(p: any): OffProduct | null {
   // DRINKS sold by weight (yoghurt drinks, protein shakes, kefir: "240 g") are one bottle too — Geert's 240 g Boni
   // high-protein yoghurt drink fell through to OFF's "serving 100 g" (often just the per-100 figure echoed back).
   const nameAll = `${p.product_name ?? ''} ${p.product_name_nl ?? ''} ${p.product_name_fr ?? ''} ${p.product_name_en ?? ''} ${p.generic_name ?? ''}`;
-  const drinkish = liquid || /drink|drank|boisson|à boire|a boire|trinkjoghurt|shake|smoothie|k[eé]fir|lassi|ayran|actimel|yakult|zuivelshake/i.test(nameAll);
+  const drinkish = liquid || DRINK_NAME.test(nameAll);
   const sq100 = sq === 100;   // a "100 g serving" next to a small pack is the per-100 echo, not a real serving
   const pack = qAmt > 0 && (drinkish ? qAmt <= 750 : qAmt <= 150 || (sq100 && qAmt <= 400))
     ? { g: qAmt, label: drinkish ? '1 bottle' : '1 pack' } : null;
@@ -104,7 +115,7 @@ function toItem(p: any): OffProduct | null {
     nameAlt: [p.product_name_fr, p.product_name].find((x: unknown) => typeof x === 'string' && x && x !== name) as string | undefined,
     brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() : undefined,
     per100,
-    ...(pack ? { serving: pack } : sq && sq > 0 && sq < 2000 ? { serving: { g: sq, label: '1 serving' } } : {}),
+    ...(pack ? { serving: pack } : sq && sq > 0 && sq < 2000 && !isEcho100(sq, p.serving_size) ? { serving: { g: sq, label: '1 serving' } } : {}),
     ...(liquid ? { unit: 'ml' as const } : {}),
     image: typeof p.image_front_small_url === 'string' ? p.image_front_small_url : undefined,
     quantity: typeof p.quantity === 'string' ? p.quantity : undefined,

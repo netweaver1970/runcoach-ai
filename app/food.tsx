@@ -33,7 +33,7 @@ import {
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
-import { lookupBarcode, searchOff, rememberProduct, cachedProducts, validBarcode, OFF_CREDIT, OFF_URL, OffProduct } from '../src/services/foodOff';
+import { lookupBarcode, searchOff, rememberProduct, cachedProducts, validBarcode, OFF_CREDIT, OFF_URL, OffProduct, isEcho100, DRINK_NAME } from '../src/services/foodOff';
 import { parseMeal, looksLikeMeal, ParsedItem, MAX_ITEM_GRAMS } from '../src/services/foodParse';
 import { loadSnapshotCache, fetchBodyMassHistory, peekDailyComponents } from '../src/services/healthkit';
 import { loadCachedPlan } from '../src/services/coach';
@@ -773,14 +773,21 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
   // A food with a real serving / piece / pack ("1 bottle = 240 ml", or the size YOU set) can be entered in SERVINGS
   // (¼ · ½ · 1 · 1½ …) as well as in grams. A bare "100 g" fallback is no serving.
   const own = !!servingOverrides[item.key];
-  const piece = def.g > 0 && (own || /^1\s+\S/.test(def.label)) ? def : null;
+  // OFF's bare "1 serving = 100 g" (also on products cached before that was filtered) is the per-100 echo, not a
+  // real size → no serving; ask for the pack size instead (a 240 g yoghurt-drink bottle).
+  const echo = !own && item.src === 'off' && def.label === '1 serving' && isEcho100(def.g);
+  const drink = item.unit === 'ml' || DRINK_NAME.test(`${item.name} ${item.nameAlt ?? ''}`);
+  const piece = !echo && def.g > 0 && (own || /^1\s+\S/.test(def.label)) ? def : null;
   const pieceName = piece ? piece.label.replace(/^1\s+/, '') || 'serving' : '';
+  const askName = pieceName || (drink ? 'bottle' : 'serving');   // what the size editor calls one portion
+  const unknownSize = item.src === 'off' && !piece;             // OFF product with no usable pack/serving size
   const quarterOf = (gr: number) => !!piece && Math.abs(gr / piece.g * 4 - Math.round(gr / piece.g * 4)) < 0.02;
   const [bySrv, setBySrv] = useState(() => !!piece && (initial == null || quarterOf(initial)));
   const fmtS = (v: number) => String(Math.round(v * 100) / 100);
-  const [txt, setTxt] = useState(() => (bySrv && piece ? fmtS((initial ?? piece.g) / piece.g) : String(r0(initial ?? def.g))));
+  const [txt, setTxt] = useState(() => (bySrv && piece ? fmtS((initial ?? piece.g) / piece.g) : String(r0(initial ?? (echo ? 100 : def.g)))));
   const [fav, setFav] = useState(isFav);
-  const [editSrv, setEditSrv] = useState<string | null>(null);   // the "1 serving = … g" editor (text) while open
+  // the "1 serving = … g" editor (text) while open — OPEN from the start (empty) when OFF doesn't know the size
+  const [editSrv, setEditSrv] = useState<string | null>(() => (unknownSize && initial == null ? '' : null));
   const qty = parseFloat(txt.replace(',', '.'));
   const g = bySrv && piece ? qty * piece.g : qty;
   const valid = isFinite(g) && g > 0 && g < 5000;
@@ -793,7 +800,7 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
   const saveSrv = async () => {
     const v = parseFloat((editSrv ?? '').replace(',', '.'));
     if (!(isFinite(v) && v > 0 && v < 5000)) return;
-    const sv = { g: Math.round(v * 10) / 10, label: piece && !/^1\s+serving$/.test(piece.label) ? piece.label : '1 serving' };
+    const sv = { g: Math.round(v * 10) / 10, label: `1 ${askName}` };
     Keyboard.dismiss();
     try { await setServing(item.key, sv); } catch { Alert.alert('Not saved', 'Could not save the serving size — try again.'); return; }
     setDef(sv); setEditSrv(null);
@@ -804,7 +811,7 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
     try { await setServing(item.key, null); } catch { Alert.alert('Not saved', 'Could not reset the serving size — try again.'); return; }
     const d = defaultServing(item);
     setDef(d); setEditSrv(null);
-    const p2 = d.g > 0 && /^1\s+\S/.test(d.label);
+    const p2 = d.g > 0 && /^1\s+\S/.test(d.label) && !(item.src === 'off' && d.label === '1 serving' && isEcho100(d.g));
     if (!p2) { setBySrv(false); setTxt(String(r0(d.g))); } else if (bySrv) setTxt('1');
   };
   const chipsRaw: { v: number; label: string }[] = bySrv && piece
@@ -853,21 +860,24 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
       <View style={s.gramsRow}>
         <TextInput style={s.gramsInput} value={txt} onChangeText={setTxt} keyboardType="decimal-pad" selectTextOnFocus />
         <Text style={s.gramsUnit}>{bySrv && piece ? (isFinite(qty) && qty === 1 ? pieceName : `× ${pieceName}`) : u}</Text>
-        <Text style={s.gramsHint}>{bySrv && piece ? (valid ? `= ${r0(g)} ${u}` : '') : piece ? `1 ${pieceName} = ${r0(piece.g)} ${u}` : def.label !== '100 g' ? `${def.label} ≈ ${def.g} g` : ''}</Text>
+        <Text style={s.gramsHint}>{bySrv && piece ? (valid ? `= ${r0(g)} ${u}` : '') : piece ? `1 ${pieceName} = ${r0(piece.g)} ${u}` : def.label !== '100 g' && !echo ? `${def.label} ≈ ${def.g} g` : ''}</Text>
       </View>
       {editSrv == null ? (
-        <TouchableOpacity onPress={() => setEditSrv(String(r0(piece?.g ?? (valid ? g : 100))))} hitSlop={6}>
-          <Text style={[s.hint, { color: c.accent }]}>{piece ? `✎ 1 ${pieceName} = ${r0(piece.g)} ${u}${own ? ' (yours)' : ''} — change` : '✎ Set a serving size for this food'}</Text>
+        <TouchableOpacity onPress={() => setEditSrv(piece ? String(r0(piece.g)) : '')} hitSlop={6}>
+          <Text style={[s.hint, { color: c.accent }]}>{piece ? `✎ 1 ${pieceName} = ${r0(piece.g)} ${u}${own ? ' (yours)' : ''} — change` : `✎ Set the ${askName} size for this food`}</Text>
         </TouchableOpacity>
       ) : (
+        <>
+        {unknownSize && <Text style={s.warn}>Open Food Facts doesn't know the {askName} size of this product. Enter it once (it's on the label) and it's remembered — then you log it as 1 {askName}, ½, 2 …</Text>}
         <View style={[s.gramsRow, { marginTop: 4 }]}>
-          <Text style={s.gramsHint}>1 {pieceName || 'serving'} =</Text>
-          <TextInput style={[s.gramsInput, { minWidth: 70 }]} value={editSrv} onChangeText={setEditSrv} keyboardType="decimal-pad" selectTextOnFocus autoFocus />
+          <Text style={s.gramsHint}>1 {askName} =</Text>
+          <TextInput style={[s.gramsInput, { minWidth: 70 }]} value={editSrv} onChangeText={setEditSrv} keyboardType="decimal-pad" selectTextOnFocus autoFocus={!unknownSize} placeholder="240" />
           <Text style={s.gramsUnit}>{u}</Text>
           <TouchableOpacity onPress={saveSrv} hitSlop={6}><Text style={[s.chipTxt, { color: c.accent, fontWeight: '700' }]}>Save</Text></TouchableOpacity>
           {own && <TouchableOpacity onPress={resetSrv} hitSlop={6}><Text style={[s.chipTxt, { marginLeft: 10 }]}>Reset</Text></TouchableOpacity>}
           <TouchableOpacity onPress={() => { Keyboard.dismiss(); setEditSrv(null); }} hitSlop={6}><Text style={[s.chipTxt, { marginLeft: 10 }]}>✕</Text></TouchableOpacity>
         </View>
+        </>
       )}
       <View style={s.chips}>
         {chips.map(ch => (
