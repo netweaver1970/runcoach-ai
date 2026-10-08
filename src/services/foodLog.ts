@@ -78,6 +78,19 @@ export interface SavedMeal { id: string; name: string; items: SavedMealItem[]; c
 export interface FavItem { key: string; name: string; src: FoodSrc; per100?: Nutr; n?: Nutr; grams?: number; unit?: 'g' | 'ml'; serving?: { g: number; label: string } }
 export interface FoodLibrary { v: 1; custom: FoodItem[]; meals: SavedMeal[]; favs: string[]; favItems?: Record<string, FavItem>; recents: Recent[];
   servings?: Record<string, { g: number; label: string }>;   // YOUR serving size per food key (beats the label/table default)
+  tags?: Record<string, MealTag[]>;          // meal types per food key (multi: a yoghurt can be breakfast AND snack)
+  kept?: Record<string, FavItem>;            // snapshots of foods you maintain in "My foods" (starred / tagged) without logging
+}
+/** Meal types a food can be tagged with (several per food). */
+export type MealTag = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+export const MEAL_TAGS: { id: MealTag; label: string; short: string }[] = [
+  { id: 'breakfast', label: 'Breakfast', short: 'B' }, { id: 'lunch', label: 'Lunch', short: 'L' },
+  { id: 'dinner', label: 'Dinner', short: 'D' }, { id: 'snack', label: 'Snack', short: 'S' },
+];
+/** The meal type of a moment (same clock as mealLabel). */
+export function mealTagAt(t: string | Date = new Date()): MealTag {
+  const h = new Date(t).getHours();   // whole hours, exactly like mealLabel (its 10.5 / 14.5 … compare hours too)
+  return h < 4 ? 'snack' : h < 10.5 ? 'breakfast' : h < 14.5 ? 'lunch' : h < 17.5 ? 'snack' : h < 21.5 ? 'dinner' : 'snack';
 }
 /** In-memory mirror of FoodLibrary.servings so the sync defaultServing() can honour your own serving sizes. */
 export const servingOverrides: Record<string, { g: number; label: string }> = {};
@@ -340,6 +353,56 @@ export async function setServing(key: string, serving: { g: number; label: strin
     const m = { ...(l.servings ?? {}) };
     if (serving && serving.g > 0) m[key] = serving; else delete m[key];
     l.servings = m;   // snapshots (custom/recent/fav) stay untouched → Reset falls back to the label serving
+  });
+}
+/**
+ * "My foods" — foods maintained on their own, independent of logging (Geert 2026-10-08: star / tag foods without first
+ * adding them to a meal or a day; select one or many at once). The snapshot keeps a food listed and re-loggable.
+ */
+export interface KeptFood { key: string; snap: Omit<FavItem, 'key'> }
+const keep = (l: FoodLibrary, f: KeptFood) => { if (!l.kept?.[f.key]) l.kept = { ...(l.kept ?? {}), [f.key]: { key: f.key, ...f.snap } }; };
+/** Star / un-star several foods at once. */
+export async function setFavourites(foods: KeptFood[], on: boolean): Promise<FoodLibrary> {
+  return mutateLib(l => {
+    const keys = new Set(foods.map(f => f.key));
+    if (on) {
+      l.favs = [...l.favs, ...foods.map(f => f.key).filter(k => !l.favs.includes(k))];
+      const items = { ...(l.favItems ?? {}) };
+      for (const f of foods) { if (!items[f.key]) items[f.key] = { key: f.key, ...f.snap }; keep(l, f); }
+      l.favItems = items;
+    } else {
+      l.favs = l.favs.filter(k => !keys.has(k));
+      const items = { ...(l.favItems ?? {}) };
+      for (const k of keys) delete items[k];
+      l.favItems = items;
+      for (const f of foods) keep(l, f);   // still listed in My foods (re-star it there)
+    }
+  });
+}
+/** Meal tags for several foods: add / remove these tags, or set exactly these. */
+export async function setMealTags(foods: KeptFood[], tags: MealTag[], mode: 'add' | 'remove' | 'set'): Promise<FoodLibrary> {
+  return mutateLib(l => {
+    const all = { ...(l.tags ?? {}) };
+    for (const f of foods) {
+      const cur = new Set(all[f.key] ?? []);
+      if (mode === 'set') { cur.clear(); tags.forEach(t => cur.add(t)); }
+      else if (mode === 'add') tags.forEach(t => cur.add(t));
+      else tags.forEach(t => cur.delete(t));
+      const next = MEAL_TAGS.map(m => m.id).filter(id => cur.has(id));
+      if (next.length) { all[f.key] = next; keep(l, f); } else delete all[f.key];
+    }
+    l.tags = all;
+  });
+}
+/** Stop maintaining a food in "My foods" (un-star, untag, drop the snapshot; a custom food stays in its own list). */
+export async function forgetFoods(keys: string[]): Promise<FoodLibrary> {
+  return mutateLib(l => {
+    const ks = new Set(keys);
+    l.favs = l.favs.filter(k => !ks.has(k));
+    const fi = { ...(l.favItems ?? {}) }, tg = { ...(l.tags ?? {}) }, kp = { ...(l.kept ?? {}) };
+    for (const k of ks) { delete fi[k]; delete tg[k]; delete kp[k]; }
+    l.favItems = fi; l.tags = tg; l.kept = kp;
+    l.recents = l.recents.filter(r => !ks.has(r.key));
   });
 }
 export async function toggleFav(key: string, snap?: Omit<FavItem, 'key'>): Promise<boolean> {

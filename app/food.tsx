@@ -29,7 +29,7 @@ import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT } from '.
 import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
-  scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides,
+  scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -200,7 +200,10 @@ export default function FoodMode() {
     <View style={s.screen}>
       <Stack.Screen options={{ headerShown: false }} />
       {/* the shared mode header (Biology's), day navigation as its second row */}
-      <ModeHeader title="Food" actions={[{ icon: '＋', onPress: () => setAdding(true), label: 'Log food' }]}>
+      <ModeHeader title="Food" actions={[
+        { icon: '★', onPress: () => router.push('/food-library' as any), label: 'My foods' },   // maintain foods: star / meal tags
+        { icon: '＋', onPress: () => setAdding(true), label: 'Log food' },
+      ]}>
         <DayNav date={isToday ? undefined : date} todayKey={today} />
       </ModeHeader>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 120 }}>
@@ -577,11 +580,18 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
       onPress: () => pickMeal(m),
       onLong: () => Alert.alert(m.name, 'Delete this saved meal?', [{ text: 'Delete', style: 'destructive', onPress: () => guard(async () => { await deleteMeal(m.id); await refreshLib(); }) }, { text: 'Cancel', style: 'cancel' }]),
     }));
+    // Favourites, the ones TAGGED for this meal first (My foods), then foods tagged for this meal that aren't starred
+    const nowTag = mealTagAt(timeForDay(date));
+    const tagged = (k: string) => (lib.tags?.[k] ?? []).includes(nowTag);
+    const favList: FavItem[] = [...favouriteList(lib), ...lib.favs.filter(k => !favouriteList(lib).some(f => f.key === k)).map(k => foodByKey(k)).filter((f): f is FoodItem => !!f).map(f => ({ key: f.key, name: f.name, src: f.src, per100: f.per100 }))];
+    const extraTagged: FavItem[] = Object.values(lib.kept ?? {}).filter(f => tagged(f.key) && !lib.favs.includes(f.key))
+      .map(f => ({ ...f, grams: lib.recents.find(r => r.key === f.key)?.grams ?? f.grams }));   // your latest serving
     const src: FavItem[] | Recent[] = tab === 'fav'
-      ? [...favouriteList(lib), ...lib.favs.filter(k => !favouriteList(lib).some(f => f.key === k)).map(k => foodByKey(k)).filter((f): f is FoodItem => !!f).map(f => ({ key: f.key, name: f.name, src: f.src, per100: f.per100 }))]
+      ? [...favList.filter(f => tagged(f.key)), ...extraTagged, ...favList.filter(f => !tagged(f.key))]
       : lib.recents.slice(0, 40);
+    const tagLbl = MEAL_TAGS.find(m => m.id === nowTag)?.label.toLowerCase();
     return (src as FavItem[]).map(r => ({
-      key: r.key, title: r.name, star: favs.has(r.key),
+      key: r.key, title: `${r.name}${tab === 'fav' && tagged(r.key) ? `  · ${tagLbl}` : ''}`, star: favs.has(r.key),
       sub: r.grams ? `${amt(r.grams, ownExtras(r.key, r).unit)} · ${r0(r.per100 ? scaleNutr(r.per100, r.grams).kcal : r.n?.kcal)} kcal` : r.per100 ? `${r0(r.per100.kcal)} kcal/100 g` : `${r0(r.n?.kcal)} kcal`,
       onPress: () => pickRecent(r), onLong: () => pickRecent(r, true),
     }));
@@ -735,7 +745,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             )}
             {!showParse && <FlatList
               data={list} keyExtractor={it => it.key} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
-              ListEmptyComponent={digits ? null : <Text style={s.empty}>{qt.length >= 2 ? 'No match in the food table. Press Search for branded products, or ✏️ Add your own.' : tab === 'meals' ? 'No saved meals yet — open a logged meal (⋯) and choose "Save as meal".' : tab === 'fav' ? 'No favourites yet — ★ a food in its portion view.' : 'Foods you log appear here, with the serving you used.'}</Text>}
+              ListEmptyComponent={digits ? null : <Text style={s.empty}>{qt.length >= 2 ? 'No match in the food table. Press Search for branded products, or ✏️ Add your own.' : tab === 'meals' ? 'No saved meals yet — open a logged meal (⋯) and choose "Save as meal".' : tab === 'fav' ? 'No favourites yet — ★ a food here in its portion view, or in ★ My foods (top right of Food) without logging it.' : 'Foods you log appear here, with the serving you used.'}</Text>}
               ListFooterComponent={qt.length >= 3 && !digits ? (
                 offRes && offRes.q === dqt ? null : (
                 <TouchableOpacity style={s.onlineBtn} onPress={() => { Keyboard.dismiss(); fetchProducts(qt); }}>

@@ -1,0 +1,205 @@
+/**
+ * MY FOODS — foods maintained on their own, independent of logging (Geert 2026-10-08): star a food as a favourite and
+ * tag it with the meal types it belongs to (several: breakfast AND snack…) without first adding it to a meal or a day;
+ * select one or many foods and star / tag them at once. Lists every food you have (own foods, favourites, recents,
+ * scanned products, foods you tagged); a search also reaches the whole food table, so any food can be starred/tagged.
+ */
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Keyboard } from 'react-native';
+import { useFocusEffect } from 'expo-router';
+import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import {
+  loadLibrary, setFavourites, setMealTags, forgetFoods, FoodLibrary, FavItem, KeptFood, MealTag, MEAL_TAGS, Nutr,
+} from '../src/services/foodLog';
+import { searchFoodsEx, foodByKey, norm } from '../src/services/foodDb';
+import { cachedProducts } from '../src/services/foodOff';
+
+interface Row { key: string; name: string; sub: string; snap: KeptFood['snap']; table?: boolean }
+type Filter = 'all' | 'fav' | MealTag | 'untagged';
+
+const r0 = (v?: number) => (v == null ? '–' : String(Math.round(v)));
+const subOf = (f: { per100?: Nutr; n?: Nutr; unit?: 'g' | 'ml'; brand?: string }) =>
+  `${f.brand ? `${f.brand} · ` : ''}${f.per100 ? `${r0(f.per100.kcal)} kcal/100 ${f.unit === 'ml' ? 'ml' : 'g'} · P ${r0(f.per100.prot)} C ${r0(f.per100.carb)} F ${r0(f.per100.fat)}` : f.n ? `${r0(f.n.kcal)} kcal` : ''}`;
+const snapOf = (f: any): KeptFood['snap'] => ({ name: f.name, src: f.src, ...(f.per100 ? { per100: f.per100 } : {}), ...(f.n ? { n: f.n } : {}),
+  ...(f.unit ? { unit: f.unit } : {}), ...(f.serving ? { serving: f.serving } : {}), ...(f.grams ? { grams: f.grams } : {}) });
+
+export default function FoodLibraryScreen() {
+  const { c } = useTheme();
+  const s = useThemedStyles(makeStyles);
+  const [lib, setLib] = useState<FoodLibrary | null>(null);
+  const [prods, setProds] = useState<any[]>([]);
+  const [q, setQ] = useState('');
+  const [dq, setDq] = useState('');   // debounced query (the table search isn't run on every keystroke)
+  useEffect(() => { const t = setTimeout(() => setDq(q), 150); return () => clearTimeout(t); }, [q]);
+  const [filter, setFilter] = useState<Filter>('all');
+  const [sel, setSel] = useState<Set<string> | null>(null);   // null = not selecting
+  const [busy, setBusy] = useState(false);
+
+  useFocusEffect(useCallback(() => {
+    loadLibrary().then(setLib).catch(() => {});
+    cachedProducts().then(setProds).catch(() => {});
+    return () => Keyboard.dismiss();   // never leave with the keyboard up (iOS freeze)
+  }, []));
+
+  // every food you have, once (newest knowledge wins: own food > kept/fav snapshot > recent > product cache)
+  const mine = useMemo<Row[]>(() => {
+    if (!lib) return [];
+    const m = new Map<string, Row>();
+    const add = (key: string, f: any) => { if (!m.has(key) && f?.name) m.set(key, { key, name: f.name, sub: subOf(f), snap: snapOf(f) }); };
+    for (const f of lib.custom) add(f.key, f);
+    for (const f of Object.values(lib.kept ?? {})) add(f.key, f);
+    for (const f of Object.values(lib.favItems ?? {})) add(f.key, f);
+    for (const r of lib.recents) add(r.key, r);
+    for (const k of lib.favs) add(k, foodByKey(k));
+    for (const k of Object.keys(lib.tags ?? {})) add(k, foodByKey(k));
+    for (const p of prods) add(p.key, p);
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [lib, prods]);
+
+  const favs = useMemo(() => new Set(lib?.favs ?? []), [lib]);
+  const tagsOf = (k: string) => lib?.tags?.[k] ?? [];
+  const qn = norm(dq.trim());
+  const rows = useMemo<Row[]>(() => {
+    const words = qn.split(' ').filter(Boolean);
+    const hit = (r: Row) => !words.length || words.every(w => norm(r.name).split(' ').some(x => x.startsWith(w)));
+    const pass = (r: Row) => filter === 'all' ? true : filter === 'fav' ? favs.has(r.key) : filter === 'untagged' ? !tagsOf(r.key).length : tagsOf(r.key).includes(filter);
+    const own = mine.filter(r => hit(r) && pass(r));
+    // a search also reaches the food table → star / tag a food you've never logged
+    if (words.length && dq.trim().length >= 2 && (filter === 'all' || filter === 'untagged')) {
+      const seen = new Set(own.map(r => r.key));
+      const table = searchFoodsEx(dq.trim(), 25).items.filter(f => !seen.has(f.key) && !mine.some(r => r.key === f.key))
+        .map(f => ({ key: f.key, name: f.name, sub: subOf(f), snap: snapOf(f), table: true }));
+      return [...own, ...table];
+    }
+    return own;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mine, qn, filter, favs, lib]);
+
+  // single-row taps are never dropped: the library's write queue applies them in order; only the bulk bar waits
+  const run = async (fn: () => Promise<FoodLibrary>, bulk = false) => {
+    if (bulk) { if (busy) return; setBusy(true); }
+    try { setLib(await fn()); } catch (e: any) { Alert.alert('Not saved', String(e?.message ?? e)); } finally { if (bulk) setBusy(false); }
+  };
+  const kf = (r: Row): KeptFood => ({ key: r.key, snap: r.snap });
+  const selected = sel ? rows.filter(r => sel.has(r.key)) : [];   // only VISIBLE rows act (a filter/search hides the rest)
+  const toggleSel = (k: string) => setSel(cur => { const n = new Set(cur ?? []); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  // bulk: a star / tag goes ON for all selected unless ALL of them already have it (then OFF)
+  const bulkStar = () => { const on = !selected.every(r => favs.has(r.key)); run(() => setFavourites(selected.map(kf), on), true); };
+  const bulkTag = (t: MealTag) => { const all = selected.every(r => tagsOf(r.key).includes(t)); run(() => setMealTags(selected.map(kf), [t], all ? 'remove' : 'add'), true); };
+  const bulkForget = () => { Keyboard.dismiss(); Alert.alert(`Clear ${selected.length} food${selected.length > 1 ? 's' : ''}?`, 'Un-stars, untags and drops them from recents. Logged days are not touched. Scanned products and your own foods (✏️) stay listed — just without star or tags.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Clear', style: 'destructive', onPress: () => run(() => forgetFoods(selected.map(r => r.key)), true).then(() => setSel(new Set())) },
+  ]); };
+
+  const FILTERS: { id: Filter; label: string }[] = [
+    { id: 'all', label: 'All' }, { id: 'fav', label: '★' }, ...MEAL_TAGS.map(t => ({ id: t.id as Filter, label: t.label })), { id: 'untagged', label: 'No meal' },
+  ];
+  return (
+    <View style={s.screen}>
+      <View style={s.top}>
+        <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="Search your foods + the food table" placeholderTextColor={c.textFaint}
+          clearButtonMode="while-editing" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => Keyboard.dismiss()} />
+        <TouchableOpacity onPress={() => { Keyboard.dismiss(); setSel(cur => (cur ? null : new Set())); }} hitSlop={8}>
+          <Text style={s.selBtn}>{sel ? 'Done' : 'Select'}</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={s.chips}>
+        {FILTERS.map(f => (
+          <TouchableOpacity key={f.id} style={[s.chip, filter === f.id && s.chipOn]} onPress={() => setFilter(f.id)}>
+            <Text style={[s.chipTxt, filter === f.id && { color: c.onAccent }]}>{f.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {sel && (
+        <View style={s.selRow}>
+          <Text style={s.meta}>{selected.length} selected</Text>
+          <TouchableOpacity onPress={() => setSel(new Set(rows.map(r => r.key)))} hitSlop={6}><Text style={s.link}>Select all ({rows.length})</Text></TouchableOpacity>
+          {selected.length > 0 && <TouchableOpacity onPress={() => setSel(new Set())} hitSlop={6}><Text style={s.link}>Clear selection</Text></TouchableOpacity>}
+        </View>
+      )}
+      <FlatList
+        data={rows} keyExtractor={r => r.key} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
+        contentContainerStyle={{ paddingBottom: sel ? 140 : 40 }}
+        ListEmptyComponent={<Text style={s.empty}>{q.trim().length >= 2 ? 'No match.' : filter === 'all' ? 'No foods yet — search above to find any food and ★ / tag it.' : 'Nothing here yet.'}</Text>}
+        renderItem={({ item: r, index }) => {
+          const on = favs.has(r.key), tg = tagsOf(r.key), picked = !!sel?.has(r.key);
+          const firstTable = r.table && !rows[index - 1]?.table;
+          return (
+            <>
+              {firstTable && <Text style={s.head}>From the food table</Text>}
+              <TouchableOpacity style={[s.row, picked && s.rowOn]} activeOpacity={0.7}
+                onPress={() => (sel ? toggleSel(r.key) : undefined)} onLongPress={() => { setSel(cur => new Set([...(cur ?? []), r.key])); }}>
+                {sel ? <Text style={s.check}>{picked ? '☑' : '☐'}</Text> : (
+                  <TouchableOpacity onPress={() => run(() => setFavourites([kf(r)], !on))} hitSlop={10}>
+                    <Text style={[s.star, on && { color: c.accent }]}>{on ? '★' : '☆'}</Text>
+                  </TouchableOpacity>
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={s.name} numberOfLines={2}>{r.name}</Text>
+                  {r.sub ? <Text style={s.meta} numberOfLines={1}>{r.sub}</Text> : null}
+                </View>
+                {/* meal tags, several per food — tap to toggle (outside select mode) */}
+                <View style={s.tags}>
+                  {MEAL_TAGS.map(t => {
+                    const has = tg.includes(t.id);
+                    return (
+                      <TouchableOpacity key={t.id} disabled={!!sel} hitSlop={4} style={[s.tag, has && s.tagOn]}
+                        onPress={() => run(() => setMealTags([kf(r)], [t.id], has ? 'remove' : 'add'))}>
+                        <Text style={[s.tagTxt, has && { color: c.onAccent }]}>{t.short}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </TouchableOpacity>
+            </>
+          );
+        }}
+      />
+      {sel && selected.length > 0 && (
+        <View style={s.bar}>
+          <TouchableOpacity style={s.barBtn} onPress={bulkStar} disabled={busy}>
+            <Text style={s.barTxt}>{selected.every(r => favs.has(r.key)) ? '☆ Unstar' : '★ Star'}</Text>
+          </TouchableOpacity>
+          {MEAL_TAGS.map(t => {
+            const all = selected.length > 0 && selected.every(r => tagsOf(r.key).includes(t.id));
+            return (
+              <TouchableOpacity key={t.id} style={[s.barBtn, all && s.barBtnOn]} onPress={() => bulkTag(t.id)} disabled={busy}>
+                <Text style={[s.barTxt, all && { color: c.onAccent }]}>{t.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity style={s.barBtn} onPress={bulkForget} disabled={busy}><Text style={[s.barTxt, { color: '#e5484d' }]}>Clear</Text></TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const makeStyles = (c: Palette) => StyleSheet.create({
+  screen:  { flex: 1, backgroundColor: c.bg },
+  top:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
+  search:  { flex: 1, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, color: c.text, fontSize: 15 },
+  selBtn:  { color: c.accent, fontSize: 15, fontWeight: '700' },
+  chips:   { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 16, paddingVertical: 10 },
+  chip:    { paddingHorizontal: 11, paddingVertical: 5, borderRadius: 14, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  chipOn:  { backgroundColor: c.accent, borderColor: c.accent },
+  chipTxt: { color: c.text, fontSize: 13, fontWeight: '600' },
+  selRow:  { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 16, paddingBottom: 6 },
+  link:    { color: c.accent, fontSize: 13, fontWeight: '600' },
+  head:    { color: c.textSub, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 },
+  row:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
+  rowOn:   { backgroundColor: c.surfaceAlt },
+  check:   { color: c.accent, fontSize: 20, width: 24 },
+  star:    { color: c.textFaint, fontSize: 22, width: 24 },
+  name:    { color: c.text, fontSize: 15, fontWeight: '600' },
+  meta:    { color: c.textSub, fontSize: 12.5 },
+  tags:    { flexDirection: 'row', gap: 4 },
+  tag:     { width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
+  tagOn:   { backgroundColor: c.accent, borderColor: c.accent },
+  tagTxt:  { color: c.textSub, fontSize: 11, fontWeight: '800' },
+  empty:   { color: c.textSub, textAlign: 'center', padding: 30 },
+  bar:     { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', flexWrap: 'wrap', gap: 6, padding: 12, paddingBottom: 30, backgroundColor: c.surface, borderTopWidth: 1, borderColor: c.border },
+  barBtn:  { paddingHorizontal: 11, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: c.border, backgroundColor: c.bg },
+  barBtnOn:{ backgroundColor: c.accent, borderColor: c.accent },
+  barTxt:  { color: c.text, fontSize: 13, fontWeight: '700' },
+});
