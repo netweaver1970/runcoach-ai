@@ -9,14 +9,14 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   loadLibrary, addCustomFood, updateCustomFood, deleteCustomFood, forgetFoods, setFavourites, setMealTags, setServing,
-  FoodLibrary, FoodItem, KeptFood, MEAL_TAGS, MealTag, Nutr, NutrKey, servingOverrides,
+  FoodLibrary, FoodItem, KeptFood, MEAL_TAGS, MealTag, Nutr, NutrKey, servingOverrides, rsOverrides, setResistantStarch,
 } from '../src/services/foodLog';
 import { foodByKey } from '../src/services/foodDb';
 import { cachedProducts } from '../src/services/foodOff';
 
 const FIELDS: { k: NutrKey; label: string; unit: string }[] = [
   { k: 'kcal', label: 'Energy', unit: 'kcal' }, { k: 'prot', label: 'Protein', unit: 'g' }, { k: 'carb', label: 'Carbs', unit: 'g' },
-  { k: 'sug', label: '  of which sugars', unit: 'g' }, { k: 'fat', label: 'Fat', unit: 'g' }, { k: 'sat', label: '  of which saturated', unit: 'g' },
+  { k: 'sug', label: '  of which sugars', unit: 'g' }, { k: 'rs', label: '  of which resistant starch', unit: 'g' }, { k: 'fat', label: 'Fat', unit: 'g' }, { k: 'sat', label: '  of which saturated', unit: 'g' },
   { k: 'fib', label: 'Fibre', unit: 'g' }, { k: 'salt', label: 'Salt', unit: 'g' },
 ];
 const num = (t: string) => { const v = parseFloat(t.replace(',', '.')); return Number.isFinite(v) && v >= 0 ? v : undefined; };
@@ -49,7 +49,7 @@ export default function FoodItemScreen() {
       setBase(f);
       setName(f.name ?? ''); setBrand(f.brand ?? ''); setUnit(f.unit === 'ml' ? 'ml' : 'g');
       const p100: Nutr = f.per100 ?? {};
-      setVals(Object.fromEntries(FIELDS.map(x => [x.k, txt(p100[x.k])])));
+      setVals({ ...Object.fromEntries(FIELDS.map(x => [x.k, txt(p100[x.k])])), ...(rsOverrides[key] != null ? { rs: txt(rsOverrides[key]) } : {}) });
       const sv = servingOverrides[key] ?? f.serving;
       setSrv(sv?.g ? String(sv.g) : '');
     })().catch(() => {});
@@ -65,6 +65,7 @@ export default function FoodItemScreen() {
     try {
       const p = per100();
       const sg = num(srv);
+      if (p.rs != null && p.rs > (p.carb ?? 0) + 0.5) { Alert.alert('Check resistant starch', 'It is PART of the carbs — it can\'t be more than the carbs per 100.'); return; }
       if (isNew) {
         if (!name.trim() || p.kcal == null) { Alert.alert('Missing', 'A name and the energy (kcal per 100) are needed.'); return; }
         const it = await addCustomFood({ name, brand: brand || undefined, per100: p, unit, ...(sg ? { serving: { g: sg, label: '1 serving' } } : {}) });
@@ -76,7 +77,13 @@ export default function FoodItemScreen() {
         await updateCustomFood(key, { name, brand, per100: p, unit, serving: sg ? { g: sg, label: base?.serving?.label ?? '1 serving' } : null });
         await setServing(key, sg ? { g: sg, label: base?.serving?.label ?? '1 serving' } : null);   // an older own-serving override must not win
       }
-      else await setServing(key, sg ? { g: sg, label: base?.serving?.label && !/^100 g$/.test(base.serving.label) ? base.serving.label : '1 serving' } : null);
+      if (!own) {
+        const rsv = num(vals.rs ?? '');
+        const carb = base?.per100?.carb ?? 0;
+        if (rsv != null && rsv > carb + 0.5) { Alert.alert('Check resistant starch', `It's part of the carbs, so it can't be more than the ${Math.round(carb)} g carbs per 100.`); return; }
+        await setResistantStarch(key, rsv ?? null);
+      }
+      if (!own) await setServing(key, sg ? { g: sg, label: base?.serving?.label && !/^100 g$/.test(base.serving.label) ? base.serving.label : '1 serving' } : null);
       setLib(await loadLibrary());
       Alert.alert('Saved', name || base?.name || '');
     } catch (e: any) { Alert.alert('Not saved', String(e?.message ?? e)); }
@@ -127,11 +134,12 @@ export default function FoodItemScreen() {
       {FIELDS.map(f => (
         <View key={f.k} style={s.field}>
           <Text style={s.fieldLbl}>{f.label}</Text>
-          <TextInput style={[s.num, !own && s.ro]} value={vals[f.k] ?? ''} editable={own} keyboardType="decimal-pad" selectTextOnFocus
+          <TextInput style={[s.num, !own && f.k !== 'rs' && s.ro]} value={vals[f.k] ?? ''} editable={own || f.k === 'rs'} keyboardType="decimal-pad" selectTextOnFocus
             onChangeText={v => setVals(p => ({ ...p, [f.k]: v }))} placeholder="–" placeholderTextColor={c.textFaint} />
           <Text style={s.unit}>{f.unit}</Text>
         </View>
       ))}
+      <Text style={s.hint}>Resistant starch is part of the carbs on the label but isn't absorbed — it feeds the gut bacteria (~2 kcal/g). It's left out of your day's carbs and counted at 2 kcal/g. Typical: RAW unmodified potato starch ≈ 60–70 g / 100 g (stirred in cold, never heated) · cooked starch ≈ 0–1 · cooked-then-cooled potato / rice ≈ 1–3 · green banana flour ≈ 40–50. Only enter what the label's carbs INCLUDE (if the label already counts it as fibre, leave this empty).</Text>
       <Text style={s.lbl}>1 serving / pack ({unit})</Text>
       <TextInput style={s.input} value={srv} onChangeText={setSrv} keyboardType="decimal-pad" placeholder="e.g. 240 — leave empty for none" placeholderTextColor={c.textFaint} />
       {!own && <Text style={s.hint}>Values come from {base?.src === 'off' ? 'Open Food Facts' : 'the food table'} — read-only. The serving size is yours.</Text>}

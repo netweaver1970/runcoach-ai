@@ -32,7 +32,7 @@ import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
-  updateMealItems, SavedMealItem, setFavourites, removeRecent,
+  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -220,7 +220,7 @@ export default function FoodMode() {
             <Text style={s.kcal}>{r0(totals?.kcal)}</Text><Text style={s.kcalUnit}>kcal</Text>
           </View>
           <Text style={s.macros}>Carbs {r0(totals?.carb)} g · Protein {r0(totals?.prot)} g · Fat {r0(totals?.fat)} g</Text>
-          <Text style={s.sub}>💧 {r1((totals?.waterMl ?? 0) / 1000)} L drinks · Sodium {r1((totals?.na ?? 0) / 1000)} g · Fibre {r0(totals?.fib)} g</Text>
+          <Text style={s.sub}>💧 {r1((totals?.waterMl ?? 0) / 1000)} L drinks · Sodium {r1((totals?.na ?? 0) / 1000)} g · Fibre {r0(totals?.fib)} g{totals?.rs ? ` + ${r0(totals.rs)} g resistant starch (not in carbs)` : ''}</Text>
           {burn != null && !(isToday && !sameDay) && (
             isToday
               ? <Text style={s.sub}>⌚ Watch energy so far: {r0(burn.kcal)} kcal (active + resting{burn.at > 0 ? `, as of ${new Date(burn.at).toTimeString().slice(0, 5)}` : ''})</Text>
@@ -272,7 +272,7 @@ export default function FoodMode() {
               </TouchableOpacity>
             </SwipeRow>
           );
-          const kcal = r0(row.items.reduce((a, e) => a + (e.n.kcal ?? 0), 0));
+          const kcal = r0(row.items.reduce((a, e) => a + (netNutr(e.n).kcal ?? 0), 0));   // resistant starch at 2 kcal/g
           return (
             <View key={row.items[0].id} style={s.mealCard}>
               <TouchableOpacity style={s.mealHead} onPress={() => mealMenu(row.items)}>
@@ -284,7 +284,7 @@ export default function FoodMode() {
                 <SwipeRow key={e.id} onDelete={() => once(async () => { await removeEntries(foodDayOf(e.t), [e.id]); })}>
                   <TouchableOpacity style={[s.entry, { backgroundColor: c.surface }]} onPress={() => setEditing(e)}>
                     <Text style={s.entryName} numberOfLines={1}>{e.name}</Text>
-                    <Text style={s.entryMeta}>{e.grams ? `${amt(e.grams, e.unit)} · ` : ''}{r0(e.n.kcal)} kcal</Text>
+                    <Text style={s.entryMeta}>{e.grams ? `${amt(e.grams, e.unit)} · ` : ''}{r0(netNutr(e.n).kcal)} kcal{e.n.rs ? ` · ${r0(e.n.rs)} g resistant starch` : ''}</Text>
                   </TouchableOpacity>
                 </SwipeRow>
               ))}
@@ -831,7 +831,8 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
   const qty = parseFloat(txt.replace(',', '.'));
   const g = bySrv && piece ? qty * piece.g : qty;
   const valid = isFinite(g) && g > 0 && g < 5000;
-  const n = valid ? scaleNutr(item.per100, g) : {};
+  const raw = valid ? scaleNutr(withRs(item.key, item.per100), g) : {};
+  const n = netNutr(raw);   // resistant starch out of the carbs / energy
   const switchUnit = (toSrv: boolean) => {
     if (!piece || toSrv === bySrv) return;
     if (isFinite(g) && g > 0) setTxt(toSrv ? fmtS(g / piece.g) : String(r0(g)));
@@ -929,7 +930,7 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
       {valid && (
         <View style={s.preview}>
           <Text style={s.previewKcal}>{r0(n.kcal)} kcal</Text>
-          <Text style={s.previewSub}>Carbs {r1(n.carb)} g · Protein {r1(n.prot)} g · Fat {r1(n.fat)} g · Fibre {r1(n.fib)} g · Sodium {r0(n.na)} mg</Text>
+          <Text style={s.previewSub}>Carbs {r1(n.carb)} g{raw.rs ? ` (+ ${r1(raw.rs)} g resistant starch, not counted)` : ''} · Protein {r1(n.prot)} g · Fat {r1(n.fat)} g · Fibre {r1(n.fib)} g · Sodium {r0(n.na)} mg</Text>
         </View>
       )}
       <View style={s.btnRow}>

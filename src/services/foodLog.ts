@@ -26,7 +26,8 @@ async function linkSupplements(keys: string[], t: string): Promise<void> {
 
 export type NutrKey =
   | 'kcal' | 'prot' | 'carb' | 'fat' | 'sug' | 'fib' | 'sat' | 'salt' | 'na' | 'k' | 'ca' | 'fe' | 'mg'
-  | 'water' | 'alc' | 'vitC' | 'vitD' | 'caf';
+  | 'water' | 'alc' | 'vitC' | 'vitD' | 'caf'
+  | 'rs';   // resistant starch (g) — PART OF `carb` as labelled; not absorbed (gut-bacteria food), ~2 kcal/g instead of 4
 export type Nutr = Partial<Record<NutrKey, number>>;
 export type FoodSrc = 'ciqual' | 'off' | 'custom' | 'quick' | 'ai' | 'builtin';
 export type EntryVia = 'search' | 'recent' | 'fav' | 'meal' | 'copy' | 'quick' | 'parse' | 'photo' | 'ean' | 'label' | 'suggest';
@@ -80,6 +81,7 @@ export interface FoodLibrary { v: 1; custom: FoodItem[]; meals: SavedMeal[]; fav
   servings?: Record<string, { g: number; label: string }>;   // YOUR serving size per food key (beats the label/table default)
   tags?: Record<string, MealTag[]>;          // meal types per food key (multi: a yoghurt can be breakfast AND snack)
   kept?: Record<string, FavItem>;            // snapshots of foods you maintain in "My foods" (starred / tagged) without logging
+  rs?: Record<string, number>;               // YOUR resistant starch (g / 100) for non-own foods (see netNutr)
 }
 /** Meal types a food can be tagged with (several per food). */
 export type MealTag = 'breakfast' | 'lunch' | 'dinner' | 'snack';
@@ -97,6 +99,8 @@ export const servingOverrides: Record<string, { g: number; label: string }> = {}
 const syncServings = (l: FoodLibrary) => {
   for (const k of Object.keys(servingOverrides)) delete servingOverrides[k];
   Object.assign(servingOverrides, l.servings ?? {});
+  for (const k of Object.keys(rsOverrides)) delete rsOverrides[k];
+  Object.assign(rsOverrides, l.rs ?? {});
 };
 
 const DIR = FileSystem.documentDirectory;
@@ -107,7 +111,23 @@ const LIB = `${DIR}${FOOD_LIBRARY_FILE}`;
 const MAX_RECENTS = 200;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────────────────────────
-export const NUTR_KEYS: NutrKey[] = ['kcal', 'prot', 'carb', 'fat', 'sug', 'fib', 'sat', 'salt', 'na', 'k', 'ca', 'fe', 'mg', 'water', 'alc', 'vitC', 'vitD', 'caf'];
+export const NUTR_KEYS: NutrKey[] = ['kcal', 'prot', 'carb', 'fat', 'sug', 'fib', 'sat', 'salt', 'na', 'k', 'ca', 'fe', 'mg', 'water', 'alc', 'vitC', 'vitD', 'caf', 'rs'];
+
+/**
+ * Resistant starch (Geert 2026-10-08, raw potato starch): it's in the label's carbs but isn't digested in the small
+ * intestine — the colon's bacteria ferment it (~2 kcal/g, no glucose). So for the day it comes OFF the available carbs
+ * and is counted at 2 instead of 4 kcal/g. Applied wherever amounts are summed or shown; the stored entry keeps the
+ * label values + its `rs`.
+ */
+export function netNutr(n: Nutr): Nutr {
+  const rs = n.rs ?? 0;
+  if (!rs) return n;
+  return { ...n, carb: Math.max(0, (n.carb ?? 0) - rs), ...(n.kcal != null ? { kcal: Math.max(0, n.kcal - 2 * rs) } : {}) };
+}
+/** YOUR resistant-starch value (g per 100) for a food-table / product food (own foods carry it in per100). */
+export const rsOverrides: Record<string, number> = {};
+/** per100 with your resistant-starch value merged in (logging uses this). */
+export const withRs = (key: string, per100: Nutr): Nutr => (rsOverrides[key] != null ? { ...per100, rs: rsOverrides[key] } : per100);
 
 export function scaleNutr(per100: Nutr, grams: number): Nutr {
   const out: Nutr = {};
@@ -116,7 +136,10 @@ export function scaleNutr(per100: Nutr, grams: number): Nutr {
 }
 export function sumNutr(list: Nutr[]): Nutr {
   const out: Nutr = {};
-  for (const n of list) for (const k of NUTR_KEYS) { const v = n[k]; if (typeof v === 'number') out[k] = (out[k] ?? 0) + v; }
+  for (const n0 of list) {
+    const n = netNutr(n0);   // available carbs / energy (resistant starch out)
+    for (const k of NUTR_KEYS) { const v = n[k]; if (typeof v === 'number') out[k] = (out[k] ?? 0) + v; }
+  }
   return out;
 }
 const uid = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -198,7 +221,7 @@ export async function logFood(
 ): Promise<FoodEntry> {
   const t = opts.t ?? (opts.date ? timeForDay(opts.date) : localIso(new Date()));
   const date = foodDayOf(t);
-  const n = 'per100' in item && opts.grams != null ? scaleNutr(item.per100, opts.grams) : ('n' in item ? item.n : {});
+  const n = 'per100' in item && opts.grams != null ? scaleNutr(withRs(item.key, item.per100), opts.grams) : ('n' in item ? item.n : {});
   const e: FoodEntry = {
     id: uid(), t, key: item.key, name: item.name, src: item.src, n, via: opts.via,
     ...(opts.grams != null ? { grams: opts.grams } : {}),
@@ -217,7 +240,7 @@ export async function logFoods(items: { item: FoodItem; grams: number }[], opts:
   const t = timeForDay(opts.date);
   const groupId = opts.groupId ?? uid();
   const out: FoodEntry[] = items.map(({ item, grams }) => ({
-    id: uid(), t, key: item.key, name: item.name, src: item.src, n: scaleNutr(item.per100, grams), grams, via: opts.via, groupId,
+    id: uid(), t, key: item.key, name: item.name, src: item.src, n: scaleNutr(withRs(item.key, item.per100), grams), grams, via: opts.via, groupId,
     ...(item.unit === 'ml' ? { unit: 'ml' as const } : {}),
   }));
   await mutateDay(foodDayOf(t), d => { d.entries.push(...out); });
@@ -488,6 +511,10 @@ export async function deleteCustomFood(key: string): Promise<FoodLibrary> {
     if (l.servings?.[key]) { const sv = { ...l.servings }; delete sv[key]; l.servings = sv; }
   });
 }
+/** Set (null = clear) your resistant-starch value (g per 100) for a food-table / product food. */
+export async function setResistantStarch(key: string, g: number | null): Promise<void> {
+  await mutateLib(l => { const m = { ...(l.rs ?? {}) }; if (g != null && g > 0) m[key] = g; else delete m[key]; l.rs = m; });
+}
 /** Drop a food from the recents list only (swipe in Add food → Recents). */
 export async function removeRecent(key: string): Promise<void> {
   await mutateLib(l => { l.recents = l.recents.filter(r => r.key !== key); });
@@ -513,7 +540,7 @@ export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'me
   const groupId = uid();
   const out: FoodEntry[] = meal.items.map(it => ({
     id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId,
-    n: it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams) : (it.n ?? {}),
+    n: it.per100 && it.grams != null ? scaleNutr(withRs(it.key, it.per100), it.grams) : (it.n ?? {}),
     ...(it.grams != null ? { grams: it.grams } : {}),
     ...(it.unit ? { unit: it.unit } : {}),
   }));
