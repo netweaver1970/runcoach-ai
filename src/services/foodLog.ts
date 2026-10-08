@@ -581,6 +581,7 @@ export async function replaceFoodEverywhere(oldKey: string, to: { key: string; n
   await mutateLib(l => {
     l.meals = l.meals.map(m => ({ ...m, items: m.items.map(i => (i.key !== oldKey ? i
       : { ...i, key: to.key, name: to.name, src: to.src, ...(to.per100 ? { per100: to.per100 } : {}), ...(to.unit === 'ml' ? { unit: 'ml' as const } : {}) })) }));
+    if (to.key === oldKey) return;   // a value correction of the SAME food: nothing to move (keep its tags / recents)
     const move = <T,>(rec: Record<string, T> | undefined): Record<string, T> | undefined => {
       if (!rec || rec[oldKey] === undefined) return rec;
       const r = { ...rec }; if (r[to.key] === undefined) r[to.key] = r[oldKey]; delete r[oldKey]; return r;

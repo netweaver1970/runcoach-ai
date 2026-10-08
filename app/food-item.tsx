@@ -82,7 +82,11 @@ export default function FoodItemScreen() {
       if (own) {
         if (!name.trim() || p.kcal == null) { Alert.alert('Missing', 'A name and the energy (kcal per 100) are needed.'); return; }
         await updateCustomFood(key, { name, brand, per100: p, unit, serving: sg ? { g: sg, label: base?.serving?.label ?? '1 serving' } : null });
-        if (base?.name && name.trim() && name.trim() !== base.name) { await renameInLogs(key, name.trim()); setBase(b => (b ? { ...b, name: name.trim() } : b)); }   // logged days show the new name
+        // corrected values / unit → every logged use of this food is RECALCULATED (and renamed), saved meals follow
+        const valuesChanged = JSON.stringify(base?.per100 ?? {}) !== JSON.stringify(p) || (base?.unit === 'ml' ? 'ml' : 'g') !== unit;
+        if (valuesChanged) await replaceFoodEverywhere(key, { key, name: name.trim() || base?.name || 'Food', src: 'custom', per100: p, unit });
+        else if (base?.name && name.trim() && name.trim() !== base.name) await renameInLogs(key, name.trim());   // logged days show the new name
+        setBase(b => (b ? { ...b, name: name.trim() || b.name, per100: p, unit } : b));
         await setServing(key, sg ? { g: sg, label: base?.serving?.label ?? '1 serving' } : null);   // an older own-serving override must not win
       }
       if (!own) {

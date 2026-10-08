@@ -81,12 +81,11 @@ export default function FoodMealScreen() {
       const before = orig;
       const next: SavedMeal | null = before ? { ...before, name: name || before.name, items } : null;
       const u = before ? await mealUsage(before).catch(() => ({ instances: 0, days: 0 })) : { instances: 0, days: 0 };
-      if (before && next && u.instances) {
-        Alert.alert('Saved — update the logged days too?', `"${next.name}" was logged ${u.instances}× (${u.days} day${u.days > 1 ? 's' : ''}). Redo those from the corrected meal? Values are recalculated; components you'd left out at the time stay out.`, [
-          { text: 'Only the meal', style: 'cancel', onPress: () => setOrig(next) },
-          { text: 'Update logged days', onPress: async () => { const n = await relogMealEverywhere(before, next).catch(() => 0); setOrig(next); Alert.alert('Updated', `${n} logged meal${n === 1 ? '' : 's'} recalculated.`); } },
-        ]);
-      } else { if (next) setOrig(next); Alert.alert('Saved', `${name} · ${items.length} components · ${r0(kcal)} kcal`); }
+      // ALWAYS redo the logged instances from the corrected meal (Geert: "the recorded meals are modified and the days
+      // recalculated") — values recalculated, components left out at the time stay out
+      const n = before && next && u.instances ? await relogMealEverywhere(before, next).catch(() => 0) : 0;
+      if (next) setOrig(next);
+      Alert.alert('Saved', `${name} · ${items.length} components · ${r0(kcal)} kcal${n ? `\n${n} logged meal${n === 1 ? '' : 's'} on ${u.days} day${u.days > 1 ? 's' : ''} recalculated.` : ''}`);
     } catch (e: any) { Alert.alert('Not saved', String(e?.message ?? e)); }
   };
   const del = async () => {

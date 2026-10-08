@@ -32,7 +32,7 @@ import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
-  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs, MICROS,
+  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs, MICROS, relogMealEverywhere,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -680,7 +680,11 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
             onConfirm={g => editItem(mode.entry, g)} />
         ) : mode.m === 'meal' ? (
           <MealPanel meal={mode.meal} onCancel={() => setMode({ m: 'search' })}
-            onSaveItems={items => guard(async () => { await updateMealItems(mode.meal.id, items); await refreshLib(); })}
+            onSaveItems={items => guard(async () => {
+              await updateMealItems(mode.meal.id, items);
+              await relogMealEverywhere(mode.meal, { ...mode.meal, items });   // the logged days follow the corrected meal
+              await refreshLib();
+            })}
             onConfirm={items => guard(async () => {
               // components unticked in the preview are remembered → a later edit / replacement of the meal keeps them out
               const skip = mode.meal.items.map(i => i.key).filter(k => !items.some(x => x.key === k));
