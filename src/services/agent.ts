@@ -249,7 +249,10 @@ const TOOLS: AgentTool[] = [
           last_7d_min: cs.tof7d, prev_7d_min: cs.tofPrev7d,
           remaining_today_min: cs.tofBudgetTodayMin,
           next_meaningful_run: cs.tofNextRunLabel ?? null, next_run_in_days: cs.tofNextRunInDays ?? null,
-          note: 'Every running minute (any zone) is deducted from this rolling +cap% 7-day time-on-feet budget.',
+          note: cs.rampBudget
+            ? 'FITNESS RAMP ON: the budget is LOAD vs the ramp\'s 7-day target (see ramp_budget); remaining_today_min is that load as easy-run minutes. cap_pct does not limit volume.'
+            : 'Every running minute (any zone) is deducted from this rolling +cap% 7-day time-on-feet budget.',
+          ...(cs.rampBudget ? { ramp_budget: { ctl_per_week: cs.rampBudget.ramp, target_7d_load: cs.rampBudget.target7, done_7d_load: cs.rampBudget.load7, left_load: cs.rampBudget.budgetLoad } } : {}),
         },
         training_load: { ctl_fitness: cs.ctl, atl_fatigue: cs.atl, tsb_form: cs.tsb, acwr: cs.acwr },
         readiness: cs.readiness ?? null, recovery: cs.recovery ?? null, drivers: cs.drivers ?? null,

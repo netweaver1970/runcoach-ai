@@ -55,6 +55,7 @@ export interface CoachSnapshot {
   loadCapPct?:       number;   // the rolling increase cap % (default 10)
   ctlRampTarget?:    number;   // fitness ramp target, CTL points/week (null/undefined = off) — the week fill aims at it
   trimpRates?:       TrimpRates; // the athlete's CALIBRATED TRIMP/min (CTL's own units) — prices the ramp target
+  rampBudget?:       RampBudget; // CTL ramp on → the 7-day LOAD budget (target / load so far / left) the daily cap uses
   loadBudgetToday?:  number;   // remaining budget today in loadUnit
   loadUnit?:         'min' | 'km';
   paceMinPerKm?:     number;   // trailing real-work pace (min/km) — km↔min conversion when distance basis
@@ -1429,7 +1430,7 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   // suppressed (the race block, not the cap, decides the days → avoids "run 25m" + "next run Sat").
   let nextRunLabel  = (cappedToday && !raceForced && !rampSlot) ? snap.tofNextRunLabel : undefined;
   let nextRunInDays = raceForced || rampSlot ? undefined : snap.tofNextRunInDays;
-  if (cappedToday && !raceForced && !rampSlot) {
+  if (cappedToday && !raceForced && !rampSlot && !snap.rampBudget) {   // ramp: the load budget's own next-run day stands
     const wp = await nextRunFromWeekPlan(snap);
     if (wp) { nextRunLabel = wp.label; nextRunInDays = wp.inDays; }
   }
@@ -1448,7 +1449,9 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   if (cappedToday && !honourSlot && !raceForced && !rampSlot) {
     return {
       headline: 'At your volume cap — recovery day',
-      session: `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${nextRunLabel ?? 'in a couple of days'}.`,
+      session: snap.rampBudget
+        ? `Rest from running today — your 7-day training load (${snap.rampBudget.load7}) is within ${snap.rampBudget.budgetLoad} of this week's fitness-ramp target (${snap.rampBudget.target7} for +${snap.rampBudget.ramp} CTL/week), too little for a meaningful run. Keep it to easy mobility/strength; next run ${nextRunLabel ?? 'in a couple of days'}.`
+        : `Rest from running today — your trailing 7-day time-on-feet is at the +${capPct}% ceiling. Keep it to easy mobility/strength; next run ${nextRunLabel ?? 'in a couple of days'}.`,
       strength: STRENGTH_DEFAULT, intensity: 'rest', runMinutes: 0,
       rationale: bandPhrase(strainReal, strainLow, strainHigh, 'cap reached, so banking volume for the next quality day'),
       cautions: recoveryStale ? STALE_CAUTION : undefined, workout: null, sessionKind: 'recovery', secondSession: null, ...stamp,
@@ -1492,7 +1495,9 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
       : it === 'hard' ? 'intervals' : it === 'moderate' ? 'tempo' : it === 'easy' ? 'easy' : 'recovery';
   let intensity: CoachIntensity; let sk: SK; let base: number; let eased = '';
   let kind: string = template[dow];                 // scheduled session TYPE (drives the rest-day wording)
-  const slot = todaySlot;
+  // FITNESS RAMP: a cached 7-day slot that rested ONLY for the minutes cap ("capRest") doesn't bind when the LOAD
+  // budget still has room for a meaningful run — the ramp's budget decides (the template/budget path below sizes it)
+  const slot = (snap.rampBudget && todaySlot?.capRest && (snap.tofBudgetTodayMin ?? 0) >= 20) ? null : todaySlot;   // 20 = a meaningful run
   if (raceSlot) {
     // RACE MODE: today = the LLM race-week session (overrides template/cap). Recovery may still ease it.
     // If you've ALREADY run today, the session is done → rest (don't re-prescribe the same run).
@@ -1569,7 +1574,12 @@ export async function deterministicCoachPlan(snap: CoachSnapshot): Promise<Coach
   }
   // Build the structured session. A shrink-to-fit slot is HONOURED at its (already-short) minutes —
   // only today's heat eases it — so the daily card matches the 7-day plan instead of re-capping to rest.
-  const totalMin = Math.max(8, honorDirect || rampSlot ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budget, base));
+  // ramp: the budget is in EASY-minute equivalents — a moderate/hard minute costs its own (calibrated) TRIMP/min
+  const rr = snap.rampBudget ? (snap.rampBudget.rates ?? snap.trimpRates) : undefined;
+  const iRate = rr ? (intensity === 'hard' ? rr.hard : intensity === 'moderate' ? rr.moderate : rr.easy) : 0;
+  // never LONGER than the easy budget (calibrated rates aren't monotonic — a hard rate can read below easy)
+  const budgetI = rr && iRate > 0 ? Math.round(budget * Math.min(1, rr.easy / iRate)) : budget;
+  const totalMin = Math.max(8, honorDirect || rampSlot ? Math.round(base / Math.max(1, heatFactor)) : Math.min(budgetI, base));
 
   // SPLIT LONG RUN: on a long day, per the athlete's Long-run style, deliver the SAME long target as Part 1
   // (now) + Part 2 (later, easy Z2). This redistributes today's long — it does NOT add volume — so there's
@@ -1702,7 +1712,11 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
       : basis.shrinkForced
       ? `\n\nIMPORTANT — TODAY'S SESSION IS DELIBERATELY FORCE-PLACED. The rolling volume cap is nearly spent, but the app has INTENTIONALLY held this shortened quality session on its scheduled day (shrink-to-fit) and banked budget elsewhere in the week. A low tofBudgetTodayMin therefore does NOT mean today is a rest day: do NOT return intensity "rest", and do NOT write that the cap forces rest today. Honour the prescribed session (you may still ease it slightly if today's recovery genuinely warrants).`
       : '';
-    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}${forced}`;
+    // FITNESS RAMP ON → the volume budget is LOAD (the ramp's 7-day target), not the +loadCapPct% on minutes
+    const rampNote = snap.rampBudget
+      ? `\n\nVOLUME BUDGET (fitness ramp +${snap.rampBudget.ramp} CTL/week): the rolling 7-day budget is LOAD, not a % on minutes — target ${snap.rampBudget.target7}, done ${snap.rampBudget.load7}, left ${snap.rampBudget.budgetLoad} (≈ tofBudgetTodayMin easy minutes; harder minutes cost more). Ignore loadCapPct for volume; never cite a "+X% ceiling".`
+      : '';
+    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}${forced}${rampNote}`;
     setUsageFeature('coach-plan');
     const txt = await callLLM({
       system,
@@ -2706,13 +2720,66 @@ export function computeTimeOnFeetPlan(
 
 export interface CapContext {
   tof: TofPlan;            // time-on-feet plan — always computed (alternation + run-minutes budget)
-  cap: TofPlan;            // the ACTIVE-basis plan (=== tof when basis is 'tof')
+  cap: TofPlan;            // the ACTIVE-basis plan (=== tof when basis is 'tof'; the LOAD plan under a CTL ramp)
+  ramp?: RampBudget;       // set when a CTL ramp target drives the budget (load, not minutes)
   budgetMin: number;       // today's budget as run-MINUTES (distance cap → pace-converted)
   loadUnit: 'min' | 'km';
   capBasis: LoadCapBasis;
   capPct: number;
   paceMinPerKm: number;    // trailing real-work pace (min/km); 0 in tof mode (unused there)
   heatCredit: Record<string, number>; // date → heat factor experienced (for the week planner's matching base)
+}
+
+/**
+ * FITNESS-RAMP volume budget (2026-10-08, Geert: "load, not minutes"). With a CTL ramp target set, the rolling 7-day
+ * budget is the ramp's own LOAD target — 7·(CTL + ramp/(1−e^(−7/42))), the load that lifts CTL by `ramp`/week — minus
+ * the last 6 days' load and today's so far. The old path turned that target into a +% on the previous week's MINUTES,
+ * which broke when the two weeks' intensity mix differed (2026-10-08: 317 load in 179 min, then 289 load in 208 min
+ * → "at the +4 % ceiling, rest" while ~48 load / ~40 min easy was still due). Expressed back in easy-run minutes via
+ * the athlete's calibrated easy TRIMP/min so every minute-based consumer (daily plan, LLM, next-run) just works.
+ * Freshness (TSB/ACWR) may only shrink the ramp's increment (never boost it, never below maintenance); recovery/sleep
+ * ease or rest the day further down (unchanged).
+ */
+export interface RampBudget { ramp: number; target7: number; load7: number; budgetLoad: number; easyRate: number; rates?: TrimpRates }
+export function rampLoadPlan(
+  series: { date: string; load: number; ctl: number }[], ramp: number, toDate: Date, easyRate: number, freshFac = 1,
+): { plan: TofPlan; info: RampBudget } | null {
+  const p = (n: number) => String(n).padStart(2, '0');
+  const keyAt = (offset: number) => { const d = new Date(toDate); d.setDate(d.getDate() - offset); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+  const byDate = new Map(series.map(d => [d.date, d]));
+  const loadAt = (offset: number) => { const v = byDate.get(keyAt(offset))?.load; return Number.isFinite(v) ? (v as number) : 0; };
+  const ctl = byDate.get(keyAt(1))?.ctl;   // CTL at the end of yesterday (the last completed day)
+  if (!Number.isFinite(ctl) || !(easyRate > 0)) return null;
+  // Freshness (TSB/ACWR) may only EASE the ramp's increment — never boost it, never cut below maintenance
+  const target7 = 7 * ((ctl as number) + Math.max(0, Math.min(1, freshFac)) * ramp / CTL_WEEK_RESPONSE);
+  let last6 = 0; for (let o = 1; o <= 6; o++) last6 += loadAt(o);
+  // every day carries background load (NEAT / activity floor ~ the quietest days' load): reserve it for the rest of
+  // today and for future rest days, so the budget and the next-run day don't overshoot by a day's floor
+  const quiet = Array.from({ length: 14 }, (_, i) => loadAt(i + 1)).sort((a, b) => a - b).slice(0, 3);
+  const floor = quiet.length ? quiet[Math.floor(quiet.length / 2)] : 0;
+  const today = Math.max(loadAt(0), floor);
+  const budgetLoad = Math.max(0, target7 - last6 - today);
+  const toMin = (load: number) => Math.round(load / easyRate);
+  // next day a meaningful (20-min easy) run fits, assuming rest until then (old high days roll off the window)
+  const meaningful = 20 * easyRate;
+  let nextRunInDays = 0, nextBudget = budgetLoad;
+  for (let k = 0; k <= 21; k++) {
+    let l6 = 0; for (let j = 1; j <= 6; j++) l6 += k - j < 0 ? loadAt(j - k) : k - j === 0 ? today : floor;
+    const b = Math.max(0, target7 - l6 - (k === 0 ? today : floor));
+    if (b >= meaningful) { nextRunInDays = k; nextBudget = b; break; }
+  }
+  const nd = new Date(toDate); nd.setDate(nd.getDate() + nextRunInDays);
+  const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const seriesN = (n: number) => { const out: { date: string; min: number }[] = []; for (let o = n - 1; o >= 0; o--) out.push({ date: keyAt(o), min: toMin(loadAt(o)) }); return out; };
+  let prev7 = 0; for (let o = 7; o <= 13; o++) prev7 += loadAt(o);
+  const plan: TofPlan = {
+    series14: seriesN(14), series28: seriesN(28),
+    tof7d: toMin(last6 + today), tofPrev7d: toMin(prev7), cap7dMin: toMin(target7),
+    budgetTodayMin: toMin(budgetLoad), yesterdayMin: toMin(loadAt(1)),
+    nextRunInDays, nextRunDate: `${nd.getFullYear()}-${p(nd.getMonth() + 1)}-${p(nd.getDate())}`,
+    nextRunLabel: `${WD[nd.getDay()]} ${nd.getDate()} ${MO[nd.getMonth()]}`, nextRunBudgetMin: toMin(nextBudget),
+  };
+  return { plan, info: { ramp, target7: Math.round(target7), load7: Math.round(last6 + today), budgetLoad: Math.round(budgetLoad), easyRate } };
 }
 
 // Anti-heat-erosion tuning for the rolling cap (shared by the daily engine + the week planner so both
@@ -2731,6 +2798,7 @@ export async function buildCapContext(
   // Current load model — lets the raw-sum ceiling flex with ACWR/TSB. Omitted → neutral (factor 1), so
   // every existing caller keeps today's behaviour until it opts in.
   tsbNow?: number | null, acwrNow?: number | null,
+  tlSeries?: { date: string; load: number; ctl: number }[],   // the caller's fresh training-load series (saves a re-fetch)
 ): Promise<CapContext> {
   const periodization = await getPeriodization();
   const buildWk = periodization.on && cyclePhase(toDate, periodization).phase === 'build';  // relax freshness inside a build block
@@ -2741,6 +2809,21 @@ export async function buildCapContext(
   for (const [date, w] of Object.entries(weatherHist)) heatCredit[date] = heatStrainFactor({ tempC: w.tempC, humidity: w.humidity });
   const antiErosion = { heatCredit, heatCreditMax: HEAT_CREDIT_MAX, baseWindows: BASE_WINDOWS };
   const tof = computeTimeOnFeetPlan(durSeries, toDate, { capPct, meaningful: 20, reentryBelow: 30, reentryFloor: 20, periodization, freshness: freshnessCapFactor(tsbNow, acwrNow, buildWk), ...antiErosion });
+  // A CTL ramp target → the budget is LOAD (the ramp's own 7-day target), not a % on minutes (see rampLoadPlan)
+  const rampT = await getCtlRampTarget().catch(() => null);
+  if (rampT != null && capBasis !== 'distance') {
+    // up to NOW (or the end of a past viewed day) — a midnight toDate would drop today's load from the budget
+    const eod = new Date(toDate); eod.setHours(23, 59, 59, 999);
+    const tlEnd = new Date(Math.min(Date.now(), eod.getTime()));
+    const [tl, snapC] = await Promise.all([tlSeries?.length ? tlSeries : fetchTrainingLoadHistory(1, tlEnd).catch(() => [] as any[]), loadSnapshotCache().catch(() => null)]);
+    const easyRate = (snapC as any)?.trimpRates?.easy ?? estimateDayTrimp('easy', 100) / 100;
+    // freshness from the same series the home uses when the caller didn't pass TSB/ACWR (Daily Coach / Strain screens)
+    const tk = (() => { const q = (n: number) => String(n).padStart(2, '0'); return `${toDate.getFullYear()}-${q(toDate.getMonth() + 1)}-${q(toDate.getDate())}`; })();
+    const last = (tl as any[]).filter(d => d.date <= tk).at(-1) ?? (tl as any[]).at(-1);   // same entry the home uses (tlLast)
+    const tsbF = tsbNow ?? last?.tsb, acwrF = acwrNow ?? (last?.ctl > 0 ? last.atl / last.ctl : undefined);
+    const rp = rampLoadPlan(tl as any[], rampT, toDate, easyRate, freshnessCapFactor(tsbF, acwrF, buildWk));
+    if (rp) return { tof, cap: rp.plan, ramp: { ...rp.info, ...((snapC as any)?.trimpRates ? { rates: (snapC as any).trimpRates } : {}) }, budgetMin: rp.plan.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
+  }
   if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
 
   const distKm = await fetchDailyWorkDistanceHistory(toDate);
@@ -2904,7 +2987,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
 
   // ToF per day already honours the accounting regime — fetchDailyWorkHistory prefers the cached run
   // SEGMENTS over the uuid-metadata decode, whose full-duration fallback used to count warm-up/cool-down.
-  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit } = await buildCapContext(dur, new Date(), capPct, capBasis, latest.tsb, acwrConsistent);
+  const { tof, cap, budgetMin, loadUnit, paceMinPerKm, heatCredit, ramp: rampBudget } = await buildCapContext(dur, new Date(), capPct, capBasis, latest.tsb, acwrConsistent, Array.isArray(tlSeries) ? tlSeries as any[] : undefined);
   const strainHist = dates.map(d => comps[d].strainScore).filter((v): v is number => v !== undefined);
   return {
     date,
@@ -2943,6 +3026,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     ctlRampTarget:     ctlRampT ?? undefined,
     trimpRates:        ctlRampT ? (await loadSnapshotCache().catch(() => null))?.trimpRates : undefined,
     loadBudgetToday:   cap.budgetTodayMin,   // in loadUnit
+    rampBudget,
     loadUnit,
     paceMinPerKm,
     yesterdayStrain:   comps[yesterdayKey]?.strainScore,

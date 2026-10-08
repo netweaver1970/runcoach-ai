@@ -110,8 +110,13 @@ How to use the prescription:
  * the day's PRESCRIBED minutes, which a poor night can cut to ~0, and wrongly concludes the athlete "had no
  * budget" (Geert's case: a long run was reduced to recovery, then a 30-min recovery run was called over-budget).
  */
-export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: number; tofPrev7d?: number; loadCapPct?: number } | null): string {
+export function buildBudgetContext(cs: { tofBudgetTodayMin?: number; tof7d?: number; tofPrev7d?: number; loadCapPct?: number;
+  rampBudget?: { ramp: number; target7: number; load7: number; budgetLoad: number } } | null): string {
   if (!cs || cs.tofBudgetTodayMin == null) return '';
+  if (cs.rampBudget) {   // FITNESS RAMP: the budget is LOAD vs the ramp's 7-day target (not a % on minutes)
+    const r = cs.rampBudget, remain = Math.max(0, Math.round(cs.tofBudgetTodayMin));
+    return `ROLLING VOLUME BUDGET (fitness ramp +${r.ramp} CTL/week — LOAD, not minutes): 7-day load target ${r.target7}, done ${r.load7} (this run included), ${r.budgetLoad} left (~${remain} easy-run min).${remain > 0 ? ' The run stayed WITHIN the budget — do NOT say it went over.' : ' This run brought the 7-day load up to the ramp target.'} Never cite a "+X% time-on-feet ceiling". A low PRESCRIBED-minutes day is a READINESS call, not the budget running out.`;
+  }
   const cap    = cs.loadCapPct ?? 10;
   const prev   = Math.round(cs.tofPrev7d ?? 0);
   const weekly = Math.round(prev * (1 + cap / 100));

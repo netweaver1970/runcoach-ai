@@ -701,6 +701,68 @@ function groupLoad(events: MuscleEvent[], now: number, g: { key: string; label: 
     return { key: g.key, label: g.label, acute: Math.round(atl * 7), chronicWk: Math.round(ctl * 7), ratio, status, days };
   }
 }
+// ── Over-time views (Strength stats: muscular load per area, leg-load timeline, records) ────────────────────
+/** Daily muscular-load status per area over the last `days` days (ratio null while calibrating) — the strength PMC. */
+export interface LoadPt { t: number; ratio: number | null; acute: number; chronic: number }
+export function muscularLoadSeries(events: MuscleEvent[], days = 90, now = Date.now()): { key: string; label: string; pts: LoadPt[] }[] {
+  const end = new Date(now); end.setHours(23, 59, 0, 0);
+  return LOAD_GROUPS.filter(g => g.key !== 'body').map(g => {
+    const pts: LoadPt[] = [];
+    for (let k = days - 1; k >= 0; k--) {
+      const t = Math.min(now, end.getTime() - k * 86_400_000);
+      const gl = groupLoad(events, t, g);
+      pts.push({ t, ratio: gl.ratio, acute: gl.acute, chronic: gl.chronicWk });
+    }
+    return { key: g.key, label: g.label, pts };
+  });
+}
+const LEGS: Muscle[] = ['quads', 'hamstrings', 'glutes', 'calves', 'adductors'];
+/**
+ * Leg-load timeline: per day the leg units from RUNS vs from STRENGTH, plus leg freshness at the end of the day
+ * (same decay + habitual-reference model as Muscle Freshness, for the legs as one group). Freshness reference is
+ * computed once (now), so the line is comparable across days.
+ */
+export interface LegDay { t: number; run: number; strength: number; fresh: number }
+export function legLoadDaily(events: MuscleEvent[], days = 28, now = Date.now()): LegDay[] {
+  const H = 3_600_000, D = 86_400_000;
+  const legsOf = (e: MuscleEvent) => LEGS.reduce((a, m) => a + (e.units[m] ?? 0), 0);
+  const ev = events.filter(e => e.at >= now - (days + 56) * D && legsOf(e) > 0);
+  const tau = LEGS.reduce((a, m) => a + TAU_H[m], 0) / LEGS.length;
+  const fatigueAt = (t: number) => ev.reduce((a, e) => (e.at <= t && t - e.at < 14 * D ? a + legsOf(e) * Math.exp(-(t - e.at) / H / tau) : a), 0);
+  let sum = 0, n = 0;
+  for (let t = now - 42 * D; t < now; t += 3 * H) { sum += fatigueAt(t); n++; }
+  const recent = ev.filter(e => e.at >= now - 42 * D);
+  const ref = Math.max(5 * (sum / Math.max(1, n)), 1.2 * Math.max(0, ...recent.map(legsOf)), 3);
+  const out: LegDay[] = [];
+  const day0 = new Date(now); day0.setHours(0, 0, 0, 0);
+  for (let k = days - 1; k >= 0; k--) {
+    const s0 = day0.getTime() - k * D, e0 = s0 + D;
+    const inDay = ev.filter(e => e.at >= s0 && e.at < e0);
+    const at = Math.min(now, e0 - 1);
+    out.push({ t: s0, run: inDay.filter(e => e.kind === 'run').reduce((a, e) => a + legsOf(e), 0),
+      strength: inDay.filter(e => e.kind === 'strength').reduce((a, e) => a + legsOf(e), 0),
+      fresh: Math.round(100 * Math.max(0, Math.min(1, 1 - fatigueAt(at) / ref))) });
+  }
+  return out;
+}
+/** Every PR ever set, oldest first (recomputed from history: each session vs the sessions before it). */
+export interface PrEvent extends PrHit { t: number; sessionId: string }
+export function prTimeline(s: StrengthStore): PrEvent[] {
+  return s.sessions.filter(x => x.finishedAt).sort((a, b) => a.finishedAt! - b.finishedAt!)
+    .flatMap(x => sessionPRs(s, x.id).map(p => ({ ...p, t: x.finishedAt!, sessionId: x.id })));
+}
+/** Hard sets per muscle over [from, to] (fractional: weighted by involvement), work sets only. */
+export function muscleSetsBetween(s: StrengthStore, from: number, to = Date.now()): Partial<Record<Muscle, number>> {
+  const out: Partial<Record<Muscle, number>> = {};
+  for (const x of s.sessions) {
+    if (!x.finishedAt || x.finishedAt < from || x.finishedAt > to) continue;
+    for (const l of x.sets.filter(isWorkSet)) {
+      for (const [m, inv] of Object.entries(exerciseById(s, l.exerciseId)?.muscles ?? {}) as [Muscle, number][]) out[m] = (out[m] ?? 0) + inv;
+    }
+  }
+  return out;
+}
+
 export const FRESH_COLOR: Record<FreshState, string> = { Recovered: '#2f9e44', Fatigued: '#e8a317', Depleted: '#e5484d', Calibrating: '#8a8f98' };
 export const LOAD_COLOR: Record<LoadStatus, string> = { Detraining: '#5b8def', Maintaining: '#8a8f98', Productive: '#2f9e44', Peaking: '#e8a317', Overtraining: '#e5484d', Calibrating: '#8a8f98' };
 

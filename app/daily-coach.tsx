@@ -422,6 +422,7 @@ export default function DailyCoachScreen() {
         loadCapBasis:      capCtx?.capBasis,
         loadCapPct:        capCtx?.capPct,
         loadBudgetToday:   capCtx?.cap.budgetTodayMin,
+        rampBudget:        capCtx?.ramp,   // fitness ramp → the load budget (cap-rest text + LLM ramp note)
         loadUnit:          capCtx?.loadUnit,
         ctlRampTarget:     targetIsToday ? (await getCtlRampTarget().catch(() => null)) ?? undefined : undefined,   // honour ramp-grown week slots
         // Yesterday's strain by DATE (not strainHistUpTo[length-2], which reads the day-before-yesterday
@@ -555,7 +556,10 @@ export default function DailyCoachScreen() {
               const maintMin = target.ctl ? Math.round((target.ctl * 7) / (estimateDayTrimp('easy', 100) / 100)) : 0;
               return (
                 <Text style={s.readyTof}>
-                  7-day time on feet {tof.tof7d}m{maintMin ? ` · maintenance ~${maintMin}m` : ''} · ceiling {tof.cap7dMin}m · today ≤ {tof.budgetTodayMin}m
+                  {capCtx?.ramp
+                    // fitness ramp on → the budget is LOAD: the 7-day target that lifts CTL by the ramp, what's done, what's left
+                    ? `7-day load ${capCtx.ramp.load7} · ramp target ${capCtx.ramp.target7} (+${capCtx.ramp.ramp} CTL/wk) · today ≤ ${capCtx.ramp.budgetLoad} (~${capCtx.cap.budgetTodayMin} min easy) · time on feet ${tof.tof7d}m`
+                    : `7-day time on feet ${tof.tof7d}m${maintMin ? ` · maintenance ~${maintMin}m` : ''} · ceiling ${tof.cap7dMin}m · today ≤ ${tof.budgetTodayMin}m`}
                 </Text>
               );
             })()}
