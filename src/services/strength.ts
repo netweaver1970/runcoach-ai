@@ -211,7 +211,8 @@ export const STARTER_ROUTINES: Routine[] = [
 
 // ── Storage ──────────────────────────────────────────────────────────────────────────────────────────────────
 export const STRENGTH_FILE = `${FileSystem.documentDirectory}runcoach-strength.json`;
-export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boolean; hkExtrasAsked?: boolean; routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
+export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boolean; hkExtrasAsked?: boolean; voice?: boolean;   // voice = spoken set announcements in the session (default on)
+  routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
 
 let cache: StrengthStore | null = null;
 let loading: Promise<StrengthStore> | null = null;   // one in-flight read shared by concurrent callers
@@ -235,7 +236,7 @@ export function loadStrength(): Promise<StrengthStore> {
         let j: any = null;
         try { j = JSON.parse(raw); } catch { j = null; }
         if (j && Array.isArray(j.routines)) {
-          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
+          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
           if ((cache.starterRev ?? 1) < STARTER_REV) {
             // The starter programs changed (rev 2 = adapted to the Marcy home gym): swap the EXERCISES of the stored
             // starter routines; keep their name, planned days and source, and every logged session.

@@ -27,6 +27,29 @@ function Cell({ value, onCommit, decimal, style }: { value: number; onCommit: (n
 
 // Replace this session in the store — or put it back if something removed it meanwhile (a watch-logged workout of
 // the same routine drops an untouched phone session; ticking here afterwards must not log into nothing).
+// The set to do next: the next open set of the exercise just worked on, else the first open set in the (re-orderable)
+// session order. -1 = everything ticked.
+function nextSetIdx(x: StrengthSession, focusExId?: string | null): number {
+  const f = focusExId ? x.sets.findIndex(l => l.exerciseId === focusExId && !l.done) : -1;
+  return f >= 0 ? f : x.sets.findIndex(l => !l.done);
+}
+// "Chest Press, set 2 of 4, 10 reps, 27.5 kilos" (body-weight moves: "body weight plus 5 kilos" / "assisted, 20 kilos")
+function describeSet(st: StrengthStore, x: StrengthSession, idx: number): string {
+  const l = x.sets[idx];
+  if (!l) return '';
+  const ex = exerciseById(st, l.exerciseId);
+  const work = x.sets.filter(q => q.exerciseId === l.exerciseId && !q.warmup);
+  const k = work.indexOf(l) + 1;
+  const kg = Math.round(l.weightKg * 100) / 100;
+  const w = ex?.bodyweightFrac ? (kg > 0 ? `body weight plus ${kg} kilos` : kg < 0 ? `assisted, ${-kg} kilos` : 'body weight') : `${kg} kilos`;
+  return `${ex?.name ?? l.exerciseId}, ${l.warmup ? 'warm-up set' : `set ${k} of ${work.length}`}, ${l.reps} reps, ${w}`;
+}
+// Spoken on the phone through the native voice path (ducks music, hands it back); no-op on an older binary.
+function say(text: string) {
+  if (!text) return;
+  try { (require('../modules/runcoach-watchsync').default as { speak?: (t: string) => Promise<boolean> } | null)?.speak?.(text).catch(() => {}); } catch { /* old binary */ }
+}
+
 const upsert = (list: StrengthSession[], x: StrengthSession) => (list.some(q => q.id === x.id) ? list.map(q => (q.id === x.id ? x : q)) : [...list, x]);
 
 export default function StrengthSessionScreen() {
@@ -40,6 +63,10 @@ export default function StrengthSessionScreen() {
   const [restEnd, setRestEnd] = useState<number | null>(null);   // epoch ms the current rest ends
   const [now, setNow] = useState(Date.now());
   const [rpe, setRpe] = useState<number | undefined>();
+  const focusEx = useRef<string | null>(null);   // exercise of the set ticked last → its next set comes first
+  const announced = useRef(false);               // the opening set was announced (once per screen)
+  const storeRef = useRef<StrengthStore | null>(null);
+  storeRef.current = store;
   const notifId = useRef<string | null>(null);
   const notifGen = useRef(0);      // bumps on every start/cancel → a schedule that resolves late is cancelled
   const buzzed = useRef(false);
@@ -80,10 +107,14 @@ export default function StrengthSessionScreen() {
     if (!restEnd) return;
     const t = setInterval(() => {
       setNow(Date.now());
-      if (Date.now() >= restEnd && !buzzed.current) { buzzed.current = true; Vibration.vibrate([0, 400, 200, 400]); }
+      if (Date.now() >= restEnd && !buzzed.current) { buzzed.current = true; Vibration.vibrate([0, 400, 200, 400]); announceNext(); }
     }, 500);
     return () => clearInterval(t);
   }, [restEnd]);
+  // announce the first set once the session is on screen (voice on)
+  useEffect(() => {
+    if (sess && store && !announced.current) { announced.current = true; announceNext(); }
+  }, [sess, store]);
   useEffect(() => {
     const sub = AppState.addEventListener('change', st => { if (st === 'active') setNow(Date.now()); });
     return () => sub.remove();
@@ -102,6 +133,37 @@ export default function StrengthSessionScreen() {
     updateStrength(cur => ({ ...cur, sessions: upsert(cur.sessions, next) })).then(st => setStore({ ...st }));
   };
 
+  // only while this session is live and the app is in front (never after Finish, never under a run in the background)
+  const voiceOn = () => storeRef.current?.voice !== false && !finishing.current && AppState.currentState === 'active';
+  const announceNext = () => {
+    const x = sessRef.current, st = storeRef.current;
+    if (!x || !st || !voiceOn()) return;
+    const i = nextSetIdx(x, focusEx.current);
+    if (i >= 0) say(describeSet(st, x, i));
+  };
+  // Machine free → "Do next": the exercise goes in front of everything still open and becomes the next set (even if
+  // another exercise is half done); machine taken → "Later": to the end. The display order, the NEXT tag, the voice
+  // and the rest notification follow.
+  const moveBlock = (exId: string, where: 'next' | 'later') => {
+    persist(x => {
+      const mine = x.sets.filter(l => l.exerciseId === exId), rest = x.sets.filter(l => l.exerciseId !== exId);
+      if (where === 'later') return { ...x, sets: [...rest, ...mine] };
+      const open = rest.findIndex(l => !l.done);
+      // in front of the whole block holding the first open set (never between a half-done exercise's sets)
+      const at = open < 0 ? -1 : rest.findIndex(l => l.exerciseId === rest[open].exerciseId);
+      return { ...x, sets: at < 0 ? [...rest, ...mine] : [...rest.slice(0, at), ...mine, ...rest.slice(at)] };
+    });
+    if (where === 'next') focusEx.current = exId;
+    else if (focusEx.current === exId) focusEx.current = null;
+    if (restEnd && Date.now() < restEnd) startRest(Math.ceil((restEnd - Date.now()) / 1000));   // re-word the rest-done notification
+    else announceNext();
+  };
+
+  const nextLine = () => {
+    const x = sessRef.current, st = storeRef.current;
+    const i = x && st ? nextSetIdx(x, focusEx.current) : -1;
+    return i >= 0 ? describeSet(st!, x!, i) : '';
+  };
   const startRest = async (sec: number) => {
     cancelRestNotif();
     if (sec <= 0) { setRestEnd(null); return; }
@@ -110,7 +172,7 @@ export default function StrengthSessionScreen() {
     const gen = notifGen.current;
     try {
       const id = await Notifications.scheduleNotificationAsync({
-        content: { title: '⏱ Rest done', body: 'Next set.', sound: true },
+        content: { title: '⏱ Rest done', body: nextLine() || 'Next set.', sound: true },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: sec },
       });
       if (gen !== notifGen.current) Notifications.cancelScheduledNotificationAsync(id).catch(() => {});   // superseded meanwhile
@@ -136,8 +198,9 @@ export default function StrengthSessionScreen() {
   });
   const toggle = (idx: number, restSec: number) => {
     const done = !sessRef.current!.sets[idx].done;
+    if (done) focusEx.current = sessRef.current!.sets[idx].exerciseId;
     persist(x => ({ ...x, sets: x.sets.map((l, k) => k === idx ? { ...l, done, doneAt: done ? Date.now() : undefined } : l) }));
-    if (done) startRest(restSec); else { cancelRestNotif(); setRestEnd(null); }
+    if (done) { startRest(restSec); if (restSec <= 0) announceNext(); } else { cancelRestNotif(); setRestEnd(null); }
   };
   // switch to the alternative exercise for the sets NOT yet done
   const swap = (fromId: string, toId: string) => persist(x => ({ ...x, sets: x.sets.map(l => l.exerciseId === fromId && !l.done ? { ...l, exerciseId: toId } : l) }));
@@ -149,7 +212,7 @@ export default function StrengthSessionScreen() {
       return;
     }
     finishing.current = true;
-    cancelRestNotif();
+    cancelRestNotif(); setRestEnd(null);
     const fin = { ...cur, finishedAt: Date.now(), rpe };
     sessRef.current = fin;
     let routineChanges: string[] = [];
@@ -172,7 +235,7 @@ export default function StrengthSessionScreen() {
     });
   };
   const discard = () => {
-    cancelRestNotif();
+    cancelRestNotif(); setRestEnd(null); finishing.current = true;
     const id = sessRef.current!.id;
     updateStrength(st => ({ ...st, sessions: st.sessions.filter(x => x.id !== id) })).then(() => router.back());
   };
@@ -182,15 +245,24 @@ export default function StrengthSessionScreen() {
   // group the flat set list back into the routine's exercise order (by first appearance)
   const order: string[] = [];
   for (const l of sess.sets) if (!order.includes(l.exerciseId)) order.push(l.exerciseId);
+  const nextIdx = nextSetIdx(sess, focusEx.current);
+  const nextEx = nextIdx >= 0 ? sess.sets[nextIdx].exerciseId : null;
 
   return (
     <View style={s.screen}>
-      <Stack.Screen options={{ title: sess.routineName, headerBackTitle: 'Back' }} />
+      <Stack.Screen options={{ title: sess.routineName, headerBackTitle: 'Back', headerRight: () => (
+        // spoken set announcements on/off (remembered)
+        <TouchableOpacity hitSlop={10} onPress={() => updateStrength(cur => ({ ...cur, voice: cur.voice === false })).then(st => {
+          storeRef.current = st; setStore({ ...st }); if (st.voice !== false) announceNext();   // ref first: announceNext reads it
+        })}>
+          <Text style={{ fontSize: 20 }}>{store.voice === false ? '🔇' : '🔊'}</Text>
+        </TouchableOpacity>
+      ) }} />
       {restEnd && (
         <View style={[s.restBar, restLeft <= 0 && { backgroundColor: '#2f9e44' }]}>
           <Text style={s.restTxt}>{restLeft > 0 ? `Rest ${fmt(restLeft)}` : 'Rest done — go!'}</Text>
           <TouchableOpacity onPress={() => startRest(Math.max(0, restLeft) + 30)} hitSlop={8}><Text style={s.restBtn}>+30 s</Text></TouchableOpacity>
-          <TouchableOpacity onPress={() => { cancelRestNotif(); setRestEnd(null); }} hitSlop={8}><Text style={s.restBtn}>{restLeft > 0 ? 'Skip' : 'OK'}</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => { cancelRestNotif(); setRestEnd(null); if (restLeft > 0) announceNext(); }} hitSlop={8}><Text style={s.restBtn}>{restLeft > 0 ? 'Skip' : 'OK'}</Text></TouchableOpacity>
         </View>
       )}
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 60 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
@@ -206,7 +278,7 @@ export default function StrengthSessionScreen() {
             <View key={exId} style={s.ex}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <TouchableOpacity style={{ flex: 1 }} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: exId } })}>
-                  <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId} ›</Text>
+                  <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId} ›{exId === nextEx ? <Text style={s.nextTag}>  NEXT</Text> : null}</Text>
                 </TouchableOpacity>
                 {ex?.video && <TouchableOpacity onPress={() => Linking.openURL(ex.video!.url)} hitSlop={8}><Text style={s.link}>▶ video</Text></TouchableOpacity>}
               </View>
@@ -215,6 +287,13 @@ export default function StrengthSessionScreen() {
               </Text>
               {sug.why ? <Text style={s.sug}>💡 {sug.why}</Text> : null}
               {ex?.cue ? <Text style={s.cue}>{ex.cue}</Text> : null}
+              {/* machine free / taken → change the order */}
+              {sess.sets.some(l => l.exerciseId === exId && !l.done) && (
+                <View style={{ flexDirection: 'row', gap: 18, marginTop: 4 }}>
+                  {exId !== nextEx && <TouchableOpacity onPress={() => moveBlock(exId, 'next')}><Text style={s.link}>⤴ Do next</Text></TouchableOpacity>}
+                  {ei < order.length - 1 && <TouchableOpacity onPress={() => moveBlock(exId, 'later')}><Text style={s.link}>⤵ Later</Text></TouchableOpacity>}
+                </View>
+              )}
               {alts.map(a => (
                 <TouchableOpacity key={a} onPress={() => swap(exId, a)}><Text style={s.link}>⇄ switch to {exerciseById(store, a)?.name ?? a}</Text></TouchableOpacity>
               ))}
@@ -313,6 +392,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   rirOn:   { backgroundColor: c.accent, borderColor: c.accent },
   rirTxt:  { color: c.textSub, fontSize: 15, fontWeight: '800' },
   prev:    { color: c.textFaint, fontSize: 11, marginLeft: 42, marginTop: -2, marginBottom: 2 },
+  nextTag: { color: '#2f9e44', fontSize: 12, fontWeight: '800' },
   addSet:  { color: c.textSub, fontWeight: '700', marginTop: 8 },
   rpeRow:  { flexDirection: 'row', gap: 8, marginTop: 10 },
   rpe:     { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: c.border, alignItems: 'center' },

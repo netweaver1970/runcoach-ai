@@ -68,6 +68,10 @@ final class StrengthEngine: NSObject, ObservableObject {
   @Published var issue = ""                // shown on the strength screens (start/save problems)
   @Published var doneNote = ""             // after save: "Saved to Health · 14 sets · 41 min · 212 kcal"
   @Published var canResume = true          // false once the system ended/failed the session → only Save/Discard
+  // spoken set announcements ("Chest Press, set 2 of 4, 10 reps, 27.5 kilos") — the runner's switch, remembered
+  @Published var voiceOn: Bool = UserDefaults.standard.object(forKey: "strengthVoice") as? Bool ?? true {
+    didSet { UserDefaults.standard.set(voiceOn, forKey: "strengthVoice") }
+  }
   @Published var orphan: (name: String, sets: Int)?   // a workout the app was killed in → "Send to iPhone" / "Discard"
   private var restEnd: Date?
   private var restTicked = false           // the 10-s-left tick already played
@@ -129,6 +133,7 @@ final class StrengthEngine: NSObject, ObservableObject {
       routine = r; logged = []; exIdx = 0; restEnd = nil; restLeft = 0
       loadSet(0, 0)
       phase = .lifting
+      announce()
       saveLive()
       s.startActivity(with: now)
       b.beginCollection(withStart: now) { [weak self] ok, err in
@@ -187,16 +192,36 @@ final class StrengthEngine: NSObject, ObservableObject {
     if it.rest >= 5 && it.rest < 3600 {
       restEnd = Date().addingTimeInterval(it.rest); restLeft = Int(it.rest); restTicked = false
       phase = .resting
-    }
+    } else { announce() }   // no rest → straight into the next set
   }
   func addRest(_ s: Double) { if let e = restEnd { restEnd = e.addingTimeInterval(s); restLeft = max(0, restLeft + Int(s)) } }
   func skipRest() { restEnd = nil; restLeft = 0; if phase == .resting { phase = .lifting } }
+  func skipRestTapped() { let was = phase == .resting; skipRest(); if was { announce() } }
+
+  // Machine taken / free → do ANY exercise next: from the set screen, or during the rest (the countdown keeps going;
+  // the "Next:" line and the end-of-rest announcement follow the choice).
+  func pickExercise(_ i: Int) {
+    guard let r = routine, i >= 0, i < r.items.count, phase == .lifting || phase == .resting else { return }
+    loadSet(i, loggedCount(i))
+    if phase == .lifting { announce() }
+  }
+
+  // "Chest Press, set 2 of 4, 10 reps, 27.5 kilos" (body-weight moves: "body weight plus 5 kilos" / "assisted, 20 kilos")
+  func announce() {
+    guard voiceOn, let it = item else { return }
+    let n = it.sets.count, k = setIdx + 1
+    let w: String
+    if it.bw ?? false { w = kg > 0 ? "body weight plus \(fmtKg(kg)) kilos" : kg < 0 ? "assisted, \(fmtKg(-kg)) kilos" : "body weight" }
+    else { w = "\(fmtKg(kg)) kilos" }
+    SpeechCue.shared.say("\(it.name), \(k > n ? "extra set" : "set \(k) of \(n)"), \(reps) reps, \(w)")
+  }
 
   // ◀ ▶ between exercises (swap order, skip one, add an extra set to a finished one)
   func moveExercise(_ d: Int) {
     guard let r = routine, !r.items.isEmpty, phase == .lifting else { return }
     let i = (exIdx + d + r.items.count) % r.items.count
     loadSet(i, loggedCount(i))
+    announce()
   }
   func undoLast() {
     guard phase == .lifting, let last = logged.popLast() else { return }
@@ -357,7 +382,7 @@ final class StrengthEngine: NSObject, ObservableObject {
       if left <= 0 {
         self.restEnd = nil; self.phase = .lifting
         WKInterfaceDevice.current().play(.notification)
-        if let it = self.item { SpeechCue.shared.say("Go. \(it.name), set \(self.setIdx + 1)") }
+        self.announce()   // the next set (voice switch on) — the haptic above always plays
       }
     }
   }

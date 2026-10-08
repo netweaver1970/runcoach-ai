@@ -56,6 +56,13 @@ public class RunCoachWatchSyncModule: Module {
     AsyncFunction("ackStrengthLogs") { (ids: [String]) in
       WatchSync.shared.ackStrength(ids)
     }
+
+    // Speak a line on the PHONE (strength-session set announcements), ducking any music and handing it back after —
+    // the same session/synth/watchdog path the run cues use.
+    AsyncFunction("speak") { (text: String) -> Bool in
+      WatchSync.shared.speakLocal(text)
+      return true
+    }
   }
 }
 
@@ -119,6 +126,17 @@ final class WatchSync: NSObject, WCSessionDelegate, AVSpeechSynthesizerDelegate 
     if s.isReachable { s.sendMessage(ctx, replyHandler: nil, errorHandler: nil) }
     s.transferUserInfo(ctx)
     return true
+  }
+
+  func speakLocal(_ text: String) {
+    DispatchQueue.main.async {
+      self.cancelResume()   // this line owns the session now — no pending resume-retry may deactivate under it
+      let sess = AVAudioSession.sharedInstance()
+      try? sess.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+      try? sess.setActive(true)
+      self.alog("local speak '\(text.prefix(24))'")
+      self.speakNow(text)   // utteranceEnded → resumeOthers (un-duck); the stall watchdog covers a wedged synth
+    }
   }
 
   // ─── Strength logs from the watch ───────────────────────────────────────────────────────────────────────

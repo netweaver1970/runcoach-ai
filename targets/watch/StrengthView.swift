@@ -6,6 +6,7 @@ struct StrengthDest: Hashable {}   // nav sentinel for the strength screens
 struct StrengthView: View {
   @ObservedObject var eng = StrengthEngine.shared
   @State private var confirmDiscard = false
+  @State private var picking = false          // the exercise picker (machine taken → do another one first)
 
   var body: some View {
     Group {
@@ -20,6 +21,7 @@ struct StrengthView: View {
     }
     .navigationTitle(eng.routine?.name ?? "Strength")
     .navigationBarBackButtonHidden(eng.running)   // mid-workout: stay here (End is on the workout screen)
+    .sheet(isPresented: $picking) { exercisePicker }
   }
 
   private var issueText: some View {
@@ -69,7 +71,13 @@ struct StrengthView: View {
         statLine
         issueText
         if let it = eng.item {
-          Text(it.name).font(.system(size: 16, weight: .bold)).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.7)
+          // tap the name → pick another exercise (machine taken / free)
+          Button { picking = true } label: {
+            HStack(spacing: 3) {
+              Text(it.name).font(.system(size: 16, weight: .bold)).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.7)
+              Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)).foregroundColor(.secondary)
+            }
+          }.buttonStyle(.plain)
           let n = it.sets.count, k = eng.setIdx + 1
           Text(k > n ? "Extra set \(k) · \(it.lo)–\(it.hi) reps" : "Set \(k) of \(n) · \(it.lo)–\(it.hi) reps")
             .font(.system(size: 11)).foregroundColor(.secondary)
@@ -82,6 +90,9 @@ struct StrengthView: View {
             Button { eng.moveExercise(-1) } label: { Image(systemName: "chevron.left") }
             Button { eng.undoLast() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(eng.logged.isEmpty)
             Button { eng.moveExercise(1) } label: { Image(systemName: "chevron.right") }
+            Button { eng.voiceOn.toggle(); if eng.voiceOn { eng.announce() } } label: {
+              Image(systemName: eng.voiceOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
+            }
             Button(role: .destructive) { eng.askFinish() } label: { Image(systemName: "stop.fill") }
           }
           .font(.system(size: 13)).buttonStyle(.bordered)
@@ -117,13 +128,15 @@ struct StrengthView: View {
         Text(clock(TimeInterval(eng.restLeft))).font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
           .foregroundColor(eng.restLeft <= 10 ? .green : .orange)
         if let it = eng.item {
-          Text("Next: \(it.name)").font(.system(size: 13, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
+          Button { picking = true } label: {   // change what's next while resting
+            Text("Next: \(it.name) ⌄").font(.system(size: 13, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
+          }.buttonStyle(.plain)
           Text("Set \(eng.setIdx + 1) · \((it.bw ?? false) ? "BW \(eng.kg >= 0 ? "+" : "−")\(fmtKg(abs(eng.kg)))" : fmtKg(eng.kg)) kg × \(eng.reps)")
             .font(.system(size: 12)).foregroundColor(.secondary)
         }
         HStack(spacing: 6) {
           Button("+15 s") { eng.addRest(15) }
-          Button { eng.skipRest() } label: { Label("Skip", systemImage: "forward.fill") }.tint(.green)
+          Button { eng.skipRestTapped() } label: { Label("Skip", systemImage: "forward.fill") }.tint(.green)
         }
         .font(.system(size: 13, weight: .semibold)).buttonStyle(.bordered)
         statLine
@@ -148,6 +161,26 @@ struct StrengthView: View {
     .confirmationDialog("Discard this workout? Nothing is saved.", isPresented: $confirmDiscard) {
       Button("Discard", role: .destructive) { eng.discard() }
       Button("Cancel", role: .cancel) { }
+    }
+  }
+
+  // Every exercise with its progress; the current one marked. Done ones stay pickable (an extra set).
+  private var exercisePicker: some View {
+    List {
+      if let r = eng.routine {
+        ForEach(Array(r.items.enumerated()), id: \.offset) { i, it in
+          Button { eng.pickExercise(i); picking = false } label: {
+            HStack {
+              Image(systemName: eng.loggedCount(i) >= it.sets.count ? "checkmark.circle.fill" : i == eng.exIdx ? "play.circle.fill" : "circle")
+                .foregroundColor(eng.loggedCount(i) >= it.sets.count ? .green : i == eng.exIdx ? .yellow : .secondary)
+              VStack(alignment: .leading, spacing: 1) {
+                Text(it.name).font(.system(size: 14, weight: .semibold)).lineLimit(2)
+                Text("\(eng.loggedCount(i))/\(it.sets.count) sets").font(.system(size: 11)).foregroundColor(.secondary)
+              }
+            }
+          }
+        }
+      }
     }
   }
 

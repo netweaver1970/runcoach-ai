@@ -7,6 +7,7 @@ export interface RunCoachWatchSyncNative {
   queue?(json: string): Promise<boolean>;                 // builds ≥ 2026-10-07 (strength on the watch)
   pendingStrengthLogs?(): Promise<string>;
   ackStrengthLogs?(ids: string[]): Promise<void>;
+  speak?(text: string): Promise<boolean>;                 // builds ≥ 2026-10-08 (strength voice on the phone)
 }
 
 // Resolves to null if the native module isn't built into this binary.
