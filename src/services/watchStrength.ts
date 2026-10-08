@@ -12,7 +12,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
   StrengthSession, SetLog, loadStrength, updateStrength, routinesForDate, exerciseById, suggestWeight, lastSetsFor,
-  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
+  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
 } from './strength';
 
 interface Native {
@@ -111,7 +111,7 @@ async function importOnce(): Promise<number> {
       const routineId = baseRoutineId(rawRid);
       const pd = cur.autoPlan?.days.find(d => d.date === date);
       const tailored: StrengthSession['tailored'] = rawRid !== routineId ? 'prehab'
-        : pd?.kind === 'session' && pd.routineId === routineId && pd.changes?.length ? 'reduced' : undefined;
+        : routineId === DAILY_CUSTOM_ID || (pd?.kind === 'session' && pd.routineId === routineId && pd.changes?.length) ? 'reduced' : undefined;
       // the same routine opened on the phone today but never ticked = an abandoned duplicate of this workout → drop it
       sessions = sessions.filter(x => !(x.routineId === routineId && x.date === date && !x.finishedAt && !x.sets.some(s => s.done) && (x.tailored === 'prehab') === (tailored === 'prehab')));
       const uuid = typeof l.uuid === 'string' && l.uuid ? l.uuid : undefined;

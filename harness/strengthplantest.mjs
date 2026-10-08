@@ -21,3 +21,6 @@ const c = { st, today, days, readiness, avgReady: readiness, routines, prof, las
 const t = adaptiveTarget(c, Number(process.env.PREV ?? 200)); if (process.env.T) t.target = Number(process.env.T);
 console.log('target', t);
 for (const d of draftPlan(c, t.target)) console.log(d.date, (d.kind.padEnd(7)), (d.name ?? '').padEnd(16), '|', d.run, '|', d.why, d.changes?.length ? ' [' + d.changes.join('; ') + ']' : '', d.items ? ' items:' + d.items.map(i => i.exerciseId + ' ' + i.sets + 'x' + (i.weightKg ?? '-')).join(', ') : '');
+const dc = P.__test.composeDaily({ ...c, routines: routines.filter(r => r.id !== 'daily_custom') });
+console.log('\nDAILY CUSTOM:', dc?.source);
+for (const it of dc?.items ?? []) console.log('  ', it.exerciseId, `${it.sets}x${it.repsLo}-${it.repsHi}`, it.weightKg ?? '-');

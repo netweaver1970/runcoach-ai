@@ -51,6 +51,7 @@ export interface Routine {
   sourceUrl?: string;
   days: number[];          // planned weekdays, 0 = Sun … 6 = Sat
   autoUpdate?: boolean;    // after a session, move the planned weights to the suggested next ones (default on)
+  composedFor?: string;    // the "Daily custom" routine: the local date the coach composed it for (strengthPlan.ts)
   items: RoutineItem[];
   updatedAt: number;
 }
@@ -98,6 +99,8 @@ export interface StrengthSession {
 
 /** The auto-plan's prehab day is a separate routine id (base + this) so the FULL routine can still be started. */
 export const PREHAB_SUFFIX = '~prehab';
+/** The coach-composed routine of the day (recovered muscles, exercises from your own routines). */
+export const DAILY_CUSTOM_ID = 'daily_custom';
 export const baseRoutineId = (id: string) => (id.endsWith(PREHAB_SUFFIX) ? id.slice(0, -PREHAB_SUFFIX.length) : id);
 /** Was this (possibly prehab-suffixed) planned routine already logged among these sessions? */
 export const plannedDone = (r: { id: string }, done: StrengthSession[]) =>
@@ -275,6 +278,7 @@ export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boole
   drills?: DrillItem[]; drillsOn?: boolean;   // pre-run drills done before EVERY run → counted on each run (default: 20 forward lunges, on)
   autoPlanOn?: boolean;                       // the coach plans strength days around the runs (default ON) — see strengthPlan.ts
   autoPlan?: StrengthAutoPlan;                // the latest 7-day strength plan (today → +6)
+  dailyCustomOn?: boolean;                    // compose the "Daily custom" routine each day (default ON)
   routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
 
 /** One day of the coach's strength plan: a TAILORED routine (sets/weights for that day), short prehab, or no lifting. */
@@ -319,7 +323,7 @@ export function loadStrength(): Promise<StrengthStore> {
         let j: any = null;
         try { j = JSON.parse(raw); } catch { j = null; }
         if (j && Array.isArray(j.routines)) {
-          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), ...(typeof j.autoPlanOn === 'boolean' ? { autoPlanOn: j.autoPlanOn } : {}), ...(j.autoPlan && Array.isArray(j.autoPlan.days) ? { autoPlan: j.autoPlan } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
+          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), ...(typeof j.autoPlanOn === 'boolean' ? { autoPlanOn: j.autoPlanOn } : {}), ...(typeof j.dailyCustomOn === 'boolean' ? { dailyCustomOn: j.dailyCustomOn } : {}), ...(j.autoPlan && Array.isArray(j.autoPlan.days) ? { autoPlan: j.autoPlan } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
           const rev0 = cache.starterRev ?? 1;
           if (rev0 < STARTER_REV) {
             // Step-wise, each step ONCE (a later rev must never redo an earlier one — rev 2 resets exercises, which would

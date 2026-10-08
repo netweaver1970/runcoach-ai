@@ -9,9 +9,9 @@ import {
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
   exerciseStatLine, ExerciseStatLine, DEFAULT_DRILLS, exerciseById,
-  plannedDay, plannedDone,
+  plannedDay, plannedDone, DAILY_CUSTOM_ID,
 } from '../src/services/strength';
-import { ensureStrengthPlan } from '../src/services/strengthPlan';
+import { ensureStrengthPlan, ensureDailyCustom } from '../src/services/strengthPlan';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
 import { getEffectiveMaxHr } from '../src/services/claude';
@@ -83,6 +83,8 @@ export default function FitnessMode() {
     pushStrengthToWatch().catch(() => {});   // routines + today's weights → the watch app
     // the coach's 7-day strength plan (AI-refined when a key works) — only regenerated when its inputs changed
     ensureStrengthPlan({ ai: true }).then(p => { if (p) loadStrength().then(st => setStore({ ...st })).catch(() => {}); }).catch(() => {});
+    // today's "Daily custom" routine (recovered muscles, your exercises) — composed once a day
+    ensureDailyCustom().then(ch => { if (ch) loadStrength().then(st => setStore({ ...st })).catch(() => {}); }).catch(() => {});
     // runs load the legs too (freshness + load status) — from the cached health snapshot, no HealthKit query
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as RunLike[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -99,6 +101,7 @@ export default function FitnessMode() {
   const today = localDateKey();
   const planned = routinesForDate(store);
   const todayPlan = plannedDay(store);   // the coach's auto-plan for today (why / tailoring)
+  const daily = store.routines.find(r => r.id === DAILY_CUSTOM_ID && r.items.length);
   const doneToday = sessionsOn(store, today);
   const load = muscleLoad(store, sessionsWithinDays(store, win));
   const maxSets = Math.max(1, ...load.map(l => l.hardSets));
@@ -158,6 +161,41 @@ export default function FitnessMode() {
           </>
         )}
       </View>
+
+      {/* Daily custom: a routine composed for TODAY from the recovered muscles, with your own exercises — choose / run */}
+      {daily && (
+        <View style={s.card}>
+          <View style={s.todayRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.todayName}>🎲 Daily custom{daily.composedFor !== today ? ' (yesterday’s)' : ''}</Text>
+              <Text style={s.meta}>{daily.items.length} exercises · ~{estimateMinutes(daily)} min</Text>
+            </View>
+            <TouchableOpacity style={s.startBtn} onPress={() => start(daily)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
+          </View>
+          {daily.source ? <Text style={s.meta}>{daily.source}</Text> : null}
+          <Text style={[s.meta, { color: c.text, marginTop: 4 }]} numberOfLines={3}>
+            {daily.items.map(it => `${allExercises(store).find(e => e.id === it.exerciseId)?.name ?? it.exerciseId} ${it.sets}×${it.repsLo}–${it.repsHi}${it.weightKg ? ` @${it.weightKg}` : ''}`).join(' · ')}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
+            <TouchableOpacity hitSlop={8} onPress={() => ensureDailyCustom({ force: true }).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+              <Text style={[s.meta, { color: c.accent }]}>↻ Recompose</Text>
+            </TouchableOpacity>
+            <TouchableOpacity hitSlop={8} onPress={() => router.push({ pathname: '/strength-routine' as any, params: { id: daily.id } })}>
+              <Text style={[s.meta, { color: c.accent }]}>✎ Choose exercises</Text>
+            </TouchableOpacity>
+            <View style={{ flex: 1 }} />
+            <TouchableOpacity hitSlop={8} onPress={() => updateStrength(st => ({ ...st, dailyCustomOn: false })).then(() => ensureDailyCustom()).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+              <Text style={s.meta}>Turn off</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {store.dailyCustomOn === false && (
+        <TouchableOpacity style={{ marginBottom: 12 }} onPress={() => updateStrength(st => ({ ...st, dailyCustomOn: true })).then(() => ensureDailyCustom({ force: true })).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+          <Text style={[s.meta, { color: c.accent }]}>🎲 Turn on the Daily custom routine (composed each day from your recovered muscles)</Text>
+        </TouchableOpacity>
+      )}
 
       {/* The coach's strength week: tailored routines placed around the run plan (adaptive 2–4 sessions) */}
       <View style={s.card}>

@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -91,7 +91,10 @@ export default function StrengthSessionScreen() {
       // the prehab day is "<routine>~prehab": logged under the real routine, tagged, so the full routine stays separate
       const baseId = baseRoutineId(r.id);
       const day = plannedDay(st);
-      const tailored: StrengthSession['tailored'] = r.id !== baseId ? 'prehab' : planned && day?.routineId === baseId && day.changes?.length ? 'reduced' : undefined;
+      // the Daily custom mixes exercises at its own set counts → tagged like a trimmed session, so a lighter set count
+      // there never breaks that exercise's progression streak in its home routine
+      const tailored: StrengthSession['tailored'] = r.id !== baseId ? 'prehab'
+        : baseId === DAILY_CUSTOM_ID || (planned && day?.routineId === baseId && day.changes?.length) ? 'reduced' : undefined;
       const open = st.sessions.find(x => x.routineId === baseId && x.date === today && !x.finishedAt && (x.tailored === 'prehab') === (tailored === 'prehab'));
       let session = open;
       if (!session) {
