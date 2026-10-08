@@ -56,6 +56,7 @@ export interface CoachSnapshot {
   ctlRampTarget?:    number;   // fitness ramp target, CTL points/week (null/undefined = off) — the week fill aims at it
   trimpRates?:       TrimpRates; // the athlete's CALIBRATED TRIMP/min (CTL's own units) — prices the ramp target
   rampBudget?:       RampBudget; // CTL ramp on → the 7-day LOAD budget (target / load so far / left) the daily cap uses
+  recentLoad28?:     { date: string; load: number }[];   // daily training load (CTL units), last 28 days → the week planner's ramp budget
   loadBudgetToday?:  number;   // remaining budget today in loadUnit
   loadUnit?:         'min' | 'km';
   paceMinPerKm?:     number;   // trailing real-work pace (min/km) — km↔min conversion when distance basis
@@ -1011,6 +1012,22 @@ export async function getWeekPlan(
   // +25 % minutes over the recent base. Only the load-aware PROGRESSIVE FILL chases it (it stops at the target
   // load, priced in the athlete's CALIBRATED TRIMP rates = CTL's own units); the main loop is untouched.
   const rampT    = snap.ctlRampTarget && snap.ctlRampTarget > 0 ? snap.ctlRampTarget : 0;
+  // RAMP MODE (2026-10-08, Geert: "load, not minutes"): each day's room is the ramp's 7-day LOAD target minus the 6
+  // days before it — real loads for past days, estimated loads for the days this plan places — instead of the +cap%
+  // on minutes. With minutes, a 4 % day (after a high-load / low-minute week) rested Wednesday's tempo and the week
+  // fell to +0.5 CTL. Same idea as the daily budget (rampLoadPlan; that one uses yesterday's CTL + a measured floor).
+  // The fill's +25 % MINUTES bound stays (Geert, 2026-10-08: "keep +25%"). No ramp → unchanged.
+  const rampRates = snap.trimpRates;
+  const loadByDate = new Map((snap.recentLoad28 ?? []).map(d => [d.date, d.load]));
+  const rampMode = rampT > 0 && loadByDate.size >= 7 && (snap.ctl ?? 0) > 0 && snap.loadCapBasis !== 'distance';
+  const rampEasyTpm = (estimateDayTrimp('easy', 100, rampRates) / 100) || easyTpm;
+  const rampFloorLoad = estimateDayTrimp('rest', 0, rampRates);
+  // load history aligned with tof/tofDate; today = max(load so far, the background floor) — today itself is the daily
+  // engine's call, the plan starts tomorrow
+  const loadW: number[] = rampMode ? tofDate.map((dt, k) => {
+    const v = loadByDate.get(dt) ?? 0;
+    return k === tofDate.length - 1 ? Math.max(v, rampFloorLoad) : v;
+  }) : [];
   const maintFloor = (gross: number, recentBase: number, isBuild: boolean) =>
     (isBuild && !reentry && maintMin > 0) ? Math.max(gross, Math.min(maintMin, Math.round(recentBase * 1.25))) : gross;
   // Grow an easy day to spend the SPARE budget (after reserving for quality still to place) up to EASY_MAX,
@@ -1085,6 +1102,15 @@ export async function getWeekPlan(
     const grossCeil = Math.max(baseRef > 0 ? maintFloor(baseRef * weekCapMultiplier(d, periodization, capPct, BASE_WINDOWS > 1) * freshDay, baseRef, buildWk) : 0, restartFloor);
     let allowance = grossCeil > 0 ? Math.max(0, Math.round(grossCeil - prior6)) : 45;
     if (rawPrev7 < 30) allowance = Math.max(allowance, MEANINGFUL); // re-entry floor (matches computeTimeOnFeetPlan)
+    if (rampMode) {
+      // the ramp's LOAD room for this day (easy-minute equivalents); freshness may only shrink the increment
+      // a DELOAD week keeps its cut: no ramp increment, maintenance × (1 − deloadDropPct)
+      const targetL = deloadDay
+        ? 7 * (snap.ctl ?? 0) * Math.max(0.5, 1 - periodization.deloadDropPct / 100)
+        : 7 * ((snap.ctl ?? 0) + Math.max(0, Math.min(1, freshDay)) * rampT / CTL_WEEK_RESPONSE);
+      const prior6L = loadW.slice(-6).reduce((a, b) => a + b, 0);
+      allowance = Math.max(0, Math.round((targetL - prior6L) / rampEasyTpm));
+    }
     // Capture the week's +cap% ToF ceiling from day 0 — RAW recent-max weekly ToF × the (periodization- and
     // freshness-adjusted) cap multiplier. Same number the Volume-vs-Budget budget shows; the progressive-fill
     // post-pass grows easy volume UP TO here so a compliant week reaches its ceiling instead of parking under it.
@@ -1175,6 +1201,7 @@ export async function getWeekPlan(
     // load); otherwise the day's counted ToF is capped at the available allowance.
     tof.push(intensity === 'rest' ? 0 : forcePlaced ? heatMin : Math.min(heatMin, Math.max(MEANINGFUL, allowance)));
     tofDate.push(key);   // keep the date array aligned so the max-window base indexes correctly as the loop projects forward
+    if (rampMode) loadW.push(intensity === 'rest' ? rampFloorLoad : estimateDayTrimp(intensity, runMinutes, rampRates));
 
     const isLong = placed === 'long';
     const structure = intensity === 'rest' ? 'Rest'
@@ -1194,8 +1221,9 @@ export async function getWeekPlan(
       shifted                         ? `${qName(placed)} — rescheduled here as the cap freed up` :
       shrunk && placed === 'long'     ? 'Long run — protected (kept long on a tight week)' :
       shrunk                          ? `${qName(placed)} — shortened to hold its day (banks budget for the long)` :
-      deferredHere                    ? `${qName(kind)} deferred past the +${capPct}% cap${intensity === 'rest' ? '' : ' — easy jog instead'}` :
+      deferredHere                    ? `${qName(kind)} deferred past the ${rampMode ? 'ramp load target' : `+${capPct}% cap`}${intensity === 'rest' ? '' : ' — easy jog instead'}` :
       banked                          ? 'Recovery — banking volume for the week’s quality' :
+      capRest && rampMode             ? `Cap rest — 7-day load at your +${rampT} CTL/week target` :
       capRest                         ? `Cap rest — 7-day volume at the +${capPct}% ceiling` :
       intensity === 'rest'            ? 'Recovery run or rest' :
       intensity === 'hard'            ? 'Intervals — keep it genuinely hard' :
@@ -1250,6 +1278,28 @@ export async function getWeekPlan(
       // build day the floor drops 4pt below the athlete's everyday floor (and the gate with it) so week 4 can
       // reach a real PEAK instead of stalling at the leisure floor. Deload/leisure days snap back to minTSB.
       let ctlP = snap.ctl ?? 0, atlP = snap.atl ?? 0;   // seed from today (screen re-trims with today's run folded in)
+      // LOOK-AHEAD (2026-10-08): growing an easy day must not leave the NEXT quality session (tempo/intervals/long)
+      // without the form to happen — the 7-day screen's TSB floor would then REST that quality day, and the week
+      // ends up with LESS load than before the fill (Geert: Fri/Sun/Tue grown toward the ramp → Wed tempo rested →
+      // +0.5 CTL instead of +1). Walk forward from day `idx` with `mins` on it, through the next quality day itself.
+      const isQual = (o: WeekPlanDay) => o.intensity !== 'rest' && (o.kind === 'tempo' || o.kind === 'intervals' || o.kind === 'long');
+      const qualityKeepsForm = (idx: number, mins: number, c0: number, a0: number, intens?: CoachIntensity): boolean => {
+        let c = c0, a = a0;
+        for (let k = idx; k < out.length; k++) {
+          const ok = out[k];
+          const m = k === idx ? mins : (ok.intensity === 'rest' ? 0 : ok.runMinutes);
+          const load = estimateDayTrimp(k === idx ? (intens ?? ok.intensity) : ok.intensity, m, walkRates);
+          a += La * (load - a); c += Lc * (load - c);
+          if (k > idx && isQual(ok)) {
+            // the screen's per-day floor: build days (periodization on) may go 4 deeper, everything else holds minTSB
+            const buildQ = periodization.on && cyclePhase(new Date(ok.date + 'T00:00:00'), periodization).phase === 'build';
+            const floorQ = buildQ ? Math.max(-25, minTSB - 4) : minTSB;
+            if (c - a < floorQ + 1.5) return false;                              // margin over the screen's trim (+ today's seed)
+          }
+        }
+        return true;   // every remaining quality day keeps its form
+      };
+      out.forEach((o, idx) => { (o as any).__idx = idx; });
       for (const o of out) {
         const preTSB = ctlP - atlP;
         const isEasy = o.kind === 'easy' || o.kind === 'flex';
@@ -1269,7 +1319,8 @@ export async function getWeekPlan(
           const tMaxE   = (ctlP * (1 - Lc) - atlP * (1 - La) - (growFloorTSB + 2)) / (La - Lc);   // TSB-floor load bound (+2 margin)
           const byFloor = Math.floor(tMaxE / (estimateDayTrimp('easy', 100, walkRates) / 100));
           const byLoad  = perMinE > 0 ? Math.ceil((rampLoad - weekLoad + estimateDayTrimp('rest', 0, rates)) / perMinE) : 0;
-          const mins    = Math.min(30, byFloor, byLoad, headroom);
+          let mins    = Math.min(30, byFloor, byLoad, headroom);
+          while (mins >= MEANINGFUL && !qualityKeepsForm((o as any).__idx, mins, ctlP, atlP, 'easy')) mins -= 5;   // same look-ahead (this branch is ramp-only)
           if (mins >= MEANINGFUL) {
             weekLoad += estimateDayTrimp('easy', mins, rates) - estimateDayTrimp('rest', 0, rates);
             o.intensity = 'easy'; o.kind = 'easy'; o.runMinutes = mins; o.capRest = undefined;
@@ -1288,7 +1339,11 @@ export async function getWeekPlan(
           // ramp: no more than the load still missing to the CTL target (in this day's minutes)
           const perMinC = estimateDayTrimp(o.intensity, 100, rates) / 100;
           const addByRamp = rampT > 0 ? (perMinC > 0 ? Math.max(0, Math.ceil((rampLoad - weekLoad) / perMinC)) : 0) : Infinity;
-          const target = Math.min(cap, o.runMinutes + Math.min(addByFloor, headroom, addByRamp));
+          let target = Math.min(cap, o.runMinutes + Math.min(addByFloor, headroom, addByRamp));
+          // shrink the growth until the next quality day still has its form (see qualityKeepsForm)
+          const idxO = (o as any).__idx as number;
+          while (rampMode && target > o.runMinutes && !qualityKeepsForm(idxO, target, ctlP, atlP)) target -= 5;   // ramp mode only (ToF mode unchanged)
+          if (target < o.runMinutes) target = o.runMinutes;
           if (target > o.runMinutes) {
             const add = target - o.runMinutes;
             weekLoad += estimateDayTrimp(o.intensity, target, rates) - estimateDayTrimp(o.intensity, o.runMinutes, rates);
@@ -1299,6 +1354,7 @@ export async function getWeekPlan(
         atlP += La * (dt - atlP);
         ctlP += Lc * (dt - ctlP);
       }
+      out.forEach(o => { delete (o as any).__idx; });
       grown.forEach(o => {
         o.structure = `${o.runMinutes}min ${o.kind === 'long' ? 'long-ish aerobic' : 'easy @ Z2'}`;
         o.note = rampT > 0
@@ -2743,6 +2799,7 @@ export interface CapContext {
 export interface RampBudget { ramp: number; target7: number; load7: number; budgetLoad: number; easyRate: number; rates?: TrimpRates }
 export function rampLoadPlan(
   series: { date: string; load: number; ctl: number }[], ramp: number, toDate: Date, easyRate: number, freshFac = 1,
+  deloadDropPct?: number,   // a deload week → no ramp increment, maintenance × (1 − drop)
 ): { plan: TofPlan; info: RampBudget } | null {
   const p = (n: number) => String(n).padStart(2, '0');
   const keyAt = (offset: number) => { const d = new Date(toDate); d.setDate(d.getDate() - offset); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
@@ -2751,7 +2808,9 @@ export function rampLoadPlan(
   const ctl = byDate.get(keyAt(1))?.ctl;   // CTL at the end of yesterday (the last completed day)
   if (!Number.isFinite(ctl) || !(easyRate > 0)) return null;
   // Freshness (TSB/ACWR) may only EASE the ramp's increment — never boost it, never cut below maintenance
-  const target7 = 7 * ((ctl as number) + Math.max(0, Math.min(1, freshFac)) * ramp / CTL_WEEK_RESPONSE);
+  const target7 = deloadDropPct != null
+    ? 7 * (ctl as number) * Math.max(0.5, 1 - deloadDropPct / 100)
+    : 7 * ((ctl as number) + Math.max(0, Math.min(1, freshFac)) * ramp / CTL_WEEK_RESPONSE);
   let last6 = 0; for (let o = 1; o <= 6; o++) last6 += loadAt(o);
   // every day carries background load (NEAT / activity floor ~ the quietest days' load): reserve it for the rest of
   // today and for future rest days, so the budget and the next-run day don't overshoot by a day's floor
@@ -2821,7 +2880,8 @@ export async function buildCapContext(
     const tk = (() => { const q = (n: number) => String(n).padStart(2, '0'); return `${toDate.getFullYear()}-${q(toDate.getMonth() + 1)}-${q(toDate.getDate())}`; })();
     const last = (tl as any[]).filter(d => d.date <= tk).at(-1) ?? (tl as any[]).at(-1);   // same entry the home uses (tlLast)
     const tsbF = tsbNow ?? last?.tsb, acwrF = acwrNow ?? (last?.ctl > 0 ? last.atl / last.ctl : undefined);
-    const rp = rampLoadPlan(tl as any[], rampT, toDate, easyRate, freshnessCapFactor(tsbF, acwrF, buildWk));
+    const deloadNow = periodization.on && cyclePhase(toDate, periodization).phase === 'deload';
+    const rp = rampLoadPlan(tl as any[], rampT, toDate, easyRate, freshnessCapFactor(tsbF, acwrF, buildWk), deloadNow ? periodization.deloadDropPct : undefined);
     if (rp) return { tof, cap: rp.plan, ramp: { ...rp.info, ...((snapC as any)?.trimpRates ? { rates: (snapC as any).trimpRates } : {}) }, budgetMin: rp.plan.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
   }
   if (capBasis !== 'distance') return { tof, cap: tof, budgetMin: tof.budgetTodayMin, loadUnit: 'min', capBasis, capPct, paceMinPerKm: 0, heatCredit };
@@ -3027,6 +3087,7 @@ export async function assembleCoachSnapshot(strain: DayStrain | null, activities
     trimpRates:        ctlRampT ? (await loadSnapshotCache().catch(() => null))?.trimpRates : undefined,
     loadBudgetToday:   cap.budgetTodayMin,   // in loadUnit
     rampBudget,
+    recentLoad28:      Array.isArray(tlSeries) ? (tlSeries as any[]).slice(-28).map(d => ({ date: d.date, load: d.load })) : undefined,
     loadUnit,
     paceMinPerKm,
     yesterdayStrain:   comps[yesterdayKey]?.strainScore,

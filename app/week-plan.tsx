@@ -40,7 +40,7 @@ const CLIMATE_TINT: Record<Climate, string> = {
 // flat), plus the RAMP RATE = projected ΔCTL over the week, and the ACWR sweet-spot. All read straight off
 // the deterministic projection this screen already computes — no new model, so it can't disagree with the
 // chart below it.
-function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, tsb, floorBinding, capBinding, isDeload, minTSB, capPct, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; tsb: number | null; floorBinding: boolean; capBinding: boolean; isDeload: boolean; minTSB: number; capPct: number; s: any }) {
+function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, tsb, floorBinding, capBinding, isDeload, minTSB, capPct, rampT, s }: { ctl0: number; plannedLoad: number; projCtl: number; acwr: number | null; tsb: number | null; floorBinding: boolean; capBinding: boolean; isDeload: boolean; minTSB: number; capPct: number; rampT?: number; s: any }) {
   const ramp = projCtl - ctl0;            // CTL points / week (the PMC ramp rate)
   const maint = ctl0 * 7;                 // weekly load that holds CTL flat
   const overPct = maint > 0 ? Math.round(((plannedLoad - maint) / maint) * 100) : 0;
@@ -65,7 +65,8 @@ function WeeklyLoadCard({ ctl0, plannedLoad, projCtl, acwr, tsb, floorBinding, c
     : (belowMaint && capBinding && absorbing)
         ? `Recovery week — you're absorbing your recent block (ACWR ${acwr?.toFixed(2) ?? '—'}${tsb != null ? `, TSB ${Math.round(tsb)}` : ''}). The plan eases so fatigue clears and CTL consolidates around ${Math.round(ctl0)} — it's banking your last weeks, not losing them. The budget returns as that load rolls off.`
     : (belowMaint && capBinding)
-        ? `Held below maintenance by the +${capPct}%/wk volume cap — your recent load already used this week's budget, so it can't add more. It frees up as those days roll off; raise the cap % (Settings) to build faster.`
+        ? (rampT ? `Held below maintenance by your +${rampT} CTL/week ramp's 7-day load budget — your recent load already used it. It frees up as those days roll off.`
+                 : `Held below maintenance by the +${capPct}%/wk volume cap — your recent load already used this week's budget, so it can't add more. It frees up as those days roll off; raise the cap % (Settings) to build faster.`)
     : (belowMaint && floorBinding)
         ? `Held below maintenance by your form floor (TSB ≥ ${minTSB}) — you came in fatigued, so the plan can't add load. Freshen the easy days (TSB toward 0) to build, or lower the floor in Settings.`
     : (belowMaint)
@@ -152,6 +153,7 @@ export default function WeekPlan() {
   const [acwrNow, setAcwrNow] = useState<number | null>(null);
   const [adherence, setAdherence] = useState<Adherence | null>(null);
   const [rates, setRates] = useState<TrimpRates | null>(null);
+  const [rampTgt, setRampTgt] = useState<number | null>(null);   // CTL ramp on → texts speak of the load budget, not +cap%
   const [weekCap, setWeekCap] = useState<{ capPct: number; cappedDays: number; forcedDays: number; floorRestDays: number; taperDays: number; minTSB: number } | null>(null);
   const [genAt, setGenAt] = useState<string | null>(null);
   // Strength routines planned on weekdays (+ logged sessions) → shown on each day of the plan (training calendar).
@@ -198,6 +200,7 @@ export default function WeekPlan() {
 
       const coach = await assembleCoachSnapshot(snap.strain ?? null, snap.activities, snap.runs);
       setAcwrNow(coach.acwr ?? null);   // for the weekly-load ramp/ACWR framing card
+      setRampTgt(coach.loadCapBasis !== 'distance' ? (coach.ctlRampTarget ?? null) : null);   // ramp mode skips the distance basis
 
       // ── Seed TODAY with its prescribed run if it isn't done yet ──────────────────────────────────────
       // The seed above reads today's REALISED load — which, before you've run, is just a rest day (strain
@@ -523,11 +526,12 @@ export default function WeekPlan() {
             projCtl={rows[rows.length - 1]?.ctl ?? seed.ctl}
             acwr={acwrNow}
             tsb={seed.ctl - seed.atl}
-            capBinding={rows.some(r => r.capped)}
+            capBinding={rows.some(r => r.capped) || (!!rampTgt && rows.some(r => r.capRest))}
             floorBinding={rows.some(r => r.tsbTrim || r.floorRest)}
             isDeload={/deload/i.test(periodLabel)}
             minTSB={weekCap?.minTSB ?? -10}
             capPct={weekCap?.capPct ?? 10}
+            rampT={rampTgt ?? undefined}
             s={s}
           />
 
@@ -634,8 +638,8 @@ export default function WeekPlan() {
             {weekCap ? ((weekCap.floorRestDays + weekCap.taperDays) > 0
               ? `  ·  ${weekCap.floorRestDays + weekCap.taperDays} day${(weekCap.floorRestDays + weekCap.taperDays) === 1 ? '' : 's'} rested for your ${weekCap.minTSB} TSB floor${weekCap.taperDays > 0 ? ' + long taper' : ''} (long protected)`
               : weekCap.cappedDays > 0
-                ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the +${weekCap.capPct}%/wk cap or ${weekCap.minTSB} TSB floor`
-                : `  ·  within the +${weekCap.capPct}%/wk cap + ${weekCap.minTSB} TSB floor ✓`) : ''}
+                ? `  ·  ${weekCap.cappedDays} day${weekCap.cappedDays === 1 ? '' : 's'} trimmed to the ${rampTgt ? `+${rampTgt} CTL/wk load budget` : `+${weekCap.capPct}%/wk cap`} or ${weekCap.minTSB} TSB floor`
+                : `  ·  within the ${rampTgt ? `+${rampTgt} CTL/wk load budget` : `+${weekCap.capPct}%/wk cap`} + ${weekCap.minTSB} TSB floor ✓`) : ''}
           </Text>
 
           {genAt && (
