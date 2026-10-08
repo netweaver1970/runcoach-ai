@@ -51,6 +51,28 @@ private func workoutRanges(_ series: [KPIPoint]) -> [(Double, Double, Int)] {
   return out
 }
 
+// Time divisions for the x-axis (index positions + labels): day charts every 6 h ("0h" "6h" "12h" "18h"), multi-day
+// charts at each Monday ("6 Oct"); a short multi-day series without a Monday gets its first + last date.
+private func xTicks(_ kpi: KPI) -> [(Double, String)] {
+  let s = kpi.series
+  guard s.count > 1 else { return [] }
+  let cal = Calendar.current
+  let date = { (t: Double) in Date(timeIntervalSince1970: t / 1000) }
+  if kpi.frame == "day" {
+    var out: [(Double, String)] = []
+    for i in 1..<s.count {
+      let a = date(s[i - 1].t), b = date(s[i].t)
+      let qa = cal.component(.hour, from: a) / 6, qb = cal.component(.hour, from: b) / 6
+      if qa != qb || !cal.isDate(a, inSameDayAs: b) { out.append((Double(i) - 0.5, "\(qb * 6)h")) }
+    }
+    return out
+  }
+  let f = DateFormatter(); f.locale = Locale(identifier: "en_GB"); f.dateFormat = "d MMM"
+  let marks = (kpi.marks ?? []).filter { $0 > 0 && $0 < s.count }
+  if !marks.isEmpty { return marks.map { (Double($0) - 0.5, f.string(from: date(s[$0].t))) } }
+  return [(0, f.string(from: date(s[0].t))), (Double(s.count - 1), f.string(from: date(s[s.count - 1].t)))]
+}
+
 // Tiny legend under a chart explaining the context annotations.
 private func contextCaption(_ kpi: KPI) -> String? {
   if kpi.frame == "multi" { return (kpi.marks?.isEmpty == false) ? "┊ week (Mon)" : nil }
@@ -194,7 +216,11 @@ struct KPIDetailView: View {
           let fixed = ["stress", "battery", "recovery"].contains(kpi.key)
           let lo = fixed ? 0 : (vals.min() ?? 0)
           let hiRaw = fixed ? 100 : (vals.max() ?? 1)
-          let hi = hiRaw > lo ? hiRaw : lo + 1
+          let hi0 = hiRaw > lo ? hiRaw : lo + 1
+          // a little headroom on free-scaled charts so the line never sits on the frame edge
+          let padY = fixed ? 0 : (hi0 - lo) * 0.08
+          let yLo = lo - padY, hi = hi0 + padY
+          let ticks = xTicks(kpi)
           // Value-coloured line (Bevel-style): high→low ramp mapped to the y-axis.
           let lineStyle = kpi.grad.map { LinearGradient(colors: $0.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom) }
             ?? LinearGradient(colors: [color, color], startPoint: .top, endPoint: .bottom)
@@ -206,7 +232,7 @@ struct KPIDetailView: View {
             // sections: sleep (moon) and workouts (dumbbell = strength, runner = cardio) — an icon on top, not just a tint
             ForEach(Array(sleep.enumerated()), id: \.offset) { _, r in
               RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
-                            yStart: .value("lo", lo), yEnd: .value("hi", hi))
+                            yStart: .value("lo", yLo), yEnd: .value("hi", hi))
                 // bright enough to read on the watch's black (0.16 was near-invisible — Geert, 2026-10-08)
                 .foregroundStyle(Color(hex: "818CF8").opacity(0.38))
                 .annotation(position: .overlay, alignment: .top) {
@@ -215,7 +241,7 @@ struct KPIDetailView: View {
             }
             ForEach(Array(work.enumerated()), id: \.offset) { _, r in
               RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
-                            yStart: .value("lo", lo), yEnd: .value("hi", hi))
+                            yStart: .value("lo", yLo), yEnd: .value("hi", hi))
                 .foregroundStyle(Color(hex: "FB923C").opacity(0.36))
                 .annotation(position: .overlay, alignment: .top) {
                   // 1 strength → dumbbell, 2 cardio → runner, 3 yoga/flexibility/cooldown → shading only
@@ -224,11 +250,6 @@ struct KPIDetailView: View {
                   }
                 }
             }
-            ForEach(kpi.marks ?? [], id: \.self) { m in
-              RuleMark(x: .value("wk", Double(m) - 0.5))
-                .foregroundStyle(Color.gray.opacity(0.35))
-                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-            }
             ForEach(Array(kpi.series.enumerated()).filter { ($0.element.x ?? 0) == 0 }, id: \.offset) { i, pt in
               AreaMark(x: .value("i", Double(i)), y: .value("v", pt.v), series: .value("seg", segs[i]))
                 .foregroundStyle(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
@@ -236,20 +257,31 @@ struct KPIDetailView: View {
                 .foregroundStyle(lineStyle).interpolationMethod(.monotone)
             }
           }
-          .chartYScale(domain: lo...hi)
-          .chartXAxis(.hidden)
-          .frame(height: 110)
-          HStack {
-            Text("low \(fmtVal(vals.min() ?? 0))").font(.system(size: 11)).foregroundColor(.secondary)
-            Spacer()
-            if let ctx = contextCaption(kpi) { Text(ctx).font(.system(size: 10)).foregroundColor(.secondary) }
-            Spacer()
-            Text("high \(fmtVal(vals.max() ?? 0))").font(.system(size: 11)).foregroundColor(.secondary)
+          .chartYScale(domain: yLo...hi)
+          // time divisions: a visible dashed line + label at each 6 h (day) or Monday (multi-day)
+          .chartXAxis {
+            AxisMarks(values: ticks.map(\.0)) { v in
+              AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [2, 2])).foregroundStyle(Color.white.opacity(0.35))
+              AxisValueLabel(anchor: .top) {
+                if let d = v.as(Double.self), let t = ticks.first(where: { abs($0.0 - d) < 0.01 }) {
+                  Text(t.1).font(.system(size: 9)).foregroundColor(.secondary)
+                }
+              }
+            }
           }
+          .frame(height: 124)
+          HStack {
+            Text("low \(fmtVal(vals.min() ?? 0))").font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+            Spacer(minLength: 2)
+            if let ctx = contextCaption(kpi) { Text(ctx).font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.7) }
+            Spacer(minLength: 2)
+            Text("high \(fmtVal(vals.max() ?? 0))").font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+          }
+          .padding(.horizontal, 6)   // keep the labels clear of the rounded screen corners
         } else {
           Text("No history yet").font(.system(size: 12)).foregroundColor(.secondary).padding(.vertical, 8)
         }
-        Text(relTime(kpi.series.last?.t)).font(.system(size: 11)).foregroundColor(.secondary)
+        Text(relTime(kpi.series.last?.t)).font(.system(size: 11)).foregroundColor(.secondary).padding(.horizontal, 6)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 4)

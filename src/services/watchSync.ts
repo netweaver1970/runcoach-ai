@@ -6,7 +6,7 @@
 import * as SecureStore from 'expo-secure-store';
 import { requireNativeModule } from 'expo-modules-core';
 import { computeBodyBattery } from './bodyBattery';
-import { loadSnapshotCache } from './healthkit';
+import { loadSnapshotCache, peekDailyComponents } from './healthkit';
 
 interface WatchSyncNative { isSupported(): Promise<boolean>; isPaired(): Promise<boolean>; sync(json: string): Promise<boolean>; }
 let WatchSync: WatchSyncNative | null = null;
@@ -96,6 +96,26 @@ function prepIntraday(
   return res;
 }
 
+// Last 21 nights of HRV: the stored daily components' nightly value; if that store is still empty (e.g. right after
+// a recompute), the median of each night's raw readings (18:00 → 10:00, attributed to the wake-up day).
+async function nightlyHrv(raw: { date: string; value: number }[]): Promise<{ t: number; v: number }[]> {
+  const dc = await peekDailyComponents().catch(() => null);
+  const fromDc = Object.entries(dc?.days ?? {}).filter(([, d]) => (d.restingHrv ?? 0) > 0)
+    .sort(([a], [b]) => a.localeCompare(b)).slice(-21).map(([day, d]) => ({ t: ms(day), v: Math.round(d.restingHrv * 10) / 10 }));
+  if (fromDc.length >= 3) return fromDc;
+  const byNight = new Map<string, number[]>();
+  for (const r of raw) {
+    const d = new Date(r.date), h = d.getHours();
+    if (!(r.value > 0) || (h >= 10 && h < 18)) continue;   // daytime spot readings aren't the night's HRV
+    if (h >= 18) d.setDate(d.getDate() + 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    (byNight.get(key) ?? byNight.set(key, []).get(key)!).push(r.value);
+  }
+  const med = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  return [...byNight.entries()].filter(([, v]) => v.length >= 3).sort(([a], [b]) => a.localeCompare(b)).slice(-21)
+    .map(([day, v]) => ({ t: ms(day), v: med(v) }));
+}
+
 // Indices where a new ISO week (Monday-start) begins — vertical dividers on long charts.
 function weekMarks(pts: { t: number }[]): number[] {
   const monday = (t: number) => { const d = new Date(t); const off = (d.getDay() + 6) % 7; d.setDate(d.getDate() - off); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -130,8 +150,11 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
       if (tl.length) { const s = prep(tl.map((d: any) => ({ t: ms(d.date), v: Math.round(d.atl) }))); kpis.push({ key: 'cardio', label: 'Cardio Load', unit: '', value: Math.round(tl.at(-1)!.atl), color: '#3B82F6', frame: 'multi', marks: weekMarks(s), series: s }); }
       const rhr = (snap.restingHR ?? []).slice(-21);
       if (rhr.length) { const s = prep(rhr.map((d: any) => ({ t: ms(d.date), v: d.value }))); kpis.push({ key: 'rhr', label: 'Resting HR', unit: '', value: rhr.at(-1)!.value, color: '#60A5FA', frame: 'multi', marks: weekMarks(s), series: s }); }
-      const hrv = (snap.hrv ?? []).slice(-21);
-      if (hrv.length) { const s = prep(hrv.map((d: any) => ({ t: ms(d.date), v: d.value }))); kpis.push({ key: 'hrv', label: 'HRV', unit: 'ms', value: hrv.at(-1)!.value, color: '#A78BFA', frame: 'multi', marks: weekMarks(s), series: s }); }
+      // HRV = the NIGHTLY value (the one recovery uses), one point per night over the last 3 weeks. snap.hrv is the
+      // RAW 15-min readings NEWEST-FIRST — `.slice(-21)` sent 21 single readings of one night 2 weeks old, and its
+      // `.at(-1)` showed an old reading as "today" (2026-10-08: the graph peaked at 73 while the value said 33).
+      const hrvNights = await nightlyHrv(snap.hrv ?? []);
+      if (hrvNights.length) { const s = prep(hrvNights); kpis.push({ key: 'hrv', label: 'HRV', unit: 'ms', value: Math.round(s.at(-1)!.v), color: '#A78BFA', frame: 'multi', marks: weekMarks(s), series: s }); }
       const vo2 = (snap.vo2max ?? []).slice(-21);
       if (vo2.length) { const s = prep(vo2.map((d: any) => ({ t: ms(d.date), v: d.value }))); kpis.push({ key: 'vo2', label: 'VO₂ Max', unit: '', value: vo2.at(-1)!.value, color: '#2DD4BF', frame: 'multi', marks: weekMarks(s), series: s }); }
     }
