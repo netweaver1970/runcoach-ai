@@ -17,6 +17,7 @@ import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/wea
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
 import { StrengthToday, useAutoPlanOn } from '../src/components/StrengthToday';
+import { CaffeineNight } from '../src/components/CaffeineNight';
 import { pushWorkoutToWatch, watchModuleAvailable, getWatchRecorder } from '../src/services/watchWorkout';
 import { sendWorkoutToWatch } from '../src/services/watchRoute';
 import { handOffRouteWorkout } from '../src/services/routeWorkoutHandoff';
@@ -538,6 +539,7 @@ export default function DailyCoachScreen() {
         </View>
 
         {targetIsToday && <StrengthToday />}
+        {targetIsToday && <CaffeineNight date={targetDate} />}
 
         {/* Readiness — multi-factor (recovery + sleep + form + ACWR + illness guards) */}
         {!loadingH && dates.length > 0 && (

@@ -15,3 +15,4 @@ export function extractWeatherTempC() { return undefined; }
 export async function fetchWorkoutDetail() { return { hr: [], power: [], pace: [], totalMs: 0, activities: [], kmSplits: [], pauseIntervals: [] }; }
 export async function fetchActivityHistory() { return []; }   // agent.ts (query_activities) imports; never called on the deterministic path
 export const getSnapshotVersion = () => 0;   // coach.ts plan-cache keying
+export async function peekDailyComponents() { return globalThis.__DC ?? { days: {}, updatedAt: 0 }; }

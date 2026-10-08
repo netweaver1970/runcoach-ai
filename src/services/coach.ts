@@ -1772,7 +1772,10 @@ export async function getCoachPlan(snap: CoachSnapshot): Promise<CoachPlan> {
     const rampNote = snap.rampBudget
       ? `\n\nVOLUME BUDGET (fitness ramp +${snap.rampBudget.ramp} CTL/week): the rolling 7-day budget is LOAD, not a % on minutes — target ${snap.rampBudget.target7}, done ${snap.rampBudget.load7}, left ${snap.rampBudget.budgetLoad} (≈ tofBudgetTodayMin easy minutes; harder minutes cost more). Ignore loadCapPct for volume; never cite a "+X% ceiling".`
       : '';
-    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====\n\n${OUTPUT}${ceiling}${forced}${rampNote}`;
+    // personal caffeine → overnight HRV: lets the prose explain a low-HRV morning after a late-caffeine night
+    const cafNote = await (async () => { const C = require('./caffeineHrv') as typeof import('./caffeineHrv'); const r = await C.caffeineHrv(); const ln = r.lastNight;
+      return ln && ln.night === snap.date ? `\n\nCAFFEINE LAST NIGHT: ${ln.atBed} mg still active at bedtime, HRV ${ln.hrv} ms (${ln.z > 0 ? '+' : ''}${ln.z} SD vs baseline). ${C.cafHrvSummary(r)} If HRV is low and caffeine was late, say the HRV dip is likely partly caffeine, not only fatigue.` : `\n\n${C.cafHrvSummary(r)}`; })().catch(() => '');
+    const system = `${ROLE}${raceHdr}${snap.timelineContext ?? ''}\n\n===== COACHING KNOWLEDGE =====\n${knowledge}\n===== END COACHING KNOWLEDGE =====${cafNote}\n\n${OUTPUT}${ceiling}${forced}${rampNote}`;
     setUsageFeature('coach-plan');
     const txt = await callLLM({
       system,

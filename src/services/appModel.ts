@@ -45,6 +45,9 @@ export async function buildAppModelPrompt(): Promise<string> {
     getCtlRampTarget().catch(() => null),
   ]);
   const strengthLine = await strengthLineForLLM().catch(() => '');
+  // personal caffeine → overnight-HRV finding (or "collecting") — explains a low-HRV morning, informs late-day advice
+  const cafLine = await (async () => { const C = require('./caffeineHrv') as typeof import('./caffeineHrv'); const r = await C.caffeineHrv(); const ln = r.lastNight;
+    return `• ${C.cafHrvSummary(r)}${ln ? ` Last logged night (${ln.night}): ${ln.atBed} mg active at bedtime, HRV ${ln.hrv} ms (${ln.z > 0 ? '+' : ''}${ln.z} SD vs 30-night baseline).` : ''} When HRV is low after a late-caffeine night, say so — it's not necessarily training fatigue; advise caffeine before ~8 h pre-bed.`; })().catch(() => '');
   const full = foodDays.filter(d => d.complete);
   const foodLine = full.length
     ? `• FOOD LOG (athlete-entered, last 7 days, ${full.length} fully-logged day${full.length === 1 ? '' : 's'}): avg ${Math.round(full.reduce((a, d) => a + d.kcal, 0) / full.length)} kcal · C ${Math.round(full.reduce((a, d) => a + d.carb, 0) / full.length)} g · P ${Math.round(full.reduce((a, d) => a + d.prot, 0) / full.length)} g · F ${Math.round(full.reduce((a, d) => a + d.fat, 0) / full.length)} g. Advisory context only — nutrition never changes the training plan.`
@@ -67,5 +70,6 @@ export async function buildAppModelPrompt(): Promise<string> {
     '• WAYFINDER ROUTE RUNS: an easy/long/tempo session run on a route has a DISTANCE-based work step (it ends 200 m before the route finish), so its work minutes can differ from the prescribed minutes — judge the session by route completion and intensity, not by minutes over/under.',
     foodLine,
     strengthLine,
+    cafLine,
   ].filter(Boolean).join('\n');
 }

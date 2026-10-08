@@ -22,6 +22,7 @@ import { ModeHeader } from '../src/components/ModeHeader';
 import { SwipeRow } from '../src/components/SwipeRow';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
+import { caffeineHrv, cafHrvSummary } from '../src/services/caffeineHrv';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
@@ -1042,6 +1043,8 @@ function CaffeineCard({ entries, bed }: { entries: FoodEntry[]; bed: number | nu
     return t != null ? { ...e, n: { ...e.n, caf: t * e.grams / 100 } } : e;
   }), [entries]);
   const d = useMemo(() => caffeineDay(es, bed), [es, bed]);
+  const [cafFinding, setCafFinding] = useState('');   // the PERSONAL caffeine → HRV result (or "collecting")
+  useEffect(() => { caffeineHrv().then(r => setCafFinding(cafHrvSummary(r))).catch(() => {}); }, []);
   if (!d.total) return null;
   const warnDay = d.total > CAF_DAY_MAX, warnDose = d.maxDose > CAF_DOSE_MAX, late = d.late.length > 0;
   const col = warnDay || warnDose || late ? '#e67e22' : c.text;
@@ -1054,6 +1057,7 @@ function CaffeineCard({ entries, bed }: { entries: FoodEntry[]; bed: number | nu
       {late && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ {d.late.map(e => `${e.name.split(',')[0]} ${e.t.slice(11, 16)}`).join(', ')} — within {CAF_CUTOFF_H} h of bed: can delay sleep, cut deep sleep and lower overnight HRV (tomorrow's recovery / readiness).</Text>}
       {warnDose && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ {Math.round(d.maxDose)} mg within an hour — above the {CAF_DOSE_MAX} mg single-dose guidance.</Text>}
       {warnDay && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ Above the {CAF_DAY_MAX} mg/day EFSA level for healthy adults.</Text>}
+      {cafFinding ? <Text style={[s.sub, { marginTop: 4 }]}>{cafFinding}</Text> : null}
       <Text style={s.hint}>Typical values (EFSA / USDA) — a real cup varies ±50 %; set your own per food in 📚 Food database.</Text>
     </View>
   );
