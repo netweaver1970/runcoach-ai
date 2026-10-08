@@ -12,6 +12,7 @@ import {
   plannedDay, plannedDone, DAILY_CUSTOM_ID, KITS, currentKit, flatRoutine,
 } from '../src/services/strength';
 import { ensureStrengthPlan, ensureDailyCustom } from '../src/services/strengthPlan';
+import { ExerciseMini } from '../src/components/ExercisePeek';
 import { SessionVsPrevious } from '../src/components/SessionVsPrevious';
 import { checkLocation, pickKit, setKitHere } from '../src/services/strengthLocation';
 import { loadSnapshotCache } from '../src/services/healthkit';
@@ -340,6 +341,7 @@ export default function FitnessMode() {
         return !q || e.name.toLowerCase().includes(q) || Object.keys(e.muscles).some(m => MUSCLE_LABEL[m as Muscle]?.toLowerCase().includes(q));
       }).map(({ e, st }) => (
           <TouchableOpacity key={e.id} style={s.exRow} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.id } })}>
+            <ExerciseMini ex={e} />
             <View style={{ flex: 1 }}>
               <Text style={s.histName}>{e.name}{e.video ? <Text style={s.meta}>  ▶</Text> : null}</Text>
               <Text style={s.meta} numberOfLines={1}>{st ? exLine(st, e.timed) : 'not trained yet'}</Text>

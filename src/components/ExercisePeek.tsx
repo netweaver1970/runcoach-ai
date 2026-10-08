@@ -33,8 +33,15 @@ export function ExercisePeek({ ex, onClose }: { ex?: Exercise; onClose: () => vo
     </TouchableOpacity>
   );
 }
+/** A small static picture for lists (exercise database, routine editor, picker). */
+export function ExerciseMini({ ex, size = 44 }: { ex?: Exercise; size?: number }) {
+  const imgs = exerciseImages(ex);
+  if (!imgs.length) return <View style={[st.mini, { width: size * 1.33, height: size }]} />;
+  return <Image source={{ uri: imgs[0] }} style={[st.mini, { width: size * 1.33, height: size }]} resizeMode="cover" />;
+}
 const st = StyleSheet.create({
-  thumb:  { width: 46, height: 34, borderRadius: 6, backgroundColor: '#0002', marginRight: 8 },
+  mini:   { borderRadius: 6, backgroundColor: '#8882', marginRight: 10 },
+  thumb:  { width: 64, height: 48, borderRadius: 8, backgroundColor: '#0002', marginRight: 10 },
   thumbOn:{ opacity: 0.5 },
   peek:   { marginTop: 8, borderRadius: 10, overflow: 'hidden', backgroundColor: '#000' },
   big:    { width: '100%', aspectRatio: 1.5 },

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Modal, ActivityIndicator, Keyboard, Alert, Linking, Switch } from 'react-native';
 import { Stack, useLocalSearchParams, useNavigation, useRouter, useFocusEffect } from 'expo-router';
+import { ExerciseThumb, ExercisePeek, ExerciseMini } from '../src/components/ExercisePeek';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, Routine, RoutineItem, Exercise, Muscle, MUSCLES, MUSCLE_LABEL, WEEKDAYS, flatRoutine,
@@ -32,7 +33,8 @@ export default function StrengthRoutineScreen() {
   const navigation = useNavigation();
   const [store, setStore] = useState<StrengthStore | null>(null);
   const [picker, setPicker] = useState(false);
-  const [incPicker, setIncPicker] = useState(false);   // "＋ Include a routine" (supersets / blocks inside this one)
+  const [incPicker, setIncPicker] = useState(false);
+  const [peek, setPeek] = useState<number | null>(null);   // item whose picture is open   // "＋ Include a routine" (supersets / blocks inside this one)
   const [q, setQ] = useState('');
   const [custom, setCustom] = useState<{ name: string; muscle: Muscle } | null>(null);
 
@@ -144,9 +146,11 @@ export default function StrengthRoutineScreen() {
         return (
           <View key={`${it.exerciseId}-${i}`} style={s.item}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={s.itemName}>{String.fromCharCode(97 + i)}. {ex?.name ?? it.exerciseId}</Text>
+              <ExerciseThumb ex={ex} open={peek === i} onToggle={() => setPeek(p => (p === i ? null : i))} />
+              <Text style={[s.itemName, { flex: 1 }]}>{String.fromCharCode(97 + i)}. {ex?.name ?? it.exerciseId}</Text>
               {ex?.video && <TouchableOpacity onPress={() => Linking.openURL(ex.video!.url)} hitSlop={8}><Text style={s.link}>▶ video</Text></TouchableOpacity>}
             </View>
+            {peek === i && <ExercisePeek ex={ex} onClose={() => setPeek(null)} />}
             {it.altIds?.length ? <Text style={s.meta}>or {it.altIds.map(a => exerciseById(store, a)?.name ?? a).join(' / ')}</Text> : null}
             <View style={s.grid}>
               <View style={s.cell}><Text style={s.cellLbl}>Sets</Text><NumField style={s.num} value={it.sets} onCommit={n => n != null && n >= 1 && patchItem(i, { sets: Math.min(10, n) })} /></View>
@@ -228,9 +232,12 @@ export default function StrengthRoutineScreen() {
                 <TextInput style={s.input} value={q} onChangeText={setQ} placeholder="Search exercises" placeholderTextColor="#999" returnKeyType="search" />
                 <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 420 }}>
                   {list.map(e => (
-                    <TouchableOpacity key={e.id} style={s.pickRow} onPress={() => addExercise(e)}>
+                    <TouchableOpacity key={e.id} style={[s.pickRow, { flexDirection: 'row', alignItems: 'center' }]} onPress={() => addExercise(e)}>
+                      <ExerciseMini ex={e} size={36} />
+                      <View style={{ flex: 1 }}>
                       <Text style={s.pickName}>{e.name}</Text>
                       <Text style={s.meta}>{Object.entries(e.muscles).filter(([, v]) => (v ?? 0) >= 0.5).map(([m]) => MUSCLE_LABEL[m as Muscle]).join(', ')}</Text>
+                    </View>
                     </TouchableOpacity>
                   ))}
                   <TouchableOpacity style={s.pickRow} onPress={() => setCustom({ name: q, muscle: 'chest' })}>
