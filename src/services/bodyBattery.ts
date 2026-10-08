@@ -207,9 +207,19 @@ const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { retur
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export interface BatteryPoint { t: number; battery: number; stress: number; asleep: boolean; workout: boolean;
+  rec?: boolean;   // post-exercise RECOVERY tail: stress paused (like `workout`) but it's not exercise → no workout band
   wt?: 'strength' | 'cardio' | 'other';   // the workout kind in this bin (graphs: dumbbell / runner / no icon)
 }
 const WORKOUT_SETTLE_MS = 15 * 60_000; // exclude exercise + this settle window from the stress curve
+// POST-EXERCISE RECOVERY (2026-10-08): after the fixed settle, keep the stress curve paused while HR is STILL clearly
+// raised by the workout (z > this vs the daytime baseline), up to RECOVERY_MAX_MIN after it ends (NOT scaled by
+// the workout's length: a 35-min run's tail ended at +50 min with HR still up → stress 70–90 again), ending once HR settles. Geert: an easy 35-min run → our stress 60–91 for the next hour vs Bevel 33 — raised
+// post-run HR/HRV (shower, breakfast) read as "stress". Garmin/Bevel treat that as activity recovery, not stress.
+// Hardened after review: z 1.0 (0.5 ≈ "any pottering about"), the tail ENDS when HR rises again (> 5 bpm on the
+// previous tail bin = a new stressor / activity → it counts as stress), and it settles only after 2 calm bins.
+const RECOVERY_HR_Z = 1.0;
+const RECOVERY_MAX_MIN = 90;
+const RECOVERY_RISE_BPM = 5;
 export interface BodyBattery {
   current: number;        // 0–100 now
   currentStress: number;  // 0–100 now
@@ -619,6 +629,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   let wakeAt = start;       // timestamp of the most recent morning get-up (resets the circadian drain clock)
   let prevNight = true;     // window opens mid-sleep, so we start "in the night"
   const series: BatteryPoint[] = [];
+  const settledWins = new Set<number>();   // workouts whose post-exercise HR has settled (recovery tail over)
+  const tailState = new Map<number, { prev: number; calm: number }>();   // per workout: last tail-bin HR, calm-bin count
   const binDebug: any[] = [];
   const corrBins: { t: number; s: number; hr: number; hrv: number; stg: number; a: number; b: number }[] = [];
   for (let t = start; t <= now; t += binMs) {
@@ -630,7 +642,25 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     const asleep = isAsleep(mid);
     const night = asleep || inSleepSession(mid); // asleep OR a micro-wake inside the night
     const stage = stageAt(mid);                  // HK stage 0..5 (-1 none)
-    const workout = inWorkout(mid);      // exercise + settle tail → freezes the STRESS curve
+    let workout = inWorkout(mid);        // exercise + settle tail → freezes the STRESS curve
+    // …and the HR-gated recovery tail after it (see RECOVERY_HR_Z): paused while HR is still raised by the workout
+    // and FALLING. The latest unsettled workout whose tail window contains this bin decides.
+    let rec = false;
+    if (!workout && n > 0 && !night) {
+      const w = exerciseWins
+        .filter(x => !settledWins.has(x.s) && mid > x.e && mid <= x.e + RECOVERY_MAX_MIN * 60_000)
+        .sort((a, b) => b.e - a.e)[0];
+      if (w) {
+        const hrNow = sum / n;
+        const st = tailState.get(w.s) ?? { prev: Infinity, calm: 0 };
+        if (hrNow > st.prev + RECOVERY_RISE_BPM) settledWins.add(w.s);          // HR going UP again → a new stressor: count it
+        else if (hrNow > dayBase.hrM + RECOVERY_HR_Z * dayBase.hrS) { rec = true; st.calm = 0; }
+        else if (++st.calm >= 2) settledWins.add(w.s);                          // 2 calm bins in a row → recovery over
+        else rec = true;                                                         // 1st calm bin: wait for the 2nd
+        st.prev = hrNow; tailState.set(w.s, st);
+        if (rec) workout = true;
+      }
+    }
     const exercising = inExercise(mid);  // exercise ONLY → drives the %HRR DRAIN (settle must not drain)
     // Circadian clock: the night→day transition (getting up) restarts time-since-wake; micro-wakes
     // inside the sleep session keep `night` true and don't reset it.
@@ -678,7 +708,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // Fitted two-regime model (Bevel-calibrated, NO ceiling): ASLEEP charges, AWAKE holds at rest /
     // drains under stress. REM's autonomic stress spike isn't real strain → cap it; NREM (core & deep)
     // share one curve. A workout's real effort drains via its higher stress. Rates are per-HOUR.
-    const drainStress = workout ? Math.min(WORKOUT_STRESS_CAP, Math.max(rawStress, stress)) : stress;
+    // the post-exercise recovery tail isn't stress → drain at the frozen (pre-workout) level, not the raised raw value
+    const drainStress = rec ? stress : workout ? Math.min(WORKOUT_STRESS_CAP, Math.max(rawStress, stress)) : stress;
     // NO time-of-day factor (29 Jun re-fit vs Bevel): Bevel holds energy FLAT through a calm morning and
     // drains purely on stress — the circadian effect already enters via the measured stress. The old
     // morning multiplier over-drained the low-stress morning (left us ~10% below Bevel all day). Kept as 1
@@ -718,8 +749,8 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // Only honour anchors that fall INSIDE the 60h window; a stale one (e.g. days old) would otherwise
     // apply at the window's start and skew the whole curve. anchor.at must be ≥ start to bite here.
     if (anchor && anchor.at >= start && !anchored && mid >= anchor.at) { battery = clamp(anchor.value, 0, 100); anchored = true; }
-    series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout, ...(workout ? { wt: workoutKind(mid) } : {}) });
-    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), s0: night ? Math.round(stress) : Math.max(0, Math.round(stress - DAY_STRESS_OFFSET)), h: Math.round(hoursAwake * 10) / 10, tm: Math.round(timeMult * 100) / 100, b: Math.round(battery) });
+    series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout, ...(rec ? { rec: true } : workout ? { wt: workoutKind(mid) } : {}) });
+    binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: rec ? 2 : workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), s0: night ? Math.round(stress) : Math.max(0, Math.round(stress - DAY_STRESS_OFFSET)), h: Math.round(hoursAwake * 10) / 10, tm: Math.round(timeMult * 100) / 100, b: Math.round(battery) });
     corrBins.push({ t, s: Math.round(stress), hr: Math.round(avgHR), hrv: vHrv ? Math.round(vHrv) : 0, stg: stage, a: night ? 1 : 0, b: Math.round(battery) });
   }
   if (!series.length) return null;

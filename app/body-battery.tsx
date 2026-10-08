@@ -39,7 +39,7 @@ const ICON = 13;
 function dayBands(pts: BatteryPoint[], which: 'sleep' | 'workout'): Band[] {
   const out: Band[] = [];
   for (const p of pts) {
-    const on = which === 'sleep' ? p.asleep : p.workout;
+    const on = which === 'sleep' ? p.asleep : (p.workout && !p.rec);   // the post-run recovery tail is no workout band
     if (!on) continue;
     const kind: BandKind = which === 'sleep' ? 'sleep' : (p.wt ?? 'cardio');
     const last = out[out.length - 1];
@@ -407,7 +407,7 @@ function StressGraph({ data }: { data: BodyBattery }) {
       </Svg>
       <BandIcons bands={[...bands, ...wBands]} x={x} padT={padT} />
       </View>
-      <Text style={s.graphCaption}>Stress · last 24h · 🌙 asleep · dumbbell / runner = workout (excluded +15m)</Text>
+      <Text style={s.graphCaption}>Stress · last 24h · 🌙 asleep · dumbbell / runner = workout (stress paused during it + while HR is still recovering)</Text>
     </View>
   );
 }
