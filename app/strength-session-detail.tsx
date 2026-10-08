@@ -1,11 +1,11 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, Alert } from 'react-native';
 import { Stack, useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import Svg, { Polyline, Line, Text as SvgText } from 'react-native-svg';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, sessionBreakdown, sessionPRs, strengthWindow, MUSCLE_LABEL, Muscle, FEEL_LABEL, sessionStrainLoad,
-  Feel, setExerciseFeel, exerciseById,
+  Feel, setExerciseFeel, exerciseById, updateStrength,
 } from '../src/services/strength';
 import { fetchHrSamples, loadSnapshotCache } from '../src/services/healthkit';
 import { getEffectiveMaxHr } from '../src/services/claude';
@@ -24,6 +24,23 @@ export default function StrengthSessionDetail() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const [st, setSt] = useState<StrengthStore | null>(null);
+  // correct a logged set afterwards (e.g. a plank logged at the planned 45 s that was really held ~20 s)
+  const editSet = (sessId: string, exId: string, setNo: number, timed: boolean, reps: number, kg: number, name: string) => {
+    const save = (patch: { reps?: number; weightKg?: number }) => updateStrength(cur => ({ ...cur, sessions: cur.sessions.map(q => q.id !== sessId ? q
+      : { ...q, sets: q.sets.map(l => (l.exerciseId === exId && l.set === setNo ? { ...l, ...patch } : l)) }) })).then(n => setSt({ ...n })).catch(() => {});
+    Alert.prompt(`${name} · set ${setNo}`, timed ? 'Seconds held' : 'Reps', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: timed ? 'Save' : 'Next: kg', onPress: (v?: string) => {
+        const n = Math.round(Number(String(v ?? '').replace(',', '.')));
+        const r = Number.isFinite(n) && n > 0 && n < 1000 ? n : reps;
+        if (timed) { save({ reps: r }); return; }
+        Alert.prompt(`${name} · set ${setNo}`, 'Weight (kg)', [
+          { text: 'Cancel', style: 'cancel', onPress: () => save({ reps: r }) },
+          { text: 'Save', onPress: (w?: string) => { const k = Number(String(w ?? '').replace(',', '.')); save({ reps: r, ...(Number.isFinite(k) && k > -200 && k < 1000 ? { weightKg: Math.round(k * 4) / 4 } : {}) }); } },
+        ], 'plain-text', String(kg), 'decimal-pad');
+      } },
+    ], 'plain-text', String(reps), 'number-pad');
+  };
   const [hr, setHr] = useState<{ t: number; bpm: number }[] | null>(null);
   const [split, setSplit] = useState<{ cardio: number; muscular: number } | null>(null);
 
@@ -110,9 +127,14 @@ export default function StrengthSessionDetail() {
               <Text style={s.meta}>records ›</Text>
             </TouchableOpacity>
             {/* every set: reps (or seconds) @ weight, warm-ups marked, RIR when rated */}
-            <Text style={s.setLine}>
-              {sets.map(l => `${l.warmup ? 'W ' : ''}${l.reps}${ex?.timed ? ' s' : ''}${ex?.timed && !l.weightKg ? '' : ` @ ${ex?.bodyweightFrac ? (l.weightKg === 0 ? 'BW' : `BW${l.weightKg > 0 ? '+' : '−'}${Math.abs(l.weightKg)}`) : `${l.weightKg} kg`}`}${l.rir != null ? ` (RIR ${l.rir >= 3 ? '3+' : l.rir})` : ''}`).join('  ·  ')}
-            </Text>
+            {/* tap a set to correct it afterwards (reps / seconds held, then kg) */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+              {sets.map((l, k) => (
+                <TouchableOpacity key={k} style={s.setChip} onPress={() => editSet(x.id, l.exerciseId, l.set, !!ex?.timed, l.reps, l.weightKg, ex?.name ?? '')}>
+                  <Text style={s.setLine}>{`${l.warmup ? 'W ' : ''}${l.reps}${ex?.timed ? ' s' : ''}${ex?.timed && !l.weightKg ? '' : ` @ ${ex?.bodyweightFrac ? (l.weightKg === 0 ? 'BW' : `BW${l.weightKg > 0 ? '+' : '−'}${Math.abs(l.weightKg)}`) : `${l.weightKg} kg`}`}${l.rir != null ? ` (RIR ${l.rir >= 3 ? '3+' : l.rir})` : ''}`} ✎</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             {!ex?.timed ? <Text style={s.meta}>{e.volume.toLocaleString()} kg volume</Text> : null}
             {/* the post-exercise feel, right here (Hard = this session doesn't count toward a raise) — tap again clears */}
             <View style={s.feelRow}>
@@ -172,7 +194,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   row:      { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   rowTitle: { color: c.text, fontSize: 15, fontWeight: '700' },
   exCard:   { backgroundColor: c.surface, borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: c.border },
-  setLine:  { color: c.text, fontSize: 13.5, lineHeight: 20, marginTop: 6, fontVariant: ['tabular-nums'] },
+  setLine:  { color: c.text, fontSize: 13.5, lineHeight: 20, fontVariant: ['tabular-nums'] },
+  setChip:  { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceAlt },
   feelRow:  { flexDirection: 'row', gap: 8, marginTop: 8 },
   feel:     { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 14, borderWidth: 1, borderColor: c.border },
   feelTxt:  { color: c.textSub, fontWeight: '700', fontSize: 13 },

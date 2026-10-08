@@ -269,7 +269,9 @@ export default function StrengthSessionScreen() {
     startRest(h.restSec); if (h.restSec <= 0) announceNext();
   };
   const toggle = (idx: number, restSec: number) => {
-    if (hold?.idx === idx) cancelHold();   // ✓ on the held set ends the hold (the typed seconds stand)
+    // ✓ on the set being HELD = stop the hold: log the seconds actually held (it used to keep the planned 45 s —
+    // Geert's 2nd side plank of ~20 s was logged as 45)
+    if (hold?.idx === idx) { finishHold((Date.now() - hold.start) / 1000); return; }
     const done = !sessRef.current!.sets[idx].done;
     if (done) focusEx.current = sessRef.current!.sets[idx].exerciseId;
     persist(x => ({ ...x, sets: x.sets.map((l, k) => k === idx ? { ...l, done, doneAt: done ? Date.now() : undefined } : l) }));
