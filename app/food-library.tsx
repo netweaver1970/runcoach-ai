@@ -12,7 +12,7 @@ import { SwipeRow } from '../src/components/SwipeRow';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   loadLibrary, setFavourites, setMealTags, forgetFoods, FoodLibrary, FavItem, KeptFood, MealTag, MEAL_TAGS, Nutr,
-  deleteCustomFood, deleteMeal, scaleNutr,
+  deleteCustomFood, deleteMeal, scaleNutr, foodUsage,
 } from '../src/services/foodLog';
 import { searchFoodsEx, foodByKey, norm } from '../src/services/foodDb';
 import { cachedProducts } from '../src/services/foodOff';
@@ -87,7 +87,15 @@ export default function FoodLibraryScreen() {
   };
   const kf = (r: Row): KeptFood => ({ key: r.key, snap: r.snap });
   // swipe → Delete: your own food is deleted; any other food leaves your list (star / tags / recent) — the food table keeps it
-  const delOne = (r: Row) => run(() => (lib?.custom.some(x => x.key === r.key) ? deleteCustomFood(r.key) : forgetFoods([r.key])));
+  const delOne = async (r: Row) => {
+    const own = !!lib?.custom.some(x => x.key === r.key);
+    // your own food used on logged days / in meals → deleting needs a one-for-one replacement (picked in its editor)
+    if (own) {
+      const u = await foodUsage(r.key).catch(() => ({ entries: 0, days: 0, meals: [] as string[] }));
+      if (u.entries || u.meals.length) { router.push({ pathname: '/food-item' as any, params: { key: r.key, replace: '1' } }); return; }
+    }
+    run(() => (own ? deleteCustomFood(r.key) : forgetFoods([r.key])));
+  };
   const selected = sel ? rows.filter(r => sel.has(r.key)) : [];   // only VISIBLE rows act (a filter/search hides the rest)
   const toggleSel = (k: string) => setSel(cur => { const n = new Set(cur ?? []); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   // bulk: a star / tag goes ON for all selected unless ALL of them already have it (then OFF)

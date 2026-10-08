@@ -538,6 +538,65 @@ export async function deleteCustomFood(key: string): Promise<FoodLibrary> {
 export async function setResistantStarch(key: string, g: number | null): Promise<void> {
   await mutateLib(l => { const m = { ...(l.rs ?? {}) }; if (g != null && g > 0) m[key] = g; else delete m[key]; l.rs = m; });
 }
+// ─── one-for-one replacement / rename across the logged days (Geert 2026-10-08) ───────────────────────────────────
+async function shardPaths(): Promise<string[]> {
+  if (!DIR) return [];
+  const files = await FileSystem.readDirectoryAsync(DIR).catch(() => [] as string[]);
+  return files.filter(f => f.startsWith(FOOD_LOG_PREFIX) && f.endsWith('.json')).map(f => `${DIR}${f}`);
+}
+/** Where a food is used: logged entries (and on how many days) + saved meals containing it. */
+export async function foodUsage(key: string): Promise<{ entries: number; days: number; meals: string[] }> {
+  let entries = 0; const days = new Set<string>();
+  for (const p of await shardPaths()) {
+    const sh = await readJson<Shard>(p, { v: 1, days: {} }).catch(() => ({ v: 1 as const, days: {} }));
+    for (const [d, day] of Object.entries(sh.days ?? {})) for (const e of day.entries ?? []) if (e.key === key) { entries++; days.add(d); }
+  }
+  const lib = await loadLibrary();
+  return { entries, days: days.size, meals: lib.meals.filter(m => m.items.some(i => i.key === key)).map(m => m.name) };
+}
+/**
+ * Re-point every use of a food to another one: logged entries keep their NUMBERS (what was eaten stays correct) and
+ * take the new food's key + name; saved meals take the new food (its values from now on); star / tags / serving /
+ * resistant-starch settings move over when the new food has none. Used for "delete, but replace by …".
+ */
+export async function replaceFoodEverywhere(oldKey: string, to: { key: string; name: string; src: FoodSrc; per100?: Nutr; unit?: 'g' | 'ml' }): Promise<number> {
+  let n = 0;
+  await serial(async () => {
+    for (const p of await shardPaths()) {
+      const sh = await readJson<Shard>(p, { v: 1, days: {} });
+      let changed = false;
+      for (const day of Object.values(sh.days ?? {})) for (const e of day.entries ?? []) {
+        if (e.key !== oldKey) continue;
+        e.key = to.key; e.name = to.name; e.src = to.src; n++; changed = true;
+      }
+      if (changed) await writeJson(p, sh);
+    }
+  });
+  await mutateLib(l => {
+    l.meals = l.meals.map(m => ({ ...m, items: m.items.map(i => (i.key !== oldKey ? i
+      : { ...i, key: to.key, name: to.name, src: to.src, ...(to.per100 ? { per100: to.per100 } : {}), ...(to.unit === 'ml' ? { unit: 'ml' as const } : {}) })) }));
+    const move = <T,>(rec: Record<string, T> | undefined): Record<string, T> | undefined => {
+      if (!rec || rec[oldKey] === undefined) return rec;
+      const r = { ...rec }; if (r[to.key] === undefined) r[to.key] = r[oldKey]; delete r[oldKey]; return r;
+    };
+    if (l.favs.includes(oldKey)) l.favs = [...l.favs.filter(k => k !== oldKey && k !== to.key), to.key];
+    l.tags = move(l.tags); l.servings = move(l.servings); l.rs = move(l.rs);
+    l.recents = l.recents.filter(r => r.key !== oldKey);
+  });
+  return n;
+}
+/** Your own food was renamed → the logged entries show the new name too (values untouched). */
+export async function renameInLogs(key: string, name: string): Promise<void> {
+  await serial(async () => {
+    for (const p of await shardPaths()) {
+      const sh = await readJson<Shard>(p, { v: 1, days: {} });
+      let changed = false;
+      for (const day of Object.values(sh.days ?? {})) for (const e of day.entries ?? []) if (e.key === key && e.name !== name) { e.name = name; changed = true; }
+      if (changed) await writeJson(p, sh);
+    }
+  });
+  await mutateLib(l => { l.meals = l.meals.map(m => ({ ...m, items: m.items.map(i => (i.key === key ? { ...i, name } : i)) })); });
+}
 /** Drop a food from the recents list only (swipe in Add food → Recents). */
 export async function removeRecent(key: string): Promise<void> {
   await mutateLib(l => { l.recents = l.recents.filter(r => r.key !== key); });

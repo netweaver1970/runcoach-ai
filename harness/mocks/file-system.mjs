@@ -15,3 +15,4 @@ export async function readAsStringAsync(uri) {
 export async function writeAsStringAsync(uri, content) { files.set(uri, String(content)); }
 export async function makeDirectoryAsync() { /* noop */ }
 export async function deleteAsync(uri) { files.delete(uri); }
+export async function readDirectoryAsync(dir) { return [...files.keys()].filter(k => k.startsWith(dir) && !k.slice(dir.length).includes('/')).map(k => k.slice(dir.length)); }
