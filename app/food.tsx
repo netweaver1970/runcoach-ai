@@ -29,7 +29,7 @@ import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT } from '.
 import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
-  scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods,
+  scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -626,7 +626,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
         )}
 
         {mode.m === 'portion' ? (
-          <PortionPanel item={mode.item} initial={mode.grams} isFav={lib.favs.includes(mode.item.key)} forChip={activeChip ?? undefined}
+          <PortionPanel key={`p${mode.item.key}`} item={mode.item} initial={mode.grams} isFav={lib.favs.includes(mode.item.key)} forChip={activeChip ?? undefined}
             onFav={() => guard(async () => { await toggleFav(mode.item.key, { name: mode.item.name, src: mode.item.src, per100: mode.item.per100, ...(mode.item.unit ? { unit: mode.item.unit } : {}), ...(mode.item.serving ? { serving: mode.item.serving } : {}) }); await refreshLib(); })}
             onCancel={() => setMode({ m: 'search' })}
             onConfirm={g => guard(async () => {
@@ -642,7 +642,7 @@ function AddSheet({ date, lib: lib0, onClose }: { date: string; lib: FoodLibrary
             onTotals={name => setMode({ m: 'quick', name, ean: mode.ean })}
             onSave={f => guard(async () => { const item = await addCustomFood(f); await refreshLib(); setMode({ m: 'portion', item, grams: item.serving?.g }); })} />
         ) : mode.m === 'editItem' ? (
-          <PortionPanel item={{ key: mode.entry.key, src: mode.entry.src, id: idOf(mode.entry.key), name: mode.entry.name, per100: perOf(mode.entry), ...ownExtras(mode.entry.key, { unit: mode.entry.unit }) }}
+          <PortionPanel key={`e${mode.entry.id}`} item={{ key: mode.entry.key, src: mode.entry.src, id: idOf(mode.entry.key), name: mode.entry.name, per100: perOf(mode.entry), ...ownExtras(mode.entry.key, { unit: mode.entry.unit }) }}
             initial={mode.entry.grams} isFav={lib.favs.includes(mode.entry.key)} confirmLabel="Save"
             onFav={() => guard(async () => { await toggleFav(mode.entry.key, { name: mode.entry.name, src: mode.entry.src, per100: perOf(mode.entry) }); await refreshLib(); })}
             onCancel={() => setMode({ m: 'search' })}
@@ -768,17 +768,48 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
 }) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
-  const def = defaultServing(item);
-  const [txt, setTxt] = useState(String(r0(initial ?? def.g)));
+  const [def, setDef] = useState(() => defaultServing(item));   // your own serving size if set, else label/table
+  const u = item.unit === 'ml' ? 'ml' : 'g';
+  // A food with a real serving / piece / pack ("1 bottle = 240 ml", or the size YOU set) can be entered in SERVINGS
+  // (¼ · ½ · 1 · 1½ …) as well as in grams. A bare "100 g" fallback is no serving.
+  const own = !!servingOverrides[item.key];
+  const piece = def.g > 0 && (own || /^1\s+\S/.test(def.label)) ? def : null;
+  const pieceName = piece ? piece.label.replace(/^1\s+/, '') || 'serving' : '';
+  const quarterOf = (gr: number) => !!piece && Math.abs(gr / piece.g * 4 - Math.round(gr / piece.g * 4)) < 0.02;
+  const [bySrv, setBySrv] = useState(() => !!piece && (initial == null || quarterOf(initial)));
+  const fmtS = (v: number) => String(Math.round(v * 100) / 100);
+  const [txt, setTxt] = useState(() => (bySrv && piece ? fmtS((initial ?? piece.g) / piece.g) : String(r0(initial ?? def.g))));
   const [fav, setFav] = useState(isFav);
-  const g = parseFloat(txt.replace(',', '.'));
+  const [editSrv, setEditSrv] = useState<string | null>(null);   // the "1 serving = … g" editor (text) while open
+  const qty = parseFloat(txt.replace(',', '.'));
+  const g = bySrv && piece ? qty * piece.g : qty;
   const valid = isFinite(g) && g > 0 && g < 5000;
   const n = valid ? scaleNutr(item.per100, g) : {};
-  const u = item.unit === 'ml' ? 'ml' : 'g';
-  // A food with its own piece/pack size ("1 can = 330 ml") offers pieces first: ½ · 1 · 2 of it.
-  const piece = item.serving && item.serving.g > 0 && /^1\s+\S/.test(item.serving.label) ? item.serving : null;
-  const pieceName = piece ? piece.label.replace(/^1\s+/, '') : '';
-  const chipsRaw: { v: number; label: string }[] = piece
+  const switchUnit = (toSrv: boolean) => {
+    if (!piece || toSrv === bySrv) return;
+    if (isFinite(g) && g > 0) setTxt(toSrv ? fmtS(g / piece.g) : String(r0(g)));
+    setBySrv(toSrv);
+  };
+  const saveSrv = async () => {
+    const v = parseFloat((editSrv ?? '').replace(',', '.'));
+    if (!(isFinite(v) && v > 0 && v < 5000)) return;
+    const sv = { g: Math.round(v * 10) / 10, label: piece && !/^1\s+serving$/.test(piece.label) ? piece.label : '1 serving' };
+    Keyboard.dismiss();
+    try { await setServing(item.key, sv); } catch { Alert.alert('Not saved', 'Could not save the serving size — try again.'); return; }
+    setDef(sv); setEditSrv(null);
+    if (bySrv) setTxt('1'); else { setTxt(fmtS(1)); setBySrv(true); }
+  };
+  const resetSrv = async () => {
+    Keyboard.dismiss();
+    try { await setServing(item.key, null); } catch { Alert.alert('Not saved', 'Could not reset the serving size — try again.'); return; }
+    const d = defaultServing(item);
+    setDef(d); setEditSrv(null);
+    const p2 = d.g > 0 && /^1\s+\S/.test(d.label);
+    if (!p2) { setBySrv(false); setTxt(String(r0(d.g))); } else if (bySrv) setTxt('1');
+  };
+  const chipsRaw: { v: number; label: string }[] = bySrv && piece
+    ? [0.25, 0.5, 0.75, 1, 1.5, 2].map(k => ({ v: k * piece.g, label: `${({ 0.25: '¼', 0.5: '½', 0.75: '¾', 1.5: '1½' } as Record<number, string>)[k] ?? k} · ${r0(k * piece.g)} ${u}` }))
+    : piece
     ? [
         { v: piece.g, label: `1 ${pieceName} · ${r0(piece.g)} ${u}` },
         { v: piece.g / 2, label: `½ · ${r0(piece.g / 2)} ${u}` },
@@ -788,7 +819,9 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
       ]
     : [...new Set([def.g, ...(initial ? [initial] : []), Math.round(def.g / 2), def.g * 2, 50, 100, 150, 200].map(r0))].filter(x => x > 0).slice(0, 7).map(v => ({ v, label: `${v} ${u}` }));
   // one chip per amount (a 100 ml piece must not also get the fixed "100 ml" chip → duplicate key + double highlight)
-  const chips = chipsRaw.filter((ch, i) => chipsRaw.findIndex(o => r0(o.v) === r0(ch.v)) === i);
+  const same = (a: number, b: number) => (bySrv && piece ? Math.abs(a - b) < piece.g * 0.01 : r0(a) === r0(b));   // tiny servings: compare by count
+  const chips = chipsRaw.filter((ch, i) => chipsRaw.findIndex(o => same(o.v, ch.v)) === i);
+  const setChip = (v: number) => setTxt(bySrv && piece ? fmtS(v / piece.g) : String(r0(v)));
   const off = item.src === 'off' ? (item as OffProduct) : null;
   return (
     <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 40 }}>
@@ -808,15 +841,38 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
       {off?.implausible && <Text style={s.warn}>These values don't add up (energy vs carbs/protein/fat) — probably mis-entered on Open Food Facts. Check the pack, or enter the label.</Text>}
       <Text style={[s.resultSub, { marginTop: 4 }]}>Per 100 {u}{off ? ' (or 100 mL)' : ''}: {r0(item.per100.kcal)} kcal · {macroLine(item.per100)}</Text>
 
+      {piece && (
+        <View style={[s.tabs, { marginTop: 10 }]}>
+          {([false, true] as const).map(v => (
+            <TouchableOpacity key={String(v)} onPress={() => switchUnit(v)} style={[s.tab, { flex: 1, alignItems: 'center' }, bySrv === v && s.tabOn]}>
+              <Text style={[s.tabTxt, bySrv === v && s.tabTxtOn]}>{v ? `Servings (${pieceName})` : u === 'ml' ? 'Millilitres' : 'Grams'}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
       <View style={s.gramsRow}>
         <TextInput style={s.gramsInput} value={txt} onChangeText={setTxt} keyboardType="decimal-pad" selectTextOnFocus />
-        <Text style={s.gramsUnit}>{u}</Text>
-        <Text style={s.gramsHint}>{piece ? `1 ${pieceName} = ${r0(piece.g)} ${u}` : def.label !== '100 g' ? `${def.label} ≈ ${def.g} g` : ''}</Text>
+        <Text style={s.gramsUnit}>{bySrv && piece ? (isFinite(qty) && qty === 1 ? pieceName : `× ${pieceName}`) : u}</Text>
+        <Text style={s.gramsHint}>{bySrv && piece ? (valid ? `= ${r0(g)} ${u}` : '') : piece ? `1 ${pieceName} = ${r0(piece.g)} ${u}` : def.label !== '100 g' ? `${def.label} ≈ ${def.g} g` : ''}</Text>
       </View>
+      {editSrv == null ? (
+        <TouchableOpacity onPress={() => setEditSrv(String(r0(piece?.g ?? (valid ? g : 100))))} hitSlop={6}>
+          <Text style={[s.hint, { color: c.accent }]}>{piece ? `✎ 1 ${pieceName} = ${r0(piece.g)} ${u}${own ? ' (yours)' : ''} — change` : '✎ Set a serving size for this food'}</Text>
+        </TouchableOpacity>
+      ) : (
+        <View style={[s.gramsRow, { marginTop: 4 }]}>
+          <Text style={s.gramsHint}>1 {pieceName || 'serving'} =</Text>
+          <TextInput style={[s.gramsInput, { minWidth: 70 }]} value={editSrv} onChangeText={setEditSrv} keyboardType="decimal-pad" selectTextOnFocus autoFocus />
+          <Text style={s.gramsUnit}>{u}</Text>
+          <TouchableOpacity onPress={saveSrv} hitSlop={6}><Text style={[s.chipTxt, { color: c.accent, fontWeight: '700' }]}>Save</Text></TouchableOpacity>
+          {own && <TouchableOpacity onPress={resetSrv} hitSlop={6}><Text style={[s.chipTxt, { marginLeft: 10 }]}>Reset</Text></TouchableOpacity>}
+          <TouchableOpacity onPress={() => { Keyboard.dismiss(); setEditSrv(null); }} hitSlop={6}><Text style={[s.chipTxt, { marginLeft: 10 }]}>✕</Text></TouchableOpacity>
+        </View>
+      )}
       <View style={s.chips}>
         {chips.map(ch => (
-          <TouchableOpacity key={ch.label} style={[s.chip, r0(g) === r0(ch.v) && s.chipOn]} onPress={() => setTxt(String(r0(ch.v)))}>
-            <Text style={[s.chipTxt, r0(g) === r0(ch.v) && { color: c.onAccent }]}>{ch.label}</Text>
+          <TouchableOpacity key={ch.label} style={[s.chip, same(g, ch.v) && s.chipOn]} onPress={() => setChip(ch.v)}>
+            <Text style={[s.chipTxt, same(g, ch.v) && { color: c.onAccent }]}>{ch.label}</Text>
           </TouchableOpacity>
         ))}
       </View>

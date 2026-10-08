@@ -68,12 +68,22 @@ export function mapNutriments(nm: Record<string, unknown> = {}): Nutr {
   return out;
 }
 
+/** "240 g" · "1 bouteille (25 cl)" · "0,25 l" · "200 gr" · "2 x 15 g" (→ 30) · "30g (2 biscuits)" → grams/ml. */
+export function servingFromText(t: unknown): number | undefined {
+  if (typeof t !== 'string') return undefined;
+  const m = /(?:(\d+)\s*[x×]\s*)?(\d+(?:[.,]\d+)?)\s*(gr?|ml|cl|l)\b/i.exec(t);
+  if (!m) return undefined;
+  const v = parseFloat(m[2].replace(',', '.')) * ({ g: 1, gr: 1, ml: 1, cl: 10, l: 1000 } as Record<string, number>)[m[3].toLowerCase()] * (m[1] ? parseInt(m[1], 10) : 1);
+  return isFinite(v) && v > 0 ? v : undefined;
+}
+
 function toItem(p: any): OffProduct | null {
   if (!p) return null;
   const code = String(p.code ?? '');
   const name = String(p.product_name_nl || p.product_name_en || p.product_name || p.product_name_fr || p.generic_name || '').trim();
   const per100 = mapNutriments(p.nutriments);
-  const sq = num(p.serving_quantity);
+  // serving_quantity is often missing while the text serving_size ("240 g", "1 bouteille (240 ml)") is there
+  const sq = num(p.serving_quantity) ?? servingFromText(p.serving_size);
   // Pack size "330ml" / "33 cl" / "1 l" / "250 g" → the unit and ONE PACK as the piece (single-serve packs only).
   const qm = typeof p.quantity === 'string' ? /^\s*(\d+(?:[.,]\d+)?)\s*(ml|cl|l|g|kg)\s*[e℮]?\s*$/i.exec(p.quantity) : null;
   const qUnit = qm ? qm[2].toLowerCase() : '';

@@ -76,7 +76,15 @@ export interface SavedMealItem { key: string; name: string; src: FoodSrc; grams?
 export interface SavedMeal { id: string; name: string; items: SavedMealItem[]; count: number; last?: string; hrs: number[] }
 /** A favourite keeps its own snapshot so it survives dropping out of recents and works for OFF/custom foods. */
 export interface FavItem { key: string; name: string; src: FoodSrc; per100?: Nutr; n?: Nutr; grams?: number; unit?: 'g' | 'ml'; serving?: { g: number; label: string } }
-export interface FoodLibrary { v: 1; custom: FoodItem[]; meals: SavedMeal[]; favs: string[]; favItems?: Record<string, FavItem>; recents: Recent[] }
+export interface FoodLibrary { v: 1; custom: FoodItem[]; meals: SavedMeal[]; favs: string[]; favItems?: Record<string, FavItem>; recents: Recent[];
+  servings?: Record<string, { g: number; label: string }>;   // YOUR serving size per food key (beats the label/table default)
+}
+/** In-memory mirror of FoodLibrary.servings so the sync defaultServing() can honour your own serving sizes. */
+export const servingOverrides: Record<string, { g: number; label: string }> = {};
+const syncServings = (l: FoodLibrary) => {
+  for (const k of Object.keys(servingOverrides)) delete servingOverrides[k];
+  Object.assign(servingOverrides, l.servings ?? {});
+};
 
 const DIR = FileSystem.documentDirectory;
 export const FOOD_LOG_PREFIX = 'runcoach-food-log-';
@@ -288,7 +296,7 @@ export function mealLabel(t: string): string {
 // ─── library ──────────────────────────────────────────────────────────────────────────────────────
 const emptyLib = (): FoodLibrary => ({ v: 1, custom: [], meals: [], favs: [], recents: [] });
 export async function loadLibrary(): Promise<FoodLibrary> {
-  try { return { ...emptyLib(), ...(await readJson<FoodLibrary>(LIB, emptyLib())) }; }
+  try { const l = { ...emptyLib(), ...(await readJson<FoodLibrary>(LIB, emptyLib())) }; syncServings(l); return l; }
   catch { return emptyLib(); }                          // display only; mutations throw instead of overwriting
 }
 function mutateLib(fn: (l: FoodLibrary) => void): Promise<FoodLibrary> {
@@ -296,6 +304,7 @@ function mutateLib(fn: (l: FoodLibrary) => void): Promise<FoodLibrary> {
     const l = { ...emptyLib(), ...(await readJson<FoodLibrary>(LIB, emptyLib())) };
     fn(l);
     await writeJson(LIB, l);
+    syncServings(l);
     return l;
   });
 }
@@ -321,6 +330,17 @@ async function touchRecent(item: FoodItem | { key: string; name: string; src: Fo
 }
 export async function rememberServing(key: string, grams: number): Promise<void> {
   await mutateLib(l => { const r = l.recents.find(x => x.key === key); if (r) r.grams = grams; });
+}
+/**
+ * Set (or clear with null) YOUR serving size for a food — e.g. a 240 g yoghurt drink bottle whose table/label default
+ * is 100 g. Stored per food key; defaultServing(), the portion panel and one-tap re-logs use it from then on.
+ */
+export async function setServing(key: string, serving: { g: number; label: string } | null): Promise<void> {
+  await mutateLib(l => {
+    const m = { ...(l.servings ?? {}) };
+    if (serving && serving.g > 0) m[key] = serving; else delete m[key];
+    l.servings = m;   // snapshots (custom/recent/fav) stay untouched → Reset falls back to the label serving
+  });
 }
 export async function toggleFav(key: string, snap?: Omit<FavItem, 'key'>): Promise<boolean> {
   let on = false;
@@ -393,7 +413,7 @@ export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'me
 
 /** Re-log a recent with its remembered serving (the 1–2 tap path). */
 export async function logRecent(r: Recent, date: string, via: EntryVia = 'recent', groupId?: string): Promise<FoodEntry> {
-  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? r.serving?.g ?? 100, via, date, groupId });
+  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? servingOverrides[r.key]?.g ?? r.serving?.g ?? 100, via, date, groupId });
   return logFood({ key: r.key, name: r.name, src: r.src, n: r.n ?? {} }, { via, date, groupId });
 }
 

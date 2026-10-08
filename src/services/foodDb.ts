@@ -10,6 +10,7 @@
  * Search is local, keyless and offline; Open Food Facts is only queried on an explicit tap (foodOff.ts).
  */
 import type { FoodItem, Nutr, NutrKey } from './foodLog';
+import { servingOverrides } from './foodLog';
 import { matchSports, sportsByKey } from './foodSports';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -279,6 +280,8 @@ const GROUP_SERVING: Record<string, { g: number; label: string }> = {
   '0103': { g: 300, label: 'plate' }, '0104': { g: 150, label: 'slice' }, '0105': { g: 200, label: '1 sandwich' },
 };
 export function defaultServing(f: FoodItem): { g: number; label: string } {
+  const own = servingOverrides[f.key];   // the serving size YOU set for this food wins
+  if (own && own.g > 0) return own;
   if (f.serving) return f.serving;
   // dry grains / flakes / dry pasta are weighed dry: 180 g "cooked portion" of raw oats would be ~680 kcal
   if ((f.grp === '0301' || f.grp === '0707') && /\b(raw|cru|crue|crus|dry|sec|seche|seches|flakes|flocons)\b/.test(norm(`${f.name} ${f.nameAlt ?? ''}`))
