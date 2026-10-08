@@ -21,6 +21,7 @@ import {
 import Svg, { Circle } from 'react-native-svg';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
+import { ModeHeader } from '../src/components/ModeHeader';
 
 import {
   requestPermissions,
@@ -612,6 +613,9 @@ export default function HomeScreen() {
   if (!onbChecked) return <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} />;  // blank until the onboarding check resolves
   if (loading) {
     return (
+      <SafeAreaView style={styles.container}>
+      <ModeHeader title="RunCoach AI" showHome={false} insetTop={false}
+        actions={[{ icon: '⚙️', onPress: () => router.push('/settings'), label: 'Settings' }]} />
       <View style={styles.center}>
         <ActivityIndicator size="large" color={c.accent} />
         <Text style={styles.loadingText}>
@@ -629,6 +633,7 @@ export default function HomeScreen() {
           <Text style={styles.progressPct}>{loadingStep.pct}%</Text>
         )}
       </View>
+      </SafeAreaView>
     );
   }
 
@@ -699,6 +704,9 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* the shared mode header (Biology's): title + Settings; no 🏠 on Home itself */}
+      <ModeHeader title="RunCoach AI" showHome={false} insetTop={false}
+        actions={[{ icon: '⚙️', onPress: () => router.push('/settings'), label: 'Settings' }]} />
       {/* Whole screen is day-swipeable (← → between days); the responder only claims
           horizontal gestures so vertical scroll + pull-to-refresh still work. */}
       <View style={{ flex: 1 }} {...swipe.panHandlers}>

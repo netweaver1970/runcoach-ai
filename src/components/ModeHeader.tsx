@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { setStatusBarStyle } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../theme';
 
@@ -8,17 +9,28 @@ import { useTheme, useThemedStyles, Palette } from '../theme';
 // 🏠 button, the mode title, then the mode's action icons on the right; optional extra rows (range tabs, day nav)
 // go in `children`. Keeps every mode's top the same (Geert, 2026-10-08: "harmonize… take the Biology screen").
 export interface ModeAction { icon: string; onPress: () => void; off?: boolean; disabled?: boolean; label?: string }
-export function ModeHeader({ title, actions = [], loading, children }: { title: string; actions?: ModeAction[]; loading?: boolean; children?: React.ReactNode }) {
+// showHome=false on Home itself (nothing to go back to); insetTop=false when the screen already sits in a SafeAreaView.
+export function ModeHeader({ title, actions = [], loading, children, showHome = true, insetTop = true }: {
+  title: string; actions?: ModeAction[]; loading?: boolean; children?: React.ReactNode; showHome?: boolean; insetTop?: boolean;
+}) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  // the app-wide status bar is 'light' (white, for the orange native headers); this header sits on the theme
+  // background → dark icons on a light theme while a mode screen is in front, back to light when it isn't
+  useFocusEffect(React.useCallback(() => {
+    setStatusBarStyle(c.mode === 'dark' ? 'light' : 'dark');
+    return () => setStatusBarStyle('light');
+  }, [c.mode]));
   return (
-    <View style={[s.header, { paddingTop: insets.top + 4 }]}>
+    <View style={[s.header, { paddingTop: (insetTop ? insets.top : 0) + 4 }]}>
       <View style={[s.headerTop, !children && { marginBottom: 0 }]}>
-        <TouchableOpacity style={s.homeBtn} onPress={() => (router.canGoBack() ? router.back() : router.replace('/' as any))} accessibilityLabel="Home">
-          <Text style={s.homeBtnTxt}>🏠</Text>
-        </TouchableOpacity>
+        {showHome && (
+          <TouchableOpacity style={s.homeBtn} onPress={() => (router.canGoBack() ? router.back() : router.replace('/' as any))} accessibilityLabel="Home">
+            <Text style={s.homeBtnTxt}>🏠</Text>
+          </TouchableOpacity>
+        )}
         <Text style={s.hTitle} numberOfLines={1}>{title}</Text>
         <View style={{ flex: 1 }} />
         {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}

@@ -1,6 +1,5 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { TouchableOpacity, Text } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
@@ -86,15 +85,7 @@ function RootStack() {
           name="index"
           options={{
             title: 'RunCoach AI',
-            headerRight: () => (
-              <TouchableOpacity
-                onPress={() => router.push('/settings')}
-                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-                style={{ paddingVertical: 6, paddingHorizontal: 10, marginRight: 2 }}
-              >
-                <Text style={{ color: '#fff', fontSize: 22 }}>⚙️</Text>
-              </TouchableOpacity>
-            ),
+            headerShown: false,   // Home draws the shared ModeHeader itself (same top as Biology / Strength / Food); title stays = back label
           }}
         />
         <Stack.Screen name="analysis" options={{ title: 'Coach Report', headerBackTitle: 'Back' }} />
