@@ -8,6 +8,8 @@ struct KPIPoint: Codable, Hashable {
   let v: Double
   let a: Int?                // 1 = asleep (sleep shading)
   let g: Int?               // 1 = break the line before this point (data hole / workout)
+  let w: Int?               // in a workout: 1 = strength (dumbbell icon), 2 = cardio (runner icon)
+  let x: Int?               // 1 = not part of the line (a workout excluded from stress — band + icon only)
 }
 struct KPI: Codable, Identifiable, Hashable {
   var id: String { key }

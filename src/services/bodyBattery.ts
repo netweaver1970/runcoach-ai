@@ -206,7 +206,9 @@ const HRV_WIN_MIN   = 65;     // carry a trusted read this many minutes to fill 
 const safe = async <T>(fn: () => Promise<T>, fb: T): Promise<T> => { try { return await fn(); } catch { return fb; } };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export interface BatteryPoint { t: number; battery: number; stress: number; asleep: boolean; workout: boolean; }
+export interface BatteryPoint { t: number; battery: number; stress: number; asleep: boolean; workout: boolean;
+  wt?: 'strength' | 'cardio' | 'other';   // the workout kind in this bin (graphs: dumbbell / runner / no icon)
+}
 const WORKOUT_SETTLE_MS = 15 * 60_000; // exclude exercise + this settle window from the stress curve
 export interface BodyBattery {
   current: number;        // 0–100 now
@@ -572,9 +574,13 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
   // not psychological/physiological stress — exclude that span from the stress curve so a
   // run doesn't read as a stress spike. Built from the snapshot's workouts (runs included).
   const workoutWins = (((snap as any)?.activities ?? []) as any[])
-    .map(a => { const s = new Date(a.date).getTime(); return { s, e: s + (a.durationMin ?? 0) * 60_000 + WORKOUT_SETTLE_MS }; })
+    .map(a => { const s = new Date(a.date).getTime(); return { s, e: s + (a.durationMin ?? 0) * 60_000 + WORKOUT_SETTLE_MS,
+      // functional/traditional strength → dumbbell; yoga / flexibility / mind-body / cooldown → no icon; else runner
+      kind: ([20, 50].includes(a.activityType) ? 'strength' : [57, 62, 80].includes(a.activityType) ? 'other' : 'cardio') as 'strength' | 'cardio' | 'other' }; })
     .filter(w => Number.isFinite(w.s) && w.e > fromMs);
   const inWorkout = (t: number) => workoutWins.some(w => t >= w.s && t <= w.e);
+  // the LATEST-starting window containing t: a run straight after lifting is the run, not the lift's +15-min settle tail
+  const workoutKind = (t: number) => workoutWins.filter(w => t >= w.s && t <= w.e).sort((p, q) => q.s - p.s)[0]?.kind;
   // The +WORKOUT_SETTLE_MS tail above exists to keep post-exercise HR OUT OF THE STRESS CURVE. It must NOT
   // also drain you at exercise intensity — you've stopped moving. Draining the settle window at the full
   // %HRR workout rate was silently adding ~15 min of hard drain to EVERY session (2026-07-14 paired-Bevel
@@ -712,7 +718,7 @@ export async function computeBodyBattery(): Promise<BodyBattery | null> {
     // Only honour anchors that fall INSIDE the 60h window; a stale one (e.g. days old) would otherwise
     // apply at the window's start and skew the whole curve. anchor.at must be ≥ start to bite here.
     if (anchor && anchor.at >= start && !anchored && mid >= anchor.at) { battery = clamp(anchor.value, 0, 100); anchored = true; }
-    series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout });
+    series.push({ t, battery: Math.round(battery), stress: Math.round(stress), asleep, workout, ...(workout ? { wt: workoutKind(mid) } : {}) });
     binDebug.push({ m: relMin(t), hr: Math.round(avgHR), a: asleep ? 1 : 0, ses: night ? 1 : 0, stg: stage, wo: workout ? 1 : 0, hrv: vHrv ? Math.round(vHrv) : 0, s: Math.round(stress), s0: night ? Math.round(stress) : Math.max(0, Math.round(stress - DAY_STRESS_OFFSET)), h: Math.round(hoursAwake * 10) / 10, tm: Math.round(timeMult * 100) / 100, b: Math.round(battery) });
     corrBins.push({ t, s: Math.round(stress), hr: Math.round(avgHR), hrv: vHrv ? Math.round(vHrv) : 0, stg: stage, a: night ? 1 : 0, b: Math.round(battery) });
   }

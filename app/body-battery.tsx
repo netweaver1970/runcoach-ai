@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, Stop } from 'react-native-svg';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { shareJson } from '../src/shareJson';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
@@ -25,6 +26,47 @@ function splitRuns<T extends { t: number }>(pts: T[]): T[][] {
     runs[runs.length - 1].push(pts[i]);
   }
   return runs;
+}
+
+// ── Day-graph sections: sleep (moon) and workouts (dumbbell = strength, runner = cardio) ──────────────────────
+// Each band is marked by an ICON above it, not just its tint. Contiguous points merge into one band (≤ 15-min gaps);
+// a workout band also splits where the kind changes (a run straight after lifting gets its own runner).
+type BandKind = 'sleep' | 'strength' | 'cardio' | 'other';
+interface Band { s: number; e: number; kind: BandKind }
+const BAND_ICON: Record<BandKind, 'weather-night' | 'dumbbell' | 'run' | null> = { sleep: 'weather-night', strength: 'dumbbell', cardio: 'run', other: null };
+const BAND_COLOR: Record<BandKind, string> = { sleep: '#6366F1', strength: '#F97316', cardio: '#F97316', other: '#F97316' };
+const ICON = 13;
+function dayBands(pts: BatteryPoint[], which: 'sleep' | 'workout'): Band[] {
+  const out: Band[] = [];
+  for (const p of pts) {
+    const on = which === 'sleep' ? p.asleep : p.workout;
+    if (!on) continue;
+    const kind: BandKind = which === 'sleep' ? 'sleep' : (p.wt ?? 'cardio');
+    const last = out[out.length - 1];
+    if (last && last.kind === kind && p.t - last.e <= 15 * 60_000) last.e = p.t;
+    else out.push({ s: p.t, e: p.t, kind });
+  }
+  return out;
+}
+// the icon row (absolute RN views over the Svg, centred on each band; very close icons are thinned)
+function BandIcons({ bands, x, padT }: { bands: Band[]; x: (t: number) => number; padT: number }) {
+  const top = Math.max(0, (padT - ICON) / 2);   // centred in the strip above the plot
+  // by MIDPOINT (what's drawn), thinned so icons never touch (a band nested in another keeps only one icon)
+  const placed = bands.filter(b => BAND_ICON[b.kind]).map(b => ({ b, cx: (x(b.s) + x(b.e)) / 2 })).sort((p, q) => p.cx - q.cx);
+  let lastX = -99;
+  return (
+    <>
+      {placed.map(({ b, cx }, i) => {
+        if (cx - lastX < ICON + 1) return null;
+        lastX = cx;
+        return (
+          <View key={i} pointerEvents="none" style={{ position: 'absolute', left: cx - ICON / 2, top }}>
+            <MaterialCommunityIcons name={BAND_ICON[b.kind]!} size={ICON} color={BAND_COLOR[b.kind]} />
+          </View>
+        );
+      })}
+    </>
+  );
 }
 
 // Catmull-Rom → cubic-Bézier: a smooth curve through the points (no overshoot artefacts),
@@ -233,8 +275,8 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
   const { width: winW } = useWindowDimensions();       // reactive to rotation
   const insets = useSafeAreaInsets();                  // landscape notch/home-indicator side padding
   const W = Math.round(winW - insets.left - insets.right) - 32;
-  const H = 170;
-  const padL = 26, padR = 8, padT = 10, padB = 18;
+  const H = 180;
+  const padL = 26, padR = 8, padT = 20, padB = 18;   // padT leaves a row for the section icons
   const gw = W - padL - padR, gh = H - padT - padB;
   const pts = data.series;
   if (pts.length < 2) return null;
@@ -247,14 +289,7 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
   const lineFor = (run: typeof pts) => smoothPath(run.map(p => ({ x: x(p.t), y: y(p.battery) })));
   const areaFor = (run: typeof pts) => run.length < 2 ? '' : `${lineFor(run)} L${x(run[run.length - 1].t).toFixed(1)},${y(0).toFixed(1)} L${x(run[0].t).toFixed(1)},${y(0).toFixed(1)} Z`;
 
-  // Sleep bands (contiguous asleep runs)
-  const bands: { s: number; e: number }[] = [];
-  for (const p of pts) {
-    if (!p.asleep) continue;
-    const last = bands[bands.length - 1];
-    if (last && p.t - last.e <= 15 * 60_000) last.e = p.t;
-    else bands.push({ s: p.t, e: p.t });
-  }
+  const bands = dayBands(pts, 'sleep'), wBands = dayBands(pts, 'workout');
 
   const cur = pts[pts.length - 1];
   const hourLabels = [0, 6, 12, 18].map(h => {
@@ -264,6 +299,7 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
 
   return (
     <View style={s.graphCard}>
+      <View>
       <Svg width={W} height={H}>
         {/* gridlines */}
         {[0, 25, 50, 75, 100].map(v => (
@@ -272,9 +308,12 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
             <SvgText x={2} y={y(v) + 3} fontSize={8} fill={axis} fontWeight="600">{v}</SvgText>
           </React.Fragment>
         ))}
-        {/* sleep bands */}
+        {/* sleep + workout bands */}
         {bands.map((b, i) => (
           <Rect key={i} x={x(b.s)} y={padT} width={Math.max(1, x(b.e) - x(b.s))} height={gh} fill="#6366F1" opacity={0.12} />
+        ))}
+        {wBands.map((b, i) => (
+          <Rect key={`w${i}`} x={x(b.s)} y={padT} width={Math.max(1.5, x(b.e) - x(b.s))} height={gh} fill="#F97316" opacity={0.12} />
         ))}
         {/* area + line (one path per contiguous run; gaps left as holes) */}
         {runs.map((run, i) => <Path key={`a${i}`} d={areaFor(run)} fill={levelColor(cur.battery)} opacity={0.12} />)}
@@ -286,7 +325,9 @@ function BatteryGraph({ data }: { data: BodyBattery }) {
           <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} fontWeight="600" textAnchor="middle">{h.label}</SvgText>
         ))}
       </Svg>
-      <Text style={s.graphCaption}>Last 24h · shaded = asleep</Text>
+      <BandIcons bands={[...bands, ...wBands]} x={x} padT={padT} />
+      </View>
+      <Text style={s.graphCaption}>Last 24h · 🌙 asleep · dumbbell = strength · runner = cardio</Text>
     </View>
   );
 }
@@ -299,8 +340,8 @@ function StressGraph({ data }: { data: BodyBattery }) {
   const { width: winW } = useWindowDimensions();       // reactive to rotation
   const insets = useSafeAreaInsets();                  // landscape notch/home-indicator side padding
   const W = Math.round(winW - insets.left - insets.right) - 32;
-  const H = 150;
-  const padL = 26, padR = 8, padT = 10, padB = 18;
+  const H = 160;
+  const padL = 26, padR = 8, padT = 20, padB = 18;   // padT leaves a row for the section icons
   const gw = W - padL - padR, gh = H - padT - padB;
   const pts = data.series;
   if (pts.length < 2) return null;
@@ -308,26 +349,11 @@ function StressGraph({ data }: { data: BodyBattery }) {
   const x = (t: number) => padL + ((t - t0) / Math.max(1, t1 - t0)) * gw;
   const y = (v: number) => padT + (1 - v / 100) * gh;
 
-  // Sleep bands (contiguous asleep runs)
-  const bands: { s: number; e: number }[] = [];
-  for (const p of pts) {
-    if (!p.asleep) continue;
-    const last = bands[bands.length - 1];
-    if (last && p.t - last.e <= 15 * 60_000) last.e = p.t;
-    else bands.push({ s: p.t, e: p.t });
-  }
-
+  const bands = dayBands(pts, 'sleep');
   const cur = pts[pts.length - 1];
-
   // Workout (+settle) bands — the stress curve excludes these (exercise HR ≠ stress); show
   // them as a faint marker and BREAK the line across them so the gap is explained, not bridged.
-  const wBands: { s: number; e: number }[] = [];
-  for (const p of pts) {
-    if (!p.workout) continue;
-    const last = wBands[wBands.length - 1];
-    if (last && p.t - last.e <= 15 * 60_000) last.e = p.t;
-    else wBands.push({ s: p.t, e: p.t });
-  }
+  const wBands = dayBands(pts, 'workout');
   // Build line runs from non-workout points, breaking on data gaps OR right after a workout.
   const runs: BatteryPoint[][] = [];
   for (let i = 0; i < pts.length; i++) {
@@ -347,6 +373,7 @@ function StressGraph({ data }: { data: BodyBattery }) {
   return (
     <View style={s.graphCard}>
       <Text style={s.graphTitle}>Stress  <Text style={{ color: stressColor(cur.stress) }}>{cur.stress}</Text></Text>
+      <View>
       <Svg width={W} height={H}>
         {[0, 25, 50, 75, 100].map(v => (
           <React.Fragment key={v}>
@@ -378,7 +405,9 @@ function StressGraph({ data }: { data: BodyBattery }) {
           <SvgText key={i} x={x(h.t)} y={H - 4} fontSize={8} fill={axis} fontWeight="600" textAnchor="middle">{h.label}</SvgText>
         ))}
       </Svg>
-      <Text style={s.graphCaption}>Stress · last 24h · blue = asleep · orange = workout (excluded +15m)</Text>
+      <BandIcons bands={[...bands, ...wBands]} x={x} padT={padT} />
+      </View>
+      <Text style={s.graphCaption}>Stress · last 24h · 🌙 asleep · dumbbell / runner = workout (excluded +15m)</Text>
     </View>
   );
 }

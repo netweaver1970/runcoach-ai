@@ -40,9 +40,11 @@ const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' :
 const ms = (d: string) => Date.parse(d.length <= 10 ? d + 'T12:00:00' : d);
 
 // series points carry optional context flags: a = asleep, g = break-the-line-before (a data
-// hole or an excluded workout). frame tells the watch how to annotate: "day" → sleep shading +
-// gaps; "multi" → vertical week dividers (Mondays) at the `marks` indices.
-interface CtxPoint { t: number; v: number; a?: number; g?: number }
+// hole or an excluded workout), w = in a workout (1 strength → dumbbell, 2 cardio → runner on the watch),
+// x = not part of the line (a workout excluded from stress: kept only so the watch can draw its band + icon).
+// frame tells the watch how to annotate: "day" → sleep/workout shading + icons + gaps; "multi" → vertical week
+// dividers (Mondays) at the `marks` indices.
+interface CtxPoint { t: number; v: number; a?: number; g?: number; w?: number; x?: number }
 interface OutKPI {
   key: string; label: string; unit: string; value: number; color: string;
   grad?: string[]; frame?: 'day' | 'multi'; marks?: number[]; series: CtxPoint[];
@@ -70,7 +72,7 @@ function prep(pts: { t: number; v: number }[], n = 80): { t: number; v: number }
 // mark a break (g=1) before any real data hole (watch off) or excluded workout.
 const HOLE_MS = 30 * 60_000;
 function prepIntraday(
-  src: { t: number; v: number; asleep: boolean; workout: boolean }[],
+  src: { t: number; v: number; asleep: boolean; workout: boolean; wt?: 'strength' | 'cardio' | 'other' }[],
   excludeWorkout: boolean,
   n = 150,
 ): CtxPoint[] {
@@ -84,9 +86,11 @@ function prepIntraday(
   const res: CtxPoint[] = [];
   let prevT: number | null = null, pendingBreak = false;
   for (const p of clean) {
-    if (excludeWorkout && p.workout) { pendingBreak = true; continue; }
+    const w = p.workout ? { w: p.wt === 'strength' ? 1 : p.wt === 'other' ? 3 : 2 } : {};   // 3 = no icon on the watch
+    // an excluded workout stays in the series (for its band + icon) but is flagged out of the line
+    if (excludeWorkout && p.workout) { res.push({ t: p.t, v: Math.round(p.v), ...w, x: 1 }); pendingBreak = true; continue; }
     const gap = pendingBreak || (prevT != null && p.t - prevT > HOLE_MS);
-    res.push({ t: p.t, v: Math.round(p.v), ...(p.asleep ? { a: 1 } : {}), ...(gap ? { g: 1 } : {}) });
+    res.push({ t: p.t, v: Math.round(p.v), ...(p.asleep ? { a: 1 } : {}), ...(gap ? { g: 1 } : {}), ...w });
     prevT = p.t; pendingBreak = false;
   }
   return res;
@@ -112,8 +116,8 @@ export async function syncWatch(bbIn?: any, snapIn?: any): Promise<boolean> {
 
     if (bb) {
       // Intraday: stress excludes workouts (gap); battery keeps them (it really drains).
-      const stressSrc = bb.series.map((p: any) => ({ t: p.t, v: p.stress, asleep: p.asleep, workout: p.workout }));
-      const batterySrc = bb.series.map((p: any) => ({ t: p.t, v: p.battery, asleep: p.asleep, workout: p.workout }));
+      const stressSrc = bb.series.map((p: any) => ({ t: p.t, v: p.stress, asleep: p.asleep, workout: p.workout, wt: p.wt }));
+      const batterySrc = bb.series.map((p: any) => ({ t: p.t, v: p.battery, asleep: p.asleep, workout: p.workout, wt: p.wt }));
       kpis.push({ key: 'stress', label: 'Stress', unit: '', value: bb.currentStress, color: stressColor(bb.currentStress), frame: 'day', series: prepIntraday(stressSrc, true) });
       kpis.push({ key: 'battery', label: 'Body Battery', unit: '%', value: bb.current, color: batteryColor(bb.current), frame: 'day', series: prepIntraday(batterySrc, false) });
     }

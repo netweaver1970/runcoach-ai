@@ -12,6 +12,7 @@
     "android": "expo run:android"
   },
   "dependencies": {
+    "@expo/vector-icons": "~14.0.4",
     "@kingstinct/react-native-healthkit": "^9.0.0",
     "@react-native-community/datetimepicker": "8.2.0",
     "@react-native-picker/picker": "2.9.0",

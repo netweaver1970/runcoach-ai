@@ -39,10 +39,25 @@ private func sleepRanges(_ series: [KPIPoint]) -> [(Double, Double)] {
   return ranges
 }
 
+// Contiguous workout index ranges (±0.5) with their kind (1 = strength, 2 = cardio) — band + icon on the chart.
+private func workoutRanges(_ series: [KPIPoint]) -> [(Double, Double, Int)] {
+  var out: [(Double, Double, Int)] = []; var start: Int? = nil; var kind = 0
+  for (i, p) in series.enumerated() {
+    let k = p.w ?? 0
+    if let s = start, k != kind { out.append((Double(s) - 0.5, Double(i - 1) + 0.5, kind)); start = nil }
+    if k != 0 && start == nil { start = i; kind = k }
+  }
+  if let s = start { out.append((Double(s) - 0.5, Double(series.count - 1) + 0.5, kind)) }
+  return out
+}
+
 // Tiny legend under a chart explaining the context annotations.
 private func contextCaption(_ kpi: KPI) -> String? {
   if kpi.frame == "multi" { return (kpi.marks?.isEmpty == false) ? "┊ week (Mon)" : nil }
-  if kpi.series.contains(where: { ($0.a ?? 0) == 1 }) { return "▓ asleep" }
+  let sleep = kpi.series.contains(where: { ($0.a ?? 0) == 1 }), work = kpi.series.contains(where: { ($0.w ?? 0) != 0 })
+  if sleep && work { return "▓ asleep · ▓ workout" }
+  if sleep { return "▓ asleep" }
+  if work { return "▓ workout" }
   return nil
 }
 
@@ -152,7 +167,7 @@ struct KPIRow: View {
       if kpi.series.count > 1 {
         let lineStyle = kpi.grad.map { LinearGradient(colors: $0.map { Color(hex: $0) }, startPoint: .top, endPoint: .bottom) }
           ?? LinearGradient(colors: [color, color], startPoint: .top, endPoint: .bottom)
-        Chart(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
+        Chart(Array(kpi.series.enumerated()).filter { ($0.element.x ?? 0) == 0 }, id: \.offset) { i, pt in
           LineMark(x: .value("i", i), y: .value("v", pt.v)).foregroundStyle(lineStyle).interpolationMethod(.monotone)
         }
         .chartXAxis(.hidden).chartYAxis(.hidden)
@@ -175,7 +190,7 @@ struct KPIDetailView: View {
           Text(kpi.unit).font(.system(size: 16, weight: .semibold)).foregroundColor(.secondary)
         }
         if kpi.series.count > 1 {
-          let vals = kpi.series.map(\.v)
+          let vals = kpi.series.filter { ($0.x ?? 0) == 0 }.map(\.v)   // excluded workout points aren't on the line
           let fixed = ["stress", "battery", "recovery"].contains(kpi.key)
           let lo = fixed ? 0 : (vals.min() ?? 0)
           let hiRaw = fixed ? 100 : (vals.max() ?? 1)
@@ -186,18 +201,31 @@ struct KPIDetailView: View {
           // Segment ids break the line at gaps (data holes / workouts); sleep ranges shade the night.
           let segs = segmentIds(kpi.series)
           let sleep = sleepRanges(kpi.series)
+          let work = workoutRanges(kpi.series)
           Chart {
+            // sections: sleep (moon) and workouts (dumbbell = strength, runner = cardio) — an icon on top, not just a tint
             ForEach(Array(sleep.enumerated()), id: \.offset) { _, r in
               RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
                             yStart: .value("lo", lo), yEnd: .value("hi", hi))
                 .foregroundStyle(Color(hex: "6366F1").opacity(0.16))
+                .annotation(position: .overlay, alignment: .top) {
+                  Image(systemName: "moon.fill").font(.system(size: 9)).foregroundColor(Color(hex: "818CF8"))
+                }
+            }
+            ForEach(Array(work.enumerated()), id: \.offset) { _, r in
+              RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
+                            yStart: .value("lo", lo), yEnd: .value("hi", hi))
+                .foregroundStyle(Color(hex: "F97316").opacity(0.18))
+                .annotation(position: .overlay, alignment: .top) {
+                  Image(systemName: r.2 == 1 ? "dumbbell.fill" : "figure.run").font(.system(size: 9)).foregroundColor(Color(hex: "FB923C"))
+                }
             }
             ForEach(kpi.marks ?? [], id: \.self) { m in
               RuleMark(x: .value("wk", Double(m) - 0.5))
                 .foregroundStyle(Color.gray.opacity(0.35))
                 .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
             }
-            ForEach(Array(kpi.series.enumerated()), id: \.offset) { i, pt in
+            ForEach(Array(kpi.series.enumerated()).filter { ($0.element.x ?? 0) == 0 }, id: \.offset) { i, pt in
               AreaMark(x: .value("i", Double(i)), y: .value("v", pt.v), series: .value("seg", segs[i]))
                 .foregroundStyle(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.02)], startPoint: .top, endPoint: .bottom))
               LineMark(x: .value("i", Double(i)), y: .value("v", pt.v), series: .value("seg", segs[i]))
