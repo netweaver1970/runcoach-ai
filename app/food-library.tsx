@@ -12,7 +12,7 @@ import { SwipeRow } from '../src/components/SwipeRow';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   loadLibrary, setFavourites, setMealTags, forgetFoods, FoodLibrary, FavItem, KeptFood, MealTag, MEAL_TAGS, Nutr,
-  deleteCustomFood, deleteMeal, scaleNutr, foodUsage,
+  deleteCustomFood, deleteMeal, scaleNutr, foodUsage, mealUsage,
 } from '../src/services/foodLog';
 import { searchFoodsEx, foodByKey, norm } from '../src/services/foodDb';
 import { cachedProducts } from '../src/services/foodOff';
@@ -130,7 +130,12 @@ export default function FoodLibraryScreen() {
         renderItem={({ item: m }) => {
           const kcal = m.items.reduce((a, it) => a + ((it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams).kcal : it.n?.kcal) ?? 0), 0);
           return (
-            <SwipeRow onDelete={() => run(async () => { await deleteMeal(m.id); return loadLibrary(); })}>
+            <SwipeRow onDelete={async () => {
+              // logged before → deleting needs a replacement meal (picked in its editor); else delete
+              const u = await mealUsage(m).catch(() => ({ instances: 0, days: 0 }));
+              if (u.instances) { router.push({ pathname: '/food-meal' as any, params: { id: m.id, replace: '1' } }); return; }
+              run(async () => { await deleteMeal(m.id); return loadLibrary(); });
+            }}>
               <TouchableOpacity style={s.row} activeOpacity={0.7} onPress={() => router.push({ pathname: '/food-meal' as any, params: { id: m.id } })}>
                 <Text style={s.star}>🍽️</Text>
                 <View style={{ flex: 1 }}>

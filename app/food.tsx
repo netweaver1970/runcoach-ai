@@ -681,7 +681,11 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
         ) : mode.m === 'meal' ? (
           <MealPanel meal={mode.meal} onCancel={() => setMode({ m: 'search' })}
             onSaveItems={items => guard(async () => { await updateMealItems(mode.meal.id, items); await refreshLib(); })}
-            onConfirm={items => guard(async () => { await logged(await logMeal({ ...mode.meal, items }, date)); })} />
+            onConfirm={items => guard(async () => {
+              // components unticked in the preview are remembered → a later edit / replacement of the meal keeps them out
+              const skip = mode.meal.items.map(i => i.key).filter(k => !items.some(x => x.key === k));
+              await logged(await logMeal({ ...mode.meal, items }, date, 'meal', skip));
+            })} />
         ) : mode.m === 'online' ? (
           <OnlinePanel query={mode.query} results={mode.results} error={mode.error} onCancel={() => setMode({ m: 'search' })}
             onPick={p => { setMode({ m: 'portion', item: p, grams: chipGrams() ?? recentOf(p.key)?.grams }); }} />

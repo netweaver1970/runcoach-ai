@@ -102,7 +102,7 @@ export default function FoodItemScreen() {
     if (own) {
       const u = await foodUsage(key).catch(() => ({ entries: 0, days: 0, meals: [] as string[] }));
       if (u.entries || u.meals.length) {
-        Alert.alert(`"${name}" is in use`, `${u.entries ? `${u.entries} logged item${u.entries > 1 ? 's' : ''} on ${u.days} day${u.days > 1 ? 's' : ''}` : ''}${u.entries && u.meals.length ? ' and ' : ''}${u.meals.length ? `the meal${u.meals.length > 1 ? 's' : ''} ${u.meals.join(', ')}` : ''}. Pick the food that replaces it — the logged values stay exactly as they were.`, [
+        Alert.alert(`"${name}" is in use`, `${u.entries ? `${u.entries} logged item${u.entries > 1 ? 's' : ''} on ${u.days} day${u.days > 1 ? 's' : ''}` : ''}${u.entries && u.meals.length ? ' and ' : ''}${u.meals.length ? `the meal${u.meals.length > 1 ? 's' : ''} ${u.meals.join(', ')}` : ''}. Pick the food that replaces it — the logged amounts stay, their values are recalculated from it.`, [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Choose replacement', onPress: () => { openReplace(true).catch(() => {}); } },
         ]);
@@ -185,7 +185,7 @@ export default function FoodItemScreen() {
         onPick={to => {
           const u = picking!.usage, del2 = picking!.thenDelete;
           Keyboard.dismiss();
-          Alert.alert(`Replace by "${to.name}"?`, `${u.entries} logged item${u.entries === 1 ? '' : 's'} (${u.days} day${u.days === 1 ? '' : 's'})${u.meals.length ? ` and ${u.meals.length} saved meal${u.meals.length > 1 ? 's' : ''}` : ''} will show "${to.name}". Logged amounts and values stay as they were${u.meals.length ? '; saved meals use the new food from now on' : ''}.${del2 ? ` Then "${name}" is ${own ? 'deleted' : 'removed from your foods'}.` : ''}`, [
+          Alert.alert(`Replace by "${to.name}"?`, `${u.entries} logged item${u.entries === 1 ? '' : 's'} (${u.days} day${u.days === 1 ? '' : 's'})${u.meals.length ? ` and ${u.meals.length} saved meal${u.meals.length > 1 ? 's' : ''}` : ''} become "${to.name}": same logged amounts, values RECALCULATED from "${to.name}" (the day totals follow)${u.meals.length ? '; saved meals use the new food' : ''}.${del2 ? ` Then "${name}" is ${own ? 'deleted' : 'removed from your foods'}.` : ''}`, [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Replace', style: 'destructive', onPress: async () => {
               try {
@@ -218,7 +218,7 @@ function ReplacePicker({ open, lib, exclude, name, usage, thenDelete, q, setQ, o
           <Text style={[s.lbl, { flex: 1, marginTop: 0 }]}>Replace "{name}" by…</Text>
           <TouchableOpacity onPress={onClose} hitSlop={10}><Text style={s.ghostTxt}>Cancel</Text></TouchableOpacity>
         </View>
-        {usage && <Text style={s.hint}>Used in {usage.entries} logged item{usage.entries === 1 ? '' : 's'}{usage.days ? ` on ${usage.days} day${usage.days > 1 ? 's' : ''}` : ''}{usage.meals.length ? ` · meals: ${usage.meals.join(', ')}` : ''}. One-for-one: the logged values don't change, only which food they point to{thenDelete ? ` — then "${name}" goes` : ''}.</Text>}
+        {usage && <Text style={s.hint}>Used in {usage.entries} logged item{usage.entries === 1 ? '' : 's'}{usage.days ? ` on ${usage.days} day${usage.days > 1 ? 's' : ''}` : ''}{usage.meals.length ? ` · meals: ${usage.meals.join(', ')}` : ''}. One-for-one: the logged amounts stay, the values are recalculated from the food you pick{thenDelete ? ` — then "${name}" goes` : ''}.</Text>}
         <TextInput style={[s.input, { marginTop: 10 }]} value={q} onChangeText={setQ} placeholder="Search your foods + the food table" placeholderTextColor={c.textFaint} autoFocus autoCorrect={false} />
         <ScrollView keyboardShouldPersistTaps="handled" style={{ marginTop: 6 }}>
           {qt.length < 2 && <Text style={s.hint}>Your own foods — or type to search everything.</Text>}

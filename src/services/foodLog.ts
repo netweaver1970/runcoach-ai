@@ -60,6 +60,8 @@ export interface FoodEntry {
   via: EntryVia;
   confidence?: number;    // 0..1 for AI-derived entries
   groupId?: string;       // entries logged together (a saved meal, a copied meal, a parsed phrase)
+  mealId?: string;        // logged from this SAVED meal (→ a meal edit / replacement can redo the logged instances)
+  mealSkip?: string[];    // components of that meal left out when it was logged (the preview's unticked items)
 }
 export interface WaterEntry { id: string; t: string; ml: number }
 export interface DayLog { date: string; entries: FoodEntry[]; water: WaterEntry[]; complete?: boolean }
@@ -567,7 +569,11 @@ export async function replaceFoodEverywhere(oldKey: string, to: { key: string; n
       let changed = false;
       for (const day of Object.values(sh.days ?? {})) for (const e of day.entries ?? []) {
         if (e.key !== oldKey) continue;
-        e.key = to.key; e.name = to.name; e.src = to.src; n++; changed = true;
+        // FULL replacement (Geert 2026-10-08): the new food's values, recalculated for the logged amount
+        e.key = to.key; e.name = to.name; e.src = to.src;
+        if (to.per100 && e.grams != null) e.n = scaleNutr(withRs(to.key, to.per100), e.grams);
+        if (to.unit === 'ml') e.unit = 'ml'; else delete e.unit;
+        n++; changed = true;
       }
       if (changed) await writeJson(p, sh);
     }
@@ -584,6 +590,65 @@ export async function replaceFoodEverywhere(oldKey: string, to: { key: string; n
     l.recents = l.recents.filter(r => r.key !== oldKey);
   });
   return n;
+}
+// ─── saved meals on the logged days: find the logged instances, redo them from a (new / edited) meal ──────────────
+interface MealInstance { path: string; date: string; groupId: string; t: string; ids: string[]; skip: string[] }
+/** Logged instances of a saved meal: entries carrying its id, or (logged before ids were kept) a meal-logged group
+ *  whose foods are all components of it (≥ 2, ≥ half of them). */
+async function mealInstances(meal: SavedMeal): Promise<MealInstance[]> {
+  const keys = new Set(meal.items.map(i => i.key));
+  const out: MealInstance[] = [];
+  for (const p of await shardPaths()) {
+    const sh = await readJson<Shard>(p, { v: 1, days: {} }).catch(() => ({ v: 1 as const, days: {} }));
+    for (const [date, day] of Object.entries(sh.days ?? {})) {
+      const groups = new Map<string, FoodEntry[]>();
+      for (const e of day.entries ?? []) if (e.groupId) groups.set(e.groupId, [...(groups.get(e.groupId) ?? []), e]);
+      for (const [gid, es] of groups) {
+        const tagged = es.some(e => e.mealId === meal.id);
+        const legacy = !es.some(e => e.mealId) && es.every(e => (e.via === 'meal' || e.via === 'suggest') && keys.has(e.key))
+          && es.length >= Math.min(2, keys.size) && es.length * 2 >= keys.size;
+        if (!tagged && !legacy) continue;
+        const own = tagged ? es.filter(e => e.mealId === meal.id) : es;
+        const skip = tagged ? (own[0].mealSkip ?? []) : [...keys].filter(k => !es.some(e => e.key === k));
+        out.push({ path: p, date, groupId: gid, t: own[0].t, ids: own.map(e => e.id), skip });
+      }
+    }
+  }
+  return out;
+}
+export async function mealUsage(meal: SavedMeal): Promise<{ instances: number; days: number }> {
+  const ins = await mealInstances(meal);
+  return { instances: ins.length, days: new Set(ins.map(i => i.date)).size };
+}
+/**
+ * Redo every logged instance of `oldMeal` from `newMeal` (a replacement, or the same meal after an edit): its entries
+ * are removed and the new meal's components are logged in their place (same time + group), values RECALCULATED; a
+ * component left out at the time (unticked) stays out. Returns the number of instances redone.
+ */
+export async function relogMealEverywhere(oldMeal: SavedMeal, newMeal: SavedMeal): Promise<number> {
+  const ins = await mealInstances(oldMeal);
+  if (!ins.length) return 0;
+  await serial(async () => {
+    const byPath = new Map<string, MealInstance[]>();
+    for (const i of ins) byPath.set(i.path, [...(byPath.get(i.path) ?? []), i]);
+    for (const [p, list] of byPath) {
+      const sh = await readJson<Shard>(p, { v: 1, days: {} });
+      for (const i of list) {
+        const day = sh.days[i.date];
+        if (!day) continue;
+        const drop = new Set(i.ids);
+        const fresh: FoodEntry[] = newMeal.items.filter(it => !i.skip.includes(it.key)).map(it => ({
+          id: uid(), t: i.t, key: it.key, name: it.name, src: it.src, via: 'meal' as EntryVia, groupId: i.groupId, mealId: newMeal.id,
+          ...(i.skip.length ? { mealSkip: i.skip } : {}),
+          n: it.per100 && it.grams != null ? scaleNutr(withRs(it.key, it.per100), it.grams) : (it.n ?? {}),
+          ...(it.grams != null ? { grams: it.grams } : {}), ...(it.unit ? { unit: it.unit } : {}),
+        }));
+        day.entries = [...day.entries.filter(e => !drop.has(e.id)), ...fresh];
+      }
+      await writeJson(p, sh);
+    }
+  });
+  return ins.length;
 }
 /** Your own food was renamed → the logged entries show the new name too (values untouched). */
 export async function renameInLogs(key: string, name: string): Promise<void> {
@@ -617,11 +682,11 @@ export async function updateMealItems(id: string, items: SavedMealItem[]): Promi
 }
 export async function deleteMeal(id: string): Promise<void> { await mutateLib(l => { l.meals = l.meals.filter(m => m.id !== id); }); }
 
-export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal'): Promise<FoodEntry[]> {
+export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal', skip?: string[]): Promise<FoodEntry[]> {
   const t = timeForDay(date);
   const groupId = uid();
   const out: FoodEntry[] = meal.items.map(it => ({
-    id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId,
+    id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId, mealId: meal.id, ...(skip?.length ? { mealSkip: skip } : {}),
     n: it.per100 && it.grams != null ? scaleNutr(withRs(it.key, it.per100), it.grams) : (it.n ?? {}),
     ...(it.grams != null ? { grams: it.grams } : {}),
     ...(it.unit ? { unit: it.unit } : {}),

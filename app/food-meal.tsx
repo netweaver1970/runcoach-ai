@@ -3,13 +3,14 @@
  * components by search, by typing a list ("2 eggs, toast, 200 ml milk") or 🎤 by voice; save / delete the meal.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, Keyboard } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, Keyboard, Modal } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { SwipeRow } from '../src/components/SwipeRow';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import {
   loadLibrary, addMeal, renameMeal, updateMealItems, deleteMeal, scaleNutr, FoodLibrary, FoodItem, SavedMealItem, searchCustom,
+  SavedMeal, mealUsage, relogMealEverywhere,
 } from '../src/services/foodLog';
 import { searchFoodsEx, defaultServing, norm } from '../src/services/foodDb';
 import { parseMeal, looksLikeMeal } from '../src/services/foodParse';
@@ -18,7 +19,7 @@ const r0 = (v?: number) => (v == null ? '–' : String(Math.round(v)));
 const itemOf = (f: FoodItem, grams: number): SavedMealItem => ({ key: f.key, name: f.name, src: f.src, grams, per100: f.per100, ...(f.unit === 'ml' ? { unit: 'ml' as const } : {}) });
 
 export default function FoodMealScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, replace } = useLocalSearchParams<{ id: string; replace?: string }>();
   const isNew = id === 'new';
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
@@ -29,13 +30,16 @@ export default function FoodMealScreen() {
   const [q, setQ] = useState('');
   const [dq, setDq] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [orig, setOrig] = useState<SavedMeal | null>(null);       // the meal as saved — finds its logged instances
+  const [pickMeal, setPickMeal] = useState<false | 'replace' | 'delete'>(false);   // ⇄ replace by another meal (required to delete a used one)
   useEffect(() => { const t = setTimeout(() => setDq(q.trim()), 200); return () => clearTimeout(t); }, [q]);
   useFocusEffect(useCallback(() => () => Keyboard.dismiss(), []));
   useEffect(() => {
     loadLibrary().then(l => {
       setLib(l);
       const m = l.meals.find(x => x.id === id);
-      if (m) { setName(m.name); setRows(m.items.map(it => ({ it, gTxt: it.grams != null ? String(r0(it.grams)) : '' }))); }
+      if (m && replace === '1') setPickMeal('delete');
+      if (m) { setOrig(m); setName(m.name); setRows(m.items.map(it => ({ it, gTxt: it.grams != null ? String(r0(it.grams)) : '' }))); }
     }).catch(() => {});
   }, [id]);
 
@@ -73,13 +77,42 @@ export default function FoodMealScreen() {
       await renameMeal(id, name);
       await updateMealItems(id, items);
       setDirty(false);
-      Alert.alert('Saved', `${name} · ${items.length} components · ${r0(kcal)} kcal`);
+      // the meal was LOGGED before → offer to redo those days from the corrected meal (values recalculated)
+      const before = orig;
+      const next: SavedMeal | null = before ? { ...before, name: name || before.name, items } : null;
+      const u = before ? await mealUsage(before).catch(() => ({ instances: 0, days: 0 })) : { instances: 0, days: 0 };
+      if (before && next && u.instances) {
+        Alert.alert('Saved — update the logged days too?', `"${next.name}" was logged ${u.instances}× (${u.days} day${u.days > 1 ? 's' : ''}). Redo those from the corrected meal? Values are recalculated; components you'd left out at the time stay out.`, [
+          { text: 'Only the meal', style: 'cancel', onPress: () => setOrig(next) },
+          { text: 'Update logged days', onPress: async () => { const n = await relogMealEverywhere(before, next).catch(() => 0); setOrig(next); Alert.alert('Updated', `${n} logged meal${n === 1 ? '' : 's'} recalculated.`); } },
+        ]);
+      } else { if (next) setOrig(next); Alert.alert('Saved', `${name} · ${items.length} components · ${r0(kcal)} kcal`); }
     } catch (e: any) { Alert.alert('Not saved', String(e?.message ?? e)); }
   };
-  const del = () => { Keyboard.dismiss(); Alert.alert(`Delete "${name}"?`, 'The saved meal is deleted. Logged days keep their entries.', [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete', style: 'destructive', onPress: async () => { await deleteMeal(id).catch(() => {}); router.back(); } },
-  ]); };
+  const del = async () => {
+    Keyboard.dismiss();
+    const u = orig ? await mealUsage(orig).catch(() => ({ instances: 0, days: 0 })) : { instances: 0, days: 0 };
+    if (u.instances) {   // logged before → only with a replacement meal (one-for-one, recalculated)
+      Alert.alert(`"${name}" is in use`, `Logged ${u.instances}× on ${u.days} day${u.days > 1 ? 's' : ''}. Pick the meal that replaces it there.`, [
+        { text: 'Cancel', style: 'cancel' }, { text: 'Choose replacement', onPress: () => setPickMeal('delete') },
+      ]);
+      return;
+    }
+    Alert.alert(`Delete "${name}"?`, 'The saved meal is deleted.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => { await deleteMeal(id).catch(() => {}); router.back(); } },
+    ]);
+  };
+  const replaceWith = (to: SavedMeal, thenDelete: boolean) => Alert.alert(`Replace by "${to.name}"?`,
+    `Every logged "${name}" becomes "${to.name}": its components, values recalculated (components you'd left out stay out).${thenDelete ? ` Then "${name}" is deleted.` : ''}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Replace', style: 'destructive', onPress: async () => {
+        if (!orig) return;
+        const n = await relogMealEverywhere(orig, to).catch(() => 0);
+        if (thenDelete) { await deleteMeal(id).catch(() => {}); setPickMeal(false); router.back(); }
+        else { setPickMeal(false); Alert.alert('Replaced', `${n} logged meal${n === 1 ? '' : 's'} now "${to.name}".`); }
+      } },
+    ]);
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingBottom: 60 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
@@ -126,7 +159,23 @@ export default function FoodMealScreen() {
       ))}
 
       <TouchableOpacity style={[s.save, !dirty && !isNew && { opacity: 0.5 }]} onPress={save}><Text style={s.saveTxt}>{isNew ? 'Create meal' : 'Save meal'}</Text></TouchableOpacity>
-      {!isNew && <TouchableOpacity style={s.ghost} onPress={del}><Text style={[s.ghostTxt, { color: '#e5484d' }]}>🗑 Delete meal</Text></TouchableOpacity>}
+      {!isNew && <TouchableOpacity style={s.ghost} onPress={() => setPickMeal('replace')}><Text style={s.ghostTxt}>⇄ Replace by another meal everywhere</Text></TouchableOpacity>}
+      {!isNew && <TouchableOpacity style={s.ghost} onPress={() => { del().catch(() => {}); }}><Text style={[s.ghostTxt, { color: '#e5484d' }]}>🗑 Delete meal</Text></TouchableOpacity>}
+      <Modal visible={!!pickMeal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setPickMeal(false)}>
+        <ScrollView style={s.screen} contentContainerStyle={{ padding: 16 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={[s.lbl, { flex: 1, marginTop: 0 }]}>Replace "{name}" by…</Text>
+            <TouchableOpacity onPress={() => setPickMeal(false)} hitSlop={10}><Text style={s.ghostTxt}>Cancel</Text></TouchableOpacity>
+          </View>
+          {(lib?.meals ?? []).filter(m => m.id !== id).map(m => (
+            <TouchableOpacity key={m.id} style={s.result} onPress={() => replaceWith(m, pickMeal === 'delete')}>
+              <Text style={s.compName}>🍽️ {m.name}</Text>
+              <Text style={s.hint}>{m.items.length} components — {m.items.map(i => i.name.split(',')[0]).join(', ')}</Text>
+            </TouchableOpacity>
+          ))}
+          {(lib?.meals ?? []).filter(m => m.id !== id).length === 0 && <Text style={s.hint}>No other saved meal yet — create one first (＋ New meal).</Text>}
+        </ScrollView>
+      </Modal>
     </ScrollView>
   );
 }
