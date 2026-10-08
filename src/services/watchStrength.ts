@@ -39,7 +39,10 @@ async function pushOnce(): Promise<boolean> {
   if (!W?.queue) return false;
   if (!(await W.isPaired().catch(() => false))) return false;
   const st = await loadStrength();
-  const todays = routinesForDate(st);   // the coach's TAILORED routine for today (auto-plan) or the weekday routines
+  const planned = routinesForDate(st);   // the coach's TAILORED routine for today (auto-plan) or the weekday routines
+  // + today's "Daily custom" right after it, flagged TODAY too (it's composed for today) — top of the watch list
+  const daily = st.routines.find(r => r.id === DAILY_CUSTOM_ID && r.items.length && r.composedFor === localDateKey());
+  const todays = daily && !planned.some(r => r.id === DAILY_CUSTOM_ID) ? [...planned, daily] : planned;
   const todayIds = new Set(todays.map(r => r.id));
   const { fetchBodyMassHistory } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
   const bodyKg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
