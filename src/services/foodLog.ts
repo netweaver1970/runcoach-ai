@@ -86,6 +86,7 @@ export interface FoodLibrary { v: 1; custom: FoodItem[]; meals: SavedMeal[]; fav
   tags?: Record<string, MealTag[]>;          // meal types per food key (multi: a yoghurt can be breakfast AND snack)
   kept?: Record<string, FavItem>;            // snapshots of foods you maintain in "My foods" (starred / tagged) without logging
   rs?: Record<string, number>;               // YOUR resistant starch (g / 100) for non-own foods (see netNutr)
+  caf?: Record<string, number>;              // YOUR caffeine (mg / 100) for non-own foods (table / product values are typical)
 }
 /** Meal types a food can be tagged with (several per food). */
 export type MealTag = 'breakfast' | 'lunch' | 'dinner' | 'snack';
@@ -105,6 +106,8 @@ const syncServings = (l: FoodLibrary) => {
   Object.assign(servingOverrides, l.servings ?? {});
   for (const k of Object.keys(rsOverrides)) delete rsOverrides[k];
   Object.assign(rsOverrides, l.rs ?? {});
+  for (const k of Object.keys(cafOverrides)) delete cafOverrides[k];
+  Object.assign(cafOverrides, l.caf ?? {});
 };
 
 const DIR = FileSystem.documentDirectory;
@@ -151,8 +154,10 @@ export function netNutr(n: Nutr): Nutr {
 }
 /** YOUR resistant-starch value (g per 100) for a food-table / product food (own foods carry it in per100). */
 export const rsOverrides: Record<string, number> = {};
-/** per100 with your resistant-starch value merged in (logging uses this). */
-export const withRs = (key: string, per100: Nutr): Nutr => (rsOverrides[key] != null ? { ...per100, rs: rsOverrides[key] } : per100);
+export const cafOverrides: Record<string, number> = {};
+/** per100 with YOUR resistant-starch / caffeine values merged in (logging uses this). */
+export const withRs = (key: string, per100: Nutr): Nutr => (rsOverrides[key] == null && cafOverrides[key] == null ? per100
+  : { ...per100, ...(rsOverrides[key] != null ? { rs: rsOverrides[key] } : {}), ...(cafOverrides[key] != null ? { caf: cafOverrides[key] } : {}) });
 
 export function scaleNutr(per100: Nutr, grams: number): Nutr {
   const out: Nutr = {};
@@ -587,7 +592,7 @@ export async function replaceFoodEverywhere(oldKey: string, to: { key: string; n
       const r = { ...rec }; if (r[to.key] === undefined) r[to.key] = r[oldKey]; delete r[oldKey]; return r;
     };
     if (l.favs.includes(oldKey)) l.favs = [...l.favs.filter(k => k !== oldKey && k !== to.key), to.key];
-    l.tags = move(l.tags); l.servings = move(l.servings); l.rs = move(l.rs);
+    l.tags = move(l.tags); l.servings = move(l.servings); l.rs = move(l.rs); l.caf = move(l.caf);
     l.recents = l.recents.filter(r => r.key !== oldKey);
   });
   return n;
@@ -663,6 +668,10 @@ export async function renameInLogs(key: string, name: string): Promise<void> {
   });
   await mutateLib(l => { l.meals = l.meals.map(m => ({ ...m, items: m.items.map(i => (i.key === key ? { ...i, name } : i)) })); });
 }
+/** Set (null = clear) your caffeine value (mg per 100) for a food-table / product food. */
+export async function setCaffeine(key: string, mg: number | null): Promise<void> {
+  await mutateLib(l => { const m = { ...(l.caf ?? {}) }; if (mg != null && mg >= 0) m[key] = mg; else delete m[key]; l.caf = m; });
+}
 /** Drop a food from the recents list only (swipe in Add food → Recents). */
 export async function removeRecent(key: string): Promise<void> {
   await mutateLib(l => { l.recents = l.recents.filter(r => r.key !== key); });
@@ -726,7 +735,7 @@ export function quickItem(label: string, n: Nutr): { key: string; name: string; 
 }
 
 /** Debug export: daily TOTALS only (never item names/times) — REPORT.md §6.1. */
-export async function foodTotalsForExport(days: number): Promise<{ date: string; kcal: number; carb: number; prot: number; fat: number; na: number; waterMl: number; entries: number; complete: boolean }[]> {
+export async function foodTotalsForExport(days: number): Promise<{ date: string; kcal: number; carb: number; prot: number; fat: number; na: number; waterMl: number; entries: number; complete: boolean; caf: number; cafLast?: string }[]> {
   const out = [];
   const now = Date.now();
   for (let i = 0; i < days; i++) {
@@ -734,7 +743,9 @@ export async function foodTotalsForExport(days: number): Promise<{ date: string;
     const d = await loadDay(date);
     if (!d.entries.length && !d.water.length) continue;
     const t = dayTotals(d);
-    out.push({ date, kcal: Math.round(t.kcal ?? 0), carb: Math.round(t.carb ?? 0), prot: Math.round(t.prot ?? 0), fat: Math.round(t.fat ?? 0), na: Math.round(t.na ?? 0), waterMl: t.waterMl, entries: d.entries.length, complete: !!d.complete });
+    out.push({ date, kcal: Math.round(t.kcal ?? 0), carb: Math.round(t.carb ?? 0), prot: Math.round(t.prot ?? 0), fat: Math.round(t.fat ?? 0), na: Math.round(t.na ?? 0), waterMl: t.waterMl, entries: d.entries.length, complete: !!d.complete,
+      // caffeine total + the clock time of the last intake → correlate with that night's HRV / sleep later
+      caf: Math.round(t.caf ?? 0), ...(d.entries.some(e => (e.n.caf ?? 0) > 0) ? { cafLast: d.entries.filter(e => (e.n.caf ?? 0) > 0).map(e => e.t.slice(11, 16)).sort().pop() } : {}) });
   }
   return out;
 }

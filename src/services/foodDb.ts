@@ -18,6 +18,26 @@ const RAW = require('../../assets/food/ciqual-2025.json') as {
   v: number; src: string; credit: string; cols: string[]; groups: Record<string, string>; foods: (string | number | null)[][];
 };
 
+/**
+ * CAFFEINE (mg per 100 g / 100 ml) — CIQUAL doesn't measure it. Typical values for the table's caffeine sources:
+ * EFSA 2015 (Scientific Opinion on the safety of caffeine, EFSA Journal 13(5):4102 — espresso ≈ 80 mg / 60 ml,
+ * filter coffee ≈ 90 mg / 200 ml, cola ≈ 40 mg / 355 ml, energy drink 32 mg / 100 ml) and USDA FoodData Central
+ * (instant powder, tea, cocoa, chocolate). Real cups vary ±50 %; your own value per food overrides (food editor).
+ */
+const CAFFEINE: Record<string, number> = {
+  18004: 40, 18071: 133, 18073: 30, 18151: 30, 18003: 1000, 18005: 3100, 18160: 400, 18163: 350,          // coffee
+  18070: 1, 18072: 1, 18069: 80,                                                                      // decaf
+  18153: 10, 18162: 20, 18150: 800,                                                                   // chicory-coffee mixes
+  18020: 20, 18154: 20, 18155: 12, 18076: 2500,                                                       // tea
+  18018: 10, 18037: 10, 18063: 10, 18060: 12, 18067: 0, 18068: 0,                                      // cola
+  18015: 7, 18062: 7, 18064: 7, 18065: 7, 18075: 7,                                                   // iced tea drinks
+  18324: 32, 18352: 32, 18353: 32, 18354: 32,                                                         // energy drinks
+  19116: 25, 19117: 25, 19118: 3, 19119: 3, 18104: 3, 18106: 3,                                       // milk drinks
+  18100: 230, 18101: 45, 18167: 45, 18168: 45, 42501: 45,                                             // cocoa powders
+  31074: 80, 31005: 43, 31085: 50, 31030: 60, 31069: 40, 31070: 40, 31072: 40, 31080: 40,             // dark chocolate
+  31004: 20, 31009: 20, 31012: 20, 31018: 20, 31020: 20, 31084: 20, 31120: 30, 31010: 0, 31026: 0,    // milk / white
+};
+
 /** Full attribution required by Etalab 2.0 / REPORT.md §3.3 — shown on the Food screen. */
 export const CIQUAL_CREDIT = RAW.credit;
 
@@ -136,6 +156,7 @@ function load(): Row[] {
   for (const f of RAW.foods) {
     const per100: Nutr = {};
     nKeys.forEach((k, i) => { const v = f[4 + i]; if (typeof v === 'number') per100[k] = v; });
+    const caf = CAFFEINE[String(f[0])]; if (caf != null) per100.caf = caf;
     const fr = String(f[idx('fr')] ?? ''), en = String(f[idx('en')] ?? '');
     const item: FoodItem = { key: `ciqual:${f[0]}`, src: 'ciqual', id: String(f[0]), name: en || fr, nameAlt: fr, per100, grp: String(f[idx('grp')] ?? '') };
     const wf = words(fr), we = words(en);

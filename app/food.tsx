@@ -21,6 +21,7 @@ import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
 import { SwipeRow } from '../src/components/SwipeRow';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
+import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
@@ -82,7 +83,8 @@ export default function FoodMode() {
   const [runs, setRuns] = useState<RunMark[]>([]);
   const [fuel, setFuel] = useState<FuelAdvice | null>(null);
   const [burn, setBurn] = useState<{ kcal: number; at: number } | null>(null);   // watch active + basal kcal (stored, not recomputed)
-  const [adding, setAdding] = useState<boolean | SavedMeal>(false);   // a SavedMeal = open straight in its preview
+  const [adding, setAdding] = useState<boolean | SavedMeal>(false);
+  const [bedMin, setBedMin] = useState<number | null>(null);   // usual bedtime (min after midnight) from recent nights   // a SavedMeal = open straight in its preview
   const [editing, setEditing] = useState<FoodEntry | null>(null);
   const [photoTest, setPhotoTest] = useState(false);
   const [undo, setUndo] = useState<Undo>(null);
@@ -104,6 +106,7 @@ export default function FoodMode() {
       if (!live) return;
       setRuns((snap?.runs ?? []).filter(r => trainingDayKey(r.date) === date)
         .map(r => ({ t: toLocal(r.date), km: r.distance / 1000, min: r.duration / 60, label: r.label ?? 'Run' })));
+      setBedMin(usualBedtimeMin(((snap as any)?.recentSleep ?? []) as { bedtime: string }[]));   // for the caffeine cut-off
     }).catch(() => live && setRuns([]));
     return () => { live = false; };
   }, [date]);
@@ -236,6 +239,7 @@ export default function FoodMode() {
           <Text style={s.hint}>Only fully-logged days will count toward energy balance.</Text>
         </View>
 
+        {day && day.entries.length > 0 && <CaffeineCard entries={day.entries} bed={bedMin} />}
         {day && day.entries.length > 0 && <MicrosCard entries={day.entries} />}
 
         {fuel && fuel.kind !== 'none' && (
@@ -1023,6 +1027,34 @@ function ParsePanel({ items: items0, onConfirm, onAsOne }: {
       <TouchableOpacity onPress={() => { Keyboard.dismiss(); onAsOne(); }} hitSlop={8}>
         <Text style={s.asOne}>It's one dish — search the whole text as one food</Text>
       </TouchableOpacity>
+    </View>
+  );
+}
+
+// ─── Caffeine of the day ──────────────────────────────────────────────────────────────────────────
+function CaffeineCard({ entries, bed }: { entries: FoodEntry[]; bed: number | null }) {
+  const { c } = useTheme();
+  const s = useThemedStyles(makeStyles);
+  // entries logged before caffeine was stored → filled from the table by key × grams
+  const es = useMemo(() => entries.map(e => {
+    if (e.n.caf != null || !e.grams) return e;
+    const t = foodByKey(e.key)?.per100.caf;
+    return t != null ? { ...e, n: { ...e.n, caf: t * e.grams / 100 } } : e;
+  }), [entries]);
+  const d = useMemo(() => caffeineDay(es, bed), [es, bed]);
+  if (!d.total) return null;
+  const warnDay = d.total > CAF_DAY_MAX, warnDose = d.maxDose > CAF_DOSE_MAX, late = d.late.length > 0;
+  const col = warnDay || warnDose || late ? '#e67e22' : c.text;
+  return (
+    <View style={[s.card, { marginTop: 12 }]}>
+      <Text style={[s.section, { color: col }]}>☕ Caffeine {Math.round(d.total)} mg <Text style={s.sub}>/ {CAF_DAY_MAX} mg a day{d.last ? ` · last ${d.last.slice(11, 16)}` : ''}</Text></Text>
+      {d.bed != null && d.atBed != null && (
+        <Text style={s.sub}>≈ {Math.round(d.atBed)} mg still active at your usual bedtime {fmtClock(d.bed)} (half-life ~{CAF_HALF_LIFE_H} h){d.cutoff != null ? ` · cut-off ${fmtClock(d.cutoff)}` : ''}</Text>
+      )}
+      {late && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ {d.late.map(e => `${e.name.split(',')[0]} ${e.t.slice(11, 16)}`).join(', ')} — within {CAF_CUTOFF_H} h of bed: can delay sleep, cut deep sleep and lower overnight HRV (tomorrow's recovery / readiness).</Text>}
+      {warnDose && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ {Math.round(d.maxDose)} mg within an hour — above the {CAF_DOSE_MAX} mg single-dose guidance.</Text>}
+      {warnDay && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ Above the {CAF_DAY_MAX} mg/day EFSA level for healthy adults.</Text>}
+      <Text style={s.hint}>Typical values (EFSA / USDA) — a real cup varies ±50 %; set your own per food in 📚 Food database.</Text>
     </View>
   );
 }

@@ -9,7 +9,7 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   loadLibrary, addCustomFood, updateCustomFood, deleteCustomFood, forgetFoods, setFavourites, setMealTags, setServing,
-  FoodLibrary, FoodItem, KeptFood, MEAL_TAGS, MealTag, Nutr, NutrKey, servingOverrides, rsOverrides, setResistantStarch, MICROS,
+  FoodLibrary, FoodItem, KeptFood, MEAL_TAGS, MealTag, Nutr, NutrKey, servingOverrides, rsOverrides, setResistantStarch, MICROS, cafOverrides, setCaffeine,
   foodUsage, replaceFoodEverywhere, renameInLogs, searchCustom,
 } from '../src/services/foodLog';
 import { foodByKey, searchFoodsEx, norm } from '../src/services/foodDb';
@@ -18,7 +18,7 @@ import { cachedProducts } from '../src/services/foodOff';
 const FIELDS: { k: NutrKey; label: string; unit: string }[] = [
   { k: 'kcal', label: 'Energy', unit: 'kcal' }, { k: 'prot', label: 'Protein', unit: 'g' }, { k: 'carb', label: 'Carbs', unit: 'g' },
   { k: 'sug', label: '  of which sugars', unit: 'g' }, { k: 'rs', label: '  of which resistant starch', unit: 'g' }, { k: 'fat', label: 'Fat', unit: 'g' }, { k: 'sat', label: '  of which saturated', unit: 'g' },
-  { k: 'fib', label: 'Fibre', unit: 'g' }, { k: 'salt', label: 'Salt', unit: 'g' },
+  { k: 'fib', label: 'Fibre', unit: 'g' }, { k: 'salt', label: 'Salt', unit: 'g' }, { k: 'caf', label: 'Caffeine', unit: 'mg' },
 ];
 const num = (t: string) => { const v = parseFloat(t.replace(',', '.')); return Number.isFinite(v) && v >= 0 ? v : undefined; };
 const txt = (v?: number) => (v == null ? '' : String(Math.round(v * 10) / 10));
@@ -55,7 +55,7 @@ export default function FoodItemScreen() {
       setBase(f);
       setName(f.name ?? ''); setBrand(f.brand ?? ''); setUnit(f.unit === 'ml' ? 'ml' : 'g');
       const p100: Nutr = f.per100 ?? {};
-      setVals({ ...Object.fromEntries([...FIELDS.map(x => x.k), ...MICROS.map(m => m.k)].map(k => [k, txt(p100[k])])), ...(rsOverrides[key] != null ? { rs: txt(rsOverrides[key]) } : {}) });
+      setVals({ ...Object.fromEntries([...FIELDS.map(x => x.k), ...MICROS.map(m => m.k)].map(k => [k, txt(p100[k])])), ...(rsOverrides[key] != null ? { rs: txt(rsOverrides[key]) } : {}), ...(cafOverrides[key] != null ? { caf: txt(cafOverrides[key]) } : {}) });
       const sv = servingOverrides[key] ?? f.serving;
       setSrv(sv?.g ? String(sv.g) : '');
     })().catch(() => {});
@@ -94,6 +94,9 @@ export default function FoodItemScreen() {
         const carb = base?.per100?.carb ?? 0;
         if (rsv != null && rsv > carb + 0.5) { Alert.alert('Check resistant starch', `It's part of the carbs, so it can't be more than the ${Math.round(carb)} g carbs per 100.`); return; }
         await setResistantStarch(key, rsv ?? null);
+        // caffeine: your value for this food (only stored when it differs from the table / label value)
+        const cv = num(vals.caf ?? '');
+        await setCaffeine(key, cv != null && cv !== (base?.per100?.caf ?? null) ? cv : null);
       }
       if (!own) await setServing(key, sg ? { g: sg, label: base?.serving?.label && !/^100 g$/.test(base.serving.label) ? base.serving.label : '1 serving' } : null);
       setLib(await loadLibrary());
@@ -157,7 +160,7 @@ export default function FoodItemScreen() {
       {FIELDS.map(f => (
         <View key={f.k} style={s.field}>
           <Text style={s.fieldLbl}>{f.label}</Text>
-          <TextInput style={[s.num, !own && f.k !== 'rs' && s.ro]} value={vals[f.k] ?? ''} editable={own || f.k === 'rs'} keyboardType="decimal-pad" selectTextOnFocus
+          <TextInput style={[s.num, !own && f.k !== 'rs' && f.k !== 'caf' && s.ro]} value={vals[f.k] ?? ''} editable={own || f.k === 'rs' || f.k === 'caf'} keyboardType="decimal-pad" selectTextOnFocus
             onChangeText={v => setVals(p => ({ ...p, [f.k]: v }))} placeholder="–" placeholderTextColor={c.textFaint} />
           <Text style={s.unit}>{f.unit}</Text>
         </View>
