@@ -91,7 +91,13 @@ function toItem(p: any): OffProduct | null {
   const liquid = qUnit === 'ml' || qUnit === 'cl' || qUnit === 'l';
   // A drink up to 750 ml is one bottle/can. A SOLID pack is a piece only when it's plausibly single-serve (≤ 150 g:
   // a bar, a pot) — a 500 g muesli box must not pre-fill the portion with the whole pack.
-  const pack = qAmt > 0 && (liquid ? qAmt <= 750 : qAmt <= 150) ? { g: qAmt, label: liquid ? '1 bottle' : '1 pack' } : null;
+  // DRINKS sold by weight (yoghurt drinks, protein shakes, kefir: "240 g") are one bottle too — Geert's 240 g Boni
+  // high-protein yoghurt drink fell through to OFF's "serving 100 g" (often just the per-100 figure echoed back).
+  const nameAll = `${p.product_name ?? ''} ${p.product_name_nl ?? ''} ${p.product_name_fr ?? ''} ${p.product_name_en ?? ''} ${p.generic_name ?? ''}`;
+  const drinkish = liquid || /drink|drank|boisson|à boire|a boire|trinkjoghurt|shake|smoothie|k[eé]fir|lassi|ayran|actimel|yakult|zuivelshake/i.test(nameAll);
+  const sq100 = sq === 100;   // a "100 g serving" next to a small pack is the per-100 echo, not a real serving
+  const pack = qAmt > 0 && (drinkish ? qAmt <= 750 : qAmt <= 150 || (sq100 && qAmt <= 400))
+    ? { g: qAmt, label: drinkish ? '1 bottle' : '1 pack' } : null;
   return {
     key: `off:${code}`, src: 'off', id: code,
     name: name || `Product ${code}`,
