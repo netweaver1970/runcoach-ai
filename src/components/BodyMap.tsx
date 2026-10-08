@@ -75,18 +75,19 @@ function Figure({ shapes, w, label, color, onSelect, selected, base, selStroke }
   );
 }
 
-export function BodyMap({ fresh, onSelect, selected }: { fresh: Map<Muscle, MuscleFresh>; onSelect?: (m: Muscle) => void; selected?: Muscle | null }) {
+// `colorOf` overrides the freshness tint (e.g. the Strength stats map coloured by sets per muscle).
+export function BodyMap({ fresh, onSelect, selected, colorOf }: { fresh?: Map<Muscle, MuscleFresh>; onSelect?: (m: Muscle) => void; selected?: Muscle | null; colorOf?: (m: Muscle) => string }) {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
   const w = Math.min(150, (width - 80) / 2);
-  const color = (m: Muscle) => {
-    const f = fresh.get(m);
+  const color = colorOf ?? ((m: Muscle) => {
+    const f = fresh?.get(m);
     const st = f?.state ?? 'Calibrating';
     // calibrating = neutral grey; otherwise the band colour, deeper the more depleted
     if (st === 'Calibrating') return c.mode === 'dark' ? '#3a3d46' : '#c9ccd3';
     const a = 0.45 + 0.55 * (1 - (f?.pct ?? 100) / 100);
     return FRESH_COLOR[st] + Math.round(a * 255).toString(16).padStart(2, '0');
-  };
+  });
   const base = c.mode === 'dark' ? '#2a2c33' : '#e2e4ea';
   return (
     <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>

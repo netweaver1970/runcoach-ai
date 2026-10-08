@@ -208,6 +208,11 @@ export default function FitnessMode() {
         )) : <Text style={s.meta}>No sessions in the last {win} days yet.</Text>}
       </View>
 
+      {/* One calendar for runs + strength (done filled, planned hollow, weekly streak) */}
+      <TouchableOpacity style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]} onPress={() => router.push('/training-calendar' as any)}>
+        <Text style={[s.todayName, { flex: 1 }]}>📅 Training calendar</Text>
+        <Text style={s.meta}>runs + strength · streak ›</Text>
+      </TouchableOpacity>
       {/* Strength stats (the cardio Statistics' charts, for lifting) */}
       <TouchableOpacity style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]} onPress={() => router.push('/strength-stats' as any)}>
         <Text style={[s.todayName, { flex: 1 }]}>📈 Strength stats</Text>
