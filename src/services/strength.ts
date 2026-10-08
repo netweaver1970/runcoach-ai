@@ -65,6 +65,8 @@ export interface RoutineItem {
   restSec: number;
   tempo?: string;          // e.g. "3:1:2:1" (eccentric:pause:concentric:pause)
   note?: string;
+  ref?: string;            // INCLUDE another routine here (exerciseId '' — expanded by flatRoutine; nesting allowed)
+  ss?: string;             // (flattened only) superset group: items sharing it alternate one set at a time
 }
 export interface Routine {
   id: string;
@@ -73,6 +75,7 @@ export interface Routine {
   sourceUrl?: string;
   days: number[];          // planned weekdays, 0 = Sun … 6 = Sat
   autoUpdate?: boolean;    // after a session, move the planned weights to the suggested next ones (default on)
+  mode?: 'straight' | 'superset';   // superset = its exercises ALTERNATE (A1 B1 A2 B2…), rest after each round
   composedFor?: string;    // the "Daily custom" routine: the local date the coach composed it for (strengthPlan.ts)
   composedKit?: KitId;     // …and for which equipment (a change of place recomposes it)
   items: RoutineItem[];
@@ -118,10 +121,36 @@ export interface StrengthSession {
   // started from the coach's auto-plan in a TRIMMED form: 'prehab' = the short runner prehab, 'reduced' = sets cut for
   // the day. Such sets don't count toward (or break) the 3-stable-sessions progression streak when below the routine's.
   tailored?: 'prehab' | 'reduced';
+  groups?: string[][];     // superset groups (exercise ids) — the session alternates them
 }
 
 /** The auto-plan's prehab day is a separate routine id (base + this) so the FULL routine can still be started. */
 export const PREHAB_SUFFIX = '~prehab';
+/**
+ * A routine as it's DONE: included routines expanded in place (any depth, cycles cut), every exercise of a SUPERSET
+ * routine tagged with that routine's id (`ss`) so the session alternates them. Geert 2026-10-08: "supersets… should
+ * become like routines, and routines could be hierarchically into other routines".
+ */
+export function flatRoutine(st: StrengthStore, r: Routine, seen: string[] = []): Routine {
+  const out: RoutineItem[] = [];
+  const path = [...seen, r.id];
+  for (const it of r.items) {
+    if (it.ref) {
+      const sub = st.routines.find(x => x.id === it.ref);
+      if (!sub || path.includes(sub.id) || path.length > 4) continue;   // missing / cycle / too deep
+      out.push(...flatRoutine(st, sub, path).items);
+    } else if (it.exerciseId) out.push({ ...it });
+  }
+  // a superset routine groups EVERYTHING it contains (its own exercises and any included ones) into one superset
+  return { ...r, items: r.mode === 'superset' ? out.map(it => ({ ...it, ss: r.id })) : out };
+}
+/** Superset groups of a flattened item list: exercise ids per group, in order. */
+export function supersetGroups(items: RoutineItem[]): string[][] {
+  const g = new Map<string, string[]>();
+  for (const it of items) if (it.ss) { const a = g.get(it.ss) ?? []; if (!a.includes(it.exerciseId)) a.push(it.exerciseId); g.set(it.ss, a); }
+  return [...g.values()].filter(a => a.length >= 2);
+}
+
 /** The coach-composed routine of the day (recovered muscles, exercises from your own routines). */
 export const DAILY_CUSTOM_ID = 'daily_custom';
 export const baseRoutineId = (id: string) => (id.endsWith(PREHAB_SUFFIX) ? id.slice(0, -PREHAB_SUFFIX.length) : id);
@@ -553,19 +582,24 @@ export function routinesForDate(s: StrengthStore, date = new Date()): Routine[] 
     if (day.kind === 'rest' || !day.routineId) return [];
     const base = s.routines.find(r => r.id === day.routineId);
     if (!base) return [];
-    return [{ ...base, ...(day.kind === 'prehab' ? { id: base.id + PREHAB_SUFFIX } : {}), name: day.name ?? base.name, items: day.items?.length ? day.items : base.items }];
+    return [{ ...base, ...(day.kind === 'prehab' ? { id: base.id + PREHAB_SUFFIX } : {}), name: day.name ?? base.name, items: day.items?.length ? day.items : flatRoutine(s, base).items }];
   }
   // auto-plan on (and made): it REPLACES the fixed weekdays — nothing planned outside its 7 days (calendar stays honest)
   if (s.autoPlanOn !== false && s.autoPlan) return [];
   const dow = date.getDay();
-  return s.routines.filter(r => r.days.includes(dow));
+  return s.routines.filter(r => r.days.includes(dow)).map(r => flatRoutine(s, r));
 }
 export function sessionsOn(s: StrengthStore, dateKey: string): StrengthSession[] {
   return s.sessions.filter(x => x.date === dateKey && x.finishedAt);
 }
 /** Rough duration: ~40 s per set + the rest after each set but the last of an exercise. */
 export function estimateMinutes(r: Routine): number {
-  const sec = r.items.reduce((a, i) => a + i.sets * 40 + Math.max(0, i.sets - 1) * i.restSec + 60, 0);
+  // superset: only the LAST exercise of the group rests (after each round); the others change over in ~10 s
+  const last = new Map<string, number>();
+  r.items.forEach((i, k) => { if (i.ss) last.set(i.ss, k); });
+  // an UNexpanded include (raw routine, no store at hand) counts ~15 min — never 0 (it caps the Health workout window)
+  const sec = r.items.filter(i => i.ref).length * 15 * 60 + r.items.filter(i => !i.ref).reduce((a, i, k) => a + i.sets * 40
+    + (i.ss && last.get(i.ss) !== k ? i.sets * 10 : Math.max(0, i.sets - (i.ss ? 0 : 1)) * i.restSec) + 60, 0);
   return Math.round(sec / 60);
 }
 

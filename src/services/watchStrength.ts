@@ -12,7 +12,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
   StrengthSession, SetLog, loadStrength, updateStrength, routinesForDate, exerciseById, suggestWeight, lastSetsFor,
-  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, sessionsOn, plannedDone, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
+  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, sessionsOn, plannedDone, flatRoutine, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
 } from './strength';
 
 interface Native {
@@ -49,7 +49,7 @@ async function pushOnce(): Promise<boolean> {
   const todayIds = new Set(todays.map(r => r.id));
   const { fetchBodyMassHistory } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
   const bodyKg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
-  const routines = [...todays, ...st.routines.filter(r => !todayIds.has(r.id) && !(r.id === DAILY_CUSTOM_ID && plannedDone(r, doneToday)))]
+  const routines = [...todays, ...st.routines.filter(r => !todayIds.has(r.id) && !(r.id === DAILY_CUSTOM_ID && plannedDone(r, doneToday))).map(r => flatRoutine(st, r))]
     .filter(r => r.items.length)
     .map(r => ({
       id: r.id, name: r.name, today: todayIds.has(r.id),

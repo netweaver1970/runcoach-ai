@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, Modal, ActivityIndicator, Keyboard, Alert, Linking, Switch } from 'react-native';
-import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useNavigation, useRouter, useFocusEffect } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
-  StrengthStore, Routine, RoutineItem, Exercise, Muscle, MUSCLES, MUSCLE_LABEL, WEEKDAYS,
+  StrengthStore, Routine, RoutineItem, Exercise, Muscle, MUSCLES, MUSCLE_LABEL, WEEKDAYS, flatRoutine,
   loadStrength, updateStrength, allExercises, exerciseById, estimateMinutes, newId,
 } from '../src/services/strength';
 
@@ -32,10 +32,12 @@ export default function StrengthRoutineScreen() {
   const navigation = useNavigation();
   const [store, setStore] = useState<StrengthStore | null>(null);
   const [picker, setPicker] = useState(false);
+  const [incPicker, setIncPicker] = useState(false);   // "＋ Include a routine" (supersets / blocks inside this one)
   const [q, setQ] = useState('');
   const [custom, setCustom] = useState<{ name: string; muscle: Muscle } | null>(null);
 
-  useEffect(() => { loadStrength().then(st => setStore({ ...st })).catch(() => {}); }, []);
+  // reload on focus: coming Back from an included superset's screen shows its new exercises
+  useFocusEffect(useCallback(() => { loadStrength().then(st => setStore({ ...st })).catch(() => {}); }, []));
   useEffect(() => navigation.addListener('beforeRemove', () => { Keyboard.dismiss(); }), [navigation]);
 
   // Every edit is applied to the LATEST store in the write queue (no debounce → nothing pending on Back).
@@ -102,9 +104,42 @@ export default function StrengthRoutineScreen() {
         </View>
         <Switch value={r.autoUpdate !== false} onValueChange={v => patch({ autoUpdate: v })} />
       </View>
-      <Text style={s.meta}>{r.items.length} exercises · ~{estimateMinutes(r)} min</Text>
+      {/* SUPERSET = the exercises alternate one set at a time (A1 B1 A2 B2 …), rest after each round */}
+      <Text style={s.label}>How the exercises are done</Text>
+      <View style={s.days}>
+        {(['straight', 'superset'] as const).map(m => {
+          const on = (r.mode ?? 'straight') === m;
+          return (
+            <TouchableOpacity key={m} style={[s.day, { flex: 1 }, on && s.dayOn]} onPress={() => patch({ mode: m })}>
+              <Text style={[s.dayTxt, on && s.dayTxtOn]}>{m === 'straight' ? 'Straight sets' : '🔁 Superset'}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      <Text style={s.meta}>{r.mode === 'superset'
+        ? 'Alternate: one set of each exercise, then the next round (rounds = sets). Only the last exercise\'s rest is used, after each round. Include this superset in other routines as a block.'
+        : 'Each exercise: all its sets, then the next. Included routines (＋ Include) run as blocks; an included SUPERSET alternates.'}</Text>
+      <Text style={s.meta}>{flatRoutine(store, r).items.length} exercises{r.items.some(i => i.ref) ? ' (incl. included routines)' : ''} · ~{estimateMinutes(flatRoutine(store, r))} min</Text>
 
       {r.items.map((it, i) => {
+        if (it.ref) {
+          // an INCLUDED routine (a superset or a block) — expanded when the session starts
+          const sub = store.routines.find(x => x.id === it.ref);
+          const subFlat = sub ? flatRoutine(store, sub, [r.id]) : null;
+          return (
+            <View key={`ref-${it.ref}-${i}`} style={[s.item, { borderColor: c.accent }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => sub && router.push({ pathname: '/strength-routine' as any, params: { id: sub.id } })}>
+                  <Text style={s.itemName}>{String.fromCharCode(97 + i)}. {sub?.mode === 'superset' ? '🔁 ' : '📦 '}{sub?.name ?? 'Missing routine'} ›</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => move(i, -1)} hitSlop={8}><Text style={s.icon}>↑</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => move(i, 1)} hitSlop={8}><Text style={s.icon}>↓</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => patchR(x => ({ items: x.items.filter((_, k) => k !== i) }))} hitSlop={8}><Text style={[s.icon, { color: '#e5484d' }]}>✕</Text></TouchableOpacity>
+              </View>
+              <Text style={s.meta}>{sub?.mode === 'superset' ? 'Superset — alternates: ' : 'Block: '}{subFlat?.items.map(x => exerciseById(store, x.exerciseId)?.name ?? x.exerciseId).join(' · ') || '(empty or loops back)'}</Text>
+            </View>
+          );
+        }
         const ex = exerciseById(store, it.exerciseId);
         return (
           <View key={`${it.exerciseId}-${i}`} style={s.item}>
@@ -139,6 +174,33 @@ export default function StrengthRoutineScreen() {
       })}
 
       <TouchableOpacity style={s.addBtn} onPress={() => setPicker(true)}><Text style={s.addTxt}>＋ Add exercise</Text></TouchableOpacity>
+      <TouchableOpacity style={s.addBtn} onPress={() => setIncPicker(true)}><Text style={s.addTxt}>＋ Include a routine (superset / block)</Text></TouchableOpacity>
+      <TouchableOpacity style={s.addBtn} onPress={async () => {
+        // a new SUPERSET routine, included here right away → add its exercises on its own screen
+        const sid = newId('rt');
+        await updateStrength(st => ({ ...st, routines: [...st.routines.map(x => x.id === rid ? { ...x, items: [...x.items, { exerciseId: '', ref: sid, sets: 0, repsLo: 0, repsHi: 0, restSec: 0 }], updatedAt: Date.now() } : x),
+          { id: sid, name: `${r.name} superset`, days: [], mode: 'superset', items: [], updatedAt: Date.now() }] }));
+        setStore({ ...(await loadStrength()) });
+        router.push({ pathname: '/strength-routine' as any, params: { id: sid } });
+      }}><Text style={s.addTxt}>＋ New superset inside this routine</Text></TouchableOpacity>
+      <Modal visible={incPicker} animationType="slide" transparent onRequestClose={() => setIncPicker(false)}>
+        <View style={s.backdrop}>
+          <View style={s.sheet}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+              <Text style={[s.itemName, { flex: 1 }]}>Include a routine</Text>
+              <TouchableOpacity onPress={() => setIncPicker(false)}><Text style={s.link}>Close</Text></TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 420 }}>
+              {store.routines.filter(x => x.id !== rid && !flatIncludes(store, x.id, rid)).map(x => (
+                <TouchableOpacity key={x.id} style={s.pickRow} onPress={() => { patchR(y => ({ items: [...y.items, { exerciseId: '', ref: x.id, sets: 0, repsLo: 0, repsHi: 0, restSec: 0 }] })); setIncPicker(false); }}>
+                  <Text style={s.itemName}>{x.mode === 'superset' ? '🔁 ' : '📦 '}{x.name}</Text>
+                  <Text style={s.meta}>{flatRoutine(store, x).items.length} exercises{x.mode === 'superset' ? ' · superset' : ''}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
       <TouchableOpacity style={s.delBtn} onPress={removeRoutine}><Text style={s.delTxt}>Delete routine</Text></TouchableOpacity>
 
       <Modal visible={picker} animationType="slide" transparent onRequestClose={closePicker}>
@@ -212,3 +274,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   pickRow:  { paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   pickName: { color: c.text, fontSize: 15, fontWeight: '600' },
 });
+
+/** Does routine `id` (expanded) include `target` anywhere? (an include that would loop back is not offered) */
+function flatIncludes(st: StrengthStore, id: string, target: string, depth = 0): boolean {
+  const r = st.routines.find(x => x.id === id);
+  if (!r || depth > 5) return false;
+  return r.items.some(it => it.ref === target || (!!it.ref && flatIncludes(st, it.ref, target, depth + 1)));
+}

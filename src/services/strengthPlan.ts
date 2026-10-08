@@ -24,7 +24,7 @@
 import {
   loadStrength, updateStrength, StrengthStore, Routine, RoutineItem, Muscle, exerciseById, suggestWeight, estimateMinutes,
   localDateKey, isWorkSet, PlannedStrengthDay, StrengthSession, DAILY_CUSTOM_ID, recentSetsFor,
-  currentKit, adaptRoutineToKit, exerciseAvailable, allExercises, KITS, Exercise, StrengthAutoPlan, WEEKDAYS, muscleEvents, muscleFreshness, MUSCLE_LABEL,
+  currentKit, adaptRoutineToKit, exerciseAvailable, allExercises, KITS, Exercise, flatRoutine, StrengthAutoPlan, WEEKDAYS, muscleEvents, muscleFreshness, MUSCLE_LABEL,
 } from './strength';
 
 const LEGS: Muscle[] = ['quads', 'glutes', 'hamstrings', 'calves', 'adductors'];
@@ -332,7 +332,10 @@ async function buildContext(st: StrengthStore): Promise<{ c: Ctx; prevWeekRunMin
   const since28 = addDays(today, -28);
   const prevWeekRunMin = ((snap?.runs ?? []) as { date: string; duration: number }[])
     .filter(r => localDateKey(new Date(r.date)) >= since28 && localDateKey(new Date(r.date)) < today).reduce((a, r) => a + r.duration / 60, 0) / 4;
-  const routines = st.routines.filter(r => r.items.length && r.id !== DAILY_CUSTOM_ID);   // the daily custom is chosen, not planned
+  // done as FLATTENED routines (included routines expanded, superset groups tagged); the daily custom is chosen, not planned
+  // a routine that's INCLUDED in another (a superset / block) is part of that one, not a session of its own
+  const included = new Set(st.routines.flatMap(r => r.items.map(i => i.ref).filter((x): x is string => !!x)));
+  const routines = st.routines.filter(r => r.items.length && r.id !== DAILY_CUSTOM_ID && !included.has(r.id)).map(r => flatRoutine(st, r)).filter(r => r.items.length);
   const prof = new Map(routines.map(r => [r.id, profile(st, r)]));
   const lastDone = new Map<string, string>();
   for (const x of st.sessions) if (x.finishedAt && x.tailored !== 'prehab' && (!lastDone.get(x.routineId) || lastDone.get(x.routineId)! < x.date)) lastDone.set(x.routineId, x.date);

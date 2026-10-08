@@ -7,7 +7,7 @@ import { fetchBodyMassHistory } from '../src/services/healthkit';
 import { ExerciseThumb, ExercisePeek } from '../src/components/ExercisePeek';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, flatRoutine, supersetGroups,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -31,8 +31,44 @@ function Cell({ value, onCommit, decimal, style }: { value: number; onCommit: (n
 // The set to do next: the next open set of the exercise just worked on, else the first open set in the (re-orderable)
 // session order. -1 = everything ticked.
 function nextSetIdx(x: StrengthSession, focusExId?: string | null): number {
+  // in a SUPERSET the next set is the NEXT exercise of the group (A → B → C → A …), skipping finished ones
+  const g = focusExId ? x.groups?.find(a => a.includes(focusExId)) : undefined;
+  // a warm-up isn't a round: while the focused exercise still has an open WARM-UP set, stay on it
+  const wu = focusExId ? x.sets.findIndex(l => l.exerciseId === focusExId && !l.done && l.warmup) : -1;
+  if (g && wu >= 0) return wu;
+  if (g) {
+    const p = g.indexOf(focusExId!);
+    for (let k = 1; k <= g.length; k++) {
+      const id = g[(p + k) % g.length];
+      const i = x.sets.findIndex(l => l.exerciseId === id && !l.done);
+      if (i >= 0) return i;
+    }
+  }
   const f = focusExId ? x.sets.findIndex(l => l.exerciseId === focusExId && !l.done) : -1;
   return f >= 0 ? f : x.sets.findIndex(l => !l.done);
+}
+/** Superset sets in round order: within each group A1 B1 A2 B2 …, placed where the group's first exercise was. */
+function interleave(sets: SetLog[], groups: string[][]): SetLog[] {
+  const out: SetLog[] = [], done = new Set<string>();
+  for (const l of sets) {
+    if (done.has(l.exerciseId)) continue;
+    const g = groups.find(a => a.includes(l.exerciseId));
+    if (!g) { out.push(...sets.filter(x => x.exerciseId === l.exerciseId)); done.add(l.exerciseId); continue; }
+    const per = g.map(id => sets.filter(x => x.exerciseId === id));
+    const rounds = Math.max(...per.map(a => a.length));
+    for (let r = 0; r < rounds; r++) for (const a of per) if (a[r]) out.push(a[r]);
+    g.forEach(id => done.add(id));
+  }
+  return out;
+}
+/** Rest after ticking a superset set: a ~10 s change-over to the next exercise of the round, the full rest after the round. */
+function supersetRest(x: StrengthSession, exId: string, restSec: number): number {
+  const g = x.groups?.find(a => a.includes(exId));
+  if (!g) return restSec;
+  const p = g.indexOf(exId);
+  // is there a later exercise in this group (this round) that still has an open set? → change over, else round done
+  for (let k = p + 1; k < g.length; k++) if (x.sets.some(l => l.exerciseId === g[k] && !l.done)) return Math.min(restSec, 10);
+  return restSec;
 }
 // "Chest Press, set 2 of 4, 10 reps, 27.5 kilos" (body-weight moves: "body weight plus 5 kilos" / "assisted, 20 kilos")
 function describeSet(st: StrengthStore, x: StrengthSession, idx: number): string {
@@ -87,7 +123,8 @@ export default function StrengthSessionScreen() {
       const st = await loadStrength();
       // today's coach-TAILORED version of the routine (sets / weights / swaps for the day) when it's the planned one
       const planned = routinesForDate(st).find(x => x.id === routineId);
-      const r = planned ?? st.routines.find(x => x.id === routineId);
+      const raw = st.routines.find(x => x.id === routineId);
+      const r = planned ?? (raw ? flatRoutine(st, raw) : undefined);   // included routines expanded, supersets tagged
       if (!r) { setStore({ ...st }); return; }
       const today = localDateKey();
       // the prehab day is "<routine>~prehab": logged under the real routine, tagged, so the full routine stays separate
@@ -102,7 +139,8 @@ export default function StrengthSessionScreen() {
       if (!session) {
         const sets: SetLog[] = [];
         // where you are today decides the equipment: unavailable exercises are swapped / dropped (planned items already are)
-        for (const it of adaptRoutineToKit(st, r.items, currentKit(st)).items) {
+        const its = adaptRoutineToKit(st, r.items, currentKit(st)).items;
+        for (const it of its) {
           const sug = suggestWeight(st, it);
           const last = lastSetsFor(st, it.exerciseId);
           for (let k = 0; k < it.sets; k++) {
@@ -112,7 +150,10 @@ export default function StrengthSessionScreen() {
           }
         }
         const kg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
-        session = { id: newId('ss'), date: today, routineId: baseId, routineName: r.name, startedAt: Date.now(), bodyKg: kg, sets, ...(tailored ? { tailored } : {}) };
+        // SUPERSETS: the sets of a group are interleaved A1 B1 A2 B2 … (rounds), the group remembered for the flow
+        const groups = supersetGroups(its);
+        const ordered = groups.length ? interleave(sets, groups) : sets;
+        session = { id: newId('ss'), date: today, routineId: baseId, routineName: r.name, startedAt: Date.now(), bodyKg: kg, sets: ordered, ...(tailored ? { tailored } : {}), ...(groups.length ? { groups } : {}) };
         const created = session;
         const next = await updateStrength(cur => ({ ...cur, sessions: [...cur.sessions, created] }));
         sessRef.current = session; setStore({ ...next }); setSess(session);
@@ -182,14 +223,19 @@ export default function StrengthSessionScreen() {
   // and the rest notification follow.
   const moveBlock = (exId: string, where: 'next' | 'later') => {
     persist(x => {
-      const mine = x.sets.filter(l => l.exerciseId === exId), rest = x.sets.filter(l => l.exerciseId !== exId);
+      // a superset moves as ONE block (its rounds stay interleaved)
+      const ids = x.groups?.find(g => g.includes(exId)) ?? [exId];
+      const mine = x.sets.filter(l => ids.includes(l.exerciseId)), rest = x.sets.filter(l => !ids.includes(l.exerciseId));
       if (where === 'later') return { ...x, sets: [...rest, ...mine] };
       const open = rest.findIndex(l => !l.done);
-      // in front of the whole block holding the first open set (never between a half-done exercise's sets)
-      const at = open < 0 ? -1 : rest.findIndex(l => l.exerciseId === rest[open].exerciseId);
+      // in front of the whole block holding the first open set (never between a half-done exercise's sets, never inside
+      // another superset)
+      const blockOf = (id: string) => x.groups?.find(g => g.includes(id)) ?? [id];
+      const at = open < 0 ? -1 : rest.findIndex(l => blockOf(rest[open].exerciseId).includes(l.exerciseId));
       return { ...x, sets: at < 0 ? [...rest, ...mine] : [...rest.slice(0, at), ...mine, ...rest.slice(at)] };
     });
-    if (where === 'next') focusEx.current = exId;
+    // a moved superset starts at its first open set (focus on a member would make nextSetIdx jump to the NEXT member)
+    if (where === 'next') focusEx.current = sessRef.current?.groups?.some(g => g.includes(exId)) ? null : exId;
     else if (focusEx.current === exId) focusEx.current = null;
     if (restEnd && Date.now() < restEnd) startRest(Math.ceil((restEnd - Date.now()) / 1000));   // re-word the rest-done notification
     else announceNext();
@@ -225,8 +271,8 @@ export default function StrengthSessionScreen() {
   // with the routine's own exercise as its alternative), then the stored routine
   const slotItems = r ? [
     ...(routinesForDate(store).find(x => baseRoutineId(x.id) === r.id)?.items ?? []),
-    ...adaptRoutineToKit(store, r.items, currentKit(store)).items,
-    ...r.items,
+    ...adaptRoutineToKit(store, flatRoutine(store, r).items, currentKit(store)).items,
+    ...flatRoutine(store, r).items,   // included routines' exercises have their slots here
   ] : [];
 
   // Editing a set's WEIGHT also moves the later, not-yet-done sets of that exercise that still had the SAME weight
@@ -268,7 +314,8 @@ export default function StrengthSessionScreen() {
       if (k0 < 0) k0 = x.sets[h.idx]?.exerciseId === h.exerciseId ? h.idx : -1;
       return k0 < 0 ? x : { ...x, sets: x.sets.map((l, k) => k === k0 ? { ...l, reps: held, done: true, doneAt: Date.now() } : l) };
     });
-    startRest(h.restSec); if (h.restSec <= 0) announceNext();
+    const rs = sessRef.current ? supersetRest(sessRef.current, h.exerciseId, h.restSec) : h.restSec;
+    startRest(rs); if (rs <= 0) announceNext();
   };
   const toggle = (idx: number, restSec: number) => {
     // ✓ on the set being HELD = stop the hold: log the seconds actually held (it used to keep the planned 45 s —
@@ -277,10 +324,15 @@ export default function StrengthSessionScreen() {
     const done = !sessRef.current!.sets[idx].done;
     if (done) focusEx.current = sessRef.current!.sets[idx].exerciseId;
     persist(x => ({ ...x, sets: x.sets.map((l, k) => k === idx ? { ...l, done, doneAt: done ? Date.now() : undefined } : l) }));
-    if (done) { startRest(restSec); if (restSec <= 0) announceNext(); } else { cancelRestNotif(); setRestEnd(null); }
+    // superset: a short change-over to the next exercise of the round, the full rest only after the round
+    const ticked = sessRef.current?.sets[idx];
+    const rs = done && sessRef.current && ticked && !ticked.warmup ? supersetRest(sessRef.current, ticked.exerciseId, restSec) : restSec;
+    if (done) { startRest(rs); if (rs <= 0) announceNext(); } else { cancelRestNotif(); setRestEnd(null); }
   };
   // switch to the alternative exercise for the sets NOT yet done
-  const swap = (fromId: string, toId: string) => persist(x => ({ ...x, sets: x.sets.map(l => l.exerciseId === fromId && !l.done ? { ...l, exerciseId: toId } : l) }));
+  // ⇄ switch: the open sets AND the superset group follow the new exercise (alternation / rest / moves keep working)
+  const swap = (fromId: string, toId: string) => persist(x => ({ ...x, sets: x.sets.map(l => l.exerciseId === fromId && !l.done ? { ...l, exerciseId: toId } : l),
+    ...(x.groups ? { groups: x.groups.map(g => g.map(id => (id === fromId ? toId : id))) } : {}) }));
   const finish = () => {
     if (finishing.current) return;
     const cur = sessRef.current!;
@@ -361,6 +413,13 @@ export default function StrengthSessionScreen() {
                 {ex?.video && <TouchableOpacity onPress={() => Linking.openURL(ex.video!.url)} hitSlop={8}><Text style={s.link}>▶ video</Text></TouchableOpacity>}
               </View>
               {peek === exId && <ExercisePeek ex={ex} onClose={() => setPeek(null)} />}
+              {(() => {
+                const g = sess.groups?.find(a => a.includes(exId));
+                if (!g) return null;
+                const rounds = Math.max(...g.map(id => sess.sets.filter(l => l.exerciseId === id && !l.warmup).length));
+                const doneR = Math.min(...g.map(id => sess.sets.filter(l => l.exerciseId === id && !l.warmup && l.done).length));
+                return <Text style={[s.meta, { color: c.accent, fontWeight: '700' }]}>🔁 Superset {g.indexOf(exId) + 1}/{g.length} · round {Math.min(rounds, doneR + 1)}/{rounds} — then {exerciseById(store, g[(g.indexOf(exId) + 1) % g.length])?.name ?? ''}</Text>;
+              })()}
               <Text style={s.meta}>
                 {item ? `${item.sets} × ${repRange(item).join('–')}` : ''}{item?.tempo ? ` · tempo ${item.tempo}` : ''} · rest {fmt(restSec)}{ex?.bodyweightFrac ? ' · kg = added (− = assist)' : ''}
               </Text>

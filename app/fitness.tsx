@@ -9,7 +9,7 @@ import {
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
   exerciseStatLine, ExerciseStatLine, DEFAULT_DRILLS, exerciseById,
-  plannedDay, plannedDone, DAILY_CUSTOM_ID, KITS, currentKit,
+  plannedDay, plannedDone, DAILY_CUSTOM_ID, KITS, currentKit, flatRoutine,
 } from '../src/services/strength';
 import { ensureStrengthPlan, ensureDailyCustom } from '../src/services/strengthPlan';
 import { SessionVsPrevious } from '../src/components/SessionVsPrevious';
@@ -293,7 +293,7 @@ export default function FitnessMode() {
             <Text style={[s.todayName, { flex: 1 }]}>{r.name}</Text>
             <Text style={s.meta}>{r.days.length ? r.days.slice().sort().map(d => WEEKDAYS[d]).join(' · ') : 'not planned'}</Text>
           </View>
-          <Text style={s.meta} numberOfLines={2}>{r.items.length} exercises · ~{estimateMinutes(r)} min{r.source ? ` · ${r.source}` : ''}</Text>
+          <Text style={s.meta} numberOfLines={2}>{r.mode === 'superset' ? '🔁 Superset · ' : ''}{flatRoutine(store, r).items.length} exercises · ~{estimateMinutes(flatRoutine(store, r))} min{r.source ? ` · ${r.source}` : ''}</Text>
         </TouchableOpacity>
       ))}
       <TouchableOpacity style={s.addBtn} onPress={addRoutine}><Text style={s.addTxt}>＋ New routine</Text></TouchableOpacity>

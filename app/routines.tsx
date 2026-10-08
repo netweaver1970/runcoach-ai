@@ -3,7 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { LibraryWorkout, KIND_COLOR, describeWorkout, workoutMinutes, loadLibrary, saveLibrary, newWorkout } from '../src/services/workoutLibrary';
-import { StrengthStore, Routine, loadStrength, updateStrength, estimateMinutes, WEEKDAYS, newId, exerciseById } from '../src/services/strength';
+import { StrengthStore, Routine, loadStrength, updateStrength, estimateMinutes, WEEKDAYS, newId, exerciseById, flatRoutine } from '../src/services/strength';
 
 // One place for every routine — running (structured workouts) AND strength — Bevel-style "Routines". The two keep
 // their own editors/stores; this is the shared entry point.
@@ -60,11 +60,11 @@ export default function RoutinesScreen() {
               <View style={s.head}>
                 <View style={[s.dot, { backgroundColor: '#8e44ad' }]} />
                 <Text style={s.name} numberOfLines={1}>{r.name}</Text>
-                <Text style={s.min}>{estimateMinutes(r)}m</Text>
+                <Text style={s.min}>{estimateMinutes(flatRoutine(st, r))}m</Text>
               </View>
               <Text style={s.desc} numberOfLines={2}>
                 {r.days.length ? `${r.days.slice().sort().map(d => WEEKDAYS[d]).join(' · ')} — ` : ''}
-                {r.items.map(i => exerciseById(st, i.exerciseId)?.name ?? i.exerciseId).join(', ') || 'no exercises yet'}
+                {r.mode === 'superset' ? '🔁 ' : ''}{flatRoutine(st, r).items.map(i => exerciseById(st, i.exerciseId)?.name ?? i.exerciseId).join(', ') || 'no exercises yet'}
               </Text>
             </TouchableOpacity>
           ))}
