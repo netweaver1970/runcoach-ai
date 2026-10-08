@@ -37,7 +37,9 @@ struct StrengthPlan: Codable {
 struct LoggedSet: Codable { let exId: String; let slot: Int; let set: Int; let reps: Int; let kg: Double; let doneAt: Double }
 
 // What's on disk while a workout is open, so a killed app can still hand its sets to the phone.
-private struct LiveState: Codable { let sid: String; let start: Double; let routine: StrengthRoutine; let logged: [LoggedSet]; let rpe: Int }
+private struct LiveState: Codable { let sid: String; let start: Double; let routine: StrengthRoutine; let logged: [LoggedSet]; let rpe: Int
+  let feel: [String: String]?   // optional (older saved states have none)
+}
 
 enum StrengthPhase { case idle, lifting, resting, finishing, saving, done }
 
@@ -61,6 +63,8 @@ final class StrengthEngine: NSObject, ObservableObject {
   @Published var reps = 0
   @Published var logged: [LoggedSet] = []
   @Published var restLeft = 0
+  @Published var feel: [String: String] = [:]   // optional per-exercise feedback: exId → easy / ok / hard
+  @Published var lastDoneSlot = -1              // the slot of the set ticked last → "how did it feel?" once it's complete
   @Published var heartRate: Double = 0
   @Published var kcal: Double = 0
   @Published var elapsed: TimeInterval = 0
@@ -130,7 +134,7 @@ final class StrengthEngine: NSObject, ObservableObject {
       // Int64: the watch is arm64_32 — a plain Int is 32-bit and epoch-ms overflowed it → trap on Start (2026-10-07)
       sid = "sw-\(Int64(now.timeIntervalSince1970 * 1000))"
       issue = ""; doneNote = ""; heartRate = 0; kcal = 0; elapsed = 0; rpe = 7; canResume = true
-      routine = r; logged = []; exIdx = 0; restEnd = nil; restLeft = 0
+      routine = r; logged = []; exIdx = 0; restEnd = nil; restLeft = 0; feel = [:]; lastDoneSlot = -1
       loadSet(0, 0)
       phase = .lifting
       announce()
@@ -176,6 +180,7 @@ final class StrengthEngine: NSObject, ObservableObject {
   func doneSet() {
     guard phase == .lifting, let it = item, reps > 0, let r = routine else { return }
     logged.append(LoggedSet(exId: it.exId, slot: exIdx, set: loggedCount(exIdx) + 1, reps: reps, kg: kg, doneAt: Date().timeIntervalSince1970 * 1000))
+    lastDoneSlot = exIdx
     saveLive()
     WKInterfaceDevice.current().play(.success)
     // next: the next set of this slot, else the first slot that still has planned sets left
@@ -230,6 +235,16 @@ final class StrengthEngine: NSObject, ObservableObject {
     kg = last.kg; reps = last.reps
   }
 
+  // The slot whose sets are all done and was worked last → offer Easy / OK / Hard for it (optional; tap again clears).
+  var feelSlot: Int? {
+    guard let r = routine, lastDoneSlot >= 0, lastDoneSlot < r.items.count, loggedCount(lastDoneSlot) >= r.items[lastDoneSlot].sets.count else { return nil }
+    return lastDoneSlot
+  }
+  func setFeel(_ exId: String, _ f: String) {
+    if feel[exId] == f { feel.removeValue(forKey: exId) } else { feel[exId] = f }
+    saveLive()
+  }
+
   func askFinish() { if phase == .lifting || phase == .resting { skipRest(); phase = .finishing } }
   func backToWorkout() { if phase == .finishing && canResume { loadSet(exIdx, loggedCount(exIdx)); phase = .lifting } }
   func finishDone() { issue = ""; doneNote = ""; reset() }
@@ -243,7 +258,7 @@ final class StrengthEngine: NSObject, ObservableObject {
     saveGen += 1
     let gen = saveGen
     let end = Date()
-    let sets = logged, rpeNow = rpe, sidNow = sid
+    let sets = logged, rpeNow = rpe, sidNow = sid   // (feel is read when the log is built — no edits possible while saving)
     var meta: [String: Any] = [HKMetadataKeyWorkoutBrandName: "RunCoach · \(r.name)", "RunCoachSession": sidNow]
     let summary = exerciseSummary(r, sets)
     if !summary.isEmpty { meta["RunCoachExercises"] = String(summary.prefix(1500)) }
@@ -301,7 +316,7 @@ final class StrengthEngine: NSObject, ObservableObject {
                        effortOk: Bool, kcal: Double) -> [String: Any] {
     ["id": sid, "routineId": r.id, "routineName": r.name,
      "startedAt": sd.timeIntervalSince1970 * 1000, "finishedAt": end.timeIntervalSince1970 * 1000,
-     "rpe": rpe, "uuid": uuid ?? "", "effort": effortOk ? "ok" : "", "kcal": kcal, "bodyKg": plan?.bodyKg ?? 0,
+     "rpe": rpe, "uuid": uuid ?? "", "effort": effortOk ? "ok" : "", "kcal": kcal, "bodyKg": plan?.bodyKg ?? 0, "feel": feel,
      "sets": sets.map { ["exId": $0.exId, "set": $0.set, "reps": $0.reps, "kg": $0.kg, "doneAt": $0.doneAt] }]
   }
 
@@ -320,7 +335,7 @@ final class StrengthEngine: NSObject, ObservableObject {
   // ─── Crash safety: the open workout on disk; an orphan (app killed mid-workout) can still be sent ─────────
   private func saveLive() {
     guard let r = routine, let sd = startDate,
-          let d = try? JSONEncoder().encode(LiveState(sid: sid, start: sd.timeIntervalSince1970, routine: r, logged: logged, rpe: rpe)) else { return }
+          let d = try? JSONEncoder().encode(LiveState(sid: sid, start: sd.timeIntervalSince1970, routine: r, logged: logged, rpe: rpe, feel: feel)) else { return }
     UserDefaults.standard.set(d, forKey: "strengthLive")
   }
   private func clearLive() { UserDefaults.standard.removeObject(forKey: "strengthLive") }
@@ -330,8 +345,10 @@ final class StrengthEngine: NSObject, ObservableObject {
     }
     let sd = Date(timeIntervalSince1970: l.start)
     let last = (l.logged.map(\.doneAt).max() ?? sd.timeIntervalSince1970 * 1000) / 1000
-    sendLog(makeLog(r: l.routine, sd: sd, end: Date(timeIntervalSince1970: last + 60), sets: l.logged, rpe: l.rpe, sid: l.sid,
-                    uuid: nil, effortOk: false, kcal: 0))
+    var log = makeLog(r: l.routine, sd: sd, end: Date(timeIntervalSince1970: last + 60), sets: l.logged, rpe: l.rpe, sid: l.sid,
+                      uuid: nil, effortOk: false, kcal: 0)
+    log["feel"] = l.feel ?? [:]   // the orphan's own feedback, not the (empty) live one
+    sendLog(log)
     clearLive(); orphan = nil
   }
   func discardOrphan() { clearLive(); orphan = nil }

@@ -59,6 +59,10 @@ export interface SetLog {
   rir?: number;            // reps in reserve after the set (0 = failure … 3 = "3+"), optional effort
   doneAt?: number;         // when ✓ was tapped (epoch ms) → the real workout window for Apple Health
 }
+/** How an exercise felt (optional, per session). 'hard' = that session doesn't count toward a raise. */
+export type Feel = 'easy' | 'ok' | 'hard';
+export const FEEL_LABEL: Record<Feel, string> = { easy: 'Easy', ok: 'OK', hard: 'Hard' };
+export const isFeel = (v: unknown): v is Feel => v === 'easy' || v === 'ok' || v === 'hard';
 /** A set that counts: done, not a warm-up, with reps. */
 export const isWorkSet = (l: SetLog) => l.done && !l.warmup && l.reps > 0;
 export interface StrengthSession {
@@ -71,6 +75,7 @@ export interface StrengthSession {
   bodyKg?: number;         // body weight used for body-weight exercises
   sets: SetLog[];
   rpe?: number;            // session RPE 1–10 (scales muscular load + the Health calorie estimate)
+  feel?: Partial<Record<string, Feel>>;   // optional per-EXERCISE feedback (exerciseId → easy/ok/hard); gradable afterwards
   // Apple Health: written by us ('saved') / linked to a watch workout ('exists'); `enriched` = heart rate + Effort
   // related to our workout; `watch` = logged on the Apple Watch, `uuid` is the workout the WATCH recorded
   hk?: { status: 'saved' | 'exists' | 'failed'; uuid?: string; tries?: number; ver?: number;
@@ -304,7 +309,7 @@ export function estimateMinutes(r: Routine): number {
 /** The rep range in order — the editor saves each bound as typed, so lo > hi can occur mid-edit. */
 export const repRange = (i: RoutineItem): [number, number] => [Math.min(i.repsLo, i.repsHi), Math.max(i.repsLo, i.repsHi)];
 
-// ── Progression (double progression) ─────────────────────────────────────────────────────────────────────────
+// ── Progression (double progression, 3-session stable rule) ─────────────────────────────────────────────────────────────────────────
 /** The last finished session's completed sets for this exercise (newest first). */
 export function lastSetsFor(s: StrengthStore, exerciseId: string): SetLog[] {
   const done = s.sessions.filter(x => x.finishedAt).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0));
@@ -314,18 +319,38 @@ export function lastSetsFor(s: StrengthStore, exerciseId: string): SetLog[] {
   }
   return [];
 }
-/**
- * Suggested working weight (double progression, effort-aware when RIR was logged):
- *  · every work set reached the TOP of the rep range at the same weight → +1 step (2 kg dumbbells, 2.5 kg else);
- *    +2 steps if every one of those sets still had ≥ 3 reps in reserve (clearly too light);
- *  · fell short of the BOTTOM of the range at failure (RIR 0) → −1 step;
- *  · otherwise repeat the weight and chase the top of the range.
- */
-/** Weight increment: dumbbell racks go in 2 kg steps; stacks/plates 2.5. */
+/** Weight increment for manual steps and deloads: dumbbell racks go in 2 kg steps; stacks/plates 2.5. */
 export const weightStep = (ex?: Exercise) => (ex && /\bDB\b|Dumbbell/i.test(ex.name) ? 2 : 2.5);
+/** The last `n` finished sessions' WORK sets of this exercise (newest first), one entry per session, with its feel. */
+export function recentSetsFor(s: StrengthStore, exerciseId: string, n: number): { sets: SetLog[]; feel?: Feel }[] {
+  const out: { sets: SetLog[]; feel?: Feel }[] = [];
+  for (const x of s.sessions.filter(q => q.finishedAt).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))) {
+    const sets = x.sets.filter(l => l.exerciseId === exerciseId && isWorkSet(l));
+    if (sets.length) { out.push({ sets, feel: x.feel?.[exerciseId] }); if (out.length >= n) break; }
+  }
+  return out;
+}
+// Progression rules (Geert, 2026-10-08): raise ONLY after 3 sessions in a row that were STABLE — every planned set at
+// the top of the rep range at the same weight, and not graded 'hard'; in steps of 5, 2.5 or 1 kg, the largest within
+// ~8 % of the load (12.5 kg → +1, 31.25 → +2.5, 62.5 → +5; first asked 5 %, "too little" once seen).
+export const STABLE_SESSIONS = 3;
+export const RAISE_MAX_FRAC = 0.08;
+export const RAISE_STEPS = [5, 2.5, 1];
+/** The largest allowed raise for a load (kg moved): 5 / 2.5 / 1 kg, within 8 %. 0 = even 1 kg would be > 8 %. */
+export const raiseStep = (loadKg: number) => RAISE_STEPS.find(st => st <= loadKg * RAISE_MAX_FRAC + 1e-9) ?? 0;
+/**
+ * Suggested working weight:
+ *  · the last 3 sessions of this exercise each did every planned set at the TOP of the rep range at the SAME weight
+ *    (and none was graded 'hard') → raise by the largest of 5 / 2.5 / 1 kg within 8 % of the load (body-weight moves:
+ *    of body-weight share + added kg). When even 1 kg is more than 8 % (light loads) it says so and leaves it to you;
+ *  · the per-exercise feel is OPTIONAL: without it the rule runs on reps/sets/weight alone;
+ *  · fell short of the BOTTOM of the range at failure (RIR 0) on ≥ half the sets → −1 step;
+ *  · otherwise repeat the weight (and say how far along the 3-session streak is).
+ */
 export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: number; why?: string } {
-  const last = lastSetsFor(s, item.exerciseId);
-  if (!last.length) return item.weightKg != null ? { kg: item.weightKg } : {};
+  const hist = recentSetsFor(s, item.exerciseId, STABLE_SESSIONS);
+  const last = hist[0]?.sets;
+  if (!last) return item.weightKg != null ? { kg: item.weightKg } : {};
   const top = Math.max(...last.map(l => l.weightKg));
   const atTop = last.filter(l => l.weightKg === top);
   const ex = exerciseById(s, item.exerciseId);
@@ -333,10 +358,24 @@ export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: numbe
   const [lo, hi] = repRange(item);
   const r4 = (x: number) => Math.round(x * 4) / 4;
   const reps = atTop.map(l => `${l.reps}${l.rir != null ? `@${l.rir >= 3 ? '3+' : l.rir}` : ''}`).join('/');
-  if (atTop.length >= item.sets && atTop.every(l => l.reps >= hi)) {
-    const easy = atTop.every(l => l.rir != null && l.rir >= 3);
-    const add = easy ? 2 * step : step;
-    return { kg: r4(top + add), why: `all ${item.sets} sets hit ${hi} reps at ${top} kg${easy ? ' with 3+ reps to spare' : ''} → +${add} kg` };
+  // stable = this session's heaviest weight is the same `top`, and every planned set reached the top of the range there
+  const same = (a: number, b: number) => Math.abs(a - b) < 0.01;
+  const stable = ({ sets, feel }: { sets: SetLog[]; feel?: Feel }) => {
+    if (feel === 'hard') return false;   // graded hard → not yet stable, whatever the reps
+    const t = Math.max(...sets.map(l => l.weightKg));
+    // ≥ the planned number of sets at that weight reached the top of the range (an extra/AMRAP set doesn't spoil it)
+    return same(t, top) && sets.filter(l => same(l.weightKg, t) && l.reps >= hi).length >= item.sets;
+  };
+  let streak = 0;
+  for (const h of hist) { if (stable(h)) streak++; else break; }
+  if (streak >= STABLE_SESSIONS) {
+    const bodyKg = s.sessions.filter(q => q.finishedAt && q.bodyKg).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))[0]?.bodyKg ?? 80;
+    const load = ex?.bodyweightFrac ? bodyKg * ex.bodyweightFrac + top : top;
+    const assisted = !!ex?.bodyweightFrac && top < 0;
+    if (load <= 0) return { kg: top, why: `${STABLE_SESSIONS} stable sessions at ${top} kg — reduce the assistance yourself in the kg field` };
+    const up = raiseStep(load);
+    if (up > 0) return { kg: r4(top + up), why: `${STABLE_SESSIONS} sessions in a row: ${item.sets}×${hi} at ${top} kg → ${assisted ? `${up} kg less assistance` : `+${up} kg`} (${Math.round((up / load) * 1000) / 10}%)` };
+    return { kg: top, why: `${STABLE_SESSIONS} stable sessions at ${top} kg — ready to go up, but +1 kg is more than 8% of ${Math.round(load * 10) / 10} kg; type the heavier weight in the kg field if you want it` };
   }
   // ≥ half the sets fell short of the range AT FAILURE → lighter. Body-weight moves store ASSISTANCE as negative kg,
   // so "lighter" = more assistance (−20 → −22.5), never clamped to 0 (which would remove the assistance).
@@ -344,7 +383,30 @@ export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: numbe
     const next = ex?.bodyweightFrac ? top - step : Math.max(0, top - step);
     return { kg: r4(next), why: `missed ${lo} reps at failure last time (${reps} at ${top} kg) → ${ex?.bodyweightFrac ? `${step} kg more assistance` : `−${step} kg`}` };
   }
-  return { kg: top, why: `last time ${reps} reps at ${top} kg — aim for ${hi} on every set` };
+  if (hist[0].feel === 'hard') return { kg: top, why: `felt hard last time at ${top} kg — hold it until ${STABLE_SESSIONS} sessions in a row feel fine` };
+  if (streak > 0) return { kg: top, why: `${streak}/${STABLE_SESSIONS} stable sessions at ${top} kg (${item.sets}×${hi}) — raise after ${STABLE_SESSIONS} in a row` };
+  return { kg: top, why: `last time ${reps} reps at ${top} kg — aim for ${hi} on every set, ${STABLE_SESSIONS} sessions in a row` };
+}
+
+/**
+ * Grade (or re-grade / clear) how an exercise felt in a session — during it or any time after. For a finished session
+ * the routine's auto-update is re-run, so a raise that a later 'hard' rules out is taken back (and vice versa).
+ */
+export function setExerciseFeel(sessionId: string, exerciseId: string, feel: Feel | undefined): Promise<StrengthStore> {
+  return updateStrength(cur => {
+    const sessions = cur.sessions.map(x => {
+      if (x.id !== sessionId) return x;
+      const f = { ...(x.feel ?? {}) };
+      if (feel) f[exerciseId] = feel; else delete f[exerciseId];
+      return { ...x, feel: f };
+    });
+    const next = { ...cur, sessions };
+    // only the GRADED exercise's planned weight follows — every other item keeps what it has (hand-typed weights too)
+    const upd = autoUpdatedRoutine(next, sessionId);
+    if (!upd) return next;
+    return { ...next, routines: next.routines.map(r => r.id !== upd.routine.id ? r
+      : { ...r, items: r.items.map((it, k) => it.exerciseId === exerciseId ? upd.routine.items[k] : it) }) };
+  });
 }
 
 /**
@@ -441,7 +503,7 @@ export function e1rm(loadKg: number, reps: number, rir?: number): number | null 
   if (loadKg <= 0 || reps <= 0 || toFail > (rir != null ? 15 : 12)) return null;
   return toFail === 1 ? loadKg : Math.round(loadKg * (1 + toFail / 30) * 10) / 10;
 }
-export interface ExerciseSessionStat { sessionId: string; date: string; at: number; topKg: number; bestE1rm: number | null; bestSetVol: number; volume: number; sets: number }
+export interface ExerciseSessionStat { feel?: Feel; sessionId: string; date: string; at: number; topKg: number; bestE1rm: number | null; bestSetVol: number; volume: number; sets: number }
 /** Per finished session: the exercise's top weight, best e1RM, best single-set volume and total volume. */
 export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseSessionStat[] {
   const ex = exerciseById(s, exerciseId);
@@ -458,10 +520,51 @@ export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseS
       bestV = Math.max(bestV, kg * l.reps);
       vol += kg * l.reps;
     }
-    out.push({ sessionId: x.id, date: x.date, at: x.finishedAt, topKg, bestE1rm: bestE || null, bestSetVol: Math.round(bestV), volume: Math.round(vol), sets: sets.length });
+    out.push({ feel: x.feel?.[exerciseId], sessionId: x.id, date: x.date, at: x.finishedAt, topKg, bestE1rm: bestE || null, bestSetVol: Math.round(bestV), volume: Math.round(vol), sets: sets.length });
   }
   return out.sort((a, b) => a.at - b.at);
 }
+// ── Stats (exercise list + Strength stats screen) ─────────────────────────────────────────────────────────────
+/** One line of stats per exercise for the list: last top weight × reps, e1RM, its trend over the last 8 weeks. */
+export interface ExerciseStatLine { sessions: number; lastAt: number; lastTop: number; lastReps: number; e1rm: number | null; bestE1rm: number | null; trendPct: number | null; spark: number[] }
+export function exerciseStatLine(s: StrengthStore, exerciseId: string): ExerciseStatLine | null {
+  const h = exerciseHistory(s, exerciseId);
+  if (!h.length) return null;
+  const last = h[h.length - 1];
+  const lastSess = s.sessions.find(x => x.id === last.sessionId);
+  const lastSets = lastSess?.sets.filter(l => l.exerciseId === exerciseId && isWorkSet(l)) ?? [];
+  const lastReps = Math.max(0, ...lastSets.filter(l => l.weightKg === Math.max(...lastSets.map(q => q.weightKg))).map(l => l.reps));
+  const e = h.filter(x => x.bestE1rm != null);
+  // e1RM change over the last 8 weeks: OLS over those sessions (≥ 3), as % of the fitted start (same idea as the
+  // cardio Efficiency Trends) — null when there isn't enough to call a trend
+  const recent = e.filter(x => x.at >= Date.now() - 56 * 86_400_000).map(x => x.bestE1rm!);
+  let trendPct: number | null = null;
+  if (recent.length >= 3) {
+    const n = recent.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    recent.forEach((v, i) => { sx += i; sy += v; sxx += i * i; sxy += i * v; });
+    const den = n * sxx - sx * sx;
+    if (den) { const m = (n * sxy - sx * sy) / den, b0 = (sy - m * sx) / n; if (b0 > 0) trendPct = Math.round((m * (n - 1) / b0) * 1000) / 10; }
+  }
+  return { sessions: h.length, lastAt: last.at, lastTop: last.topKg, lastReps, e1rm: last.bestE1rm, bestE1rm: e.length ? Math.max(...e.map(x => x.bestE1rm!)) : null,
+    trendPct, spark: e.slice(-12).map(x => x.bestE1rm!) };
+}
+/** Per finished session: when, tonnage, work sets, hard sets per load area, RPE — the Strength stats series. */
+export interface SessionStat { t: number; tonnage: number; sets: number; rpe?: number; areaSets: Record<string, number> }
+export function sessionStats(s: StrengthStore): SessionStat[] {
+  return s.sessions.filter(x => x.finishedAt).sort((a, b) => a.startedAt - b.startedAt).map(x => {
+    const areaSets: Record<string, number> = {};
+    for (const l of x.sets.filter(isWorkSet)) {
+      const ex = exerciseById(s, l.exerciseId);
+      for (const g of LOAD_GROUPS) {
+        if (g.key === 'body') continue;
+        const inv = g.muscles.reduce((m, mu) => Math.max(m, ex?.muscles[mu] ?? 0), 0);   // the area's main muscle involvement
+        if (inv > 0) areaSets[g.key] = (areaSets[g.key] ?? 0) + inv;
+      }
+    }
+    return { t: x.startedAt, tonnage: sessionTonnage(s, x), sets: x.sets.filter(isWorkSet).length, rpe: x.rpe, areaSets };
+  });
+}
+
 export interface PrHit { exerciseId: string; name: string; kind: 'e1RM' | 'Heaviest' | 'Set volume' | 'Volume'; value: number; prev: number }
 /** PRs this (finished) session set vs every EARLIER session — first-ever sessions don't count as PRs. */
 export function sessionPRs(s: StrengthStore, sessionId: string): PrHit[] {

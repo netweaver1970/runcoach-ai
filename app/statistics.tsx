@@ -5,6 +5,7 @@ import {
 import {
   StatCard, StatCardId, STAT_CARD_TITLES, DEFAULT_STATS_LAYOUT, loadStatsLayout, saveStatsLayout,
 } from '../src/services/statsLayout';
+import { TChart, TPt, Ev, EV_COLOR, TS_H, TS_YW, TX_H, inWin, olsFit, trendDelta, signed, dLabel } from '../src/components/TimeChart';
 import { ReorderList } from '../src/ReorderList';
 import { loadEvents } from '../src/services/timelineEvents';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -52,17 +53,13 @@ function tempTrace(pts: { date: string; tempC?: number }[], win = 3): TPt[] {
     return { t: p.t, v: Math.round((sum / n) * 10) / 10 };
   });
 }
-const EV_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981' };
 // Ordered shortest→longest to match the other history screens (app/history.tsx '1M','3M','6M','1Y' and
 // app/biology.tsx '1M'…'10Y') so the range tabs read the same way everywhere. 'All' closes the row for the
 // full-history view these charts support; month lengths match biology's RANGE_MONTHS (30d/month).
 type Range = '1M' | '3M' | '6M' | '1Y' | '5Y' | 'All';
 const RANGES: Range[] = ['1M', '3M', '6M', '1Y', '5Y', 'All'];
 const RANGE_DAYS: Record<Range, number> = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, '5Y': 1825, All: 0 };
-interface Ev { t: number; label: string; category: string }
 const tOf = (d: string) => new Date(d.length <= 10 ? d + 'T00:00:00' : d).getTime();
-const dLabel = (t: number, yearly: boolean) =>
-  new Date(t).toLocaleDateString('en-GB', yearly ? { month: 'short', year: '2-digit' } : { day: 'numeric', month: 'short' });
 const shortDmy = (t: number) => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
 
 // ─── Power-Duration chart ───────────────────────────────────────────────────────
@@ -159,8 +156,6 @@ function PdcChart({ curve, innerW, pz }: { curve: PowerCurve; innerW: number; pz
 }
 
 // ─── Generic time-series (line + optional dots, band, reference lines) ────────────
-const TS_H = 96;
-const TS_YW = 34;
 function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
   vals: number[]; colors?: string[]; innerW: number;
   band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
@@ -234,131 +229,6 @@ function CardHead({ title, children }: { title: string; children?: React.ReactNo
         )}
       </View>
       {has && open && <Text style={{ color: c.textSub, fontSize: 11.5, lineHeight: 16, marginTop: 5 }}>{children}</Text>}
-    </View>
-  );
-}
-
-// ─── Time-windowed series chart: cursor + events + date x-axis + optional band/refs/trend ─────────
-const TX_H = 20;
-interface TPt { t: number; v: number; color?: string }
-// The points inside the shared window, in draw order — exactly the set TChart plots. Card captions use this
-// too, so their "latest"/Δ numbers describe the chart on screen rather than the whole run history.
-function inWin<T extends { t: number }>(pts: T[], t0: number, t1: number): T[] {
-  return pts.filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
-}
-// OLS fit over (index, value) — the SAME fit TChart draws as its grey trend line. Shared so a caption's
-// "±d over the window" (= fit(end) − fit(start) = m·(n−1)) always agrees with the line drawn in the card.
-function olsFit(vals: number[]): { m: number; b0: number } | null {
-  const n = vals.length; if (n < 2) return null;
-  let sx = 0, sy = 0, sxx = 0, sxy = 0;
-  for (let i = 0; i < n; i++) { sx += i; sy += vals[i]; sxx += i * i; sxy += i * vals[i]; }
-  const den = n * sxx - sx * sx; if (!den) return null;
-  const m = (n * sxy - sx * sy) / den;
-  return { m, b0: (sy - m * sx) / n };
-}
-// ≥3 points, same as TChart's trend line — a caption must never quote a "trend" the chart doesn't draw.
-const trendDelta = (vals: number[]): number | null => {
-  if (vals.length < 3) return null;
-  const f = olsFit(vals); return f ? f.m * (vals.length - 1) : null;
-};
-const signed = (v: number, dp: number) => `${v >= 0 ? '+' : ''}${v.toFixed(dp)}`;
-function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries }: {
-  pts: TPt[]; t0: number; t1: number; color: string;
-  band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
-  trend?: boolean; events: Ev[]; showEvents: boolean; yfmt: (v: number) => string; innerW: number;
-  pts2?: TPt[]; color2?: string; y2fmt?: (v: number) => string; y2label?: string;
-  bandSeries?: { t: number; lo: number; hi: number }[];
-}) {
-  const { c } = useTheme();
-  const ch = useThemedStyles(makeCh);
-  const rightGutter = pts2 && pts2.length >= 2 ? 34 : 0;   // reserve room for the secondary (weight) axis labels
-  const plotW = Math.max(1, innerW - TS_YW - rightGutter);
-  const span = Math.max(1, t1 - t0);
-  const [cur, setCur] = useState<number | null>(null);
-  const mapRef = useRef<(lx: number) => number>(() => t0);
-  mapRef.current = (lx) => t0 + (Math.max(0, Math.min(plotW, lx - TS_YW)) / plotW) * span;
-  const pan = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => false,
-    // Claim horizontal drags in the CAPTURE phase so the parent ScrollView can't swallow them first
-    // (the cause of the "sometimes unresponsive" scrub), and don't hand the gesture back once grabbed.
-    onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
-    onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > Math.abs(g.dy) && Math.abs(g.dx) > 4,
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
-    onPanResponderMove: (e) => setCur(mapRef.current(e.nativeEvent.locationX)),
-  })).current;
-
-  const win = inWin(pts, t0, t1);
-  if (innerW <= 0) return <View style={{ height: TS_H + TX_H + 20 }} />;
-  if (win.length < 2) return <View style={{ height: TS_H + TX_H, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: c.textFaint, fontSize: 12 }}>Fewer than 2 points in this range.</Text></View>;
-
-  const bandWin = (bandSeries ?? []).filter(b => b.t >= t0 && b.t <= t1).sort((a, b) => a.t - b.t);
-  const bandYs = bandWin.flatMap(b => [b.lo, b.hi]);
-  const vals = win.map(p => p.v);
-  const lo = Math.min(...vals, band ? band[0] : Infinity, ...(refs?.map(r => r.y) ?? []), ...(bandYs.length ? bandYs : [Infinity]));
-  const hi = Math.max(...vals, band ? band[1] : -Infinity, ...(refs?.map(r => r.y) ?? []), ...(bandYs.length ? bandYs : [-Infinity]));
-  const pad = (hi - lo) * 0.15 || 1, yLo = lo - pad, yHi = hi + pad;
-  const x = (t: number) => ((t - t0) / span) * plotW;
-  const toY = (v: number) => TS_H * (1 - (v - yLo) / (yHi - yLo));
-  const yTicks = [yLo + (yHi - yLo) * 0.15, (yLo + yHi) / 2, yHi - (yHi - yLo) * 0.15];
-  // Optional secondary series (e.g. body weight) — own scale, drawn faint, labelled on the right.
-  const c2 = color2 ?? '#a855f7';
-  const win2 = (pts2 ?? []).filter(p => p.t >= t0 && p.t <= t1).sort((a, b) => a.t - b.t);
-  const has2 = win2.length >= 2;
-  const v2 = win2.map(p => p.v);
-  const lo2 = has2 ? Math.min(...v2) : 0, hi2 = has2 ? Math.max(...v2) : 1;
-  const pad2 = (hi2 - lo2) * 0.15 || 1, y2Lo = lo2 - pad2, y2Hi = hi2 + pad2;
-  const toY2 = (v: number) => TS_H * (1 - (v - y2Lo) / (y2Hi - y2Lo));
-  const f2 = y2fmt ?? ((v: number) => v.toFixed(0));
-  const near2 = has2 && cur != null ? win2.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win2[0]) : (has2 ? win2[win2.length - 1] : null);
-  const yearly = span > 2.2 * 365 * 86400000;
-  const evIn = showEvents ? events.filter(e => e.t >= t0 && e.t <= t1) : [];
-  const nearest = cur == null ? win[win.length - 1] : win.reduce((b, p) => Math.abs(p.t - cur) < Math.abs(b.t - cur) ? p : b, win[0]);
-  const nearEv = cur != null ? evIn.map(e => ({ e, dx: Math.abs(x(e.t) - x(cur)) })).sort((a, b) => a.dx - b.dx)[0] : null;
-  const readEv = nearEv && nearEv.dx < 12 ? nearEv.e : null;
-  let trendEl: React.ReactNode = null;
-  if (trend && win.length >= 3) {
-    const n = win.length, fit = olsFit(vals);
-    if (fit) { const { m, b0 } = fit;
-      const x1 = x(win[0].t), y1 = toY(b0), x2 = x(win[n - 1].t), y2 = toY(b0 + m * (n - 1));
-      const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI;
-      trendEl = <View pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c.textSub, opacity: 0.7, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
-    }
-  }
-  return (
-    <View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, marginBottom: 2 }}>
-        <Text style={{ color: c.textSub, fontSize: 11.5, fontWeight: '700' }}>{dLabel(nearest.t, yearly)}</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          {readEv ? <Text style={{ color: EV_COLOR[readEv.category] ?? c.textSub, fontSize: 11.5, fontWeight: '700' }} numberOfLines={1}>{readEv.label}</Text>
-                  : <Text style={{ color, fontSize: 13, fontWeight: '800' }}>{yfmt(nearest.v)}</Text>}
-          {has2 && near2 && !readEv ? <Text style={{ color: c2, fontSize: 12, fontWeight: '700', marginLeft: 8 }}>{f2(near2.v)}{y2label ? ` ${y2label}` : ''}</Text> : null}
-        </View>
-      </View>
-      <View style={{ flexDirection: 'row' }} pointerEvents="box-only" {...pan.panHandlers}>
-        <View style={{ width: TS_YW, height: TS_H }}>
-          {yTicks.map((t, i) => <Text key={i} style={[ch.yLabel, { position: 'absolute', top: Math.max(0, toY(t) - 7), right: 4 }]}>{yfmt(t)}</Text>)}
-        </View>
-        <View style={{ width: plotW, height: TS_H + TX_H, position: 'relative' }}>
-          {yTicks.map((t, i) => <View key={`g${i}`} style={{ position: 'absolute', top: toY(t), left: 0, right: 0, height: 1, backgroundColor: c.gridline }} />)}
-          {band && <View style={{ position: 'absolute', left: 0, right: 0, top: toY(band[1]), height: Math.max(1, toY(band[0]) - toY(band[1])), backgroundColor: '#22c55e18' }} />}
-          {refs?.map((r, i) => <View key={`r${i}`} style={{ position: 'absolute', left: 0, right: 0, top: toY(r.y), height: 1, backgroundColor: r.color, opacity: r.dash ? 0.5 : 0.9 }} />)}
-          {bandWin.map((b, i) => { const xL = x(b.t); const gap = (i < bandWin.length - 1 ? x(bandWin[i + 1].t) : xL + 3) - xL; const w = Math.min(Math.max(3, gap), plotW * 0.05); const top = toY(b.hi); return <View key={`bd${i}`} pointerEvents="none" style={{ position: 'absolute', left: xL - w / 2, top, width: Math.max(2, w), height: Math.max(1, toY(b.lo) - top), backgroundColor: '#3B82F61f' }} />; })}
-          {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
-          {has2 && win2.map((p, i) => { if (i === 0) return null; const x1 = x(win2[i - 1].t), y1 = toY2(win2[i - 1].v), x2 = x(p.t), y2 = toY2(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s2${i}`} pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c2, opacity: 0.5, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
-          {win.map((p, i) => { if (i === 0) return null; const x1 = x(win[i - 1].t), y1 = toY(win[i - 1].v), x2 = x(p.t), y2 = toY(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s${i}`} style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
-          {win.map((p, i) => <View key={`d${i}`} style={{ position: 'absolute', left: x(p.t) - 2.5, top: toY(p.v) - 2.5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.color ?? color, borderWidth: 1, borderColor: c.surface }} />)}
-          {trendEl}
-          <View pointerEvents="none" style={{ position: 'absolute', left: x(nearest.t), top: 0, width: 1, height: TS_H, backgroundColor: color, opacity: 0.5 }} />
-          <View pointerEvents="none" style={{ position: 'absolute', left: x(nearest.t) - 4, top: toY(nearest.v) - 4, width: 8, height: 8, borderRadius: 4, backgroundColor: color, borderWidth: 1.5, borderColor: c.surface }} />
-          {[0, 1, 2, 3].map(i => { const t = t0 + (span * i) / 3; return <Text key={`x${i}`} style={[ch.xLabel, { position: 'absolute', top: TS_H + 4, width: 64, textAlign: i === 0 ? 'left' : i === 3 ? 'right' : 'center', left: i === 0 ? 0 : i === 3 ? plotW - 64 : x(t) - 32 }]} numberOfLines={1}>{dLabel(t, yearly)}</Text>; })}
-        </View>
-        {rightGutter > 0 && (
-          <View style={{ width: rightGutter, height: TS_H }}>
-            {has2 && [y2Hi - (y2Hi - y2Lo) * 0.15, (y2Lo + y2Hi) / 2, y2Lo + (y2Hi - y2Lo) * 0.15].map((vv, i) => <Text key={`y2l${i}`} style={{ position: 'absolute', top: toY2(vv) - 7, left: 3, fontSize: 9.5, color: c2, fontWeight: '700', opacity: 0.9 }}>{f2(vv)}</Text>)}
-          </View>
-        )}
-      </View>
     </View>
   );
 }

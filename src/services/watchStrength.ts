@@ -12,7 +12,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
   StrengthSession, SetLog, loadStrength, updateStrength, routinesForDate, exerciseById, suggestWeight, lastSetsFor,
-  repRange, weightStep, localDateKey, STRENGTH_FILE, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
+  repRange, weightStep, localDateKey, STRENGTH_FILE, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
 } from './strength';
 
 interface Native {
@@ -114,6 +114,7 @@ async function importOnce(): Promise<number> {
         id, date, routineId, routineName: String(l.routineName ?? 'Strength'), startedAt, finishedAt,
         ...(Number(l.bodyKg) > 0 ? { bodyKg: Number(l.bodyKg) } : {}),
         ...(Number(l.rpe) > 0 ? { rpe: Math.round(Number(l.rpe)) } : {}),
+        ...(l.feel && typeof l.feel === 'object' ? { feel: Object.fromEntries(Object.entries(l.feel).filter(([, v]) => isFeel(v))) as Partial<Record<string, Feel>> } : {}),
         sets,
         // the watch recorded it in Health → link it; no uuid = the watch's save failed → the phone saves a copy below
         ...(uuid ? { hk: { status: 'exists' as const, uuid, watch: true,

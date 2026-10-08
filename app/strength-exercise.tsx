@@ -1,9 +1,12 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Linking, useWindowDimensions } from 'react-native';
 import { Stack, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import Svg, { Polyline, Circle, Line, Text as SvgText } from 'react-native-svg';
+import { TChart, trendDelta, signed } from '../src/components/TimeChart';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { StrengthStore, loadStrength, exerciseById, exerciseHistory, MUSCLE_LABEL, Muscle } from '../src/services/strength';
+import { StrengthStore, loadStrength, exerciseById, exerciseHistory, MUSCLE_LABEL, Muscle, Feel, FEEL_LABEL, setExerciseFeel } from '../src/services/strength';
+// tap a history row to grade (or re-grade) how the exercise felt that day: – → Easy → OK → Hard → –
+const NEXT_FEEL: Record<string, Feel | undefined> = { none: 'easy', easy: 'ok', ok: 'hard', hard: undefined };
+const FEEL_COLOR: Record<Feel, string> = { easy: '#2f9e44', ok: '#8a8f98', hard: '#e5484d' };
 
 // Exercise detail: video + cue + muscles, personal records, and the estimated-1RM trend (Bevel-style exercise chart).
 export default function StrengthExerciseScreen() {
@@ -22,11 +25,6 @@ export default function StrengthExerciseScreen() {
   const e1 = h.filter(x => x.bestE1rm != null);
   const bw = !!ex.bodyweightFrac;
 
-  // e1RM trend chart
-  const W = width - 32, H = 150, P = 26;
-  const vals = e1.map(x => x.bestE1rm!);
-  const lo = vals.length ? Math.min(...vals) * 0.95 : 0, hi = vals.length ? Math.max(...vals) * 1.05 : 1;
-  const xy = (i: number, v: number) => [P + (vals.length > 1 ? (i / (vals.length - 1)) * (W - 2 * P) : (W - 2 * P) / 2), H - P - ((v - lo) / Math.max(1e-6, hi - lo)) * (H - 2 * P)];
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingBottom: 48 }}>
@@ -55,27 +53,29 @@ export default function StrengthExerciseScreen() {
       ) : <Text style={s.meta}>No sets logged yet — records appear after your first session.</Text>}
       {bw ? <Text style={s.meta}>Body-weight exercise: loads include {Math.round(ex.bodyweightFrac! * 100)}% of your body weight.</Text> : null}
 
-      {vals.length >= 2 && (
-        <>
-          <Text style={s.section}>Estimated 1RM</Text>
-          <Svg width={W} height={H}>
-            <Line x1={P} y1={H - P} x2={W - P} y2={H - P} stroke={c.border} strokeWidth={1} />
-            <Polyline points={vals.map((v, i) => xy(i, v).join(',')).join(' ')} fill="none" stroke={c.accent} strokeWidth={2.5} />
-            {vals.map((v, i) => { const [x, y] = xy(i, v); return <Circle key={i} cx={x} cy={y} r={i === vals.length - 1 ? 4.5 : 3} fill={c.accent} />; })}
-            <SvgText x={P} y={14} fill={c.textSub} fontSize={11}>{Math.round(hi)} kg</SvgText>
-            <SvgText x={P} y={H - 8} fill={c.textSub} fontSize={11}>{e1[0].date.slice(5)}</SvgText>
-            <SvgText x={W - P} y={H - 8} fill={c.textSub} fontSize={11} textAnchor="end">{e1[e1.length - 1].date.slice(5)}</SvgText>
-          </Svg>
-        </>
-      )}
+      {e1.length >= 2 && (() => {
+        // the cardio Statistics' time chart: scrub to read a session, grey OLS trend line, purple = heaviest kg
+        const pts = e1.map(x => ({ t: x.at, v: x.bestE1rm! }));
+        const d = trendDelta(pts.map(p => p.v));
+        return (
+          <>
+            <Text style={s.section}>Estimated 1RM</Text>
+            <TChart pts={pts} t0={pts[0].t} t1={Date.now()} color={c.accent} trend events={[]} showEvents={false} innerW={width - 32}
+              yfmt={v => `${Math.round(v)}`} pts2={h.map(x => ({ t: x.at, v: x.topKg }))} color2="#a855f7" y2fmt={v => `${Math.round(v)}`} y2label="kg top" />
+            {d != null ? <Text style={s.meta}>Trend {signed(d, 1)} kg ({signed((d / pts[0].v) * 100, 1)}%) over {pts.length} sessions</Text> : null}
+          </>
+        );
+      })()}
 
       {h.length > 0 && <Text style={s.section}>History</Text>}
+      {h.length > 0 && <Text style={[s.meta, { marginTop: -4, marginBottom: 4 }]}>Tap a session to grade how it felt — "Hard" holds the weight.</Text>}
       {h.slice().reverse().map(x => (
-        <View key={x.sessionId} style={s.row}>
+        <TouchableOpacity key={x.sessionId} style={s.row}
+          onPress={() => setExerciseFeel(x.sessionId, ex.id, NEXT_FEEL[x.feel ?? 'none']).then(st2 => setSt({ ...st2 })).catch(() => {})}>
           <Text style={s.rowDate}>{x.date.slice(5)}</Text>
           <Text style={s.rowTxt}>{x.sets} sets · top {x.topKg} kg{x.bestE1rm ? ` · e1RM ${x.bestE1rm}` : ''}</Text>
-          <Text style={s.meta}>{x.volume.toLocaleString()} kg</Text>
-        </View>
+          <Text style={[s.feelTag, x.feel ? { color: FEEL_COLOR[x.feel], borderColor: FEEL_COLOR[x.feel] } : null]}>{x.feel ? FEEL_LABEL[x.feel] : 'feel?'}</Text>
+        </TouchableOpacity>
       ))}
     </ScrollView>
   );
@@ -97,5 +97,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   prLbl:   { color: c.textSub, fontSize: 12, marginTop: 2 },
   row:     { flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   rowDate: { color: c.textFaint, fontSize: 13, width: 44, fontVariant: ['tabular-nums'] },
+  feelTag: { color: c.textFaint, fontSize: 11, fontWeight: '800', borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
   rowTxt:  { color: c.text, fontSize: 14, flex: 1 },
 });

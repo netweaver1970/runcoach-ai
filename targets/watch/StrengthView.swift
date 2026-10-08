@@ -134,6 +134,7 @@ struct StrengthView: View {
           Text("Set \(eng.setIdx + 1) · \((it.bw ?? false) ? "BW \(eng.kg >= 0 ? "+" : "−")\(fmtKg(abs(eng.kg)))" : fmtKg(eng.kg)) kg × \(eng.reps)")
             .font(.system(size: 12)).foregroundColor(.secondary)
         }
+        feelButtons
         HStack(spacing: 6) {
           Button("+15 s") { eng.addRest(15) }
           Button { eng.skipRestTapped() } label: { Label("Skip", systemImage: "forward.fill") }.tint(.green)
@@ -150,6 +151,7 @@ struct StrengthView: View {
       VStack(spacing: 6) {
         issueText
         Text("\(eng.logged.count) of \(eng.totalPlannedSets) sets · \(Int(eng.elapsed / 60)) min").font(.system(size: 13, weight: .semibold))
+        feelButtons
         Text("How hard was it? (RPE)").font(.system(size: 11)).foregroundColor(.secondary)
         stepper(label: "\(eng.rpe) / 10", minus: { eng.rpe = max(1, eng.rpe - 1) }, plus: { eng.rpe = min(10, eng.rpe + 1) })
         Button { eng.save() } label: { Label("Save", systemImage: "square.and.arrow.down").frame(maxWidth: .infinity) }
@@ -161,6 +163,23 @@ struct StrengthView: View {
     .confirmationDialog("Discard this workout? Nothing is saved.", isPresented: $confirmDiscard) {
       Button("Discard", role: .destructive) { eng.discard() }
       Button("Cancel", role: .cancel) { }
+    }
+  }
+
+  // Optional "how did it feel?" for the exercise just completed (Hard = no raise from this session). Tap again clears.
+  @ViewBuilder private var feelButtons: some View {
+    if let i = eng.feelSlot, let r = eng.routine {
+      let id = r.items[i].exId
+      VStack(spacing: 3) {
+        Text("\(r.items[i].name) felt…").font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+        HStack(spacing: 4) {
+          ForEach([("easy", "Easy", Color.green), ("ok", "OK", Color.gray), ("hard", "Hard", Color.red)], id: \.0) { key, label, col in
+            Button { eng.setFeel(id, key) } label: { Text(label).font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity) }
+              .tint(eng.feel[id] == key ? col : nil)
+              .buttonStyle(.bordered)
+          }
+        }
+      }
     }
   }
 

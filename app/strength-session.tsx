@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -127,7 +127,7 @@ export default function StrengthSessionScreen() {
 
   // Apply a change to the LIVE session and write it into the latest store (never a stale full-store copy).
   const persist = (fn: (x: StrengthSession) => StrengthSession) => {
-    if (!sessRef.current) return;
+    if (!sessRef.current || finishing.current) return;   // after Finish: nothing may overwrite the saved session
     const next = fn(sessRef.current);
     sessRef.current = next; setSess(next);
     updateStrength(cur => ({ ...cur, sessions: upsert(cur.sessions, next) })).then(st => setStore({ ...st }));
@@ -345,6 +345,22 @@ export default function StrengthSessionScreen() {
                   return { ...x, sets };
                 })}><Text style={s.addSet}>＋ warm-up set</Text></TouchableOpacity>
               </View>
+              {/* optional: how did this exercise feel? 'Hard' = this session doesn't count toward a raise. Tap again to clear. */}
+              <View style={s.feelRow}>
+                <Text style={s.feelLbl}>Felt</Text>
+                {(['easy', 'ok', 'hard'] as Feel[]).map(f => {
+                  const on = sess.feel?.[exId] === f;
+                  return (
+                    <TouchableOpacity key={f} style={[s.feel, on && s.feelOn]} onPress={() => persist(x => {
+                      const fl = { ...(x.feel ?? {}) };
+                      if (on) delete fl[exId]; else fl[exId] = f;
+                      return { ...x, feel: fl };
+                    })}>
+                      <Text style={[s.feelTxt, on && { color: c.onAccent }]}>{FEEL_LABEL[f]}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
           );
         })}
@@ -392,6 +408,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   rirOn:   { backgroundColor: c.accent, borderColor: c.accent },
   rirTxt:  { color: c.textSub, fontSize: 15, fontWeight: '800' },
   prev:    { color: c.textFaint, fontSize: 11, marginLeft: 42, marginTop: -2, marginBottom: 2 },
+  feelRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  feelLbl: { color: c.textFaint, fontSize: 12, fontWeight: '700', width: 34 },
+  feel:    { paddingVertical: 6, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderColor: c.border },
+  feelOn:  { backgroundColor: c.accent, borderColor: c.accent },
+  feelTxt: { color: c.textSub, fontWeight: '700', fontSize: 13 },
   nextTag: { color: '#2f9e44', fontSize: 12, fontWeight: '800' },
   addSet:  { color: c.textSub, fontWeight: '700', marginTop: 8 },
   rpeRow:  { flexDirection: 'row', gap: 8, marginTop: 10 },

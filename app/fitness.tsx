@@ -1,12 +1,14 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Switch } from 'react-native';
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
+import Svg, { Polyline, Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, updateStrength, routinesForDate, sessionsOn, estimateMinutes, muscleLoad,
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
+  exerciseStatLine, ExerciseStatLine,
 } from '../src/services/strength';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
@@ -22,6 +24,23 @@ const FRESH_ROWS: { label: string; muscles: Muscle[] }[] = [
 ];
 
 // Fitness mode = the strength module (Build 1): today's planned routine, routines, per-muscle load, history.
+// "27.5 kg × 10 · e1RM 36 · ▲ 6% (8 wk) · 5×" — the exercise's numbers at a glance
+function exLine(st: ExerciseStatLine): string {
+  const tr = st.trendPct == null ? '' : ` · ${st.trendPct > 1 ? '▲' : st.trendPct < -1 ? '▼' : '▶'} ${Math.abs(st.trendPct)}% (8 wk)`;
+  return `${st.lastTop < 0 ? `${-st.lastTop} kg assist` : `${st.lastTop} kg`} × ${st.lastReps}${st.e1rm ? ` · e1RM ${st.e1rm}` : ''}${tr} · ${st.sessions}×`;
+}
+// tiny e1RM sparkline (last ≤ 12 sessions), last point marked
+function Spark({ vals, color }: { vals: number[]; color: string }) {
+  const W = 54, H = 22, lo = Math.min(...vals), hi = Math.max(...vals), sp = hi - lo || 1;
+  const xy = vals.map((v, i) => [(i / (vals.length - 1)) * (W - 4) + 2, H - 3 - ((v - lo) / sp) * (H - 6)]);
+  return (
+    <Svg width={W} height={H}>
+      <Polyline points={xy.map(p => p.join(',')).join(' ')} fill="none" stroke={color} strokeWidth={1.8} />
+      <Circle cx={xy[xy.length - 1][0]} cy={xy[xy.length - 1][1]} r={2.4} fill={color} />
+    </Svg>
+  );
+}
+
 export default function FitnessMode() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
@@ -31,6 +50,10 @@ export default function FitnessMode() {
   const [win, setWin] = useState<7 | 28>(7);
   const [runs, setRuns] = useState<{ runs: RunLike[]; maxHr: number } | null>(null);
   const [showEx, setShowEx] = useState(false);
+  // the exercise list's stats rows — computed only while the list is open, and only when the store changes
+  const exRows = useMemo(() => (showEx && store ? allExercises(store)
+    .map(e => ({ e, st: exerciseStatLine(store, e.id) }))
+    .sort((a, b) => (b.st?.lastAt ?? 0) - (a.st?.lastAt ?? 0) || a.e.name.localeCompare(b.e.name)) : []), [store, showEx]);
   const [selMuscle, setSelMuscle] = useState<Muscle | null>(null);
 
   const opening = useRef(false);   // a double-tapped Start must not open (and create) two sessions
@@ -185,14 +208,24 @@ export default function FitnessMode() {
         )) : <Text style={s.meta}>No sessions in the last {win} days yet.</Text>}
       </View>
 
-      {/* Exercise library → per-exercise records + e1RM chart */}
+      {/* Strength stats (the cardio Statistics' charts, for lifting) */}
+      <TouchableOpacity style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]} onPress={() => router.push('/strength-stats' as any)}>
+        <Text style={[s.todayName, { flex: 1 }]}>📈 Strength stats</Text>
+        <Text style={s.meta}>volume · sets · e1RM trends ›</Text>
+      </TouchableOpacity>
+
+      {/* Exercise library: per exercise its stats at a glance (trained ones first, most recent on top) → detail */}
       <TouchableOpacity onPress={() => setShowEx(v => !v)}><Text style={s.section}>Exercises ({allExercises(store).length}) {showEx ? '▾' : '▸'}</Text></TouchableOpacity>
-      {showEx && allExercises(store).map(e => (
-        <TouchableOpacity key={e.id} style={s.histRow} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.id } })}>
-          <Text style={s.histName}>{e.name}</Text>
-          <Text style={s.meta}>{e.video ? '▶ ' : ''}records ›</Text>
-        </TouchableOpacity>
-      ))}
+      {showEx && exRows.map(({ e, st }) => (
+          <TouchableOpacity key={e.id} style={s.exRow} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.id } })}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.histName}>{e.name}{e.video ? <Text style={s.meta}>  ▶</Text> : null}</Text>
+              <Text style={s.meta} numberOfLines={1}>{st ? exLine(st) : 'not trained yet'}</Text>
+            </View>
+            {st && st.spark.length >= 2 ? <Spark vals={st.spark} color={st.trendPct != null && st.trendPct < -1 ? '#e5484d' : c.accent} /> : null}
+            <Text style={s.meta}>›</Text>
+          </TouchableOpacity>
+        ))}
 
       {/* Apple Health */}
       <View style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]}>
@@ -246,6 +279,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   barTrack:  { flex: 1, height: 10, borderRadius: 5, backgroundColor: c.surfaceAlt, overflow: 'hidden', marginHorizontal: 8 },
   barFill:   { height: 10, borderRadius: 5, backgroundColor: c.accent },
   barVal:    { color: c.textSub, fontSize: 12, width: 84, textAlign: 'right', fontVariant: ['tabular-nums'] },
+  exRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   histRow:   { flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   histDate:  { color: c.textFaint, fontSize: 13, width: 44, fontVariant: ['tabular-nums'] },
   histName:  { color: c.text, fontSize: 14, fontWeight: '600', flex: 1 },
