@@ -3,7 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { TChart, trendDelta, signed } from '../src/components/TimeChart';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { StrengthStore, loadStrength, exerciseById, exerciseHistory, MUSCLE_LABEL, Muscle, Feel, FEEL_LABEL, setExerciseFeel } from '../src/services/strength';
+import { StrengthStore, loadStrength, exerciseById, exerciseHistory, MUSCLE_LABEL, Muscle, Feel, FEEL_LABEL, setExerciseFeel, exerciseMetricSeries, ExMetric, EX_METRIC_LABEL } from '../src/services/strength';
 // tap a history row to grade (or re-grade) how the exercise felt that day: – → Easy → OK → Hard → –
 const NEXT_FEEL: Record<string, Feel | undefined> = { none: 'easy', easy: 'ok', ok: 'hard', hard: undefined };
 const FEEL_COLOR: Record<Feel, string> = { easy: '#2f9e44', ok: '#8a8f98', hard: '#e5484d' };
@@ -15,6 +15,7 @@ export default function StrengthExerciseScreen() {
   const s = useThemedStyles(makeStyles);
   const { width } = useWindowDimensions();
   const [st, setSt] = useState<StrengthStore | null>(null);
+  const [metric, setMetric] = useState<ExMetric>('e1rm');
   useFocusEffect(useCallback(() => { loadStrength().then(x => setSt({ ...x })).catch(() => {}); }, []));
 
   if (!st) return <View style={[s.screen, { justifyContent: 'center' }]}><ActivityIndicator color={c.accent} /></View>;
@@ -53,16 +54,27 @@ export default function StrengthExerciseScreen() {
       ) : <Text style={s.meta}>No sets logged yet — records appear after your first session.</Text>}
       {bw ? <Text style={s.meta}>Body-weight exercise: loads include {Math.round(ex.bodyweightFrac! * 100)}% of your body weight.</Text> : null}
 
-      {e1.length >= 2 && (() => {
-        // the cardio Statistics' time chart: scrub to read a session, grey OLS trend line, purple = heaviest kg
-        const pts = e1.map(x => ({ t: x.at, v: x.bestE1rm! }));
+      {h.length >= 2 && (() => {
+        // the cardio Statistics' time chart for the chosen metric: scrub to read a session, grey OLS trend line
+        const pts = exerciseMetricSeries(st, ex.id, metric).map(p => ({ t: p.t, v: p.v }));
         const d = trendDelta(pts.map(p => p.v));
+        const unit = metric === 'rel' ? '×' : metric === 'sets' || metric === 'reps' ? '' : ' kg';
         return (
           <>
-            <Text style={s.section}>Estimated 1RM</Text>
-            <TChart pts={pts} t0={pts[0].t} t1={Date.now()} color={c.accent} trend events={[]} showEvents={false} innerW={width - 32}
-              yfmt={v => `${Math.round(v)}`} pts2={h.map(x => ({ t: x.at, v: x.topKg }))} color2="#a855f7" y2fmt={v => `${Math.round(v)}`} y2label="kg top" />
-            {d != null ? <Text style={s.meta}>Trend {signed(d, 1)} kg ({signed((d / pts[0].v) * 100, 1)}%) over {pts.length} sessions</Text> : null}
+            <Text style={s.section}>Progress</Text>
+            <View style={s.chips}>
+              {(['e1rm', 'heaviest', 'volume', 'sets', 'reps', 'rel'] as ExMetric[]).map(m => (
+                <TouchableOpacity key={m} style={[s.mChip, metric === m && s.mChipOn]} onPress={() => setMetric(m)}>
+                  <Text style={[s.mChipTxt, metric === m && { color: c.onAccent }]}>{EX_METRIC_LABEL[m]}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {pts.length >= 2 ? (
+              <TChart pts={pts} t0={pts[0].t} t1={Date.now()} color={c.accent} trend events={[]} showEvents={false} innerW={width - 32}
+                yfmt={v => (metric === 'rel' ? `${v.toFixed(2)}×` : `${Math.round(v)}`)}
+                {...(metric === 'e1rm' ? { pts2: h.map(x => ({ t: x.at, v: x.topKg })), color2: '#a855f7', y2fmt: (v: number) => `${Math.round(v)}`, y2label: 'kg top' } : {})} />
+            ) : <Text style={s.meta}>Not enough data for this metric yet{metric === 'rel' ? ' (needs your body weight from Health)' : ''}.</Text>}
+            {d != null ? <Text style={s.meta}>Trend {signed(d, metric === 'rel' ? 2 : 1)}{unit}{pts[0].v > 0 ? ` (${signed((d / pts[0].v) * 100, 1)}%)` : ''} over {pts.length} sessions</Text> : null}
           </>
         );
       })()}
@@ -88,6 +100,9 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   videoTxt:{ color: c.accent, fontSize: 15, fontWeight: '700' },
   cue:     { color: c.text, fontSize: 14, lineHeight: 20, marginTop: 12 },
   chips:   { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 },
+  mChip:   { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12, borderWidth: 1, borderColor: c.border },
+  mChipOn: { backgroundColor: c.accent, borderColor: c.accent },
+  mChipTxt:{ color: c.textSub, fontWeight: '700', fontSize: 12 },
   chip:    { backgroundColor: c.accent, borderRadius: 14, paddingVertical: 4, paddingHorizontal: 10 },
   chipTxt: { color: c.onAccent, fontWeight: '700', fontSize: 12 },
   section: { color: c.textSub, fontSize: 13, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginTop: 20, marginBottom: 8 },

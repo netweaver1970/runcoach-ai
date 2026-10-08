@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, LayoutChangeEvent } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, LayoutChangeEvent, Switch } from 'react-native';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import Svg, { Polyline, Circle } from 'react-native-svg';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -7,8 +7,12 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, allExercises, exerciseHistory, sessionStats, LOAD_GROUPS, MUSCLES, MUSCLE_LABEL, Muscle,
   muscleEvents, muscularLoadSeries, legLoadDaily, prTimeline, muscleSetsBetween, RunLike, LOAD_COLOR, LegDay,
+  exerciseMetricSeries, ExMetric, EX_METRIC_LABEL, rirWeekly, RirWeek, legStrengthIndex,
 } from '../src/services/strength';
-import { loadSnapshotCache } from '../src/services/healthkit';
+import { loadSnapshotCache, fetchStrainHistory, fetchBodyMassHistory } from '../src/services/healthkit';
+import { loadStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
+import { cached } from '../src/services/detailCache';
+import * as SecureStore from 'expo-secure-store';
 import { getEffectiveMaxHr } from '../src/services/claude';
 import { BodyMap } from '../src/components/BodyMap';
 import { TChart, TPt, WeeklyBars, weeklySum, inWin, trendDelta, signed } from '../src/components/TimeChart';
@@ -62,6 +66,67 @@ function LegLoadChart({ days, quality, innerW }: { days: LegDay[]; quality: Set<
   );
 }
 
+const LAYOUT_KEY = 'strength_stats_layout_v1';
+const DEFAULT_CARDS = ['volume', 'sets', 'areas', 'muscles', 'load', 'legs', 'e1rm', 'records', 'rir', 'strain', 'economy', 'rpe'];
+const CARD_TITLE: Record<string, string> = {'volume': 'Weekly volume', 'sets': 'Weekly work sets', 'areas': 'Hard sets per area', 'muscles': 'Sets per muscle', 'load': 'Muscular load over time', 'legs': 'Legs: runs + strength', 'e1rm': 'Exercise progress', 'records': 'Records', 'rir': 'Effort per week (RIR)', 'strain': 'Daily strain composition', 'economy': 'Leg strength × running economy', 'rpe': 'Session effort (RPE)'};
+const EX_METRICS: ExMetric[] = ['e1rm', 'heaviest', 'volume', 'sets', 'reps', 'rel'];
+const EX_METRIC_NOTE: Record<ExMetric, string> = {
+  e1rm: 'Effort-adjusted Epley estimated 1RM per session (gold = a record; purple = heaviest kg)',
+  heaviest: 'Heaviest work-set weight per session',
+  volume: 'Session volume for this exercise (kg × reps, body-weight share included)',
+  sets: 'Work sets per session',
+  reps: 'Most reps in one work set per session',
+  rel: 'Estimated 1RM ÷ your body weight (relative strength)',
+};
+const RIR_COLOR = { r0: '#e5484d', r1: '#e8590c', r2: '#2f9e44', r3: '#3B82F6' };
+interface StrainDay { date: string; cardio: number; muscular: number; passive: number }
+
+// weekly stacked bars of work sets by reps in reserve
+function RirBars({ weeks, innerW }: { weeks: RirWeek[]; innerW: number }) {
+  const { c } = useTheme();
+  const tot = (w: RirWeek) => w.r0 + w.r1 + w.r2 + w.r3 + w.none;
+  if (!weeks.some(w => tot(w) > 0) || innerW <= 0) return <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 16 }}>No sets in the last 12 weeks.</Text>;
+  const max = Math.max(1, ...weeks.map(tot)), H = 100;
+  const parts: [keyof RirWeek, string][] = [['none', c.textFaint], ['r3', RIR_COLOR.r3], ['r2', RIR_COLOR.r2], ['r1', RIR_COLOR.r1], ['r0', RIR_COLOR.r0]];
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: H, gap: 3, marginTop: 8 }}>
+        {weeks.map(w => (
+          <View key={w.wk} style={{ flex: 1, justifyContent: 'flex-end', height: H }}>
+            {parts.map(([k, col]) => (w[k] as number) > 0 ? <View key={k} style={{ height: ((w[k] as number) / max) * H, backgroundColor: col, opacity: k === 'none' ? 0.5 : 1 }} /> : null)}
+          </View>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 }}>
+        {[0, weeks.length - 1].map(i => <Text key={i} style={{ fontSize: 9, color: c.textFaint }}>{new Date(weeks[i].wk).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</Text>)}
+      </View>
+    </View>
+  );
+}
+
+// daily strain stacked: cardio / muscular / everyday movement
+function StrainBars({ days, innerW }: { days: StrainDay[]; innerW: number }) {
+  const { c } = useTheme();
+  if (!days.length || innerW <= 0) return <Text style={{ color: c.textFaint, fontSize: 12, textAlign: 'center', paddingVertical: 16 }}>No strain history yet.</Text>;
+  const max = Math.max(1, ...days.map(d => d.cardio + d.muscular + d.passive)), H = 100;
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: H, gap: 2, marginTop: 8 }}>
+        {days.map(d => (
+          <View key={d.date} style={{ flex: 1, justifyContent: 'flex-end', height: H }}>
+            <View style={{ height: (d.muscular / max) * H, backgroundColor: '#F97316' }} />
+            <View style={{ height: (d.cardio / max) * H, backgroundColor: '#3B82F6' }} />
+            <View style={{ height: (d.passive / max) * H, backgroundColor: '#94a3b8' }} />
+          </View>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 }}>
+        {[0, days.length - 1].map(i => <Text key={i} style={{ fontSize: 9, color: c.textFaint }}>{new Date(days[i].date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</Text>)}
+      </View>
+    </View>
+  );
+}
+
 export default function StrengthStatsScreen() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
@@ -73,10 +138,40 @@ export default function StrengthStatsScreen() {
   const [area, setArea] = useState('legs');
   const [selMuscle, setSelMuscle] = useState<Muscle | null>(null);
   const [runs, setRuns] = useState<{ runs: (RunLike & { label?: string })[]; maxHr: number } | null>(null);
+  const [exMetric, setExMetric] = useState<ExMetric>('e1rm');
+  const [strainParts, setStrainParts] = useState<StrainDay[] | null>(null);
+  const [weights, setWeights] = useState<{ t: number; v: number }[]>([]);
+  const [econRuns, setEconRuns] = useState<{ t: number; wp: number; pw: number; easy: boolean }[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [layout, setLayout] = useState<{ id: string; on: boolean }[]>(DEFAULT_CARDS.map(id => ({ id, on: true })));
+  const saveLayout = (l: { id: string; on: boolean }[]) => { setLayout(l); SecureStore.setItemAsync(LAYOUT_KEY, JSON.stringify(l)).catch(() => {}); };
+  // strain parts per day (cardio / muscular / everyday): a month of heart rate → cached 30 min, and only fetched
+  // while the card is shown (repeated JS-thread HR crunching is the CPU-watchdog risk)
+  const strainOn = layout.some(l => l.id === 'strain' && l.on);
+  useEffect(() => {
+    if (!strainOn || strainParts) return;
+    cached('strainparts:1', () => fetchStrainHistory(1))
+      .then(h => setStrainParts(h.slice(-28).map(d => ({ date: d.date, cardio: d.cardio ?? 0, muscular: d.muscular ?? 0, passive: d.passive ?? 0 }))))
+      .catch(() => setStrainParts([]));
+  }, [strainOn, strainParts]);
+  const moveCard = (i: number, d: number) => { const l = [...layout]; const [x] = l.splice(i, 1); l.splice(i + d, 0, x); saveLayout(l); };
   const router = useRouter();
   useFocusEffect(useCallback(() => {
     loadStrength().then(x => setSt({ ...x })).catch(() => {});
     // runs load the legs too (leg timeline + muscular load) — from the cached snapshot, no HealthKit query
+    SecureStore.getItemAsync(LAYOUT_KEY).then(v => {
+      const saved = v ? JSON.parse(v) as { id: string; on: boolean }[] : null;
+      if (!Array.isArray(saved)) return;
+      // keep the saved order; cards added in a later version are appended (on)
+      const known = saved.filter(l => DEFAULT_CARDS.includes(l.id));
+      setLayout([...known, ...DEFAULT_CARDS.filter(id => !known.some(l => l.id === id)).map(id => ({ id, on: true }))]);
+    }).catch(() => {});
+    // economy: body weight (to weight-adjust) + the durable run history (beyond the snapshot window)
+    fetchBodyMassHistory(24).then(w => setWeights((w as { date: string; value: number }[]).filter(x => x.value > 0).map(x => ({ t: new Date(x.date).getTime(), v: x.value })))).catch(() => {});
+    Promise.all([loadSnapshotCache().catch(() => null), loadStatsRuns().catch(() => [])]).then(([sn, cached]) => {
+      const rr = mergeRuns(((sn as any)?.runs ?? []) as any, cached as any) as any[];
+      setEconRuns(rr.filter(r => r.workPace > 0 && r.workPower > 0).map(r => ({ t: new Date(r.date).getTime(), wp: r.workPace, pw: r.workPower, easy: r.label === 'Z2' || r.label === 'Recovery' })).sort((a, b) => a.t - b.t));
+    }).catch(() => {});
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as any[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
   }, []));
@@ -106,10 +201,7 @@ export default function StrengthStatsScreen() {
   const sets = weeklySum(stats.map(x => ({ t: x.t, v: x.sets })), t0, t1);
   const sel = trained.find(x => x.e.id === exId) ?? trained[0];
   const prSess = new Set(prs.filter(p => p.exerciseId === sel?.e.id && p.kind === 'e1RM').map(p => p.sessionId));   // gold = an e1RM record
-  const e1: TPt[] = sel ? sel.h.map(x => ({ t: x.at, v: x.bestE1rm!, ...(prSess.has(x.sessionId) ? { color: GOLD } : {}) })) : [];   // gold = a PR session
   const top: TPt[] = sel ? sel.h.map(x => ({ t: x.at, v: x.topKg })) : [];
-  const e1Win = inWin(e1, t0, t1).map(p => p.v);
-  const d = trendDelta(e1Win);
   const rpe: TPt[] = stats.filter(x => x.rpe).map(x => ({ t: x.t, v: x.rpe! }));
   // hard sets per area: average of the last 4 COMPLETED weeks vs the 4 before
   const areas = LOAD_GROUPS.filter(g => g.key !== 'body').map(g => {
@@ -119,30 +211,46 @@ export default function StrengthStatsScreen() {
     return { g, now: avg(full.slice(-4)), prev: avg(full.slice(-8, -4)) };
   });
 
-  return (
-    <View style={s.screen}>
-      <Stack.Screen options={{ title: 'Strength stats', headerBackTitle: 'Back' }} />
-      <View style={s.ctrlRow}>
-        {RANGES.map(r => (
-          <TouchableOpacity key={r} style={[s.tab, range === r && s.tabOn]} onPress={() => setRange(r)}>
-            <Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 }}>
-        {!stats.length && <Text style={s.meta}>No finished strength sessions yet — the charts fill in as you log.</Text>}
+  // exercise metric chart (e1RM / heaviest / volume / sets / reps / × body weight)
+  const mPts: TPt[] = sel ? exerciseMetricSeries(st, sel.e.id, exMetric).map(p => ({ t: p.t, v: p.v, ...(exMetric === 'e1rm' && prSess.has(p.sessionId) ? { color: GOLD } : {}) })) : [];
+  const mWin = inWin(mPts, t0, t1).map(p => p.v);
+  const mD = trendDelta(mWin);
+  const mFmt = (v: number) => (exMetric === 'rel' ? `${v.toFixed(2)}×` : exMetric === 'volume' ? kgFmt(v) : `${Math.round(v)}`);
+  const rir = rirWeekly(st, 12);
+  const legIdxAll: TPt[] = legStrengthIndex(st);
+  // WEIGHT-ADJUSTED running economy (speed ÷ power × body weight — power ∝ mass, so this cancels a weight change, same as
+  // the Statistics "ecn" card) on the work segments; both lines as % of their own baseline IN the window = the median
+  // of the first 3 points (easy runs preferred for economy), so one odd run can't set the scale
+  const nearW = (t: number) => { let best: number | null = null, bd = Infinity; for (const w of weights) { const d = Math.abs(w.t - t); if (d < bd) { bd = d; best = w.v; } } return bd <= 45 * 86_400_000 ? best : null; };
+  const ecAll = econRuns.filter(r => r.t >= t0 && r.t <= t1).map(r => { const kg = nearW(r.t); return kg ? { t: r.t, v: ((1000 / r.wp) / r.pw) * kg, easy: r.easy } : null; })
+    .filter(Boolean) as { t: number; v: number; easy: boolean }[];
+  const med3 = (a: number[]) => { const x = a.slice(0, 3).sort((p, q) => p - q); return x.length ? x[Math.floor(x.length / 2)] : 0; };
+  const ecBase = med3((ecAll.filter(r => r.easy).length >= 3 ? ecAll.filter(r => r.easy) : ecAll).map(r => r.v));
+  const ecPts: TPt[] = ecBase > 0 ? ecAll.map(r => ({ t: r.t, v: Math.round((r.v / ecBase) * 1000) / 10 })) : [];
+  const legWin = legIdxAll.filter(p => p.t >= t0 && p.t <= t1);
+  const legBase = med3(legWin.map(p => p.v));
+  const legIdx: TPt[] = legBase > 0 ? legWin.map(p => ({ t: p.t, v: Math.round((p.v / legBase) * 1000) / 10 })) : [];
 
-        <View style={s.card} onLayout={onLay}>
+  const CARD: Record<string, () => React.ReactNode> = {
+    volume: () => (
+      <>
+        <View style={s.card}>
           <Text style={s.cardTitle}>Weekly volume</Text>
           <Text style={s.meta}>Tonnage = kg × reps over all work sets (body-weight moves include your body-weight share)</Text>
           <WeeklyBars weeks={tonnage} innerW={innerW} fmt={kgFmt} unit="kg" />
         </View>
-
+      </>
+    ),
+    sets: () => (
+      <>
         <View style={s.card}>
           <Text style={s.cardTitle}>Weekly work sets</Text>
           <WeeklyBars weeks={sets} innerW={innerW} fmt={v => String(Math.round(v))} unit="sets" />
         </View>
-
+      </>
+    ),
+    areas: () => (
+      <>
         <View style={s.card}>
           <Text style={s.cardTitle}>Hard sets per area</Text>
           <Text style={s.meta}>Per week, last 4 completed weeks vs the 4 before (per area — ~10–20 hard sets per MUSCLE per week is the usual growth range)</Text>
@@ -157,7 +265,10 @@ export default function StrengthStatsScreen() {
             </View>
           ))}
         </View>
-
+      </>
+    ),
+    muscles: () => (
+      <>
         {/* Sets per muscle: body map + per-muscle rate per week vs the 10–20 growth range (Bevel Muscle Map / Hevy) */}
         <View style={s.card}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -194,7 +305,10 @@ export default function StrengthStatsScreen() {
             );
           })()}
         </View>
-
+      </>
+    ),
+    load: () => (
+      <>
         {/* Muscular load over time (the strength PMC): 7-day vs 6-week ratio per area, Productive band shaded */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Muscular load over time</Text>
@@ -218,7 +332,10 @@ export default function StrengthStatsScreen() {
             ) : <Text style={s.meta}>Calibrating — this area needs a few weeks of history.</Text>;
           })()}
         </View>
-
+      </>
+    ),
+    legs: () => (
+      <>
         {/* Leg-load timeline: runs + leg days on one axis, leg freshness, quality runs marked */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Legs: runs + strength</Text>
@@ -226,28 +343,10 @@ export default function StrengthStatsScreen() {
           <View style={{ marginTop: 6 }}><LegLoadChart days={legDays} quality={quality} innerW={innerW} /></View>
           {legDays.length ? <Text style={s.caption}>Leg freshness now {legDays[legDays.length - 1].fresh}% — a quality run is best on a day the green line is high, i.e. not straight after a heavy leg day.</Text> : null}
         </View>
-
-        <View style={s.card}>
-          <Text style={s.cardTitle}>Estimated 1RM</Text>
-          {trained.length ? (
-            <>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }} contentContainerStyle={{ gap: 6 }}>
-                {trained.map(x => (
-                  <TouchableOpacity key={x.e.id} style={[s.chip, sel?.e.id === x.e.id && s.chipOn]} onPress={() => setExId(x.e.id)}>
-                    <Text style={[s.chipTxt, sel?.e.id === x.e.id && { color: c.onAccent }]} numberOfLines={1}>{x.e.name}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-              <TChart pts={e1} t0={t0} t1={t1} color={c.accent} trend events={[]} showEvents={false} yfmt={v => `${Math.round(v)}`} innerW={innerW}
-                pts2={top} color2="#a855f7" y2fmt={v => `${Math.round(v)}`} y2label="kg top" />
-              <Text style={s.caption}>
-                Effort-adjusted Epley e1RM per session (purple: heaviest kg){d != null && e1Win.length
-                  ? ` · trend ${signed(d, 1)} kg (${signed((d / e1Win[0]) * 100, 1)}%) over this window` : ''}
-              </Text>
-            </>
-          ) : <Text style={s.meta}>Appears once an exercise has 2 sessions.</Text>}
-        </View>
-
+      </>
+    ),
+    records: () => (
+      <>
         {/* Records: every PR, newest first (gold dots on the e1RM chart above) */}
         <View style={s.card}>
           <Text style={s.cardTitle}>🏆 Records</Text>
@@ -260,10 +359,113 @@ export default function StrengthStatsScreen() {
             </TouchableOpacity>
           )) : <Text style={s.meta}>Records appear from your second session of an exercise.</Text>}
         </View>
-
+      </>
+    ),
+    rpe: () => (
+      <>
         <View style={s.card}>
           <Text style={s.cardTitle}>Session effort (RPE)</Text>
           <TChart pts={rpe} t0={t0} t1={t1} color="#e8590c" trend events={[]} showEvents={false} yfmt={v => v.toFixed(1)} innerW={innerW} />
+        </View>
+      </>
+    ),
+    e1rm: () => (
+      <>
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Exercise progress</Text>
+          {trained.length ? (
+            <>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }} contentContainerStyle={{ gap: 6 }}>
+                {trained.map(x => (
+                  <TouchableOpacity key={x.e.id} style={[s.chip, sel?.e.id === x.e.id && s.chipOn]} onPress={() => setExId(x.e.id)}>
+                    <Text style={[s.chipTxt, sel?.e.id === x.e.id && { color: c.onAccent }]} numberOfLines={1}>{x.e.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }} contentContainerStyle={{ gap: 6 }}>
+                {EX_METRICS.map(m => (
+                  <TouchableOpacity key={m} style={[s.seg, { marginLeft: 0 }, exMetric === m && s.segOn]} onPress={() => setExMetric(m)}>
+                    <Text style={[s.segTxt, exMetric === m && { color: c.onAccent }]}>{EX_METRIC_LABEL[m]}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TChart pts={mPts} t0={t0} t1={t1} color={c.accent} trend events={[]} showEvents={false} yfmt={mFmt} innerW={innerW}
+                {...(exMetric === 'e1rm' ? { pts2: top, color2: '#a855f7', y2fmt: (v: number) => `${Math.round(v)}`, y2label: 'kg top' } : {})} />
+              <Text style={s.caption}>
+                {EX_METRIC_NOTE[exMetric]}{mD != null && mWin.length ? ` · trend ${signed(mD, exMetric === 'rel' ? 2 : 1)}${exMetric === 'rel' ? '×' : exMetric === 'sets' || exMetric === 'reps' ? '' : ' kg'} ${mWin[0] > 0 ? ` (${signed((mD / mWin[0]) * 100, 1)}%)` : ''} over this window` : ''}
+              </Text>
+            </>
+          ) : <Text style={s.meta}>Appears once an exercise has 2 sessions.</Text>}
+        </View>
+      </>
+    ),
+    rir: () => (
+      <>
+        {/* Effort distribution: weekly work sets by reps in reserve */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Effort per week (reps in reserve)</Text>
+          <Text style={s.meta}><Text style={{ color: RIR_COLOR.r0 }}>■ 0 failure</Text> · <Text style={{ color: RIR_COLOR.r1 }}>■ 1</Text> · <Text style={{ color: RIR_COLOR.r2 }}>■ 2</Text> · <Text style={{ color: RIR_COLOR.r3 }}>■ 3+</Text> · <Text style={{ color: c.textFaint }}>■ not rated</Text> — mostly 1–2 = productive; lots of 0 = grinding, lots of 3+ = too light</Text>
+          <RirBars weeks={rir} innerW={innerW} />
+        </View>
+      </>
+    ),
+    strain: () => (
+      <>
+        {/* Daily strain composition: cardio · muscular · everyday (the strain model's parts) */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Daily strain: what it's made of</Text>
+          <Text style={s.meta}><Text style={{ color: '#3B82F6' }}>■ cardio (workout heart rate)</Text> · <Text style={{ color: '#F97316' }}>■ muscular (logged sets)</Text> · <Text style={{ color: '#94a3b8' }}>■ everyday movement</Text> · last 4 weeks</Text>
+          {strainParts ? <StrainBars days={strainParts} innerW={innerW} /> : <ActivityIndicator color={c.accent} style={{ marginVertical: 16 }} />}
+        </View>
+      </>
+    ),
+    economy: () => (
+      <>
+        {/* Is lifting making me a better runner? Leg strength vs running economy, both as % of their start */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Leg strength × running economy</Text>
+          {legIdx.length >= 2 ? (
+            <>
+              <TChart pts={legIdx} t0={t0} t1={t1} color="#F97316" trend events={[]} showEvents={false} yfmt={v => `${Math.round(v)}%`} innerW={innerW}
+                pts2={ecPts} color2="#3B82F6" y2fmt={v => `${Math.round(v)}%`} y2label="economy" />
+              <Text style={s.caption}>Orange: leg strength (leg-exercise e1RMs). Blue: running economy, weight-adjusted (speed ÷ power-per-kg on work segments). Both as % of their level at the start of this window. Judge it over ~3 months — one block is too short to tell.</Text>
+            </>
+          ) : <Text style={s.meta}>Appears after 2 sessions with leg exercises; meaningful after ~3 months.</Text>}
+        </View>
+      </>
+    ),
+  };
+
+  return (
+    <View style={s.screen}>
+      <Stack.Screen options={{ title: 'Strength stats', headerBackTitle: 'Back', headerRight: () => (
+        <TouchableOpacity onPress={() => setEditing(e => !e)} hitSlop={10}><Text style={{ color: c.accent, fontSize: 15, fontWeight: '700' }}>{editing ? 'Done' : '⚙︎'}</Text></TouchableOpacity>
+      ) }} />
+      <View style={s.ctrlRow}>
+        {RANGES.map(r => (
+          <TouchableOpacity key={r} style={[s.tab, range === r && s.tabOn]} onPress={() => setRange(r)}>
+            <Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 }}>
+        <View onLayout={onLay}>
+        {!stats.length && <Text style={s.meta}>No finished strength sessions yet — the charts fill in as you log.</Text>}
+        {editing ? (
+          // ⚙︎ Customise: order + show/hide the cards (remembered), like the cardio Statistics screen
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Cards</Text>
+            {layout.map((l, i) => (
+              <View key={l.id} style={s.areaRow}>
+                <Text style={[s.areaLbl, !l.on && { opacity: 0.4 }]}>{CARD_TITLE[l.id]}</Text>
+                <TouchableOpacity disabled={i === 0} onPress={() => moveCard(i, -1)} hitSlop={6}><Text style={[s.ctl, i === 0 && { opacity: 0.25 }]}>▲</Text></TouchableOpacity>
+                <TouchableOpacity disabled={i === layout.length - 1} onPress={() => moveCard(i, 1)} hitSlop={6}><Text style={[s.ctl, i === layout.length - 1 && { opacity: 0.25 }]}>▼</Text></TouchableOpacity>
+                <Switch value={l.on} onValueChange={v => saveLayout(layout.map(q => (q.id === l.id ? { ...q, on: v } : q)))} />
+              </View>
+            ))}
+            <TouchableOpacity onPress={() => saveLayout(DEFAULT_CARDS.map(id => ({ id, on: true })))}><Text style={[s.meta, { marginTop: 10, color: c.accent }]}>Reset to default</Text></TouchableOpacity>
+          </View>
+        ) : layout.filter(l => l.on).map(l => <React.Fragment key={l.id}>{CARD[l.id]?.()}</React.Fragment>)}
         </View>
       </ScrollView>
     </View>
@@ -288,6 +490,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   dot:      { width: 8, height: 8, borderRadius: 4 },
   areaLbl:  { color: c.text, fontSize: 14, fontWeight: '600', flex: 1 },
   areaVal:  { color: c.text, fontSize: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  ctl:      { color: c.accent, fontSize: 16, fontWeight: '800', paddingHorizontal: 8 },
   seg:      { paddingVertical: 3, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, marginLeft: 6 },
   segOn:    { backgroundColor: c.accent, borderColor: c.accent },
   segTxt:   { color: c.textSub, fontSize: 12, fontWeight: '700' },

@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { Stack, useFocusEffect } from 'expo-router';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
@@ -11,7 +11,7 @@ import { loadWeekPlanCache, WeekPlanDay } from '../src/services/coach';
 // dot per activity — colour = sport, size = load — done days filled, planned days (7-day plan runs + scheduled
 // routines) hollow; a weekly streak; tap a day for its list.
 type Kind = 'run' | 'strength' | 'other';
-interface Item { kind: Kind; label: string; size: 1 | 2 | 3; planned?: boolean; sub?: string }
+interface Item { kind: Kind; label: string; size: 1 | 2 | 3; planned?: boolean; sub?: string; sessionId?: string }
 const KIND_COLOR: Record<Kind, string> = { run: '#3B82F6', strength: '#F97316', other: '#14B8A6' };
 const FILTERS: { key: 'all' | Kind; label: string }[] = [{ key: 'all', label: 'All' }, { key: 'run', label: 'Runs' }, { key: 'strength', label: 'Strength' }, { key: 'other', label: 'Other' }];
 const p2 = (n: number) => String(n).padStart(2, '0');
@@ -21,6 +21,7 @@ const mondayOf = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x
 export default function TrainingCalendar() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
+  const router = useRouter();
   const [st, setSt] = useState<StrengthStore | null>(null);
   const [snap, setSnap] = useState<any>(null);
   const [plan, setPlan] = useState<WeekPlanDay[]>([]);
@@ -70,7 +71,7 @@ export default function TrainingCalendar() {
     if (st) {
       for (const x of st.sessions.filter(q => q.finishedAt)) {
         const sets = x.sets.filter(isWorkSet).length;
-        add(x.date, { kind: 'strength', label: x.routineName, size: sets > 18 ? 3 : sets > 10 ? 2 : 1,
+        add(x.date, { kind: 'strength', label: x.routineName, size: sets > 18 ? 3 : sets > 10 ? 2 : 1, sessionId: x.id,
           sub: `${sets} sets · ${sessionTonnage(st, x).toLocaleString()} kg${x.hk?.watch ? ' · ⌚' : ''}` });
       }
     }
@@ -173,13 +174,15 @@ export default function TrainingCalendar() {
 
         <Text style={s.section}>{new Date(sel + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
         {selItems.length ? selItems.map((it, i) => (
-          <View key={i} style={s.row}>
+          <TouchableOpacity key={i} style={s.row} disabled={!it.sessionId}
+            onPress={() => it.sessionId && router.push({ pathname: '/strength-session-detail' as any, params: { id: it.sessionId } })}>
             <View style={[s.rowDot, { backgroundColor: it.planned ? 'transparent' : KIND_COLOR[it.kind], borderColor: KIND_COLOR[it.kind] }]} />
             <View style={{ flex: 1 }}>
               <Text style={s.rowTitle}>{it.label}</Text>
               {it.sub ? <Text style={s.meta} numberOfLines={2}>{it.sub}</Text> : null}
             </View>
-          </View>
+            {it.sessionId ? <Text style={s.meta}>›</Text> : null}
+          </TouchableOpacity>
         )) : <Text style={s.meta}>Nothing {sel > todayKey ? 'planned' : 'logged'} this day.</Text>}
       </ScrollView>
     </View>

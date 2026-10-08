@@ -300,7 +300,15 @@ async function seed(): Promise<void> {
     added = true;
   }
   if (added) await writeIndex(idx);
-  if (!formCuesChecked) { formCuesChecked = true; await addFormCues(); }   // once per app run (idempotent anyway)
+  if (!formCuesChecked) {
+    // ONE-TIME per install (a marker file): a "Form:" line the athlete deletes later must stay deleted
+    formCuesChecked = true;
+    const marker = `${DIR}.formcues-v1`;
+    if (!(await FileSystem.getInfoAsync(marker).catch(() => ({ exists: true }))).exists) {   // unsure → don't touch the files
+      await addFormCues();
+      await FileSystem.writeAsStringAsync(marker, '1').catch(() => {});
+    }
+  }
 }
 let formCuesChecked = false;
 

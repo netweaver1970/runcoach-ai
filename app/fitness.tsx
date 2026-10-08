@@ -244,11 +244,11 @@ export default function FitnessMode() {
       {/* History */}
       {recent.length > 0 && <Text style={s.section}>Recent sessions</Text>}
       {recent.map(x => (
-        <View key={x.id} style={s.histRow}>
+        <TouchableOpacity key={x.id} style={s.histRow} onPress={() => router.push({ pathname: '/strength-session-detail' as any, params: { id: x.id } })}>
           <Text style={s.histDate}>{x.date.slice(5)}</Text>
           <Text style={s.histName}>{x.routineName}</Text>
           <Text style={s.meta}>{x.sets.filter(isWorkSet).length} sets · {sessionTonnage(store, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}{x.hk?.watch ? ' · ⌚' : ''}{x.hk?.status === 'saved' || x.hk?.status === 'exists' ? ' · ❤️' : ''}</Text>
-        </View>
+        </TouchableOpacity>
       ))}
     </ScrollView>
     <ModeSwitcher current="strength" />

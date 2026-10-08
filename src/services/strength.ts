@@ -503,7 +503,7 @@ export function e1rm(loadKg: number, reps: number, rir?: number): number | null 
   if (loadKg <= 0 || reps <= 0 || toFail > (rir != null ? 15 : 12)) return null;
   return toFail === 1 ? loadKg : Math.round(loadKg * (1 + toFail / 30) * 10) / 10;
 }
-export interface ExerciseSessionStat { feel?: Feel; sessionId: string; date: string; at: number; topKg: number; bestE1rm: number | null; bestSetVol: number; volume: number; sets: number }
+export interface ExerciseSessionStat { feel?: Feel; bestReps?: number; bodyKg?: number; sessionId: string; date: string; at: number; topKg: number; bestE1rm: number | null; bestSetVol: number; volume: number; sets: number }
 /** Per finished session: the exercise's top weight, best e1RM, best single-set volume and total volume. */
 export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseSessionStat[] {
   const ex = exerciseById(s, exerciseId);
@@ -520,7 +520,7 @@ export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseS
       bestV = Math.max(bestV, kg * l.reps);
       vol += kg * l.reps;
     }
-    out.push({ feel: x.feel?.[exerciseId], sessionId: x.id, date: x.date, at: x.finishedAt, topKg, bestE1rm: bestE || null, bestSetVol: Math.round(bestV), volume: Math.round(vol), sets: sets.length });
+    out.push({ feel: x.feel?.[exerciseId], bestReps: Math.max(...sets.map(l => l.reps)), bodyKg: x.bodyKg, sessionId: x.id, date: x.date, at: x.finishedAt, topKg, bestE1rm: bestE || null, bestSetVol: Math.round(bestV), volume: Math.round(vol), sets: sets.length });
   }
   return out.sort((a, b) => a.at - b.at);
 }
@@ -701,6 +701,89 @@ function groupLoad(events: MuscleEvent[], now: number, g: { key: string; label: 
     return { key: g.key, label: g.label, acute: Math.round(atl * 7), chronicWk: Math.round(ctl * 7), ratio, status, days };
   }
 }
+// ── Exercise chart metrics (Bevel: e1RM · heaviest · volume · sets · reps) + relative strength ────────────────
+export type ExMetric = 'e1rm' | 'heaviest' | 'volume' | 'sets' | 'reps' | 'rel';
+export const EX_METRIC_LABEL: Record<ExMetric, string> = { e1rm: 'Est. 1RM', heaviest: 'Heaviest', volume: 'Volume', sets: 'Sets', reps: 'Best reps', rel: '× body weight' };
+/** One point per session for the chosen metric (rel = e1RM ÷ body weight; sessions without a weight are skipped). */
+export function exerciseMetricSeries(s: StrengthStore, exerciseId: string, m: ExMetric): { t: number; v: number; sessionId: string }[] {
+  const fallbackKg = s.sessions.filter(x => x.bodyKg).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))[0]?.bodyKg;
+  return exerciseHistory(s, exerciseId).map(x => {
+    const v = m === 'e1rm' ? x.bestE1rm : m === 'heaviest' ? x.topKg : m === 'volume' ? x.volume : m === 'sets' ? x.sets
+      : m === 'reps' ? (x.bestReps ?? null) : (x.bestE1rm != null && (x.bodyKg ?? fallbackKg) ? Math.round((x.bestE1rm / (x.bodyKg ?? fallbackKg)!) * 100) / 100 : null);
+    return { t: x.at, v: v as number, sessionId: x.sessionId, ok: v != null && Number.isFinite(v) };
+  }).filter(p => p.ok).map(({ t, v, sessionId }) => ({ t, v, sessionId }));
+}
+
+/** Weekly work sets by reps-in-reserve: 0 (failure) / 1 / 2 / 3+ / not rated — creeping grind or sandbagging shows. */
+export interface RirWeek { wk: number; r0: number; r1: number; r2: number; r3: number; none: number }
+export function rirWeekly(s: StrengthStore, weeks = 12, now = Date.now()): RirWeek[] {
+  const monday = (t: number) => { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
+  const out = new Map<number, RirWeek>();
+  const d0 = new Date(monday(now)); d0.setDate(d0.getDate() - 7 * (weeks - 1));   // calendar weeks back (DST-safe, not ms)
+  for (let k = 0; k < weeks; k++) { const wk = new Date(d0); wk.setDate(wk.getDate() + 7 * k); out.set(monday(wk.getTime()), { wk: monday(wk.getTime()), r0: 0, r1: 0, r2: 0, r3: 0, none: 0 }); }
+  for (const x of s.sessions) {
+    if (!x.finishedAt) continue;
+    const w = out.get(monday(x.finishedAt));
+    if (!w) continue;
+    for (const l of x.sets.filter(isWorkSet)) {
+      if (l.rir == null) w.none++; else if (l.rir <= 0) w.r0++; else if (l.rir === 1) w.r1++; else if (l.rir === 2) w.r2++; else w.r3++;
+    }
+  }
+  return [...out.values()];
+}
+
+/** One session, broken down: muscle units (as the load model counts them), per exercise sets/reps/top kg/feel, PRs. */
+export interface SessionBreakdown {
+  muscles: Partial<Record<Muscle, number>>;
+  exercises: { exerciseId: string; name: string; sets: number; reps: string; topKg: number; load: string; volume: number; feel?: Feel }[];
+  tonnage: number; workSets: number; minutes: number; ticks: number[];
+}
+export function sessionBreakdown(s: StrengthStore, sessionId: string): SessionBreakdown | null {
+  const x = s.sessions.find(q => q.id === sessionId);
+  if (!x?.finishedAt) return null;
+  const eff = x.rpe ? Math.max(0.75, Math.min(1.25, x.rpe / 8)) : 1;
+  const muscles: Partial<Record<Muscle, number>> = {};
+  const order: string[] = [];
+  for (const l of x.sets.filter(isWorkSet)) {
+    if (!order.includes(l.exerciseId)) order.push(l.exerciseId);
+    for (const [m, inv] of Object.entries(exerciseById(s, l.exerciseId)?.muscles ?? {}) as [Muscle, number][]) muscles[m] = (muscles[m] ?? 0) + inv * eff;
+  }
+  const exercises = order.map(id => {
+    const ex = exerciseById(s, id);
+    const sets = x.sets.filter(l => l.exerciseId === id && isWorkSet(l));
+    const reps = sets.map(l => l.reps);
+    return { exerciseId: id, name: ex?.name ?? id, sets: sets.length, reps: Math.min(...reps) === Math.max(...reps) ? `${reps[0]}` : `${Math.min(...reps)}–${Math.max(...reps)}`,
+      topKg: Math.max(...sets.map(l => l.weightKg)),
+      // body-weight moves: the kg field is ADDED weight (− = assistance) → "BW", "BW+5", "BW−20"
+      load: (() => { const t = Math.max(...sets.map(l => l.weightKg)); return ex?.bodyweightFrac ? (t === 0 ? 'BW' : `BW${t > 0 ? '+' : '−'}${Math.abs(t)}`) : `${t} kg`; })(),
+      volume: Math.round(sets.reduce((a, l) => a + setLoadKg(ex, l, x.bodyKg) * l.reps, 0)), feel: x.feel?.[id] };
+  });
+  const r = s.routines.find(q => q.id === x.routineId);
+  const win = strengthWindow(x, r);
+  return { muscles, exercises, tonnage: sessionTonnage(s, x), workSets: x.sets.filter(isWorkSet).length,
+    minutes: Math.round((win.end - win.start) / 60000), ticks: x.sets.filter(l => l.done && l.doneAt).map(l => l.doneAt!).sort((a, b) => a - b) };
+}
+
+/** Leg strength index per session: the mean of each leg exercise's e1RM as % of its first recorded e1RM (100 = start). */
+export function legStrengthIndex(s: StrengthStore): { t: number; v: number }[] {
+  const legIds = allExercises(s).filter(e => ((e.muscles.quads ?? 0) + (e.muscles.hamstrings ?? 0) + (e.muscles.glutes ?? 0)) >= 1).map(e => e.id);
+  // each exercise's LAST known % is carried forward, so alternating A/B routines (or a new exercise entering at 100 %)
+  // doesn't make the line jump without any real strength change
+  const first = new Map<string, number>(), lastPct = new Map<string, number>();
+  const out: { t: number; v: number }[] = [];
+  for (const x of s.sessions.filter(q => q.finishedAt).sort((a, b) => a.finishedAt! - b.finishedAt!)) {
+    let any = false;
+    for (const id of legIds) {
+      const best = Math.max(0, ...x.sets.filter(l => l.exerciseId === id && isWorkSet(l)).map(l => e1rm(setLoadKg(exerciseById(s, id), l, x.bodyKg), l.reps, l.rir) ?? 0));
+      if (!(best > 0)) continue;
+      if (!first.has(id)) first.set(id, best);
+      lastPct.set(id, (best / first.get(id)!) * 100); any = true;
+    }
+    if (any) { const v = [...lastPct.values()]; out.push({ t: x.finishedAt!, v: Math.round(v.reduce((a, b) => a + b, 0) / v.length * 10) / 10 }); }
+  }
+  return out;
+}
+
 // ── Over-time views (Strength stats: muscular load per area, leg-load timeline, records) ────────────────────
 /** Daily muscular-load status per area over the last `days` days (ratio null while calibrating) — the strength PMC. */
 export interface LoadPt { t: number; ratio: number | null; acute: number; chronic: number }
@@ -785,11 +868,12 @@ export function legHardSets(s: StrengthStore, r: Routine): number {
  * 0.3 load per hard set at RPE 7 (scaled by session RPE): 19 sets @ RPE 5 ≈ 4 load ≈ +4 strain on top of the HR part.
  */
 export const MUSC_LOAD_PER_SET = 0.3;
+/** One session's muscular strain load (work sets × 0.3 × RPE/7) — shared by the day total and the session detail. */
+export const sessionStrainLoad = (x: StrengthSession) => x.sets.filter(isWorkSet).length * MUSC_LOAD_PER_SET * ((x.rpe ?? 7) / 7);
 export function strengthStrainLoad(s: StrengthStore, dayKey: string): number {
   // dayKey = the STRAIN day (trainingDayKey: 04:00 → 04:00), so a session after midnight lands on the same day as its HR
   const { trainingDayKey } = require('./trainingLoad') as typeof import('./trainingLoad');
-  return s.sessions.filter(x => x.finishedAt && trainingDayKey(x.startedAt) === dayKey)
-    .reduce((a, x) => a + x.sets.filter(isWorkSet).length * MUSC_LOAD_PER_SET * ((x.rpe ?? 7) / 7), 0);
+  return s.sessions.filter(x => x.finishedAt && trainingDayKey(x.startedAt) === dayKey).reduce((a, x) => a + sessionStrainLoad(x), 0);
 }
 
 // ── Apple Health (build 2b) ───────────────────────────────────────────────────────────────────────────────────

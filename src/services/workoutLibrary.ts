@@ -161,13 +161,17 @@ function seed(now = Date.now()): LibraryWorkout[] {
 export async function loadLibrary(): Promise<LibraryWorkout[]> {
   try {
     const info = await FileSystem.getInfoAsync(LIBRARY_FILE);
-    if (!info.exists) { const s = seed(); await saveLibrary(s); return s; }
+    if (!info.exists) { const s = seed(); await saveLibrary(s); await FileSystem.writeAsStringAsync(`${LIBRARY_FILE}.cues-v1`, '1').catch(() => {}); return s; }   // fresh seed already has the cues
     const parsed = JSON.parse(await FileSystem.readAsStringAsync(LIBRARY_FILE));
     if (Array.isArray(parsed)) {
-      // add the form cues to seeded workouts that have no notes of their own yet (never overwrites the athlete's)
+      // ONE-TIME (marker file): add the form cues to seeded workouts that have no notes of their own yet — never
+      // overwrites the athlete's, and notes he clears later stay cleared
+      const marker = `${LIBRARY_FILE}.cues-v1`;
+      if ((await FileSystem.getInfoAsync(marker).catch(() => ({ exists: true }))).exists) return parsed as LibraryWorkout[];
       let changed = false;
       const list = (parsed as LibraryWorkout[]).map(w => (SESSION_CUES[w.id] && !(w.notes ?? '').trim() ? (changed = true, { ...w, notes: SESSION_CUES[w.id] }) : w));
       if (changed) await saveLibrary(list);
+      await FileSystem.writeAsStringAsync(marker, '1').catch(() => {});
       return list;
     }
     return seed();

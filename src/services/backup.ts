@@ -18,6 +18,7 @@ import { PROVIDER_ORDER } from './llm';
 // are deliberately omitted (they're rebuilt from HealthKit on the next scan).
 const STATIC_SECURE_KEYS = [
   'theme_mode_v1', 'font_scale_v1',
+  'strength_stats_layout_v1',      // Strength stats card order / visibility
   'anthropic_api_key',            // legacy key, still read on migration
   'sync_months', 'long_run_minutes', 'ai_weeks',
   'power_zones', 'run_overrides', 'hr_unreliable_runs', 'hr_lowres_runs',

@@ -3856,7 +3856,7 @@ const STRAIN_HR_CHUNK_DAYS = 45; // keep each 24/7-HR query under the native sam
 export async function fetchStrainHistory(
   months: number,
   toDate?: Date,
-): Promise<{ date: string; value: number }[]> {
+): Promise<{ date: string; value: number; cardio?: number; muscular?: number; passive?: number }[]> {
   const end   = toDate ?? new Date();
   const since = new Date(end.getTime() - months * 30 * 86_400_000);
   since.setHours(0, 0, 0, 0); // whole boundary day (else its morning workouts get sliced off)
@@ -3938,7 +3938,7 @@ export async function fetchStrainHistory(
 
   // One entry per day that has HR data — including rest days — so the chart shows a
   // continuous daily series (and the clear run-day vs rest-day pattern).
-  const out: { date: string; value: number }[] = [];
+  const out: { date: string; value: number; cardio?: number; muscular?: number; passive?: number }[] = [];
   for (const [day, samples] of byDay) {
     // Same model as today's live strain: workout HR-zone load (active) + non-workout steps (passive).
     const dayMax = maxForDay(day) || 190;
@@ -3951,10 +3951,12 @@ export async function fetchStrainHistory(
                           : w.min * activityFactor(w.type));
     }
     const musc = strengthSt ? strengthMod.strengthStrainLoad(strengthSt, day) : 0;
-    const actStrain = actLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L)), 0)
-                    + (musc > 0 ? strainFromLoad(musc) : 0);
+    const cardioStrain = actLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L)), 0);
+    const muscStrain = musc > 0 ? strainFromLoad(musc) : 0;
     const passiveStrain = strainFromLoad(stepStrainLoad(nwStepsByDay.get(day) ?? 0));
-    out.push({ date: day, value: Math.round(actStrain + passiveStrain) }); // Bevel % — UNCAPPED; passive ADDED like the live path
+    // Bevel % — UNCAPPED; passive ADDED like the live path. The parts ride along for the strain-composition chart.
+    out.push({ date: day, value: Math.round(cardioStrain + muscStrain + passiveStrain),
+      cardio: Math.round(cardioStrain), muscular: Math.round(muscStrain), passive: Math.round(passiveStrain) });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -5374,6 +5376,13 @@ export async function watchActiveEnergy(start: number, end: number): Promise<num
   // end — else null (estimate now, re-save once synced)
   if (!best || best.covMs < 0.5 * (end - start) || best.lastEnd < end - 5 * 60_000) return null;
   return Math.round(best.kcal);
+}
+/** Heart-rate samples in [start, end] as {t, bpm} (ascending) — the strength-session breakdown's HR curve. */
+export async function fetchHrSamples(start: number, end: number): Promise<{ t: number; bpm: number }[]> {
+  const rows: any[] = await (HealthKit.queryQuantitySamples as any)(HKQuantityTypeIdentifier.heartRate, {
+    filter: { startDate: new Date(start), endDate: new Date(end) }, unit: 'count/min', ascending: true, limit: 5000,
+  }).catch(() => []);
+  return (rows ?? []).map(r => ({ t: new Date(toISOStr(r.startDate)).getTime(), bpm: r.quantity as number })).filter(p => Number.isFinite(p.t) && p.bpm > 0);
 }
 /** Our saved copy turned out to duplicate a (late-synced) watch workout → delete ours (an app may delete only its own). */
 export async function deleteOwnWorkout(uuid: string): Promise<boolean> {
