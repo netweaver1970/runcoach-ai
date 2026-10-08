@@ -1,0 +1,698 @@
+{
+ "strength": [
+  {
+   "id": "incline_db_press",
+   "name": "Incline DB Press",
+   "old_cue": "Bench ~30°, lower to the upper chest with elbows slightly in, press up and slightly together.",
+   "new_cue": "Bench ~30°, shoulder blades pinned. Lower to the upper chest, forearms vertical; press up and slightly in. Don't flare the elbows out to 90°.",
+   "sources": [
+    "https://exrx.net/WeightExercises/PectoralClavicular/DBInclineBenchPress",
+    "https://www.acefitness.org/acefit/exercise-library-details/0/240/",
+    "https://www.youtube.com/watch?v=hChjZQhX1Ls"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 141
+  },
+  {
+   "id": "flat_db_press",
+   "name": "Flat DB Press",
+   "old_cue": "Shoulder blades back and down, elbows ~45°, both sides press evenly.",
+   "new_cue": "Shoulder blades back and down, feet planted. Lower to mid-chest, elbows ~45°, press up evenly. Don't bounce or arch the lower back.",
+   "sources": [
+    "https://exrx.net/WeightExercises/PectoralSternal/DBBenchPress",
+    "https://www.acefitness.org/acefit/exercise-library-details/0/240/",
+    "https://www.youtube.com/watch?v=Vc63DPUoA40"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 131
+  },
+  {
+   "id": "chest_press_machine",
+   "name": "Chest Press Machine",
+   "old_cue": "Handles at mid-chest, chest up, press out without shrugging; squeeze at full extension.",
+   "new_cue": "Set the seat so the handles sit at mid-chest, back flat on the pad. Press out, elbows ~45°, slow return. Don't shrug or let the stack rest between reps.",
+   "sources": [
+    "https://www.nasm.org/resource-center/exercise-library/chest-press-machine",
+    "https://fitbod.me/exercises/machine-bench-press",
+    "https://www.youtube.com/watch?v=n8TOta_pfr4"
+   ],
+   "chars": 152
+  },
+  {
+   "id": "cable_chest_fly",
+   "name": "Cable Chest Fly",
+   "old_cue": "Soft bend in the elbows, hug an arc, bring the hands together in front of the chest.",
+   "new_cue": "Slight forward lean, soft fixed elbow bend. Sweep the hands together in a wide arc in front of the chest. Don't bend the elbows into a press.",
+   "sources": [
+    "https://www.strengthlog.com/standing-cable-chest-fly/",
+    "https://www.coachweb.com/chest-exercises/6623/the-cable-flye-is-our-go-to-chest-building-move",
+    "https://www.youtube.com/watch?v=8Um35Es-ROE"
+   ],
+   "chars": 141
+  },
+  {
+   "id": "machine_shoulder_press",
+   "name": "Machine Shoulder Press",
+   "old_cue": "Brace, lower to about chin height, press overhead without arching the back.",
+   "new_cue": "Handles at shoulder height, back flat on the pad, core braced. Press overhead, lower to chin level. Don't arch the lower back off the pad.",
+   "sources": [
+    "https://liftosaur.com/exercises/leverage-machine-shoulder-press",
+    "https://builtwithscience.com/fitness-tips/overhead-press-mistakes/",
+    "https://www.youtube.com/watch?v=TnhIyp4kmO8"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 138
+  },
+  {
+   "id": "db_lateral_raise",
+   "name": "DB Lateral Raises",
+   "old_cue": "Lead with the elbows out to the side up to shoulder height; no swinging.",
+   "new_cue": "Brace, slight elbow bend. Lead with the elbows out to shoulder height, lower slowly. Don't swing the body or shrug the shoulders.",
+   "sources": [
+    "https://www.acefitness.org/exercise-library-details/8/26/",
+    "https://www.youtube.com/shorts/f_OGBg2KxgY"
+   ],
+   "chars": 129
+  },
+  {
+   "id": "cable_triceps_pushdown",
+   "name": "Cable Triceps Pushdown",
+   "old_cue": "Elbows pinned at your sides, extend fully and pause at the bottom.",
+   "new_cue": "High pulley. Elbows pinned to your sides, push down to full extension, control the return. Don't lean over the bar or let the elbows drift.",
+   "sources": [
+    "https://fitbod.me/exercises/cable-tricep-pushdown",
+    "https://www.liftosaur.com/exercises/cable-triceps-pushdown",
+    "https://www.youtube.com/watch?v=_w-HpW70nSQ"
+   ],
+   "chars": 139
+  },
+  {
+   "id": "overhead_rope_extension",
+   "name": "Overhead Rope Extension",
+   "old_cue": "Rope behind the head, upper arms still, extend straight up for a full stretch-to-lockout.",
+   "new_cue": "Rope behind the head, elbows by the ears and still. Extend straight up, lower to a full stretch. Don't flare the elbows or arch the back.",
+   "sources": [
+    "https://www.garagegymreviews.com/overhead-triceps-extension",
+    "https://exrx.net/WeightExercises/Triceps/CBTriExt",
+    "https://www.youtube.com/watch?v=mRozZKkGIfg"
+   ],
+   "chars": 137
+  },
+  {
+   "id": "triceps_dips",
+   "name": "Triceps Dips / Dip Machine",
+   "old_cue": "Upright torso, lower to ~90° at the elbow, press back up under control. Weight = added kg (negative = assistance).",
+   "new_cue": "Torso upright, elbows back and close. Lower to ~90° at the elbow, press up under control. Don't sink so deep the shoulders roll forward.",
+   "sources": [
+    "https://fitbod.me/exercises/dip",
+    "https://bullbarfit.com/blogs/updates/the-forward-lean-that-turns-your-dip-into-a-chest-builder",
+    "https://www.youtube.com/watch?v=6MwtkyNC2ZY"
+   ],
+   "keep_suffix": "Weight = added kg (negative = assistance).",
+   "new_cue_full": "Torso upright, elbows back and close. Lower to ~90° at the elbow, press up under control. Don't sink so deep the shoulders roll forward. Weight = added kg (negative = assistance).",
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 136
+  },
+  {
+   "id": "lat_pulldown",
+   "name": "Lat Pulldown",
+   "old_cue": "Chest tall, drive the elbows down toward the ribs; no leaning back or momentum.",
+   "new_cue": "Sit tall, slight lean back. Pull the bar to the upper chest, driving the elbows down to the ribs. Don't yank with momentum or lean further back.",
+   "sources": [
+    "https://www.acefitness.org/resources/everyone/exercise-library/158/seated-lat-pulldown/",
+    "https://www.youtube.com/shorts/hnSqbBk15tw"
+   ],
+   "chars": 144
+  },
+  {
+   "id": "lat_pulldown_neutral",
+   "name": "Lat Pulldown (Neutral Grip)",
+   "old_cue": "Palms facing, pull the elbows down and slightly forward while the chest stays up.",
+   "new_cue": "Palms facing, chest up. Drive the elbows down to your sides, handle to the upper chest, slow return. Don't shrug up at the top.",
+   "sources": [
+    "https://www.strengthlog.com/neutral-close-grip-lat-pulldown/",
+    "https://www.strengthlog.com/lat-pulldown-with-neutral-grip/",
+    "https://www.youtube.com/watch?v=4P3-TXbH4tw"
+   ],
+   "chars": 127
+  },
+  {
+   "id": "chest_supported_row",
+   "name": "Chest-Supported Row",
+   "old_cue": "Chest on the pad, row to the lower chest and squeeze the shoulder blades together.",
+   "new_cue": "Chest on the pad, arms long. Row the elbows back to the lower ribs, squeeze the shoulder blades. Don't lift the chest off the pad to heave.",
+   "sources": [
+    "https://www.strengthlog.com/chest-supported-dumbbell-row/",
+    "https://arvo.guru/exercises/chest-supported-row",
+    "https://www.youtube.com/watch?v=llFTFDwmGcw"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 139
+  },
+  {
+   "id": "seated_row",
+   "name": "Seated Row",
+   "old_cue": "Sit tall, row the handle to the belly button, slow and controlled return.",
+   "new_cue": "Low pulley, sit tall, knees soft. Row the handle to the belly, elbows close, squeeze; slow return. Don't rock the torso back and forth.",
+   "sources": [
+    "https://www.acefitness.org/resources/everyone/exercise-library/48/seated-row/",
+    "https://www.youtube.com/watch?v=xQNrFHEMhI4"
+   ],
+   "chars": 135
+  },
+  {
+   "id": "rear_delt_fly",
+   "name": "Rear Delt Fly",
+   "old_cue": "Arms move out wide, feel the back of the shoulders; keep the traps down.",
+   "new_cue": "Light weight, soft elbows. Sweep the arms out wide to shoulder height, shoulders down. Don't shrug or go heavy enough to need momentum.",
+   "sources": [
+    "https://fitnessvolt.com/reverse-pec-deck-fly/",
+    "https://livestrong.com/article/13764222-rear-delt-fly-mistakes",
+    "https://www.youtube.com/watch?v=lPt0GqwaqEw"
+   ],
+   "chars": 135
+  },
+  {
+   "id": "db_curl",
+   "name": "Dumbbell Curls",
+   "old_cue": "Elbows by your sides, palms up, slow curl and a full squeeze at the top.",
+   "new_cue": "Elbows by your sides, palms up. Curl toward the shoulders, lower to straight arms. Don't swing the torso or let the elbows drift forward.",
+   "sources": [
+    "https://www.acefitness.org/exerciselibrary/44/seated-dumbbell-bicep-curl",
+    "https://www.youtube.com/watch?v=3OZ2MT_5r3Q"
+   ],
+   "chars": 137
+  },
+  {
+   "id": "incline_db_curl",
+   "name": "Incline DB Curls",
+   "old_cue": "Arms hang behind you for a full stretch, curl slowly, no swinging.",
+   "new_cue": "Bench 45–60°, arms hang straight down. Curl without moving the upper arm, lower to a full stretch. Don't let the elbows swing forward.",
+   "sources": [
+    "https://liftosaur.com/exercises/dumbbell-incline-curl",
+    "https://bodybuilding.com/exercises/alternate-incline-dumbbell-curl",
+    "https://www.youtube.com/watch?v=DCe8f6vMe9A"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 134
+  },
+  {
+   "id": "cable_biceps_curl",
+   "name": "Cable Bicep Curls",
+   "old_cue": "Elbows fixed, smooth curl, squeeze at the top, control the way down.",
+   "new_cue": "Low pulley, stand tall. Elbows fixed at your sides, curl up, squeeze, lower under control. Don't lean back or let the shoulders rise.",
+   "sources": [
+    "https://fitbod.me/exercises/cable-bicep-curl",
+    "https://www.liftosaur.com/exercises/cable-bicep-curl",
+    "https://www.youtube.com/watch?v=16aEi1a68E0"
+   ],
+   "chars": 133
+  },
+  {
+   "id": "back_squat",
+   "name": "Back Squat",
+   "old_cue": "Brace the core, sit down under control, drive up through the whole foot.",
+   "new_cue": "Brace, bar over mid-foot. Sit down between the hips, knees tracking over the toes; drive up through the whole foot. Don't let the knees cave in.",
+   "sources": [
+    "https://us.humankinetics.com/blogs/excerpt/squat",
+    "https://www.youtube.com/watch?v=my0tLDaWyDU"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 144
+  },
+  {
+   "id": "hack_squat",
+   "name": "Hack Squat",
+   "old_cue": "Back flat on the pad, controlled descent, push through the whole foot.",
+   "new_cue": "Back and hips flat on the pad, feet shoulder-width. Lower under control, drive through the whole foot. Don't let the hips peel off the pad.",
+   "sources": [
+    "https://www.garagegymreviews.com/hack-squat",
+    "https://asphaltgreen.org/blog/the-beginners-guide-to-the-hack-squat-machine",
+    "https://www.youtube.com/watch?v=plv5ur26Q7A"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 139
+  },
+  {
+   "id": "leg_press",
+   "name": "Leg Press",
+   "old_cue": "Feet mid-platform, knees to ~90°, never lock out at the top.",
+   "new_cue": "Back and hips flat on the seat, feet mid-platform. Lower to ~90° at the knee, press through the whole foot. Don't lock the knees at the top.",
+   "sources": [
+    "https://www.nasm.org/resource-center/exercise-library/leg-press",
+    "https://www.youtube.com/watch?v=cDGOn-yfKJA"
+   ],
+   "equipment_note": "Needs a bench / rack / dedicated machine not on the Marcy; cue phrased generically.",
+   "chars": 140
+  },
+  {
+   "id": "leg_extension",
+   "name": "Leg Extension",
+   "old_cue": "Lift with the quads, pause at the top, lower slowly.",
+   "new_cue": "Line the knee up with the pivot, pad on the lower shin. Extend fully, pause, lower slowly. Don't kick the weight up or let the stack slam.",
+   "sources": [
+    "https://cslife.clubsports.com/trainer-tip-proper-leg-extension-form/",
+    "https://www.liftosaur.com/exercises/leverage-machine-leg-extension",
+    "https://www.youtube.com/watch?v=xAUvXdHu1sI"
+   ],
+   "chars": 138
+  },
+  {
+   "id": "hamstring_curl",
+   "name": "Hamstring Curl",
+   "old_cue": "Hips stay down, curl smoothly, squeeze at full flexion.",
+   "new_cue": "Knee in line with the pivot, pad just above the heel. Curl smoothly, squeeze, lower slowly. Don't lift the hips or swing the weight up.",
+   "sources": [
+    "https://fitnessvolt.com/24561/lying-leg-curl/",
+    "https://www.myprotein.ie/blog/training/lying-leg-curl-exercise-form-common-mistakes/",
+    "https://www.youtube.com/watch?v=jxctD6fL_FQ"
+   ],
+   "chars": 135
+  },
+  {
+   "id": "calf_raise",
+   "name": "Calf Raise",
+   "old_cue": "On a step: full stretch at the bottom, push through the big toe, slow descent. Weight = added kg (dumbbell in hand).",
+   "new_cue": "Balls of the feet on a step. Drop the heels for a full stretch, rise as high as you can, lower slowly. Don't bounce at the bottom.",
+   "sources": [
+    "https://www.planetfitness.com/blog/articles/standing-calf-raise-beginners-guide",
+    "https://breakingmuscle.com/calf-raise/",
+    "https://www.youtube.com/watch?v=MAMzF7iZNkc"
+   ],
+   "keep_suffix": "Weight = added kg (dumbbell in hand).",
+   "new_cue_full": "Balls of the feet on a step. Drop the heels for a full stretch, rise as high as you can, lower slowly. Don't bounce at the bottom. Weight = added kg (dumbbell in hand).",
+   "chars": 130
+  },
+  {
+   "id": "pec_deck",
+   "name": "Pec Deck (Butterfly)",
+   "old_cue": "Back flat on the pad, elbows slightly bent, squeeze the arms together in front of the chest, slow return.",
+   "new_cue": "Set the seat so the elbows sit at shoulder height, back flat on the pad. Squeeze the arms together, pause, slow return. Don't arch or use momentum.",
+   "sources": [
+    "https://en.wikipedia.org/wiki/Machine_fly",
+    "https://www.healthline.com/health/pec-deck",
+    "https://www.youtube.com/watch?v=10hg4LAa7UQ"
+   ],
+   "chars": 147
+  },
+  {
+   "id": "seated_db_shoulder_press",
+   "name": "Seated DB Shoulder Press",
+   "old_cue": "Sit on the Marcy seat, back on the pad; lower to ear height, press up without arching.",
+   "new_cue": "Sit on the Marcy seat, back on the pad. Lower to ear height, wrists over the elbows, press straight up. Don't arch the lower back off the pad.",
+   "sources": [
+    "https://www.physitrack.com/exercise-library/how-to-perform-the-shoulder-press-seated-dumbbell-exercise",
+    "https://strengthlevel.com/exercises/seated-dumbbell-shoulder-press",
+    "https://www.youtube.com/watch?v=qEwKCR5JCog"
+   ],
+   "chars": 142
+  },
+  {
+   "id": "half_kneeling_cable_press",
+   "name": "Half-Kneeling Cable Press",
+   "old_cue": "Low pulley, kneel on the side of the working arm, ribs down, press up and slightly forward.",
+   "new_cue": "Low pulley, kneel on the working-arm side; squeeze that glute, ribs down. Press up and slightly forward. Don't lean back or arch to finish.",
+   "sources": [
+    "https://trainwell.net/exercises/half-kneeling-cable-overhead-press",
+    "https://www.functionalmovement.com/Exercises/465/half_kneeling_single_arm_kb_press",
+    "https://www.youtube.com/watch?v=6D-O-DfcfmY"
+   ],
+   "chars": 139
+  },
+  {
+   "id": "cable_lateral_raise",
+   "name": "Cable Lateral Raise",
+   "old_cue": "Low pulley, handle in the far hand, raise out to the side to shoulder height; no swinging.",
+   "new_cue": "Low pulley, handle in the far hand, elbow slightly bent. Raise out to shoulder height, lower slowly. Don't swing or lean away from the cable.",
+   "sources": [
+    "https://bodbot.com/Exercises/214/Lateral-Raise-_-Cable",
+    "https://fitbod.me/exercises/cable-lateral-raise",
+    "https://www.youtube.com/watch?v=hLrFCb1fm3w"
+   ],
+   "chars": 141
+  },
+  {
+   "id": "single_arm_cable_row",
+   "name": "Single-Arm Cable Row",
+   "old_cue": "Low pulley, brace, row the elbow back past the ribs, full stretch forward on the return.",
+   "new_cue": "Low pulley, brace. Row the elbow back past the ribs, then reach forward for a full stretch. Don't twist the torso to finish the rep.",
+   "sources": [
+    "https://www.bodbot.com/Exercises/880/Cable-Row-_-Seated,-Single-Arm-_-Neutral-Grip-",
+    "https://bodybuilding.com/exercises/seated-one-arm-cable-pulley-rows",
+    "https://www.youtube.com/watch?v=CrylzZHfO1c"
+   ],
+   "chars": 132
+  },
+  {
+   "id": "face_pull",
+   "name": "Face Pull",
+   "old_cue": "High pulley at face height, pull toward the forehead with the elbows high and wide, squeeze the rear delts.",
+   "new_cue": "High pulley, rope at face height, thumbs back. Pull to the forehead, elbows high, spreading the rope apart. Don't lean back or shrug.",
+   "sources": [
+    "https://www.nasm.org/resource-center/exercise-library/face-pull",
+    "https://www.youtube.com/watch?v=eTCBSFlCJ_s"
+   ],
+   "chars": 133
+  },
+  {
+   "id": "bayesian_cable_curl",
+   "name": "Bayesian Cable Curl",
+   "old_cue": "Face away from the low pulley, arm behind you for a full stretch, curl without moving the elbow forward.",
+   "new_cue": "Back to the low pulley, staggered stance, arm behind you. Curl without moving the elbow forward; full stretch on the way down. Don't swing.",
+   "sources": [
+    "https://www.strengthlog.com/bayesian-curl/",
+    "https://www.youtube.com/watch?v=8PXe7YNOfb4"
+   ],
+   "chars": 139
+  },
+  {
+   "id": "bulgarian_split_squat",
+   "name": "Bulgarian Split Squat",
+   "old_cue": "Rear foot on the Marcy seat, drop straight down, front knee tracks over the toes; drive up through the front foot. Weight = dumbbells in hand.",
+   "new_cue": "Rear foot on the Marcy seat. Drop straight down, front shin near vertical; drive up through the front foot. Don't let the front knee cave in.",
+   "sources": [
+    "https://www.pogophysio.com.au/blog/bulgarian-split-squat-knees-over-toes/",
+    "https://livestrong.com/article/13764398-bulgarian-split-squat-mistakes",
+    "https://www.youtube.com/watch?v=hPlKPjohFS0"
+   ],
+   "keep_suffix": "Weight = dumbbells in hand.",
+   "new_cue_full": "Rear foot on the Marcy seat. Drop straight down, front shin near vertical; drive up through the front foot. Don't let the front knee cave in. Weight = dumbbells in hand.",
+   "chars": 141
+  },
+  {
+   "id": "goblet_squat",
+   "name": "Goblet Squat",
+   "old_cue": "Dumbbell against the chest, sit between the heels, chest up, push through the whole foot.",
+   "new_cue": "Dumbbell at the chest, elbows in. Sit between the heels, chest up, knees over the toes; stand through the whole foot. Don't round the lower back.",
+   "sources": [
+    "https://acefitness.org/resources/everyone/exercise-library/362/goblet-squat",
+    "https://www.nasm.org/resource-center/exercise-library/goblet-squat",
+    "https://www.youtube.com/watch?v=MeIiIdhvXT4"
+   ],
+   "chars": 145
+  },
+  {
+   "id": "cable_squat",
+   "name": "Cable Squat",
+   "old_cue": "Hold the low-pulley handle at the chest, lean back slightly against the cable, squeeze down and drive up.",
+   "new_cue": "Low pulley, handle at the chest. Sit the hips down and back, torso upright, drive up through the whole foot. Don't lean back into a hip hinge.",
+   "sources": [
+    "https://planfit.ai/en/exercise/cable-squat",
+    "https://blog.dynamofitness.com.au/?p=2693",
+    "https://www.youtube.com/watch?v=VdWQ6Dn-o2k"
+   ],
+   "chars": 142
+  },
+  {
+   "id": "close_grip_pushup",
+   "name": "Close-Grip Push-up",
+   "old_cue": "Hands under the shoulders, elbows brushing the ribs, body straight; knees down to make it easier.",
+   "new_cue": "Hands under the shoulders, elbows brushing the ribs, body in one line. Knees down to make it easier. Don't let the hips sag.",
+   "sources": [
+    "https://www.exercise.com/exercises/close-grip-push-up/",
+    "https://www.masterclass.com/articles/close-grip-push-ups-guide",
+    "https://www.youtube.com/watch?v=J0DnG1_S92I"
+   ],
+   "chars": 124
+  },
+  {
+   "id": "overhead_cable_triceps_extension",
+   "name": "Overhead Cable Triceps Extension",
+   "old_cue": "Face away from the high pulley (bar or rope), upper arms by the ears, extend to lockout, full stretch back.",
+   "new_cue": "Face away from the high pulley, staggered stance, upper arms by the ears. Extend to lockout, return to a full stretch. Don't flare the elbows.",
+   "sources": [
+    "https://exrx.net/WeightExercises/Triceps/CBTriExt",
+    "https://bodybuilding.com/exercises/cable-rope-overhead-triceps-extension",
+    "https://www.youtube.com/watch?v=57fWTQID-1Y"
+   ],
+   "chars": 142
+  }
+ ],
+ "cardio": [
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills')",
+   "id_or_name": "Leg swings (front/back, side/side)",
+   "old_cue": "Leg swings (front/back, side/side) — 10 each",
+   "new_cue": "Hold a support, stand tall, hips square. Swing the relaxed leg front–back, then side–side, building range. Don't twist the hips or arch the back.",
+   "sources": [
+    "https://www.fleetfeet.com/blog/get-a-better-warm-up-for-running-with-these-moves",
+    "https://www.therapeuticassociates.com/dynamic-warm-up-for-runners/"
+   ],
+   "chars": 145
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills')",
+   "id_or_name": "Walking lunges with reach",
+   "old_cue": "Walking lunges with reach — 10",
+   "new_cue": "Long step, lower until both knees reach ~90°, front knee over the toes, reach overhead. Push off into the next step. Don't let the front knee cave in.",
+   "sources": [
+    "https://mensfitness.co.uk/fitness/dynamic-warm-up-for-runners/",
+    "https://www.therapeuticassociates.com/dynamic-warm-up-for-runners/"
+   ],
+   "chars": 150
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills')",
+   "id_or_name": "A-skips",
+   "old_cue": "A-skips — 2×20m",
+   "new_cue": "Tall posture, knee up to hip height, toes up. Strike down under the hip with a quick, light contact; opposite arm drives. Don't lean back.",
+   "sources": [
+    "https://marathonhandbook.com/a-skips/",
+    "https://coachathletics.com.au/coaching-education/introduction-to-sprinting-five-critical-running-drills",
+    "https://www.outsideonline.com/running/training/workouts/the-basics-of-a-skips/"
+   ],
+   "chars": 138
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills')",
+   "id_or_name": "High knees",
+   "old_cue": "High knees — 2×20m",
+   "new_cue": "Stand tall, quick rhythm. Knees to hip height, land on the balls of the feet under the hips, arms pumping. Don't lean back or sit down.",
+   "sources": [
+    "https://therunexperience.com/top-7-running-form-drills-for-faster-running/",
+    "https://www.asics.com/za/en-za/blog/article/easy-form-drills"
+   ],
+   "chars": 135
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills')",
+   "id_or_name": "Butt kicks",
+   "old_cue": "Butt kicks — 2×20m",
+   "new_cue": "Quick, light steps. Pull the heel up under the hips, knees pointing down, torso tall. Don't lean forward or let the knees swing forward.",
+   "sources": [
+    "https://www.runnersblueprint.com/speed-drills-run-faster/",
+    "https://therunexperience.com/top-7-running-form-drills-for-faster-running/"
+   ],
+   "chars": 136
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills')",
+   "id_or_name": "Ankle bounces / pogos",
+   "old_cue": "Ankle bounces / pogos — 2×15",
+   "new_cue": "Small, quick bounces off the balls of the feet, knees nearly straight, ankles springy. Minimal ground time. Don't land flat or sink into the knees.",
+   "sources": [
+    "https://support.runna.com/en/articles/7978978-pogo-jumps-exercise-tutorial",
+    "https://boxlifemagazine.com/bouncy-ankle-drills-to-run-faster/"
+   ],
+   "chars": 147
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_DRILLS (markdown string, knowledge file id 'pre-run-drills') + workoutLibrary seed 'seed-strides' (label 'strides')",
+   "id_or_name": "Strides (build-ups)",
+   "old_cue": "Strides (build-ups) — 4×15s AFTER easy jog, only on quality days",
+   "new_cue": "From a jog, build over ~5 s to fast but relaxed (~85–90%), hold, then ease off. Stay tall, quick light steps. Don't sprint all-out or tense up.",
+   "sources": [
+    "https://runnersconnect.net/running-training-articles/strides-how-strides-can-help-you-run-faster/",
+    "https://higherrunning.com/why-every-runner-should-be-doing-strides/"
+   ],
+   "chars": 143
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Eccentric calf raises / heel drops",
+   "old_cue": "Eccentric calf raises / heel drops — 3×12 (straight + bent knee)",
+   "new_cue": "Rise on both feet, shift onto one, lower that heel slowly (~3 s) below the step. Do straight- and bent-knee sets. Don't drop fast or bounce.",
+   "sources": [
+    "https://www.sportsinjuryclinic.net/?p=1225",
+    "https://runblogger.com/2014/10/achilles-tendinopathy-and-eccentric-loading-bjsm-podcast-interview-with-dr-hkan-alfredson.html"
+   ],
+   "chars": 140
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Single-leg squats / pistol progressions",
+   "old_cue": "Single-leg squats / pistol progressions — 3×8 per leg",
+   "new_cue": "Sit back to a box or the Marcy seat, knee over the second toe, hips level. Control down, drive up. Don't let the knee cave in or the hip drop.",
+   "sources": [
+    "https://www.outsideonline.com/running/training/workouts/3-single-leg-squat-variations-for-runners/",
+    "https://runnersconnect.net/running-injury-prevention/hip-strengthening-for-runners/"
+   ],
+   "chars": 142
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Step-downs (controlled)",
+   "old_cue": "Step-downs (controlled) — 3×10 per leg",
+   "new_cue": "Stand on a step, slowly lower the free heel to tap the floor, then stand. Knee over the second toe, pelvis level. Don't let the knee dive inward.",
+   "sources": [
+    "https://uk.physitrack.com/home-exercise-video/lateral-step-down-%2528vmo%2529",
+    "https://catalystathletics.com/exercise/734/Lateral-Step-Down/"
+   ],
+   "chars": 145
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Glute bridges / single-leg bridges",
+   "old_cue": "Glute bridges / single-leg bridges — 3×12",
+   "new_cue": "Feet flat, ribs down. Squeeze the glutes to lift the hips to a straight knee–hip–shoulder line, pause, lower. Don't over-arch the lower back.",
+   "sources": [
+    "https://www.acefitness.org/education-and-resources/lifestyle/exercise-library/145/glute-bridge-single-leg-progression",
+    "https://health.clevelandclinic.org/glute-bridges"
+   ],
+   "chars": 141
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Clamshells & hip abduction",
+   "old_cue": "Clamshells & hip abduction — 2×15 per side",
+   "new_cue": "Side-lying, hips stacked, heels together. Open the top knee only as far as the pelvis stays still, lower slowly. Don't roll the hips back.",
+   "sources": [
+    "https://www.noregretspt.com.au/index.php/resources/blog/43-2014/449-how-useful-is-the-clamshell-exercise-for-strengthening-gluteus-medius",
+    "https://www.setforset.com/blogs/news/clamshell-exercises"
+   ],
+   "chars": 138
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Tibialis raises",
+   "old_cue": "Tibialis raises — 3×20",
+   "new_cue": "Back to a wall, heels ~30 cm out, legs straight. Lift the toes as high as you can, lower slowly. Don't let the heels lift or the hips rock.",
+   "sources": [
+    "https://www.strengthlog.com/tibialis-raise/",
+    "https://www.coachweb.com/leg-exercises/7425/five-exercises-to-minimise-the-risk-of-shin-splints"
+   ],
+   "chars": 139
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Hamstring bridges / Nordic curls (assisted)",
+   "old_cue": "Hamstring bridges / Nordic curls (assisted) — 3×6",
+   "new_cue": "Anchor the ankles, body straight from knees to head. Lower as slowly as you can, catch with the hands, push back up. Don't bend at the hips.",
+   "sources": [
+    "https://us.humankinetics.com/blogs/excerpt/nordic-hamstring-curl",
+    "https://www.tomsguide.com/how-to/nordic-hamstring-curls-how-to-do-them-and-the-benefits-for-strengthening-your-glutes-and-hamstrings"
+   ],
+   "chars": 140
+  },
+  {
+   "where": "src/services/coachFiles.ts → DEFAULT_STRENGTH (markdown string, knowledge file id 'strength-exercises')",
+   "id_or_name": "Copenhagen planks (adductors)",
+   "old_cue": "Copenhagen planks (adductors) — 2×20s per side",
+   "new_cue": "Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don't let the hips sag or pike.",
+   "sources": [
+    "https://www.craftsbury.com/blog/motm-copenhagen-plank-variations-and-progressions",
+    "https://runningmagazine.ca/sections/training/why-runners-should-care-about-the-copenhagen-plank/"
+   ],
+   "chars": 144
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'easy' (seed-easy-40, seed-easy-60, seed-base-75, easy part of seed-strides)",
+   "id_or_name": "Easy / base run (Z2)",
+   "new_cue": "Conversational: you can speak full sentences. Relaxed shoulders, quick light steps, steady effort on hills. Don't drift up into tempo effort.",
+   "sources": [
+    "https://runkeeper.com/ja/training/how-to-keep-your-easy-runs-easy/",
+    "https://runnersworldonline.com.au/signs-youre-running-too-fast-on-easy-days-according-to-coaches/"
+   ],
+   "chars": 141
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'recovery' (seed-rec-30, seed-rec-20)",
+   "id_or_name": "Recovery run (Z1)",
+   "new_cue": "Very easy, slower than feels necessary; walk breaks are fine. Keep it short and relaxed. Don't speed up to chase a pace.",
+   "sources": [
+    "https://terilynadams.com/recovery-runs/",
+    "https://kanefootwear.com/blogs/kane-blog/recovery-run-pace"
+   ],
+   "chars": 120
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'long' (seed-long-90, seed-long-120)",
+   "id_or_name": "Long run (Z2)",
+   "new_cue": "Start easier than you want, stay conversational, keep effort even on climbs. Relax the form as you tire. Don't push the pace in the second half.",
+   "sources": [
+    "https://www.active.com/running/Articles/7-Mistakes-to-Avoid-on-Your-Long-Runs"
+   ],
+   "chars": 144
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'long' (seed-long-ff, seed-progress)",
+   "id_or_name": "Progression / fast-finish run",
+   "new_cue": "Begin easy and lift the pace gradually; finish strong but controlled. Don't jump the pace suddenly or start too quick.",
+   "sources": [
+    "https://www.garmin.com/en-US/blog/fitness/how-to-progression-runs/",
+    "https://www.mcmillanrunning.com/?p=110"
+   ],
+   "chars": 118
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'tempo', continuous (seed-tempo-25, seed-tempo-40)",
+   "id_or_name": "Tempo run (Z3)",
+   "new_cue": "Comfortably hard: a few words, not sentences. Settle in over the first minutes, then hold it steady. Don't start fast and fade.",
+   "sources": [
+    "https://www.gymshark.com/blog/article/tempo-runs",
+    "https://www.nike.com/za/a/tempo-running-workout-benefits"
+   ],
+   "chars": 127
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'tempo', reps (seed-cruise, seed-thr-4x6/3x10/2x15)",
+   "id_or_name": "Cruise / threshold intervals (Z3)",
+   "new_cue": "Same effort as a tempo; keep the recoveries short jogs. Even pace on every rep. Don't run the reps faster than threshold.",
+   "sources": [
+    "https://www.coachray.nz/2023/05/03/jack-daniels-running-intensity/",
+    "https://runningwithrock.com/jack-daniels-interval-workout/"
+   ],
+   "chars": 121
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'tempo'/'intervals', race pace (seed-10k, seed-hm, seed-mp)",
+   "id_or_name": "Race-pace reps (10K / HM / marathon)",
+   "new_cue": "Lock onto goal race effort with relaxed form and even splits. Practise rhythm and breathing. Don't run faster than goal pace.",
+   "sources": [
+    "https://www.garmin.com/en-US/blog/fitness/how-to-progression-runs/"
+   ],
+   "chars": 125
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'intervals' (seed-vo2-*, seed-400s/800s/1k/mile)",
+   "id_or_name": "VO2 / track reps (Z4–Z5)",
+   "new_cue": "Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don't open each rep with a sprint.",
+   "sources": [
+    "https://www.runnersworld.co.za/training/vo2-max-workouts-to-help-you-run-faster/",
+    "https://shuichi-running.com/en/vo2max-interval-training/"
+   ],
+   "chars": 121
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'intervals' (seed-hills-short, seed-hills-long)",
+   "id_or_name": "Hill repeats",
+   "new_cue": "Short quick steps, drive the arms, eyes up the hill, lean from the ankles. Jog back down easy. Don't hunch over or overstride.",
+   "sources": [
+    "https://www.inov8.com/blog/post/crush-the-climbs-ten-uphill-running-tips",
+    "https://www.asics.com/za/en-za/blog/article/how-to-run-long-hills-more-efficiently"
+   ],
+   "chars": 126
+  },
+  {
+   "where": "src/services/workoutLibrary.ts → seed() LibraryWorkout.notes (optional string; currently unset on every seed) — kind 'intervals' (seed-fartlek-1, seed-fartlek-2)",
+   "id_or_name": "Fartlek",
+   "new_cue": "Surge by feel to a strong, controlled effort, then jog until breathing settles. Use landmarks if you like. Don't sprint the surges.",
+   "sources": [
+    "https://runnersconnect.net/fartlek-training-workouts/",
+    "https://runbikecalc.com/blog/fartlek-training-complete-guide-2026"
+   ],
+   "chars": 131
+  }
+ ],
+ "notes": "STRENGTH: all 35 EX entries in src/services/strength.ts (fields: id, name, muscles, bodyweightFrac?, cue?, video? via VIDEOS map, custom?). new_cue is the form cue only (<=160 chars, ends with a 'Don't ...'). For triceps_dips, calf_raise and bulgarian_split_squat the current cue carries an app-functional 'Weight = ...' instruction that is NOT a form cue; it is given as keep_suffix and new_cue_full = new_cue + suffix (these exceed 160 by design). Behaviour changes worth noting: cable_squat old cue said 'lean back slightly against the cable', which the sources call a mistake (it turns into a hinge), so it is reversed; back_squat/leg_press/hack_squat now say 'knees over toes / don't cave' and 'don't lock out'; rear_delt_fly now warns against shrugging and pinching the shoulder blades. Machine cues are phrased for the Marcy (seat/pad height, pivot alignment, 'don't let the stack slam/rest', high vs low pulley). Exercises flagged equipment_note need a bench, rack or dedicated machine Geert's Marcy lacks, so those cues are generic. Every strength row's sources include its existing VIDEOS YouTube link (title-only reference). CARDIO: there is NO structured cardio exercise DB. Items live in (a) src/services/coachFiles.ts DEFAULT_DRILLS (7 drills) and DEFAULT_STRENGTH (8 runner strength moves), both markdown strings seeded once as editable knowledge files ('pre-run-drills', 'strength-exercises'). The device copies may have been edited and are not in the repo, so updating the defaults only affects fresh installs or files never seeded unless a migration re-seeds or appends. (b) src/services/workoutLibrary.ts seed(): 30 LibraryWorkout entries (id, name, kind, warmupMeters, drillsMinutes, cooldownMeters, blocks[], notes?, updatedAt). There is no cue field; `notes` (the UI placeholder reads 'Cues, goal pace, focus…') is the natural home. The cues are given per session TYPE, and the 'where' text maps each type to its seed ids. The seed only runs when the library file does not exist, so existing installs need a migration to pick them up. (c) coach.ts WatchWorkout/WorkoutStructure has only warmupMeters/drillsMinutes/cooldownMeters numbers and carries no exercise text. Cues are written in my own words (no copied text, no brand names, no medical claims). Effort cues ('conversational', 'comfortably hard') are paired with the app's HR zones in the id_or_name. Weak sourcing: race-pace reps have no dedicated source (only general pacing guidance), and the long-run row has one source. Some URLs are aggregator pages (fitbod, liftosaur, strengthlog) where ACE, ExRx or NSCA had no matching page."
+}

@@ -79,11 +79,45 @@ export function newWorkout(now = Date.now()): LibraryWorkout {
  * power is set on-device from each runner's own zones. Rep durations are minute approximations of the
  * classic distance reps (e.g. 400m ≈ 1.5 min). The athlete edits/adds freely from here.
  */
+// FORM CUES per session type (2026-10-08, researched + sanitised) — the seeded workouts' notes ("Cues, goal pace,
+// focus…"). Older installs get them on load wherever the athlete hasn't written notes of their own.
+const SESSION_CUES: Record<string, string> = {
+  'seed-10k': 'Lock onto goal race effort with relaxed form and even splits. Practise rhythm and breathing. Don\'t run faster than goal pace.',
+  'seed-1k': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+  'seed-400s': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+  'seed-800s': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+  'seed-base-75': 'Conversational: you can speak full sentences. Relaxed shoulders, quick light steps, steady effort on hills. Don\'t drift up into tempo effort.',
+  'seed-cruise': 'Same effort as a tempo; keep the recoveries short jogs. Even pace on every rep. Don\'t run the reps faster than threshold.',
+  'seed-easy-40': 'Conversational: you can speak full sentences. Relaxed shoulders, quick light steps, steady effort on hills. Don\'t drift up into tempo effort.',
+  'seed-easy-60': 'Conversational: you can speak full sentences. Relaxed shoulders, quick light steps, steady effort on hills. Don\'t drift up into tempo effort.',
+  'seed-fartlek-1': 'Surge by feel to a strong, controlled effort, then jog until breathing settles. Use landmarks if you like. Don\'t sprint the surges.',
+  'seed-fartlek-2': 'Surge by feel to a strong, controlled effort, then jog until breathing settles. Use landmarks if you like. Don\'t sprint the surges.',
+  'seed-hills-long': 'Short quick steps, drive the arms, eyes up the hill, lean from the ankles. Jog back down easy. Don\'t hunch over or overstride.',
+  'seed-hills-short': 'Short quick steps, drive the arms, eyes up the hill, lean from the ankles. Jog back down easy. Don\'t hunch over or overstride.',
+  'seed-hm': 'Lock onto goal race effort with relaxed form and even splits. Practise rhythm and breathing. Don\'t run faster than goal pace.',
+  'seed-long-120': 'Start easier than you want, stay conversational, keep effort even on climbs. Relax the form as you tire. Don\'t push the pace in the second half.',
+  'seed-long-90': 'Start easier than you want, stay conversational, keep effort even on climbs. Relax the form as you tire. Don\'t push the pace in the second half.',
+  'seed-long-ff': 'Begin easy and lift the pace gradually; finish strong but controlled. Don\'t jump the pace suddenly or start too quick.',
+  'seed-mile': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+  'seed-mp': 'Lock onto goal race effort with relaxed form and even splits. Practise rhythm and breathing. Don\'t run faster than goal pace.',
+  'seed-progress': 'Begin easy and lift the pace gradually; finish strong but controlled. Don\'t jump the pace suddenly or start too quick.',
+  'seed-rec-20': 'Very easy, slower than feels necessary; walk breaks are fine. Keep it short and relaxed. Don\'t speed up to chase a pace.',
+  'seed-rec-30': 'Very easy, slower than feels necessary; walk breaks are fine. Keep it short and relaxed. Don\'t speed up to chase a pace.',
+  'seed-strides': 'Conversational: you can speak full sentences. Relaxed shoulders, quick light steps, steady effort on hills. Don\'t drift up into tempo effort.',
+  'seed-tempo-25': 'Comfortably hard: a few words, not sentences. Settle in over the first minutes, then hold it steady. Don\'t start fast and fade.',
+  'seed-tempo-40': 'Comfortably hard: a few words, not sentences. Settle in over the first minutes, then hold it steady. Don\'t start fast and fade.',
+  'seed-thr-2x15': 'Same effort as a tempo; keep the recoveries short jogs. Even pace on every rep. Don\'t run the reps faster than threshold.',
+  'seed-thr-3x10': 'Same effort as a tempo; keep the recoveries short jogs. Even pace on every rep. Don\'t run the reps faster than threshold.',
+  'seed-thr-4x6': 'Same effort as a tempo; keep the recoveries short jogs. Even pace on every rep. Don\'t run the reps faster than threshold.',
+  'seed-vo2-4x4': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+  'seed-vo2-5x3': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+  'seed-vo2-6x2': 'Hard but controlled; run the first rep like the last. Jog or walk the recoveries easy. Don\'t open each rep with a sprint.',
+};
 function seed(now = Date.now()): LibraryWorkout[] {
   const blk = (repeats: number, workMinutes: number, restMinutes: number, hrZone: string, recoveryZone?: string, label?: string): WatchWorkoutBlock =>
     ({ repeats, workMinutes, restMinutes, hrZone, ...(recoveryZone ? { recoveryZone } : {}), ...(label ? { label } : {}) });
   const mk = (id: string, name: string, kind: WorkoutKind, drills: number, blocks: WatchWorkoutBlock[]): LibraryWorkout =>
-    ({ id, name, kind, warmupMeters: 0, drillsMinutes: drills, cooldownMeters: 0, blocks, updatedAt: now });
+    ({ id, name, kind, warmupMeters: 0, drillsMinutes: drills, cooldownMeters: 0, blocks, updatedAt: now, ...(SESSION_CUES[id] ? { notes: SESSION_CUES[id] } : {}) });
   return [
     // ── VO₂max / intervals (Z4–Z5) ──
     mk('seed-vo2-5x3',   'VO₂ 5×3min Z4',        'intervals', 6, [blk(5, 3, 2, 'Z4', 'Z1', 'VO2')]),
@@ -129,7 +163,13 @@ export async function loadLibrary(): Promise<LibraryWorkout[]> {
     const info = await FileSystem.getInfoAsync(LIBRARY_FILE);
     if (!info.exists) { const s = seed(); await saveLibrary(s); return s; }
     const parsed = JSON.parse(await FileSystem.readAsStringAsync(LIBRARY_FILE));
-    if (Array.isArray(parsed)) return parsed as LibraryWorkout[];
+    if (Array.isArray(parsed)) {
+      // add the form cues to seeded workouts that have no notes of their own yet (never overwrites the athlete's)
+      let changed = false;
+      const list = (parsed as LibraryWorkout[]).map(w => (SESSION_CUES[w.id] && !(w.notes ?? '').trim() ? (changed = true, { ...w, notes: SESSION_CUES[w.id] }) : w));
+      if (changed) await saveLibrary(list);
+      return list;
+    }
     return seed();
   } catch { return seed(); }
 }

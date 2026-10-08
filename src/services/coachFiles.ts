@@ -94,13 +94,21 @@ const DEFAULT_STRENGTH = `# Preferred Strength Exercises
 
 Pick 2–4 per plan, rotate, keep it leg/hip/foot focused for running durability:
 - Eccentric calf raises / heel drops — 3×12 (straight + bent knee)
+  Form: Rise on both feet, shift onto one, lower that heel slowly (~3 s) below the step. Do straight- and bent-knee sets. Don't drop fast or bounce.
 - Single-leg squats / pistol progressions — 3×8 per leg
+  Form: Sit back to a box or the Marcy seat, knee over the second toe, hips level. Control down, drive up. Don't let the knee cave in or the hip drop.
 - Step-downs (controlled) — 3×10 per leg
+  Form: Stand on a step, slowly lower the free heel to tap the floor, then stand. Knee over the second toe, pelvis level. Don't let the knee dive inward.
 - Glute bridges / single-leg bridges — 3×12
+  Form: Feet flat, ribs down. Squeeze the glutes to lift the hips to a straight knee–hip–shoulder line, pause, lower. Don't over-arch the lower back.
 - Clamshells & hip abduction — 2×15 per side
+  Form: Side-lying, hips stacked, heels together. Open the top knee only as far as the pelvis stays still, lower slowly. Don't roll the hips back.
 - Tibialis raises — 3×20
+  Form: Back to a wall, heels ~30 cm out, legs straight. Lift the toes as high as you can, lower slowly. Don't let the heels lift or the hips rock.
 - Hamstring bridges / Nordic curls (assisted) — 3×6
+  Form: Anchor the ankles, body straight from knees to head. Lower as slowly as you can, catch with the hands, push back up. Don't bend at the hips.
 - Copenhagen planks (adductors) — 2×20s per side
+  Form: Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don't let the hips sag or pike.
 
 Notes: prioritise eccentric calf + hip work; quality over load; stop if sharp pain.`;
 
@@ -108,12 +116,19 @@ const DEFAULT_DRILLS = `# Pre-Run Drills (dynamic warm-up)
 
 Do BEFORE every run (~8–10 min). These count toward today's strain budget:
 - Leg swings (front/back, side/side) — 10 each
+  Form: Hold a support, stand tall, hips square. Swing the relaxed leg front–back, then side–side, building range. Don't twist the hips or arch the back.
 - Walking lunges with reach — 10
+  Form: Long step, lower until both knees reach ~90°, front knee over the toes, reach overhead. Push off into the next step. Don't let the front knee cave in.
 - A-skips — 2×20m
+  Form: Tall posture, knee up to hip height, toes up. Strike down under the hip with a quick, light contact; opposite arm drives. Don't lean back.
 - High knees — 2×20m
+  Form: Stand tall, quick rhythm. Knees to hip height, land on the balls of the feet under the hips, arms pumping. Don't lean back or sit down.
 - Butt kicks — 2×20m
+  Form: Quick, light steps. Pull the heel up under the hips, knees pointing down, torso tall. Don't lean forward or let the knees swing forward.
 - Ankle bounces / pogos — 2×15
+  Form: Small, quick bounces off the balls of the feet, knees nearly straight, ankles springy. Minimal ground time. Don't land flat or sink into the knees.
 - Strides (build-ups) — 4×15s AFTER easy jog, only on quality days
+  Form: From a jog, build over ~5 s to fast but relaxed (~85–90%), hold, then ease off. Stay tall, quick light steps. Don't sprint all-out or tense up.
 
 Cold conditions → extend the warm-up; hot conditions → shorten and hydrate first.`;
 
@@ -223,6 +238,43 @@ export async function markPrescriptionExecuted(date: string): Promise<void> {
   } catch { /* ignore */ }
 }
 
+// FORM CUES (2026-10-08, researched + sanitised: ExRx / ACE / NSCA / World Athletics–style coaching sources) — one
+// "Form:" line under each drill / runner-strength move. Older installs get them by LINE, so any of the athlete's own
+// edits elsewhere in the file stay (2026-10-08: Geert's drills file differs from the default by one word).
+export const FORM_CUES: Record<string, string> = {
+  'Leg swings (front/back, side/side) — 10 each': 'Hold a support, stand tall, hips square. Swing the relaxed leg front–back, then side–side, building range. Don\'t twist the hips or arch the back.',
+  'Walking lunges with reach — 10': 'Long step, lower until both knees reach ~90°, front knee over the toes, reach overhead. Push off into the next step. Don\'t let the front knee cave in.',
+  'A-skips — 2×20m': 'Tall posture, knee up to hip height, toes up. Strike down under the hip with a quick, light contact; opposite arm drives. Don\'t lean back.',
+  'High knees — 2×20m': 'Stand tall, quick rhythm. Knees to hip height, land on the balls of the feet under the hips, arms pumping. Don\'t lean back or sit down.',
+  'Butt kicks — 2×20m': 'Quick, light steps. Pull the heel up under the hips, knees pointing down, torso tall. Don\'t lean forward or let the knees swing forward.',
+  'Ankle bounces / pogos — 2×15': 'Small, quick bounces off the balls of the feet, knees nearly straight, ankles springy. Minimal ground time. Don\'t land flat or sink into the knees.',
+  'Strides (build-ups) — 4×15s AFTER easy jog, only on quality days': 'From a jog, build over ~5 s to fast but relaxed (~85–90%), hold, then ease off. Stay tall, quick light steps. Don\'t sprint all-out or tense up.',
+  'Eccentric calf raises / heel drops — 3×12 (straight + bent knee)': 'Rise on both feet, shift onto one, lower that heel slowly (~3 s) below the step. Do straight- and bent-knee sets. Don\'t drop fast or bounce.',
+  'Single-leg squats / pistol progressions — 3×8 per leg': 'Sit back to a box or the Marcy seat, knee over the second toe, hips level. Control down, drive up. Don\'t let the knee cave in or the hip drop.',
+  'Step-downs (controlled) — 3×10 per leg': 'Stand on a step, slowly lower the free heel to tap the floor, then stand. Knee over the second toe, pelvis level. Don\'t let the knee dive inward.',
+  'Glute bridges / single-leg bridges — 3×12': 'Feet flat, ribs down. Squeeze the glutes to lift the hips to a straight knee–hip–shoulder line, pause, lower. Don\'t over-arch the lower back.',
+  'Clamshells & hip abduction — 2×15 per side': 'Side-lying, hips stacked, heels together. Open the top knee only as far as the pelvis stays still, lower slowly. Don\'t roll the hips back.',
+  'Tibialis raises — 3×20': 'Back to a wall, heels ~30 cm out, legs straight. Lift the toes as high as you can, lower slowly. Don\'t let the heels lift or the hips rock.',
+  'Hamstring bridges / Nordic curls (assisted) — 3×6': 'Anchor the ankles, body straight from knees to head. Lower as slowly as you can, catch with the hands, push back up. Don\'t bend at the hips.',
+  'Copenhagen planks (adductors) — 2×20s per side': 'Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don\'t let the hips sag or pike.',
+};
+async function addFormCues(): Promise<void> {
+  for (const id of ['pre-run-drills', 'strength-exercises']) {
+    try {
+      const raw = await FileSystem.readAsStringAsync(pathOf(id));
+      const lines = raw.split('\n');
+      const out: string[] = [];
+      let changed = false;
+      lines.forEach((l, i) => {
+        out.push(l);
+        const cue = l.startsWith('- ') ? FORM_CUES[l.slice(2).trim()] : undefined;
+        if (cue && !(lines[i + 1] ?? '').trim().startsWith('Form:')) { out.push(`  Form: ${cue}`); changed = true; }
+      });
+      if (changed) await FileSystem.writeAsStringAsync(pathOf(id), out.join('\n'));
+    } catch { /* file missing → nothing to add */ }
+  }
+}
+
 const defaultContent = (id: string) => DEFAULTS.find(d => d.id === id)?.content ?? '';
 export const isBuiltinId = (id: string) => DEFAULTS.some(d => d.id === id);
 
@@ -248,7 +300,9 @@ async function seed(): Promise<void> {
     added = true;
   }
   if (added) await writeIndex(idx);
+  if (!formCuesChecked) { formCuesChecked = true; await addFormCues(); }   // once per app run (idempotent anyway)
 }
+let formCuesChecked = false;
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
