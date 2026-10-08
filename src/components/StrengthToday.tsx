@@ -6,6 +6,7 @@ import { importWatchStrengthLogs, pushStrengthToWatch } from '../services/watchS
 import { syncRecentSessionsToHealth, loadStrength, routinesForDate, sessionsOn, estimateMinutes, sessionTonnage, localDateKey, plannedDay, plannedDone, Routine, StrengthStore, WEEKDAYS, DAILY_CUSTOM_ID } from '../services/strength';
 import { ensureStrengthPlan, ensureDailyCustom } from '../services/strengthPlan';
 import { checkLocation } from '../services/strengthLocation';
+import { SessionVsPrevious } from './SessionVsPrevious';
 
 /**
  * Daily Coach card: today's strength from the coach's auto-plan (a tailored routine, short prehab, or why not today)
@@ -48,7 +49,8 @@ export function StrengthToday() {
       <TouchableOpacity onPress={() => router.push('/fitness' as any)}>
         <Text style={s.title}>🏋️ Strength today{st.autoPlan?.ai ? '  ✨' : ''} ›</Text>
       </TouchableOpacity>
-      {done.map(x => <Text key={x.id} style={s.done}>✅ {x.routineName} · {sessionTonnage(st, x).toLocaleString()} kg{x.rpe ? ` · RPE ${x.rpe}` : ''}</Text>)}
+      {/* done → its analysis replaces the Start row: each exercise vs the last time */}
+      {done.map(x => <SessionVsPrevious key={x.id} st={st} sess={x} />)}
       {planned.filter(r => !plannedDone(r, done)).map(r => (
         <View key={r.id} style={s.row}>
           <Text style={s.name}>{r.name}{day?.kind === 'prehab' ? ' (optional)' : ''}<Text style={s.meta}>  {r.items.length} exercises · ~{estimateMinutes(r)} min</Text></Text>

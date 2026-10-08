@@ -12,6 +12,7 @@ import {
   plannedDay, plannedDone, DAILY_CUSTOM_ID, KITS, currentKit,
 } from '../src/services/strength';
 import { ensureStrengthPlan, ensureDailyCustom } from '../src/services/strengthPlan';
+import { SessionVsPrevious } from '../src/components/SessionVsPrevious';
 import { checkLocation, pickKit, setKitHere } from '../src/services/strengthLocation';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
@@ -104,8 +105,9 @@ export default function FitnessMode() {
   const today = localDateKey();
   const planned = routinesForDate(store);
   const todayPlan = plannedDay(store);   // the coach's auto-plan for today (why / tailoring)
-  const daily = store.routines.find(r => r.id === DAILY_CUSTOM_ID && r.items.length);
   const doneToday = sessionsOn(store, today);
+  // hidden once DONE today (its analysis shows in the Today card instead)
+  const daily = doneToday.some(x => x.routineId === DAILY_CUSTOM_ID) ? undefined : store.routines.find(r => r.id === DAILY_CUSTOM_ID && r.items.length);
   const load = muscleLoad(store, sessionsWithinDays(store, win));
   const maxSets = Math.max(1, ...load.map(l => l.hardSets));
   const { fresh, groups } = model;
@@ -142,9 +144,8 @@ export default function FitnessMode() {
         <TouchableOpacity hitSlop={6} onPress={() => pickKit(store.here?.name ?? 'Merelbeke').then(k => (k ? setKitHere(k) : undefined)).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
           <Text style={[s.meta, { marginBottom: 6 }]}>📍 {store.here && Date.now() - store.here.at < 12 * 3_600_000 ? store.here.name : 'Merelbeke (assumed)'} · {KITS[currentKit(store)].label} <Text style={{ color: c.accent }}>change</Text></Text>
         </TouchableOpacity>
-        {doneToday.map(x => (
-          <Text key={x.id} style={s.done}>✅ {x.routineName} done · {sessionTonnage(store, x).toLocaleString()} kg</Text>
-        ))}
+        {/* a finished session turns into its analysis: each exercise vs the last time you did it */}
+        {doneToday.map(x => <SessionVsPrevious key={x.id} st={store} sess={x} />)}
         {planned.length ? planned.filter(r => !plannedDone(r, doneToday)).map(r => (
           <View key={r.id} style={s.todayRow}>
             <View style={{ flex: 1 }}>

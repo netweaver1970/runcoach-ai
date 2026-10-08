@@ -12,7 +12,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
   StrengthSession, SetLog, loadStrength, updateStrength, routinesForDate, exerciseById, suggestWeight, lastSetsFor,
-  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
+  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, sessionsOn, plannedDone, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
 } from './strength';
 
 interface Native {
@@ -42,12 +42,14 @@ async function pushOnce(): Promise<boolean> {
   const planned = routinesForDate(st);   // the coach's TAILORED routine for today (auto-plan) or the weekday routines
   // + today's "Daily custom" right after it, flagged TODAY too (it's composed for today) — top of the watch list
   const daily = st.routines.find(r => r.id === DAILY_CUSTOM_ID && r.items.length && r.composedFor === localDateKey());
-  const todays = daily && !planned.some(r => r.id === DAILY_CUSTOM_ID) ? [...planned, daily] : planned;
+  // a routine already DONE today drops out of today's group (the Daily custom off the list entirely)
+  const doneToday = sessionsOn(st, localDateKey());
+  const todays = (daily && !planned.some(r => r.id === DAILY_CUSTOM_ID) ? [...planned, daily] : planned).filter(r => !plannedDone(r, doneToday));
   const kit = currentKit(st);
   const todayIds = new Set(todays.map(r => r.id));
   const { fetchBodyMassHistory } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
   const bodyKg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
-  const routines = [...todays, ...st.routines.filter(r => !todayIds.has(r.id))]
+  const routines = [...todays, ...st.routines.filter(r => !todayIds.has(r.id) && !(r.id === DAILY_CUSTOM_ID && plannedDone(r, doneToday)))]
     .filter(r => r.items.length)
     .map(r => ({
       id: r.id, name: r.name, today: todayIds.has(r.id),
