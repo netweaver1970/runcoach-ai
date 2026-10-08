@@ -91,7 +91,9 @@ function RootStack() {
         <Stack.Screen name="analysis" options={{ title: 'Coach Report', headerBackTitle: 'Back' }} />
         <Stack.Screen name="timeline" options={{ title: 'Timeline', headerBackTitle: 'Back' }} />
         <Stack.Screen name="week-plan" options={{ title: '7-Day Plan', headerBackTitle: 'Back' }} />
-        <Stack.Screen name="food-library" options={{ title: 'My foods', headerBackTitle: 'Back' }} />
+        <Stack.Screen name="food-library" options={{ title: 'Food database', headerBackTitle: 'Back' }} />
+        <Stack.Screen name="food-item" options={{ title: 'Food', headerBackTitle: 'Back' }} />
+        <Stack.Screen name="food-meal" options={{ title: 'Meal', headerBackTitle: 'Back' }} />
         <Stack.Screen name="run-analysis" options={{ title: 'Run Analysis', headerBackTitle: 'Back' }} />
         <Stack.Screen name="wayfinder" options={{ title: 'Route', headerBackTitle: 'Back' }} />
         <Stack.Screen

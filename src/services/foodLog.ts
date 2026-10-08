@@ -455,6 +455,53 @@ export function searchCustom(l: FoodLibrary, query: string, normFn: (s: string) 
   return l.custom.filter(c => { const w = normFn(`${c.name} ${c.brand ?? ''}`).split(' '); return q.every(t => w.some(x => x.startsWith(t))); }).slice(0, 5);
 }
 
+/** Edit one of your own foods (name / brand / unit / per-100 values / serving). */
+export async function updateCustomFood(key: string, patch: { name?: string; brand?: string; per100?: Nutr; unit?: 'g' | 'ml'; serving?: { g: number; label: string } | null }): Promise<FoodLibrary> {
+  return mutateLib(l => {
+    l.custom = l.custom.map(c => {
+      if (c.key !== key) return c;
+      const n: FoodItem = { ...c, ...(patch.name != null ? { name: patch.name.trim() || c.name } : {}), ...(patch.per100 ? { per100: patch.per100 } : {}) };
+      if (patch.brand !== undefined) { if (patch.brand.trim()) n.brand = patch.brand.trim(); else delete n.brand; }
+      if (patch.unit) { if (patch.unit === 'ml') n.unit = 'ml'; else delete n.unit; }
+      if (patch.serving !== undefined) { if (patch.serving && patch.serving.g > 0) n.serving = patch.serving; else delete n.serving; }
+      return n;
+    });
+    // keep the snapshots that list / re-log it in step
+    const c = l.custom.find(x => x.key === key);
+    if (c) {
+      const snap = { name: c.name, per100: c.per100, ...(c.unit ? { unit: c.unit } : {}), ...(c.serving ? { serving: c.serving } : {}) };
+      if (l.favItems?.[key]) l.favItems = { ...l.favItems, [key]: { ...l.favItems[key], ...snap } };
+      if (l.kept?.[key]) l.kept = { ...l.kept, [key]: { ...l.kept[key], ...snap } };
+      l.recents = l.recents.map(r => (r.key === key ? { ...r, ...snap } : r));
+    }
+  });
+}
+/** Delete one of your own foods everywhere in the library (logged days keep their copies). */
+export async function deleteCustomFood(key: string): Promise<FoodLibrary> {
+  return mutateLib(l => {
+    l.custom = l.custom.filter(c => c.key !== key);
+    l.favs = l.favs.filter(k => k !== key);
+    const fi = { ...(l.favItems ?? {}) }, tg = { ...(l.tags ?? {}), }, kp = { ...(l.kept ?? {}) };
+    delete fi[key]; delete tg[key]; delete kp[key];
+    l.favItems = fi; l.tags = tg; l.kept = kp;
+    l.recents = l.recents.filter(r => r.key !== key);
+    if (l.servings?.[key]) { const sv = { ...l.servings }; delete sv[key]; l.servings = sv; }
+  });
+}
+/** Drop a food from the recents list only (swipe in Add food → Recents). */
+export async function removeRecent(key: string): Promise<void> {
+  await mutateLib(l => { l.recents = l.recents.filter(r => r.key !== key); });
+}
+/** A new saved meal from components (Food database → Meals → ＋). */
+export async function addMeal(name: string, items: SavedMealItem[]): Promise<SavedMeal> {
+  const meal: SavedMeal = { id: uid(), name: name.trim() || 'Meal', items, count: 0, hrs: [] };
+  await mutateLib(l => { l.meals.unshift(meal); });
+  return meal;
+}
+/** Rename a saved meal. */
+export async function renameMeal(id: string, name: string): Promise<void> {
+  await mutateLib(l => { l.meals = l.meals.map(m => (m.id === id ? { ...m, name: name.trim() || m.name } : m)); });
+}
 /** Replace a saved meal's items (the meal preview's "Save changes": removed / added / re-weighed components). */
 export async function updateMealItems(id: string, items: SavedMealItem[]): Promise<void> {
   await mutateLib(l => { l.meals = l.meals.map(m => (m.id === id ? { ...m, items } : m)); });

@@ -1,15 +1,18 @@
 /**
- * MY FOODS — foods maintained on their own, independent of logging (Geert 2026-10-08): star a food as a favourite and
+ * FOOD DATABASE (Foods | Meals) — like the exercise database: browse, add, edit, delete (swipe left on a row).
+ * Foods tab = MY FOODS — foods maintained on their own, independent of logging (Geert 2026-10-08): star a food as a favourite and
  * tag it with the meal types it belongs to (several: breakfast AND snack…) without first adding it to a meal or a day;
  * select one or many foods and star / tag them at once. Lists every food you have (own foods, favourites, recents,
  * scanned products, foods you tagged); a search also reaches the whole food table, so any food can be starred/tagged.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Keyboard } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { SwipeRow } from '../src/components/SwipeRow';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   loadLibrary, setFavourites, setMealTags, forgetFoods, FoodLibrary, FavItem, KeptFood, MealTag, MEAL_TAGS, Nutr,
+  deleteCustomFood, deleteMeal, scaleNutr,
 } from '../src/services/foodLog';
 import { searchFoodsEx, foodByKey, norm } from '../src/services/foodDb';
 import { cachedProducts } from '../src/services/foodOff';
@@ -34,6 +37,8 @@ export default function FoodLibraryScreen() {
   const [filter, setFilter] = useState<Filter>('all');
   const [sel, setSel] = useState<Set<string> | null>(null);   // null = not selecting
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<'foods' | 'meals'>('foods');
+  const router = useRouter();
 
   useFocusEffect(useCallback(() => {
     loadLibrary().then(setLib).catch(() => {});
@@ -81,6 +86,8 @@ export default function FoodLibraryScreen() {
     try { setLib(await fn()); } catch (e: any) { Alert.alert('Not saved', String(e?.message ?? e)); } finally { if (bulk) setBusy(false); }
   };
   const kf = (r: Row): KeptFood => ({ key: r.key, snap: r.snap });
+  // swipe → Delete: your own food is deleted; any other food leaves your list (star / tags / recent) — the food table keeps it
+  const delOne = (r: Row) => run(() => (lib?.custom.some(x => x.key === r.key) ? deleteCustomFood(r.key) : forgetFoods([r.key])));
   const selected = sel ? rows.filter(r => sel.has(r.key)) : [];   // only VISIBLE rows act (a filter/search hides the rest)
   const toggleSel = (k: string) => setSel(cur => { const n = new Set(cur ?? []); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   // bulk: a star / tag goes ON for all selected unless ALL of them already have it (then OFF)
@@ -94,8 +101,45 @@ export default function FoodLibraryScreen() {
   const FILTERS: { id: Filter; label: string }[] = [
     { id: 'all', label: 'All' }, { id: 'fav', label: '★' }, ...MEAL_TAGS.map(t => ({ id: t.id as Filter, label: t.label })), { id: 'untagged', label: 'No meal' },
   ];
+  const meals = lib?.meals ?? [];
+  const tabs = (
+    <View style={s.tabsRow}>
+      {(['foods', 'meals'] as const).map(t => (
+        <TouchableOpacity key={t} style={[s.tabBtn, tab === t && s.tabOn]} onPress={() => { Keyboard.dismiss(); setTab(t); setSel(null); }}>
+          <Text style={[s.tabTxt, tab === t && { color: c.onAccent }]}>{t === 'foods' ? `Foods (${mine.length})` : `Meals (${meals.length})`}</Text>
+        </TouchableOpacity>
+      ))}
+      <TouchableOpacity style={s.newBtn} onPress={() => router.push({ pathname: (tab === 'foods' ? '/food-item' : '/food-meal') as any, params: tab === 'foods' ? { key: 'new' } : { id: 'new' } })}>
+        <Text style={s.newTxt}>＋ New {tab === 'foods' ? 'food' : 'meal'}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+  if (tab === 'meals') return (
+    <View style={s.screen}>
+      {tabs}
+      <FlatList data={meals} keyExtractor={m => m.id} contentContainerStyle={{ paddingBottom: 40 }}
+        ListEmptyComponent={<Text style={s.empty}>No saved meals yet — ＋ New meal (type or 🎤 say the components), or save one while logging.</Text>}
+        renderItem={({ item: m }) => {
+          const kcal = m.items.reduce((a, it) => a + ((it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams).kcal : it.n?.kcal) ?? 0), 0);
+          return (
+            <SwipeRow onDelete={() => run(async () => { await deleteMeal(m.id); return loadLibrary(); })}>
+              <TouchableOpacity style={s.row} activeOpacity={0.7} onPress={() => router.push({ pathname: '/food-meal' as any, params: { id: m.id } })}>
+                <Text style={s.star}>🍽️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.name} numberOfLines={1}>{m.name}</Text>
+                  <Text style={s.meta} numberOfLines={2}>{m.items.length} components · {r0(kcal)} kcal — {m.items.map(i => i.name.split(',')[0]).join(', ')}</Text>
+                </View>
+                <Text style={s.meta}>›</Text>
+              </TouchableOpacity>
+            </SwipeRow>
+          );
+        }} />
+      <Text style={[s.meta, { textAlign: 'center', padding: 8 }]}>Swipe a row left to delete · tap to edit</Text>
+    </View>
+  );
   return (
     <View style={s.screen}>
+      {tabs}
       <View style={s.top}>
         <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="Search your foods + the food table" placeholderTextColor={c.textFaint}
           clearButtonMode="while-editing" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => Keyboard.dismiss()} />
@@ -127,8 +171,9 @@ export default function FoodLibraryScreen() {
           return (
             <>
               {firstTable && <Text style={s.head}>From the food table</Text>}
+              <SwipeRow disabled={!!sel || r.table || r.snap.src === 'off'} onDelete={() => delOne(r)} label={lib?.custom.some(x => x.key === r.key) ? 'Delete' : 'Remove'}>
               <TouchableOpacity style={[s.row, picked && s.rowOn]} activeOpacity={0.7}
-                onPress={() => (sel ? toggleSel(r.key) : undefined)} onLongPress={() => { setSel(cur => new Set([...(cur ?? []), r.key])); }}>
+                onPress={() => (sel ? toggleSel(r.key) : router.push({ pathname: '/food-item' as any, params: { key: r.key } }))} onLongPress={() => { setSel(cur => new Set([...(cur ?? []), r.key])); }}>
                 {sel ? <Text style={s.check}>{picked ? '☑' : '☐'}</Text> : (
                   <TouchableOpacity onPress={() => run(() => setFavourites([kf(r)], !on))} hitSlop={10}>
                     <Text style={[s.star, on && { color: c.accent }]}>{on ? '★' : '☆'}</Text>
@@ -151,6 +196,7 @@ export default function FoodLibraryScreen() {
                   })}
                 </View>
               </TouchableOpacity>
+              </SwipeRow>
             </>
           );
         }}
@@ -177,6 +223,12 @@ export default function FoodLibraryScreen() {
 
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:  { flex: 1, backgroundColor: c.bg },
+  tabsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 12 },
+  tabBtn:  { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  tabOn:   { backgroundColor: c.accent, borderColor: c.accent },
+  tabTxt:  { color: c.text, fontWeight: '700', fontSize: 14 },
+  newBtn:  { marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, backgroundColor: c.accent },
+  newTxt:  { color: c.onAccent, fontWeight: '800', fontSize: 13 },
   top:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
   search:  { flex: 1, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, color: c.text, fontSize: 15 },
   selBtn:  { color: c.accent, fontSize: 15, fontWeight: '700' },
@@ -187,7 +239,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   selRow:  { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 16, paddingBottom: 6 },
   link:    { color: c.accent, fontSize: 13, fontWeight: '600' },
   head:    { color: c.textSub, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 },
-  row:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
+  row:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border, backgroundColor: c.bg },
   rowOn:   { backgroundColor: c.surfaceAlt },
   check:   { color: c.accent, fontSize: 20, width: 24 },
   star:    { color: c.textFaint, fontSize: 22, width: 24 },

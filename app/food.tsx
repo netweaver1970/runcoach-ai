@@ -19,8 +19,8 @@ import {
 import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
-import { transcribeAudio, transcriptionReady } from '../src/services/transcription';
-import { startRecording, stopRecording, cancelRecording, ensureMicPermission } from '../src/services/voiceRecorder';
+import { SwipeRow } from '../src/components/SwipeRow';
+import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
@@ -32,7 +32,7 @@ import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
-  updateMealItems, SavedMealItem,
+  updateMealItems, SavedMealItem, setFavourites, removeRecent,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -203,11 +203,15 @@ export default function FoodMode() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* the shared mode header (Biology's), day navigation as its second row */}
       <ModeHeader title="Food" actions={[
-        { icon: '★', onPress: () => router.push('/food-library' as any), label: 'My foods' },   // maintain foods: star / meal tags
+        { icon: '📚', onPress: () => router.push('/food-library' as any), label: 'Food database' },   // foods & meals: add / edit / delete
         { icon: '＋', onPress: () => setAdding(true), label: 'Log food' },
       ]}>
         <DayNav date={isToday ? undefined : date} todayKey={today} />
       </ModeHeader>
+      {/* the food DATABASE (foods + meals, like the exercise database) — reachable without logging anything */}
+      <TouchableOpacity style={s.dbLink} onPress={() => router.push('/food-library' as any)}>
+        <Text style={s.dbLinkTxt}>📚 Food database — your foods & meals: add · edit · delete  ›</Text>
+      </TouchableOpacity>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 120 }}>
 
         {/* Totals — neutral, no "over budget" red */}
@@ -262,9 +266,11 @@ export default function FoodMode() {
             </View>
           );
           if (row.kind === 'water') return (
-            <TouchableOpacity key={row.id} style={s.waterRow} onLongPress={() => confirmWaterDelete(row.id, row.ml)}>
-              <Text style={s.waterTxt}>{hhmm(row.t)}  💧 {row.ml} mL</Text>
-            </TouchableOpacity>
+            <SwipeRow key={row.id} onDelete={() => confirmWaterDelete(row.id, row.ml)}>
+              <TouchableOpacity style={[s.waterRow, { backgroundColor: c.bg }]} onLongPress={() => confirmWaterDelete(row.id, row.ml)}>
+                <Text style={s.waterTxt}>{hhmm(row.t)}  💧 {row.ml} mL</Text>
+              </TouchableOpacity>
+            </SwipeRow>
           );
           const kcal = r0(row.items.reduce((a, e) => a + (e.n.kcal ?? 0), 0));
           return (
@@ -274,10 +280,13 @@ export default function FoodMode() {
                 <Text style={s.mealKcal}>{kcal} kcal  ⋯</Text>
               </TouchableOpacity>
               {row.items.map(e => (
-                <TouchableOpacity key={e.id} style={s.entry} onPress={() => setEditing(e)}>
-                  <Text style={s.entryName} numberOfLines={1}>{e.name}</Text>
-                  <Text style={s.entryMeta}>{e.grams ? `${amt(e.grams, e.unit)} · ` : ''}{r0(e.n.kcal)} kcal</Text>
-                </TouchableOpacity>
+                // swipe left → Delete (it used to hide inside the edit sheet)
+                <SwipeRow key={e.id} onDelete={() => once(async () => { await removeEntries(foodDayOf(e.t), [e.id]); })}>
+                  <TouchableOpacity style={[s.entry, { backgroundColor: c.surface }]} onPress={() => setEditing(e)}>
+                    <Text style={s.entryName} numberOfLines={1}>{e.name}</Text>
+                    <Text style={s.entryMeta}>{e.grams ? `${amt(e.grams, e.unit)} · ` : ''}{r0(e.n.kcal)} kcal</Text>
+                  </TouchableOpacity>
+                </SwipeRow>
               ))}
             </View>
           );
@@ -561,7 +570,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
     if (tok === onlineTok.current) setMode(prev => (prev.m === 'online' && prev.query === query ? next : prev));
   };
 
-  type Li = { key: string; title: string; sub: string; badge?: string; onPress: () => void; onLong?: () => void; star?: boolean; header?: boolean };
+  type Li = { key: string; title: string; sub: string; badge?: string; onPress: () => void; onLong?: () => void; star?: boolean; header?: boolean; onDelete?: () => void; delLabel?: string };
   const list: Li[] = useMemo(() => {
     const favs = new Set(lib.favs);
     const foodRow = (f: FoodItem, badge?: string): Li => ({
@@ -583,7 +592,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
     if (tab === 'meals') return lib.meals.map(m => ({
       key: m.id, title: `🍽️ ${m.name}`,
       sub: `${m.items.length} items · ${r0(m.items.reduce((a, it) => a + ((it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams).kcal : it.n?.kcal) ?? 0), 0))} kcal`,
-      onPress: () => pickMeal(m),
+      onPress: () => pickMeal(m), onDelete: () => guard(async () => { await deleteMeal(m.id); await refreshLib(); }),
       onLong: () => Alert.alert(m.name, 'Delete this saved meal?', [{ text: 'Delete', style: 'destructive', onPress: () => guard(async () => { await deleteMeal(m.id); await refreshLib(); }) }, { text: 'Cancel', style: 'cancel' }]),
     }));
     // Favourites, the ones TAGGED for this meal first (My foods), then foods tagged for this meal that aren't starred
@@ -600,6 +609,9 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
       key: r.key, title: `${r.name}${tab === 'fav' && tagged(r.key) ? `  · ${tagLbl}` : ''}`, star: favs.has(r.key),
       sub: r.grams ? `${amt(r.grams, ownExtras(r.key, r).unit)} · ${r0(r.per100 ? scaleNutr(r.per100, r.grams).kcal : r.n?.kcal)} kcal` : r.per100 ? `${r0(r.per100.kcal)} kcal/100 g` : `${r0(r.n?.kcal)} kcal`,
       onPress: () => pickRecent(r), onLong: () => pickRecent(r, true),
+      // swipe: Favourites → un-star · Recents → drop from recents
+      onDelete: () => guard(async () => { if (tab === 'fav') await setFavourites([{ key: r.key, snap: { name: r.name, src: r.src, ...(r.per100 ? { per100: r.per100 } : {}), ...(r.n ? { n: r.n } : {}), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) } }], false); else await removeRecent(r.key); await refreshLib(); }),
+      delLabel: tab === 'fav' ? 'Unstar' : 'Remove',
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dqt, digits, search, mine, tab, lib, offRes]);
@@ -772,10 +784,12 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
               renderItem={({ item }) => item.header ? (
                 <Text style={s.prodHead}>{item.title}</Text>
               ) : (
-                <TouchableOpacity style={s.result} onPress={item.onPress} onLongPress={item.onLong}>
-                  <Text style={s.resultTitle} numberOfLines={2}>{item.star ? '★ ' : ''}{item.badge ? <Text style={s.badge}>{item.badge === 'mine' ? 'MINE  ' : 'PRODUCT  '}</Text> : null}{item.title}</Text>
-                  <Text style={s.resultSub} numberOfLines={1}>{item.sub}</Text>
-                </TouchableOpacity>
+                <SwipeRow disabled={!item.onDelete} onDelete={() => item.onDelete?.()} label={item.delLabel ?? 'Delete'}>
+                  <TouchableOpacity style={[s.result, { backgroundColor: c.bg }]} onPress={item.onPress} onLongPress={item.onLong}>
+                    <Text style={s.resultTitle} numberOfLines={2}>{item.star ? '★ ' : ''}{item.badge ? <Text style={s.badge}>{item.badge === 'mine' ? 'MINE  ' : 'PRODUCT  '}</Text> : null}{item.title}</Text>
+                    <Text style={s.resultSub} numberOfLines={1}>{item.sub}</Text>
+                  </TouchableOpacity>
+                </SwipeRow>
               )}
             />}
             {dqt.length >= 2 && !digits && !showParse && list.length > 0 && <Text style={s.hint}>Tap = add (your usual serving) · long-press = choose the amount</Text>}
@@ -1002,38 +1016,6 @@ function ParsePanel({ items: items0, onConfirm, onAsOne }: {
   );
 }
 
-// ─── Voice: dictate a meal ────────────────────────────────────────────────────────────────────────
-/** Record → transcribe (the app's Voice-input key) → onText. One button: tap = start, tap again = stop. */
-function useDictation(onText: (text: string) => void) {
-  const [state, setState] = useState<'idle' | 'recording' | 'transcribing'>('idle');
-  const cb = useRef(onText); cb.current = onText;
-  const stRef = useRef(state); stRef.current = state;
-  const toggle = async () => {
-    if (state === 'transcribing') return;
-    if (state === 'recording') {
-      setState('transcribing');
-      try {
-        const uri = await stopRecording();
-        const text = uri ? (await transcribeAudio(uri)).trim() : '';
-        setState('idle');
-        if (text) cb.current(text); else Alert.alert('Voice input', 'No speech detected — try again.');
-      } catch (e: any) { setState('idle'); Alert.alert('Voice input', e?.message ?? 'Could not transcribe.'); }
-      return;
-    }
-    if (!(await transcriptionReady())) { Alert.alert('Voice input not set up', "Add a transcription key in Settings → Voice input first — it's free with Groq."); return; }
-    if (!(await ensureMicPermission())) { Alert.alert('Microphone needed', 'Enable microphone access for RunCoachAI in iOS Settings to use voice input.'); return; }
-    try { await startRecording(); setState('recording'); } catch (e: any) { Alert.alert('Voice input', e?.message ?? 'Could not start recording.'); }
-  };
-  // leaving mid-recording must not leave the mic running (only THIS recorder's — the recorder is app-global)
-  useEffect(() => () => { if (stRef.current === 'recording') cancelRecording().catch(() => {}); }, []);
-  return { state, toggle };
-}
-/** Speech → the parser's list: sentence ends and "then" become separators, filler words go. */
-function cleanDictation(t: string): string {
-  return t.replace(/[.!?]+(\s|$)/g, ', ').replace(/\b(and then|then|daarna|dan|ook|also|uh+|euh+|ehm+)\b/gi, ', ')
-    .replace(/\s*,\s*(,\s*)+/g, ', ').replace(/^[\s,]+|[\s,]+$/g, '').trim();
-}
-
 // ─── Saved meal → preview (untick / re-weigh / add by voice) ─────────────────────────────────────
 function MealPanel({ meal, onCancel, onConfirm, onSaveItems }: {
   meal: SavedMeal; onCancel: () => void; onConfirm: (items: SavedMealItem[]) => void; onSaveItems: (items: SavedMealItem[]) => void;
@@ -1059,7 +1041,8 @@ function MealPanel({ meal, onCancel, onConfirm, onSaveItems }: {
       <Text style={s.portionName}>🍽️ {meal.name}</Text>
       <Text style={s.hint}>Untick what you don't have or eat later, adjust grams, or 🎤 add components — then add it to {mealLabel(timeForDay(todayFoodDay())).toLowerCase()}.</Text>
       {rows.map((r, i) => (
-        <View key={`${r.it.key}-${i}`} style={[s.parseRow, !r.on && { opacity: 0.45 }]}>
+        <SwipeRow key={`${r.it.key}-${i}`} onDelete={() => { setRows(prev => prev.filter((_, j) => j !== i)); setDirty(true); }} label="Remove">
+        <View style={[s.parseRow, { backgroundColor: c.bg }, !r.on && { opacity: 0.45 }]}>
           <TouchableOpacity onPress={() => upd(i, { on: !r.on })} hitSlop={8}><Text style={s.check}>{r.on ? '☑' : '☐'}</Text></TouchableOpacity>
           <Text style={[s.resultTitle, { flex: 1 }]} numberOfLines={2}>{r.it.name}</Text>
           {r.it.per100 ? (
@@ -1069,6 +1052,7 @@ function MealPanel({ meal, onCancel, onConfirm, onSaveItems }: {
             </>
           ) : <Text style={s.resultSub}>{r0(r.it.n?.kcal)} kcal</Text>}
         </View>
+        </SwipeRow>
       ))}
       <TouchableOpacity style={[s.action, { alignSelf: 'flex-start', marginTop: 8 }, dict.state === 'recording' && { backgroundColor: '#ef4444', borderColor: '#ef4444' }]} onPress={() => { Keyboard.dismiss(); dict.toggle(); }}>
         <Text style={[s.actionTxt, dict.state === 'recording' && { color: '#fff' }]}>{dict.state === 'recording' ? '⏹ Stop — add these' : dict.state === 'transcribing' ? 'Transcribing…' : '🎤 Add components by voice'}</Text>
@@ -1278,6 +1262,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 15 },
   title:     { color: c.text, fontSize: 18, fontWeight: '800' },
   card:      { backgroundColor: c.surface, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: c.border },
+  dbLink:    { marginHorizontal: 16, marginTop: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
+  dbLinkTxt: { color: c.accent, fontWeight: '700', fontSize: 14 },
   kcal:      { color: c.text, fontSize: 34, fontWeight: '800', fontVariant: ['tabular-nums'] },
   kcalUnit:  { color: c.textSub, fontSize: 15, fontWeight: '600' },
   macros:    { color: c.text, fontSize: 14, fontWeight: '600', marginTop: 2, fontVariant: ['tabular-nums'] },
