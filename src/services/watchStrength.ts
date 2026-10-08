@@ -12,7 +12,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
   StrengthSession, SetLog, loadStrength, updateStrength, routinesForDate, exerciseById, suggestWeight, lastSetsFor,
-  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
+  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
 } from './strength';
 
 interface Native {
@@ -43,6 +43,7 @@ async function pushOnce(): Promise<boolean> {
   // + today's "Daily custom" right after it, flagged TODAY too (it's composed for today) — top of the watch list
   const daily = st.routines.find(r => r.id === DAILY_CUSTOM_ID && r.items.length && r.composedFor === localDateKey());
   const todays = daily && !planned.some(r => r.id === DAILY_CUSTOM_ID) ? [...planned, daily] : planned;
+  const kit = currentKit(st);
   const todayIds = new Set(todays.map(r => r.id));
   const { fetchBodyMassHistory } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
   const bodyKg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
@@ -50,7 +51,8 @@ async function pushOnce(): Promise<boolean> {
     .filter(r => r.items.length)
     .map(r => ({
       id: r.id, name: r.name, today: todayIds.has(r.id),
-      items: r.items.map(it => {
+      // the equipment where you are today: exercises not possible here are swapped / dropped (see strengthLocation.ts)
+      items: adaptRoutineToKit(st, r.items, kit).items.map(it => {
         const ex = exerciseById(st, it.exerciseId);
         const sug = suggestWeight(st, it);
         const last = lastSetsFor(st, it.exerciseId);
@@ -63,7 +65,8 @@ async function pushOnce(): Promise<boolean> {
           sets: Array.from({ length: int(it.sets, 3) }, (_, k) => ({ kg: Number(sug.kg ?? it.weightKg ?? 0) || 0, reps: int(last[k]?.reps ?? hi, 10) })),
         };
       }),
-    }));
+    }))
+    .filter(r => r.items.length);   // nothing possible here (e.g. machines only, body weight today) → not offered
   if (!routines.length) return false;
   const json = JSON.stringify({ type: 'strength', date: localDateKey(), ...(bodyKg ? { bodyKg } : {}), routines });
   if (json === lastSig) return true;

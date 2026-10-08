@@ -23,7 +23,8 @@
  */
 import {
   loadStrength, updateStrength, StrengthStore, Routine, RoutineItem, Muscle, exerciseById, suggestWeight, estimateMinutes,
-  localDateKey, isWorkSet, PlannedStrengthDay, StrengthSession, DAILY_CUSTOM_ID, recentSetsFor, StrengthAutoPlan, WEEKDAYS, muscleEvents, muscleFreshness, MUSCLE_LABEL,
+  localDateKey, isWorkSet, PlannedStrengthDay, StrengthSession, DAILY_CUSTOM_ID, recentSetsFor,
+  currentKit, adaptRoutineToKit, exerciseAvailable, allExercises, KITS, Exercise, StrengthAutoPlan, WEEKDAYS, muscleEvents, muscleFreshness, MUSCLE_LABEL,
 } from './strength';
 
 const LEGS: Muscle[] = ['quads', 'glutes', 'hamstrings', 'calves', 'adductors'];
@@ -165,6 +166,12 @@ function adaptiveTarget(c: Ctx, prevWeekRunMin: number): { target: number; why: 
 function tailor(c: Ctx, i: number, r: Routine, kind: 'session' | 'prehab'): { items: RoutineItem[]; changes: string[] } {
   const changes: string[] = [];
   let items: RoutineItem[] = r.items.map(it => ({ ...it, weightKg: suggestWeight(c.st, it).kg ?? it.weightKg }));
+  // TODAY at a place without the routine's equipment → swap / drop (future days: where you'll be isn't known → home)
+  if (i === 0) {
+    const kit = currentKit(c.st);
+    const a = adaptRoutineToKit(c.st, items, kit);
+    if (a.changes.length) { items = a.items; changes.push(`${KITS[kit].label}: ${a.changes.join(', ')}`); }
+  }
   if (kind === 'prehab') {
     items = items.filter(it => PREHAB_IDS.includes(it.exerciseId)).map(it => ({ ...it, sets: Math.min(it.sets, 2) }));
     return { items, changes: ['short: 2 sets of the calf / hip moves'] };
@@ -317,7 +324,7 @@ async function buildContext(st: StrengthStore): Promise<{ c: Ctx; prevWeekRunMin
   const c: Ctx = { st, today, days, readiness: plan?.genReadiness, avgReady: ready.length ? ready.reduce((a, v) => a + v, 0) / ready.length : undefined,
     routines, prof, lastDone, hourNow: new Date().getHours() };
   const sigParts = [today, plan?.generatedAt ?? '-', caches[0]?.generatedAt ?? caches.find(Boolean)?.generatedAt ?? '-',
-    String(st.sessions.filter(x => x.finishedAt).length), String(Math.max(0, ...routines.map(r => r.updatedAt ?? 0))), c.hourNow >= 21 ? 'late' : 'day'];
+    String(st.sessions.filter(x => x.finishedAt).length), String(Math.max(0, ...routines.map(r => r.updatedAt ?? 0))), c.hourNow >= 21 ? 'late' : 'day', currentKit(st)];
   return { c, prevWeekRunMin, sigParts };
 }
 
@@ -334,7 +341,7 @@ async function aiRefine(c: Ctx, draft: PlannedStrengthDay[], target: number, tar
     date: x.date, routine: x.routineName, rpe: x.rpe, hard: Object.entries(x.feel ?? {}).filter(([, f]) => f === 'hard').map(([id]) => exerciseById(c.st, id)?.name ?? id),
   }));
   const input = {
-    today: c.today, readinessToday: c.readiness ?? null, readinessWeekAvg: c.avgReady != null ? Math.round(c.avgReady) : null,
+    today: c.today, equipmentToday: `${c.st.here?.name ?? 'Merelbeke'}: ${KITS[currentKit(c.st)].label} (the app swaps exercises that aren't possible here; future days assume home)`, readinessToday: c.readiness ?? null, readinessWeekAvg: c.avgReady != null ? Math.round(c.avgReady) : null,
     runPlan: c.days.map(d => ({ date: d.date, weekday: wd(d.date), run: d.label, kind: d.kind, ...(d.commitment ? { commitment: d.commitment } : {}) })),
     fatiguedMuscles: fresh, recentSessions: recent,
     routines: c.routines.map(r => ({ id: r.id, name: r.name, legDominant: (c.prof.get(r.id)?.legShare ?? 0) >= LEG_SHARE, lastDone: c.lastDone.get(r.id) ?? null,
@@ -483,7 +490,7 @@ export async function ensureDailyCustom(opts: { force?: boolean } = {}): Promise
     const st = await loadStrength();
     const today = localDateKey();
     const busy = (s: StrengthStore) => s.sessions.some(x => x.routineId === DAILY_CUSTOM_ID && x.date === today && !x.finishedAt && x.sets.some(l => l.done));
-    const fresh = (s: StrengthStore) => s.routines.find(r => r.id === DAILY_CUSTOM_ID)?.composedFor === today;
+    const fresh = (s: StrengthStore) => { const r = s.routines.find(x => x.id === DAILY_CUSTOM_ID); return r?.composedFor === today && (r.composedKit ?? 'home') === currentKit(s); };
     if (st.dailyCustomOn === false) {
       if (st.routines.some(r => r.id === DAILY_CUSTOM_ID) && !busy(st)) await updateStrength(s => ({ ...s, routines: s.routines.filter(r => r.id !== DAILY_CUSTOM_ID) }));
       return false;
@@ -500,7 +507,7 @@ export async function ensureDailyCustom(opts: { force?: boolean } = {}): Promise
       const base = s.routines.find(r => r.id === DAILY_CUSTOM_ID);
       // nothing sensible today (no-lift readiness / late / everything recovering) → an EMPTY routine stamped for today:
       // hidden in the app and on the watch, not recomposed on every focus
-      const r: Routine = { id: DAILY_CUSTOM_ID, name: 'Daily custom', days: [], autoUpdate: base?.autoUpdate ?? false, updatedAt: Date.now(), composedFor: today,
+      const r: Routine = { id: DAILY_CUSTOM_ID, name: 'Daily custom', days: [], autoUpdate: base?.autoUpdate ?? false, updatedAt: Date.now(), composedFor: today, composedKit: currentKit(s),
         source: composed?.source ?? 'Nothing to compose today', items: composed?.items ?? [] };
       // a started-but-untouched session of the OLD composition would be resumed by Start → drop it
       const sessions = s.sessions.filter(x => !(x.routineId === DAILY_CUSTOM_ID && x.date === today && !x.finishedAt && !x.sets.some(l => l.done)));
@@ -523,12 +530,17 @@ function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source:
     : next && (QUALITY.has(next.kind) || next.kind === 'long') ? `${next.label.toLowerCase()} tomorrow`
     // a free-form leg day (nordics, single-leg squats) still aches 48 h on → not 2 days before quality / long either
     : c.days[2] && (QUALITY.has(c.days[2].kind) || c.days[2].kind === 'long') ? `${c.days[2].label.toLowerCase()} on ${wd(c.days[2].date)}` : null;
-  // candidates: every exercise in your routines (+ their alternatives), with the routine item it comes from
+  // candidates: what's POSSIBLE here (location → kit), every exercise in your routines (+ their alternatives) first —
+  // they carry your history / progression — then the rest of the exercise database with sensible default sets/reps
+  const kit = currentKit(c.st);
   const cand = new Map<string, RoutineItem>();
   for (const r of c.routines) for (const it of r.items) {
     if (!cand.has(it.exerciseId)) cand.set(it.exerciseId, it);
     for (const a of it.altIds ?? []) if (!cand.has(a)) cand.set(a, { ...it, exerciseId: a, altIds: [it.exerciseId, ...(it.altIds ?? []).filter(x => x !== a)], weightKg: undefined });
   }
+  const PREHAB_ONLY = new Set(['heel_drop', 'tibialis_raise', 'clamshell', 'step_down']);   // durability drills, not a session's core
+  for (const e of allExercises(c.st)) if (!cand.has(e.id) && !PREHAB_ONLY.has(e.id)) cand.set(e.id, defaultItem(e));
+  for (const [id] of cand) if (!exerciseAvailable(exerciseById(c.st, id), kit)) cand.delete(id);
   const recovered = (m: Muscle) => { const t = trained[m]; return !t || dayDiff(t.date, c.today) >= t.gap; };
   const waited = (m: Muscle) => { const t = trained[m]; return t ? Math.min(7, dayDiff(t.date, c.today)) : 7; };
   const scored = [...cand.values()].map(it => {
@@ -571,6 +583,14 @@ function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source:
     return { ...base, weightKg: suggestWeight(c.st, { ...base, weightKg: it.weightKg }).kg ?? it.weightKg };
   });
   const focus = (Object.keys(covered) as Muscle[]).slice(0, 5).map(m => MUSCLE_LABEL[m].toLowerCase());
-  const src = `Composed for ${wd(c.today)} ${c.today.slice(8)}/${c.today.slice(5, 7)} — targets recovered ${focus.join(', ')}${legsWhyNot ? ` · no legs (${legsWhyNot})` : ''}${light ? ` · lighter: readiness ${ready}` : ''}`;
+  const src = `Composed for ${wd(c.today)} ${c.today.slice(8)}/${c.today.slice(5, 7)} · ${c.st.here?.name ? `${c.st.here.name}, ` : ''}${KITS[kit].label.toLowerCase()} — targets recovered ${focus.join(', ')}${legsWhyNot ? ` · no legs (${legsWhyNot})` : ''}${light ? ` · lighter: readiness ${ready}` : ''}`;
   return { items, source: src };
+}
+
+/** Sets / reps / rest for a database exercise that isn't in any routine (Daily custom away from home). */
+function defaultItem(e: Exercise): RoutineItem {
+  if (e.timed) return { exerciseId: e.id, sets: 3, repsLo: 30, repsHi: 45, restSec: 45 };
+  const compound = Object.values(e.muscles).filter(v => (v ?? 0) >= 0.5).length >= 2;
+  if (e.bodyweightFrac && !e.needs?.includes('db')) return { exerciseId: e.id, sets: 3, repsLo: compound ? 8 : 12, repsHi: compound ? 15 : 20, restSec: compound ? 75 : 45 };
+  return compound ? { exerciseId: e.id, sets: 3, repsLo: 8, repsHi: 12, restSec: 90 } : { exerciseId: e.id, sets: 3, repsLo: 10, repsHi: 15, restSec: 60 };
 }

@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -99,7 +99,8 @@ export default function StrengthSessionScreen() {
       let session = open;
       if (!session) {
         const sets: SetLog[] = [];
-        for (const it of r.items) {
+        // where you are today decides the equipment: unavailable exercises are swapped / dropped (planned items already are)
+        for (const it of adaptRoutineToKit(st, r.items, currentKit(st)).items) {
           const sug = suggestWeight(st, it);
           const last = lastSetsFor(st, it.exerciseId);
           for (let k = 0; k < it.sets; k++) {
@@ -218,6 +219,13 @@ export default function StrengthSessionScreen() {
       {store ? <Text style={[s.meta, { textAlign: 'center' }]}>Routine not found.</Text> : <ActivityIndicator color={c.accent} />}</View>;
   }
   const r = store.routines.find(x => x.id === sess.routineId);
+  // slots to look an exercise up in: today's planned / location-adapted version first (a swapped exercise lives there,
+  // with the routine's own exercise as its alternative), then the stored routine
+  const slotItems = r ? [
+    ...(routinesForDate(store).find(x => baseRoutineId(x.id) === r.id)?.items ?? []),
+    ...adaptRoutineToKit(store, r.items, currentKit(store)).items,
+    ...r.items,
+  ] : [];
 
   // Editing a set's WEIGHT also moves the later, not-yet-done sets of that exercise that still had the SAME weight
   // (prefilled followers) — a deliberately different later weight (pyramid) is left alone.
@@ -335,7 +343,7 @@ export default function StrengthSessionScreen() {
 
         {order.map((exId, ei) => {
           const ex = exerciseById(store, exId);
-          const item = r?.items.find(i => i.exerciseId === exId || i.altIds?.includes(exId));
+          const item = slotItems.find(i => i.exerciseId === exId) ?? slotItems.find(i => i.altIds?.includes(exId));
           const restSec = item?.restSec ?? 90;
           const sug = item ? suggestWeight(store, { ...item, exerciseId: exId }) : {};
           const alts = item ? [item.exerciseId, ...(item.altIds ?? [])].filter(a => a !== exId) : [];

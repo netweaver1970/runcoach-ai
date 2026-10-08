@@ -5,6 +5,7 @@ import { useThemedStyles, Palette } from '../theme';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../services/watchStrength';
 import { syncRecentSessionsToHealth, loadStrength, routinesForDate, sessionsOn, estimateMinutes, sessionTonnage, localDateKey, plannedDay, plannedDone, Routine, StrengthStore, WEEKDAYS, DAILY_CUSTOM_ID } from '../services/strength';
 import { ensureStrengthPlan, ensureDailyCustom } from '../services/strengthPlan';
+import { checkLocation } from '../services/strengthLocation';
 
 /**
  * Daily Coach card: today's strength from the coach's auto-plan (a tailored routine, short prehab, or why not today)
@@ -25,7 +26,8 @@ export function StrengthToday() {
     // the coach's strength plan (AI-refined when a key works) — regenerates only when its inputs changed; pushes the watch
     pushStrengthToWatch().catch(() => {});   // deduped by signature → cheap; retries an earlier failed push
     ensureStrengthPlan({ ai: true }).then(p => { if (p) reload(); }).catch(() => {});
-    ensureDailyCustom().then(ch => { if (ch) reload(); }).catch(() => {});
+    // where are you → equipment (asks once per new place) → today's Daily custom for it
+    checkLocation().catch(() => null).then(() => ensureDailyCustom()).then(() => reload()).catch(() => {});
   }, []));
   if (!st) return null;
   const today = localDateKey();

@@ -9,9 +9,10 @@ import {
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
   exerciseStatLine, ExerciseStatLine, DEFAULT_DRILLS, exerciseById,
-  plannedDay, plannedDone, DAILY_CUSTOM_ID,
+  plannedDay, plannedDone, DAILY_CUSTOM_ID, KITS, currentKit,
 } from '../src/services/strength';
 import { ensureStrengthPlan, ensureDailyCustom } from '../src/services/strengthPlan';
+import { checkLocation, pickKit, setKitHere } from '../src/services/strengthLocation';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
 import { getEffectiveMaxHr } from '../src/services/claude';
@@ -84,7 +85,9 @@ export default function FitnessMode() {
     // the coach's 7-day strength plan (AI-refined when a key works) — only regenerated when its inputs changed
     ensureStrengthPlan({ ai: true }).then(p => { if (p) loadStrength().then(st => setStore({ ...st })).catch(() => {}); }).catch(() => {});
     // today's "Daily custom" routine (recovered muscles, your exercises) — composed once a day
-    ensureDailyCustom().then(ch => { if (ch) loadStrength().then(st => setStore({ ...st })).catch(() => {}); }).catch(() => {});
+    // where are you → which equipment (asks once per new place), THEN today's Daily custom for that kit
+    checkLocation().catch(() => null)
+      .then(() => ensureDailyCustom()).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {});
     // runs load the legs too (freshness + load status) — from the cached health snapshot, no HealthKit query
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as RunLike[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -136,6 +139,9 @@ export default function FitnessMode() {
       {/* Today */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Today</Text>
+        <TouchableOpacity hitSlop={6} onPress={() => pickKit(store.here?.name ?? 'Merelbeke').then(k => (k ? setKitHere(k) : undefined)).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+          <Text style={[s.meta, { marginBottom: 6 }]}>📍 {store.here && Date.now() - store.here.at < 12 * 3_600_000 ? store.here.name : 'Merelbeke (assumed)'} · {KITS[currentKit(store)].label} <Text style={{ color: c.accent }}>change</Text></Text>
+        </TouchableOpacity>
         {doneToday.map(x => (
           <Text key={x.id} style={s.done}>✅ {x.routineName} done · {sessionTonnage(store, x).toLocaleString()} kg</Text>
         ))}

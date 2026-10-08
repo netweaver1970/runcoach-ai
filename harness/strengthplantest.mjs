@@ -24,3 +24,12 @@ for (const d of draftPlan(c, t.target)) console.log(d.date, (d.kind.padEnd(7)), 
 const dc = P.__test.composeDaily({ ...c, routines: routines.filter(r => r.id !== 'daily_custom') });
 console.log('\nDAILY CUSTOM:', dc?.source);
 for (const it of dc?.items ?? []) console.log('  ', it.exerciseId, `${it.sets}x${it.repsLo}-${it.repsHi}`, it.weightKg ?? '-');
+for (const kit of ['free', 'bw', 'gym']) {
+  const st2 = { ...st, here: { place: 'x', name: 'Elsewhere', kit, at: Date.now() } };
+  const r2 = P.__test.composeDaily({ ...c, st: st2, routines: routines.filter(r => r.id !== 'daily_custom') });
+  console.log(`\nDAILY CUSTOM @${kit}:`, r2?.source);
+  for (const it of r2?.items ?? []) console.log('  ', it.exerciseId, `${it.sets}x${it.repsLo}-${it.repsHi}`, it.weightKg ?? '-');
+  const push = st.routines.find(r => r.id === 'kd_push');
+  const a = S.adaptRoutineToKit(st2, push.items, kit);
+  console.log(`  Push adapted @${kit}:`, a.changes.join(' | ') || '(unchanged)');
+}

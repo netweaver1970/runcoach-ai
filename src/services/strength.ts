@@ -31,6 +31,28 @@ export interface Exercise {
   cue?: string;                                // one-line form cue
   video?: ExerciseVideo;
   custom?: boolean;
+  needs?: Equip[];                             // equipment it needs (ALL of them) — see KITS / exerciseAvailable
+}
+
+// ── Equipment & locations (Geert 2026-10-08: "look at location — Merelbeke = Marcy machine, no double cable;
+// elsewhere ask: gym? else free weights? else body weight only") ────────────────────────────────────────────────
+/** bw = body weight (+ chair/step/floor) · db = dumbbells · bench · cable = ONE cable stack (high/low pulley) ·
+ *  cable2 = dual cable / crossover · marcy = the Marcy home-gym stations (chest press, pec deck, pulldown, low row,
+ *  leg extension / curl) — any gym has these too · machine = other gym machines · barbell */
+export type Equip = 'bw' | 'db' | 'bench' | 'cable' | 'cable2' | 'marcy' | 'machine' | 'barbell';
+export type KitId = 'home' | 'gym' | 'free' | 'bw';
+export const KITS: Record<KitId, { label: string; equip: Equip[] }> = {
+  home: { label: 'Home — Marcy machine + dumbbells (no dual cable)', equip: ['bw', 'db', 'cable', 'marcy'] },
+  gym:  { label: 'Gym', equip: ['bw', 'db', 'bench', 'cable', 'cable2', 'marcy', 'machine', 'barbell'] },
+  free: { label: 'Free weights (dumbbells)', equip: ['bw', 'db'] },
+  bw:   { label: 'Body weight only', equip: ['bw'] },
+};
+export const HOME_PLACE = 'merelbeke';
+/** Can this exercise be done with this kit? A custom exercise without tags = home / gym only. */
+export function exerciseAvailable(ex: Exercise | undefined, kit: KitId): boolean {
+  if (!ex) return false;
+  const needs = ex.needs ?? (ex.custom ? ['marcy'] as Equip[] : ['bw'] as Equip[]);
+  return needs.every(n => KITS[kit].equip.includes(n));
 }
 
 export interface RoutineItem {
@@ -52,6 +74,7 @@ export interface Routine {
   days: number[];          // planned weekdays, 0 = Sun … 6 = Sat
   autoUpdate?: boolean;    // after a session, move the planned weights to the suggested next ones (default on)
   composedFor?: string;    // the "Daily custom" routine: the local date the coach composed it for (strengthPlan.ts)
+  composedKit?: KitId;     // …and for which equipment (a change of place recomposes it)
   items: RoutineItem[];
   updatedAt: number;
 }
@@ -159,7 +182,35 @@ const EX: Exercise[] = [
   { id: 'copenhagen_plank', name: 'Copenhagen Plank', muscles: { adductors: 1, abs: 0.5 }, bodyweightFrac: 0.5, timed: true, cue: 'Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don\'t let the hips sag or pike.' },
   { id: 'side_plank', name: 'Side Plank', muscles: { abs: 1, glutes: 0.3 }, bodyweightFrac: 0.5, timed: true, cue: 'Elbow under the shoulder, body one straight line from head to heels, hips lifted; breathe. Don\'t let the hips sag or rotate.' },
   { id: 'front_plank', name: 'Plank', muscles: { abs: 1, front_delts: 0.2 }, bodyweightFrac: 0.6, timed: true, cue: 'Forearms under the shoulders, squeeze glutes and brace, body one straight line. Don\'t let the hips sag or pike up.' },
+  // ── body-weight / dumbbell coverage for training away from home (2026-10-08) ──
+  { id: 'pushup', name: 'Push-up', muscles: { chest: 1, triceps: 0.6, front_delts: 0.5, abs: 0.2 }, bodyweightFrac: 0.65, cue: 'Hands just wider than the shoulders, body one straight line, elbows ~45° from the torso. Chest to a fist above the floor, push the floor away. Too hard → hands on a bench or the knees.' },
+  { id: 'pike_pushup', name: 'Pike Push-up', muscles: { front_delts: 1, triceps: 0.6, chest: 0.3, side_delts: 0.3 }, bodyweightFrac: 0.5, cue: 'Hips high in an inverted V, hands shoulder-width. Lower the head toward the floor between the hands, elbows back not flared; press back up. Feet on a step to make it harder.' },
+  { id: 'inverted_row', name: 'Inverted / Table Row', muscles: { upper_back: 1, lats: 0.8, biceps: 0.5, rear_delts: 0.4 }, bodyweightFrac: 0.6, cue: 'Under a sturdy table or low bar, body straight, heels down. Pull the chest to the edge, shoulder blades together; lower slowly. Bend the knees to make it easier. Test the table first.' },
+  { id: 'superman', name: 'Superman / Back Extension', muscles: { lower_back: 1, glutes: 0.4, upper_back: 0.3 }, bodyweightFrac: 0.3, cue: 'Face down, arms forward. Lift chest, arms and legs a few cm, squeeze the glutes, neck long (look at the floor); hold 2 s, lower slowly.' },
+  { id: 'dead_bug', name: 'Dead Bug', muscles: { abs: 1 }, cue: 'On the back, arms up, knees over hips at 90°. Press the low back into the floor, slowly lower the opposite arm and leg; return and switch. Low back stays down — shorten the reach if it lifts.' },
+  { id: 'db_row', name: 'One-Arm DB Row', muscles: { lats: 1, upper_back: 0.8, biceps: 0.5, rear_delts: 0.4 }, cue: 'Hand and knee on a chair/bench (or staggered stance, hand on a table), back flat. Pull the dumbbell to the hip, elbow close; lower to a full stretch. No torso twist.' },
+  { id: 'db_rdl', name: 'DB Romanian Deadlift', muscles: { hamstrings: 1, glutes: 0.8, lower_back: 0.5, forearms: 0.3 }, cue: 'Dumbbells in front of the thighs, soft knees. Push the hips back, weights close to the legs, flat back, to a hamstring stretch (~mid-shin); drive the hips forward to stand.' },
+  { id: 'db_floor_press', name: 'DB Floor Press', muscles: { chest: 1, triceps: 0.6, front_delts: 0.5 }, cue: 'Lying on the floor, knees bent. Lower until the upper arms touch the floor (pause), elbows ~45°; press up over the chest. The floor protects the shoulders — no bench needed.' },
+  { id: 'db_reverse_fly', name: 'Bent-Over DB Reverse Fly', muscles: { rear_delts: 1, upper_back: 0.6, traps: 0.3 }, cue: 'Hinge forward ~45°, flat back, slight elbow bend. Raise the dumbbells out to the sides leading with the elbows to shoulder height; lower slowly. Light weight, no swinging.' },
+  { id: 'db_overhead_triceps', name: 'DB Overhead Triceps Extension', muscles: { triceps: 1 }, cue: 'One dumbbell in both hands overhead, elbows pointing up and in. Lower behind the head to a deep stretch, extend without the elbows flaring; ribs down.' },
+  { id: 'hammer_curl', name: 'DB Hammer Curl', muscles: { biceps: 0.8, forearms: 0.7 }, cue: 'Palms facing in, elbows pinned to the sides. Curl without swinging, squeeze at the top, lower in ~2 s.' },
 ];
+
+/** Equipment each built-in exercise needs (all of them). Marcy = his home-gym stations; cable = one cable stack. */
+const NEEDS: Record<string, Equip[]> = {
+  incline_db_press: ['db', 'bench'], flat_db_press: ['db', 'bench'], chest_press_machine: ['marcy'], cable_chest_fly: ['cable2'],
+  machine_shoulder_press: ['machine'], db_lateral_raise: ['db'], cable_triceps_pushdown: ['cable'], overhead_rope_extension: ['cable'],
+  triceps_dips: ['bw'], lat_pulldown: ['marcy'], lat_pulldown_neutral: ['marcy'], chest_supported_row: ['db', 'bench'], seated_row: ['marcy'],
+  rear_delt_fly: ['db'], db_curl: ['db'], incline_db_curl: ['db', 'bench'], cable_biceps_curl: ['cable'], back_squat: ['barbell'],
+  hack_squat: ['machine'], leg_press: ['machine'], leg_extension: ['marcy'], hamstring_curl: ['marcy'], calf_raise: ['bw'],
+  pec_deck: ['marcy'], seated_db_shoulder_press: ['db'], half_kneeling_cable_press: ['cable'], cable_lateral_raise: ['cable'],
+  single_arm_cable_row: ['cable'], face_pull: ['cable'], bayesian_cable_curl: ['cable'], bulgarian_split_squat: ['bw'], goblet_squat: ['db'],
+  cable_squat: ['cable'], close_grip_pushup: ['bw'], overhead_cable_triceps_extension: ['cable'], forward_lunge: ['bw'], heel_drop: ['bw'],
+  single_leg_squat: ['bw'], step_down: ['bw'], glute_bridge: ['bw'], clamshell: ['bw'], tibialis_raise: ['bw'], nordic_curl: ['bw'],
+  copenhagen_plank: ['bw'], side_plank: ['bw'], front_plank: ['bw'], pushup: ['bw'], pike_pushup: ['bw'], inverted_row: ['bw'],
+  superman: ['bw'], dead_bug: ['bw'], db_row: ['db'], db_rdl: ['db'], db_floor_press: ['db'], db_reverse_fly: ['db'],
+  db_overhead_triceps: ['db'], hammer_curl: ['db'],
+};
 
 // Verified YouTube technique videos (oEmbed-checked 2026-10-07; one per exercise, reputable coaching channels).
 const VIDEOS: Record<string, ExerciseVideo> = {
@@ -212,7 +263,44 @@ const VIDEOS: Record<string, ExerciseVideo> = {
   front_plank: { url: 'https://www.youtube.com/watch?v=6LqqeBtFn9M', title: 'How to do the perfect PLANK: technique and common mistakes', channel: 'Get Exercise Confident' },
 };
 
-export const BUILTIN_EXERCISES: Exercise[] = EX.map(e => (VIDEOS[e.id] ? { ...e, video: VIDEOS[e.id] } : e));
+export const BUILTIN_EXERCISES: Exercise[] = EX.map(e => ({ ...e, ...(VIDEOS[e.id] ? { video: VIDEOS[e.id] } : {}), ...(NEEDS[e.id] ? { needs: NEEDS[e.id] } : {}) }));
+
+/**
+ * The exercise to do INSTEAD when this one isn't possible with the kit: its own alternatives first, else the available
+ * exercise that best covers the same muscles (involvement-weighted overlap, main mover must match). null = drop it.
+ */
+export function substituteExercise(s: StrengthStore, exerciseId: string, kit: KitId, exclude: string[] = [], altIds: string[] = []): Exercise | null {
+  const ex = exerciseById(s, exerciseId);
+  if (!ex) return null;
+  if (exerciseAvailable(ex, kit)) return ex;
+  for (const a of altIds) { const e = exerciseById(s, a); if (e && exerciseAvailable(e, kit) && !exclude.includes(e.id)) return e; }
+  const main = (Object.entries(ex.muscles) as [Muscle, number][]).sort((a, b) => b[1] - a[1])[0]?.[0];
+  let best: { e: Exercise; sc: number } | null = null;
+  for (const e of allExercises(s)) {
+    if (e.id === ex.id || exclude.includes(e.id) || !exerciseAvailable(e, kit) || !!e.timed !== !!ex.timed) continue;
+    if (!main || (e.muscles[main] ?? 0) < 0.6) continue;
+    let sc = 0;
+    for (const [m, v] of Object.entries(ex.muscles) as [Muscle, number][]) sc += Math.min(v, e.muscles[m] ?? 0);
+    for (const [m, v] of Object.entries(e.muscles) as [Muscle, number][]) if (!(m in ex.muscles)) sc -= 0.3 * v;   // off-target work
+    if (!best || sc > best.sc) best = { e, sc };
+  }
+  return best?.e ?? null;
+}
+/** A routine adapted to the kit: unavailable exercises swapped (see substituteExercise) or dropped; `changes` says what. */
+export function adaptRoutineToKit(s: StrengthStore, items: RoutineItem[], kit: KitId): { items: RoutineItem[]; changes: string[] } {
+  if (kit === 'gym') return { items, changes: [] };
+  const out: RoutineItem[] = [], changes: string[] = [];
+  for (const it of items) {
+    const ex = exerciseById(s, it.exerciseId);
+    if (exerciseAvailable(ex, kit)) { out.push(it); continue; }
+    const sub = substituteExercise(s, it.exerciseId, kit, [...items.map(i => i.exerciseId), ...out.map(o => o.exerciseId)], it.altIds ?? []);
+    if (!sub) { changes.push(`${ex?.name ?? it.exerciseId}: dropped (not possible here)`); continue; }
+    const sw: RoutineItem = { ...it, exerciseId: sub.id, altIds: [it.exerciseId], weightKg: undefined };
+    out.push({ ...sw, weightKg: suggestWeight(s, sw).kg });
+    changes.push(`${ex?.name ?? it.exerciseId} → ${sub.name}`);
+  }
+  return { items: out, changes };
+}
 
 // ── The 4 starter programs ───────────────────────────────────────────────────────────────────────────────────
 // Structure (exercise slots, sets, rep ranges, tempo) as published by Kian Deehan Fitness (Instagram reel "Stop
@@ -279,6 +367,8 @@ export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boole
   autoPlanOn?: boolean;                       // the coach plans strength days around the runs (default ON) — see strengthPlan.ts
   autoPlan?: StrengthAutoPlan;                // the latest 7-day strength plan (today → +6)
   dailyCustomOn?: boolean;                    // compose the "Daily custom" routine each day (default ON)
+  places?: Record<string, KitId>;             // remembered equipment per place (lower-case locality); Merelbeke = home
+  here?: { place: string; name: string; kit: KitId; at: number };   // where the athlete is now (last check) → today's kit
   routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
 
 /** One day of the coach's strength plan: a TAILORED routine (sets/weights for that day), short prehab, or no lifting. */
@@ -323,7 +413,7 @@ export function loadStrength(): Promise<StrengthStore> {
         let j: any = null;
         try { j = JSON.parse(raw); } catch { j = null; }
         if (j && Array.isArray(j.routines)) {
-          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), ...(typeof j.autoPlanOn === 'boolean' ? { autoPlanOn: j.autoPlanOn } : {}), ...(typeof j.dailyCustomOn === 'boolean' ? { dailyCustomOn: j.dailyCustomOn } : {}), ...(j.autoPlan && Array.isArray(j.autoPlan.days) ? { autoPlan: j.autoPlan } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
+          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), ...(typeof j.autoPlanOn === 'boolean' ? { autoPlanOn: j.autoPlanOn } : {}), ...(typeof j.dailyCustomOn === 'boolean' ? { dailyCustomOn: j.dailyCustomOn } : {}), ...(j.places && typeof j.places === 'object' ? { places: j.places } : {}), ...(j.here && j.here.kit ? { here: j.here } : {}), ...(j.autoPlan && Array.isArray(j.autoPlan.days) ? { autoPlan: j.autoPlan } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
           const rev0 = cache.starterRev ?? 1;
           if (rev0 < STARTER_REV) {
             // Step-wise, each step ONCE (a later rev must never redo an earlier one — rev 2 resets exercises, which would
@@ -1160,4 +1250,11 @@ export async function syncRecentSessionsToHealth(): Promise<void> {
       }
     }
   }
+}
+
+/** Today's equipment: the place checked today (or within 12 h), else home. */
+export function currentKit(s: StrengthStore): KitId {
+  const h = s.here;
+  if (h && Date.now() - h.at < 12 * 3_600_000 && KITS[h.kit]) return h.kit;
+  return 'home';
 }
