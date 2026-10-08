@@ -65,6 +65,14 @@ export function mapNutriments(nm: Record<string, unknown> = {}): Nutr {
   const k = g('potassium'); set('k', k != null ? k * 1000 : undefined);
   const caf = g('caffeine'); set('caf', caf != null ? caf * 1000 : undefined);
   const alc = g('alcohol'); set('alc', alc);
+  // minerals + vitamins: OFF stores every *_100g in GRAMS → mg (×1e3) / µg (×1e6) as in MICROS
+  const mgOf = (k: string, key: keyof Nutr) => { const v = g(k); if (v != null) set(key, v * 1000); };
+  const ugOf = (k: string, key: keyof Nutr) => { const v = g(k); if (v != null) set(key, v * 1e6); };
+  mgOf('calcium', 'ca'); mgOf('iron', 'fe'); mgOf('magnesium', 'mg'); mgOf('phosphorus', 'p'); mgOf('zinc', 'zn');
+  mgOf('copper', 'cu'); mgOf('manganese', 'mn'); ugOf('selenium', 'se'); ugOf('iodine', 'iod');
+  ugOf('vitamin-a', 'vitA'); ugOf('vitamin-d', 'vitD'); mgOf('vitamin-e', 'vitE'); ugOf('vitamin-k', 'vitK'); mgOf('vitamin-c', 'vitC');
+  mgOf('vitamin-b1', 'b1'); mgOf('vitamin-b2', 'b2'); mgOf('vitamin-pp', 'b3'); mgOf('pantothenic-acid', 'b5'); mgOf('vitamin-b6', 'b6');
+  ugOf('vitamin-b9', 'b9'); ugOf('vitamin-b12', 'b12');
   return out;
 }
 

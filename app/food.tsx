@@ -32,7 +32,7 @@ import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
-  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs,
+  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs, MICROS,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -235,6 +235,8 @@ export default function FoodMode() {
           </View>
           <Text style={s.hint}>Only fully-logged days will count toward energy balance.</Text>
         </View>
+
+        {day && day.entries.length > 0 && <MicrosCard entries={day.entries} />}
 
         {fuel && fuel.kind !== 'none' && (
           <View style={[s.card, s.fuelCard]}>
@@ -1013,6 +1015,46 @@ function ParsePanel({ items: items0, onConfirm, onAsOne }: {
       <TouchableOpacity onPress={() => { Keyboard.dismiss(); onAsOne(); }} hitSlop={8}>
         <Text style={s.asOne}>It's one dish — search the whole text as one food</Text>
       </TouchableOpacity>
+    </View>
+  );
+}
+
+// ─── Minerals & vitamins of the day ───────────────────────────────────────────────────────────────
+/**
+ * Day totals of the minerals / vitamins vs the EU daily reference (NRV). Entries logged before these were stored are
+ * filled from the food table (CIQUAL) by key × grams. "known for x/y items" = honesty about missing measurements.
+ */
+function MicrosCard({ entries }: { entries: FoodEntry[] }) {
+  const { c } = useTheme();
+  const s = useThemedStyles(makeStyles);
+  const [open, setOpen] = useState(false);
+  const rows = useMemo(() => MICROS.map(m => {
+    let sum = 0, known = 0;
+    for (const e of entries) {
+      let v = e.n[m.k];
+      if (v == null && e.src === 'ciqual' && e.grams) { const t = foodByKey(e.key)?.per100[m.k]; if (t != null) v = t * e.grams / 100; }
+      if (typeof v === 'number') { sum += v; known++; }
+    }
+    return { ...m, sum, known, pct: m.nrv ? Math.round((sum / m.nrv) * 100) : 0 };
+  }), [entries]);
+  const fmt = (v: number) => (v >= 100 ? String(Math.round(v)) : v >= 10 ? v.toFixed(0) : v.toFixed(1));
+  return (
+    <View style={[s.card, { marginTop: 12 }]}>
+      <TouchableOpacity onPress={() => setOpen(v => !v)} hitSlop={6}>
+        <Text style={s.section}>{open ? '▾' : '▸'} Minerals & vitamins{!open ? `  ·  ${rows.filter(r => r.pct >= 100).length}/${rows.length} at the daily reference` : ''}</Text>
+      </TouchableOpacity>
+      {open && rows.map(r => (
+        <View key={r.k} style={{ paddingVertical: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+            <Text style={[s.sub, { flex: 1, color: c.text }]}>{r.label}</Text>
+            <Text style={s.sub}>{fmt(r.sum)} {r.unit}  ·  <Text style={{ fontWeight: '700', color: r.k === 'na' ? (r.pct > 100 ? '#e67e22' : c.text) : r.pct >= 100 ? '#2f9e44' : c.text }}>{r.pct}%</Text>{r.known < entries.length ? `  (${r.known}/${entries.length})` : ''}</Text>
+          </View>
+          <View style={{ height: 4, borderRadius: 2, backgroundColor: c.surfaceAlt, marginTop: 3, overflow: 'hidden' }}>
+            <View style={{ width: `${Math.min(100, r.pct)}%`, height: 4, backgroundColor: r.k === 'na' ? (r.pct > 100 ? '#e67e22' : '#94a3b8') : r.pct >= 100 ? '#2f9e44' : c.accent }} />
+          </View>
+        </View>
+      ))}
+      {open && <Text style={s.hint}>% of the EU daily reference (label NRV; sodium vs 2.4 g = 6 g salt, a MAXIMUM). Values: CIQUAL 2025 (Anses) / Open Food Facts; (x/y) = items with a measured value — the rest add nothing, so real intake can be higher. Sweat losses (sodium, potassium) aren't included.</Text>}
     </View>
   );
 }

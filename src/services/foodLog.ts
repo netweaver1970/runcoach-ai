@@ -27,7 +27,9 @@ async function linkSupplements(keys: string[], t: string): Promise<void> {
 export type NutrKey =
   | 'kcal' | 'prot' | 'carb' | 'fat' | 'sug' | 'fib' | 'sat' | 'salt' | 'na' | 'k' | 'ca' | 'fe' | 'mg'
   | 'water' | 'alc' | 'vitC' | 'vitD' | 'caf'
-  | 'rs';   // resistant starch (g) — PART OF `carb` as labelled; not absorbed (gut-bacteria food), ~2 kcal/g instead of 4
+  | 'rs'    // resistant starch (g) — PART OF `carb` as labelled; not absorbed (gut-bacteria food), ~2 kcal/g instead of 4
+  // minerals + vitamins (CIQUAL 2025 / Open Food Facts) — units in MICROS below
+  | 'p' | 'se' | 'zn' | 'cu' | 'mn' | 'iod' | 'vitA' | 'vitE' | 'vitK' | 'b1' | 'b2' | 'b3' | 'b5' | 'b6' | 'b9' | 'b12';
 export type Nutr = Partial<Record<NutrKey, number>>;
 export type FoodSrc = 'ciqual' | 'off' | 'custom' | 'quick' | 'ai' | 'builtin';
 export type EntryVia = 'search' | 'recent' | 'fav' | 'meal' | 'copy' | 'quick' | 'parse' | 'photo' | 'ean' | 'label' | 'suggest';
@@ -111,7 +113,28 @@ const LIB = `${DIR}${FOOD_LIBRARY_FILE}`;
 const MAX_RECENTS = 200;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────────────────────────
-export const NUTR_KEYS: NutrKey[] = ['kcal', 'prot', 'carb', 'fat', 'sug', 'fib', 'sat', 'salt', 'na', 'k', 'ca', 'fe', 'mg', 'water', 'alc', 'vitC', 'vitD', 'caf', 'rs'];
+export const NUTR_KEYS: NutrKey[] = ['kcal', 'prot', 'carb', 'fat', 'sug', 'fib', 'sat', 'salt', 'na', 'k', 'ca', 'fe', 'mg', 'water', 'alc', 'vitC', 'vitD', 'caf', 'rs',
+  'p', 'se', 'zn', 'cu', 'mn', 'iod', 'vitA', 'vitE', 'vitK', 'b1', 'b2', 'b3', 'b5', 'b6', 'b9', 'b12'];
+
+/**
+ * Minerals & vitamins with the EU daily reference (NRV, Regulation 1169/2011 Annex XIII — the "% RI" on EU labels;
+ * sodium has none, the salt RI of 6 g ≈ 2.4 g sodium is used). Values per food come from CIQUAL 2025 (Anses) or
+ * Open Food Facts; a food without a measured value contributes nothing (shown as coverage).
+ */
+export const MICROS: { k: NutrKey; label: string; unit: 'mg' | 'µg'; nrv: number; group: 'mineral' | 'vitamin' }[] = [
+  { k: 'na', label: 'Sodium', unit: 'mg', nrv: 2400, group: 'mineral' }, { k: 'k', label: 'Potassium', unit: 'mg', nrv: 2000, group: 'mineral' },
+  { k: 'ca', label: 'Calcium', unit: 'mg', nrv: 800, group: 'mineral' }, { k: 'p', label: 'Phosphorus', unit: 'mg', nrv: 700, group: 'mineral' },
+  { k: 'mg', label: 'Magnesium', unit: 'mg', nrv: 375, group: 'mineral' }, { k: 'fe', label: 'Iron', unit: 'mg', nrv: 14, group: 'mineral' },
+  { k: 'zn', label: 'Zinc', unit: 'mg', nrv: 10, group: 'mineral' }, { k: 'cu', label: 'Copper', unit: 'mg', nrv: 1, group: 'mineral' },
+  { k: 'mn', label: 'Manganese', unit: 'mg', nrv: 2, group: 'mineral' }, { k: 'se', label: 'Selenium', unit: 'µg', nrv: 55, group: 'mineral' },
+  { k: 'iod', label: 'Iodine', unit: 'µg', nrv: 150, group: 'mineral' },
+  { k: 'vitA', label: 'Vitamin A', unit: 'µg', nrv: 800, group: 'vitamin' }, { k: 'vitD', label: 'Vitamin D', unit: 'µg', nrv: 5, group: 'vitamin' },
+  { k: 'vitE', label: 'Vitamin E', unit: 'mg', nrv: 12, group: 'vitamin' }, { k: 'vitK', label: 'Vitamin K', unit: 'µg', nrv: 75, group: 'vitamin' },
+  { k: 'vitC', label: 'Vitamin C', unit: 'mg', nrv: 80, group: 'vitamin' }, { k: 'b1', label: 'B1 thiamine', unit: 'mg', nrv: 1.1, group: 'vitamin' },
+  { k: 'b2', label: 'B2 riboflavin', unit: 'mg', nrv: 1.4, group: 'vitamin' }, { k: 'b3', label: 'B3 niacin', unit: 'mg', nrv: 16, group: 'vitamin' },
+  { k: 'b5', label: 'B5 pantothenic acid', unit: 'mg', nrv: 6, group: 'vitamin' }, { k: 'b6', label: 'B6', unit: 'mg', nrv: 1.4, group: 'vitamin' },
+  { k: 'b9', label: 'B9 folate', unit: 'µg', nrv: 200, group: 'vitamin' }, { k: 'b12', label: 'B12', unit: 'µg', nrv: 2.5, group: 'vitamin' },
+];
 
 /**
  * Resistant starch (Geert 2026-10-08, raw potato starch): it's in the label's carbs but isn't digested in the small

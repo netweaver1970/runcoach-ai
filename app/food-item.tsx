@@ -9,7 +9,7 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   loadLibrary, addCustomFood, updateCustomFood, deleteCustomFood, forgetFoods, setFavourites, setMealTags, setServing,
-  FoodLibrary, FoodItem, KeptFood, MEAL_TAGS, MealTag, Nutr, NutrKey, servingOverrides, rsOverrides, setResistantStarch,
+  FoodLibrary, FoodItem, KeptFood, MEAL_TAGS, MealTag, Nutr, NutrKey, servingOverrides, rsOverrides, setResistantStarch, MICROS,
 } from '../src/services/foodLog';
 import { foodByKey } from '../src/services/foodDb';
 import { cachedProducts } from '../src/services/foodOff';
@@ -49,7 +49,7 @@ export default function FoodItemScreen() {
       setBase(f);
       setName(f.name ?? ''); setBrand(f.brand ?? ''); setUnit(f.unit === 'ml' ? 'ml' : 'g');
       const p100: Nutr = f.per100 ?? {};
-      setVals({ ...Object.fromEntries(FIELDS.map(x => [x.k, txt(p100[x.k])])), ...(rsOverrides[key] != null ? { rs: txt(rsOverrides[key]) } : {}) });
+      setVals({ ...Object.fromEntries([...FIELDS.map(x => x.k), ...MICROS.map(m => m.k)].map(k => [k, txt(p100[k])])), ...(rsOverrides[key] != null ? { rs: txt(rsOverrides[key]) } : {}) });
       const sv = servingOverrides[key] ?? f.serving;
       setSrv(sv?.g ? String(sv.g) : '');
     })().catch(() => {});
@@ -58,7 +58,8 @@ export default function FoodItemScreen() {
   const snap = (): KeptFood => ({ key, snap: { name: name || base?.name || 'Food', src: (base?.src ?? 'custom') as any, ...(base?.per100 ? { per100: base.per100 } : {}), ...(base?.n ? { n: base.n } : {}), ...(unit === 'ml' ? { unit: 'ml' as const } : {}) } });
   const fav = !!lib?.favs.includes(key);
   const tags = lib?.tags?.[key] ?? [];
-  const per100 = (): Nutr => Object.fromEntries(FIELDS.map(x => [x.k, num(vals[x.k] ?? '')]).filter(([, v]) => v != null)) as Nutr;
+  const per100 = (): Nutr => Object.fromEntries([...FIELDS.map(x => x.k), ...MICROS.map(m => m.k)].map(k => [k, num(vals[k] ?? '')]).filter(([, v]) => v != null)) as Nutr;
+  const [showMicros, setShowMicros] = useState(false);
 
   const save = async () => {
     Keyboard.dismiss();
@@ -139,6 +140,19 @@ export default function FoodItemScreen() {
           <Text style={s.unit}>{f.unit}</Text>
         </View>
       ))}
+      {/* minerals & vitamins per 100 — CIQUAL 2025 / Open Food Facts; editable for your own foods */}
+      <TouchableOpacity onPress={() => setShowMicros(v => !v)} hitSlop={6}>
+        <Text style={s.lbl}>{showMicros ? '▾' : '▸'} Minerals & vitamins per 100 {unit} ({MICROS.filter(m => (vals[m.k] ?? '') !== '').length}/{MICROS.length} known)</Text>
+      </TouchableOpacity>
+      {showMicros && MICROS.map(m => (
+        <View key={m.k} style={s.field}>
+          <Text style={s.fieldLbl}>{m.label}</Text>
+          <TextInput style={[s.num, !own && s.ro]} value={vals[m.k] ?? ''} editable={own} keyboardType="decimal-pad" selectTextOnFocus
+            onChangeText={v => setVals(p => ({ ...p, [m.k]: v }))} placeholder="–" placeholderTextColor={c.textFaint} />
+          <Text style={s.unit}>{m.unit}</Text>
+        </View>
+      ))}
+      {showMicros && <Text style={s.hint}>"–" = not measured for this food (it then adds nothing to the day). Source: {own ? 'your values' : base?.src === 'off' ? 'Open Food Facts' : 'CIQUAL 2025 (Anses)'}.</Text>}
       <Text style={s.hint}>Resistant starch is part of the carbs on the label but isn't absorbed — it feeds the gut bacteria (~2 kcal/g). It's left out of your day's carbs and counted at 2 kcal/g. Typical: RAW unmodified potato starch ≈ 60–70 g / 100 g (stirred in cold, never heated) · cooked starch ≈ 0–1 · cooked-then-cooled potato / rice ≈ 1–3 · green banana flour ≈ 40–50. Only enter what the label's carbs INCLUDE (if the label already counts it as fibre, leave this empty).</Text>
       <Text style={s.lbl}>1 serving / pack ({unit})</Text>
       <TextInput style={s.input} value={srv} onChangeText={setSrv} keyboardType="decimal-pad" placeholder="e.g. 240 — leave empty for none" placeholderTextColor={c.textFaint} />

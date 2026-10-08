@@ -40,6 +40,23 @@ COLS = {
     'alc': 29,    # Alcool (g)
     'vitC': 72,   # Vitamine C (mg)
     'vitD': 65,   # Vitamine D (µg)
+    # minerals + vitamins (added 2026-10-08 — Geert: "minerals like selenium, calcium, phosphorus… fill it from sources")
+    'p': 57,      # Phosphore (mg)
+    'se': 59,     # Sélénium (µg)
+    'zn': 61,     # Zinc (mg)
+    'cu': 52,     # Cuivre (mg)
+    'mn': 56,     # Manganèse (mg)
+    'iod': 54,    # Iode (µg)
+    'vitA': 62,   # Activité vitaminique A, équivalents rétinol (µg)
+    'vitE': 68,   # Alpha-tocophérol = vitamin E (mg) — 50 % coverage vs 17 % for the 'Vitamine E' column
+    'vitK': 70,   # Vitamine K1 (µg)
+    'b1': 73,     # Thiamine (mg)
+    'b2': 74,     # Riboflavine (mg)
+    'b3': 75,     # Niacine (mg)
+    'b5': 76,     # Acide pantothénique (mg)
+    'b6': 77,     # Vitamine B6 (mg)
+    'b9': 79,     # Folates totaux (µg)
+    'b12': 82,    # Vitamine B12 (µg)
 }
 KEYS = list(COLS)
 
