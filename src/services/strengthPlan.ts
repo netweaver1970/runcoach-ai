@@ -32,6 +32,8 @@ const QUALITY = new Set(['intervals', 'tempo', 'hard', 'race']);
 const PREHAB_IDS = ['heel_drop', 'glute_bridge', 'clamshell', 'side_plank'];
 const PREHAB_ROUTINE = 'runner_strength';
 const MAX_PREHAB = 3;
+// bump when the planning logic changes → stored plans re-plan at once (not tomorrow)
+const PLAN_LOGIC_VER = 'v2';
 const LEG_SHARE = 0.4;          // routine is "legs" when ≥ 40 % of its set-weighted involvement is legs
 const MIN_GAP_DAYS = 2;         // a PLANNED session's muscles: ≥ 48 h (assumed RPE ~7) before the same muscles again
 const NO_LIFT_READY = 20;       // readiness below this → no lifting today at all
@@ -93,6 +95,7 @@ interface Ctx {
   st: StrengthStore; today: string; days: RunDay[]; readiness?: number; avgReady?: number;
   routines: Routine[]; prof: Map<string, Profile>; lastDone: Map<string, string>; hourNow: number;
   lightDays?: Set<number>;        // days holding a LIGHT session (low-readiness today) → only a 1-day gap around them
+  legCap?: number;                // max leg-dominant sessions in the 7 days (1 while the running is building)
 }
 
 /** Hard rules — shared by the deterministic placer and the AI validator. Returns a reason when NOT allowed. */
@@ -108,6 +111,8 @@ function blocked(c: Ctx, i: number, r: Routine, placed: Map<number, string>, tra
     if (c.hourNow >= 21) return 'too late today';
   }
   if (legs) {
+    const legDays = [...placed].filter(([j, id]) => j !== i && (c.prof.get(id)?.legShare ?? 0) >= LEG_SHARE).length;
+    if (c.legCap != null && legDays >= c.legCap) return c.legCap === 1 ? 'running is building: one leg day this week' : `${c.legCap} leg days already`;
     if (day.kind === 'long') return 'long-run day';
     if (next && (QUALITY.has(next.kind) || next.kind === 'long')) return `${next.label} tomorrow`;
   }
@@ -146,21 +151,27 @@ function score(c: Ctx, i: number, r: Routine, placed: Map<number, string>): numb
   const near = [...placed.keys()].some(j => Math.abs(j - i) === 1);
   if (near) sc -= placed.size + 1 >= 4 ? 0.5 : 2;
   if (i === 0) sc += c.readiness != null && c.readiness >= 50 ? 0.5 : -1;
+  // SPREAD: favour the day farthest from any other session (planned, or the last one done) — no 4-day holes
+  const lastDoneDay = c.st.sessions.filter(x => x.finishedAt && x.tailored !== 'prehab' && x.date < c.today).map(x => x.date).sort().pop();
+  const dists = [...[...placed.keys()].filter(j => j !== i).map(j => Math.abs(j - i)), ...(lastDoneDay ? [i + dayDiff(lastDoneDay, c.today)] : [])];
+  if (dists.length) sc += 0.8 * Math.min(4, Math.min(...dists));
   sc -= i * 0.05;                                                                   // tie-break: sooner
   return sc;
 }
 
-function adaptiveTarget(c: Ctx, prevWeekRunMin: number): { target: number; why: string } {
-  let t = 3;
+function adaptiveTarget(c: Ctx, prevWeekRunMin: number): { target: number; why: string; legCap: number } {
+  let t = 3, legCap = 2;
   const why: string[] = [];
   const runWeek = c.days.reduce((a, d) => a + d.runMin, 0);
   if (c.avgReady != null && c.avgReady < 45) { t--; why.push(`recovery averaged ${Math.round(c.avgReady)} this week`); }
-  if (prevWeekRunMin > 0 && runWeek > prevWeekRunMin * 1.15) { t--; why.push(`run volume up ${Math.round((runWeek / prevWeekRunMin - 1) * 100)}%`); }
+  // a RUNNING build competes with the LEGS, not with upper-body lifting (Geert 2026-10-08: "why such a big strength
+  // gap?" — a +70 % run week had cut the whole week to 2 sessions) → it caps the leg days at 1, not the session count
+  if (prevWeekRunMin > 0 && runWeek > prevWeekRunMin * 1.15) { legCap = 1; why.push(`run volume up ${Math.round((runWeek / prevWeekRunMin - 1) * 100)}% → one leg day`); }
   const done14 = c.st.sessions.filter(x => x.finishedAt && x.tailored !== 'prehab' && x.date >= addDays(c.today, -14)).length;
   const hardRecently = c.st.sessions.filter(x => x.finishedAt).slice(-3).some(x => Object.values(x.feel ?? {}).includes('hard'));
   if (t === 3 && (c.avgReady ?? 0) >= 65 && done14 >= 5 && !hardRecently && runWeek <= prevWeekRunMin * 1.05) { t = 4; why.push('recovery good, lifting consistent, runs steady'); }
   t = Math.max(2, Math.min(4, t));
-  return { target: t, why: why.length ? why.join(' · ') : 'standard: 3 sessions alongside the runs' };
+  return { target: t, why: why.length ? why.join(' · ') : 'standard: 3 sessions alongside the runs', legCap };
 }
 
 function tailor(c: Ctx, i: number, r: Routine, kind: 'session' | 'prehab'): { items: RoutineItem[]; changes: string[] } {
@@ -229,8 +240,11 @@ function draftPlan(c: Ctx, target: number): PlannedStrengthDay[] {
   // today already lifted → that IS today's session (counts toward the target)
   const doneToday = c.st.sessions.filter(x => x.finishedAt && x.date === c.today && x.tailored !== 'prehab');
   const prehabToday = c.st.sessions.some(x => x.finishedAt && x.date === c.today && x.tailored === 'prehab');
+  // a SHORT session done today (< 12 work sets, e.g. a light Daily custom) counts as half a session toward the target
+  let used = 0;
   if (doneToday.length) {
     const x = doneToday[doneToday.length - 1];
+    used = doneToday.reduce((a, q) => a + (q.sets.filter(isWorkSet).length >= 12 ? 1 : 0.5), 0);
     placed.set(0, x.routineId);
     out[0] = { date: c.today, kind: 'session', routineId: x.routineId, name: x.routineName, done: true, why: 'Done today ✅', run: c.days[0].label };
   }
@@ -256,7 +270,8 @@ function draftPlan(c: Ctx, target: number): PlannedStrengthDay[] {
         minutes: estimateMinutes({ ...best.r, items: t.items }), why: `${c.readiness < LIGHT_READY ? 'Light session only' : 'Lighter session'}: readiness ${c.readiness}${rpeNote}. ${c.readiness < LIGHT_READY ? 'Keep every set ~3 reps short of failure; skip it if you feel worse once warm.' : 'One set fewer each; stop if the warm-up feels heavy.'}`, run: c.days[0].label };
     } else c.lightDays = undefined;
   }
-  while (placed.size - extra < target) {
+  const count = () => placed.size - extra - (placed.has(0) && used ? 1 - Math.min(1, used) : 0);
+  while (count() < target) {
     let best: { i: number; r: Routine; sc: number } | null = null;
     for (let i = 0; i < c.days.length; i++) for (const r of pool) {
       if (blocked(c, i, r, placed, trained)) continue;
@@ -324,7 +339,7 @@ async function buildContext(st: StrengthStore): Promise<{ c: Ctx; prevWeekRunMin
   const c: Ctx = { st, today, days, readiness: plan?.genReadiness, avgReady: ready.length ? ready.reduce((a, v) => a + v, 0) / ready.length : undefined,
     routines, prof, lastDone, hourNow: new Date().getHours() };
   const sigParts = [today, plan?.generatedAt ?? '-', caches[0]?.generatedAt ?? caches.find(Boolean)?.generatedAt ?? '-',
-    String(st.sessions.filter(x => x.finishedAt).length), String(Math.max(0, ...routines.map(r => r.updatedAt ?? 0))), c.hourNow >= 21 ? 'late' : 'day', currentKit(st)];
+    String(st.sessions.filter(x => x.finishedAt).length), String(Math.max(0, ...routines.map(r => r.updatedAt ?? 0))), c.hourNow >= 21 ? 'late' : 'day', currentKit(st), PLAN_LOGIC_VER];
   return { c, prevWeekRunMin, sigParts };
 }
 
@@ -355,7 +370,7 @@ Rules (hard — a violation is discarded):
 - Leg-dominant routines: never on a long-run day, never the day before intervals/tempo/hard/long. Best the same day as a quality run (after it) or before a rest day.
 - Muscle recovery follows the RPE of the session that trained them: RPE ≤ 5 → 1 day, 6–7 → 2 days, ≥ 8 → 3 days (+1 day for an exercise graded hard); planned sessions need 2 days between the same muscles. One session per day. Days marked done stay as they are.
 - Today: no lifting if readiness < ${NO_LIFT_READY}; ${NO_LIFT_READY}–${LIGHT_READY - 1} → at most a LIGHT upper session (muscles recovered by the RPE rule; it's extra, on top of the week's count); ${LIGHT_READY}–49 → upper body only.
-- 2–4 sessions in the 7 days (adaptive: fewer when recovery is low or running is building, more when recovery is good and lifting is consistent).
+- 2–4 sessions in the 7 days (fewer when recovery is low, more when recovery is good and lifting is consistent). A running BUILD limits LEG days (max ${c.legCap ?? 2} this week), not upper-body sessions. Spread sessions — avoid 4+ day holes. A short session already done today counts as half.
 Tailoring per session day (optional): setsDelta per exercise id (-1 or +1 only), swap an exercise ONLY to one of its listed alternatives.
 Return ONLY JSON: {"target":n,"summary":"≤40 words, the week's strength logic","days":[{"date":"YYYY-MM-DD","kind":"session|prehab|rest","routineId":"id or null","setsDelta":{"exId":-1},"swap":{"exId":"altId"},"why":"≤20 words, specific to that day"}]} — exactly the 7 dates given.`;
   setUsageFeature('strength-plan');
@@ -442,7 +457,8 @@ export function ensureStrengthPlan(opts: { ai?: boolean; force?: boolean } = {})
       const cur = st.autoPlan;
       if (!opts.force && cur && cur.sig === sig && (!opts.ai || cur.ai || cur.aiTried)) return cur;
       if (!c.routines.length) return null;
-      const { target, why } = adaptiveTarget(c, prevWeekRunMin);
+      const { target, why, legCap } = adaptiveTarget(c, prevWeekRunMin);
+      c.legCap = legCap;
       let days = draftPlan(c, target);
       let plan: StrengthAutoPlan = { date: c.today, generatedAt: Date.now(), sig, target, targetWhy: why, days };
       if (opts.ai) {

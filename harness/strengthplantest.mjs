@@ -18,7 +18,7 @@ for (const [id, p] of prof) console.log('profile', id, 'legShare', p.legShare.to
 const lastDone = new Map(); for (const x of st.sessions) if (x.finishedAt && (!lastDone.get(x.routineId) || lastDone.get(x.routineId) < x.date)) lastDone.set(x.routineId, x.date);
 const readiness = readyArg != null ? Number(readyArg) : plan.genReadiness;
 const c = { st, today, days, readiness, avgReady: readiness, routines, prof, lastDone, hourNow: 12 };
-const t = adaptiveTarget(c, Number(process.env.PREV ?? 200)); if (process.env.T) t.target = Number(process.env.T);
+const t = adaptiveTarget(c, Number(process.env.PREV ?? 200)); if (process.env.T) t.target = Number(process.env.T); c.legCap = t.legCap;
 console.log('target', t);
 for (const d of draftPlan(c, t.target)) console.log(d.date, (d.kind.padEnd(7)), (d.name ?? '').padEnd(16), '|', d.run, '|', d.why, d.changes?.length ? ' [' + d.changes.join('; ') + ']' : '', d.items ? ' items:' + d.items.map(i => i.exerciseId + ' ' + i.sets + 'x' + (i.weightKg ?? '-')).join(', ') : '');
 const dc = P.__test.composeDaily({ ...c, routines: routines.filter(r => r.id !== 'daily_custom') });
