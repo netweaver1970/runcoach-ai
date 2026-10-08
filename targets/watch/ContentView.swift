@@ -207,17 +207,21 @@ struct KPIDetailView: View {
             ForEach(Array(sleep.enumerated()), id: \.offset) { _, r in
               RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
                             yStart: .value("lo", lo), yEnd: .value("hi", hi))
-                .foregroundStyle(Color(hex: "6366F1").opacity(0.16))
+                // bright enough to read on the watch's black (0.16 was near-invisible — Geert, 2026-10-08)
+                .foregroundStyle(Color(hex: "818CF8").opacity(0.38))
                 .annotation(position: .overlay, alignment: .top) {
-                  Image(systemName: "moon.fill").font(.system(size: 9)).foregroundColor(Color(hex: "818CF8"))
+                  Image(systemName: "moon.fill").font(.system(size: 10)).foregroundColor(Color(hex: "C7D2FE"))
                 }
             }
             ForEach(Array(work.enumerated()), id: \.offset) { _, r in
               RectangleMark(xStart: .value("s", r.0), xEnd: .value("e", r.1),
                             yStart: .value("lo", lo), yEnd: .value("hi", hi))
-                .foregroundStyle(Color(hex: "F97316").opacity(0.18))
+                .foregroundStyle(Color(hex: "FB923C").opacity(0.36))
                 .annotation(position: .overlay, alignment: .top) {
-                  Image(systemName: r.2 == 1 ? "dumbbell.fill" : "figure.run").font(.system(size: 9)).foregroundColor(Color(hex: "FB923C"))
+                  // 1 strength → dumbbell, 2 cardio → runner, 3 yoga/flexibility/cooldown → shading only
+                  if r.2 != 3 {
+                    Image(systemName: r.2 == 1 ? "dumbbell.fill" : "figure.run").font(.system(size: 10)).foregroundColor(Color(hex: "FED7AA"))
+                  }
                 }
             }
             ForEach(kpi.marks ?? [], id: \.self) { m in
