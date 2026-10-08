@@ -27,6 +27,7 @@ export interface Exercise {
   name: string;
   muscles: Partial<Record<Muscle, number>>;   // involvement 0–1
   bodyweightFrac?: number;                     // share of body weight moved (dips ≈ 0.95); weight field = added (− = assistance)
+  timed?: boolean;                             // a HOLD (planks): a set's "reps" are SECONDS held; no tonnage / e1RM
   cue?: string;                                // one-line form cue
   video?: ExerciseVideo;
   custom?: boolean;
@@ -63,6 +64,13 @@ export interface SetLog {
 export type Feel = 'easy' | 'ok' | 'hard';
 export const FEEL_LABEL: Record<Feel, string> = { easy: 'Easy', ok: 'OK', hard: 'Hard' };
 export const isFeel = (v: unknown): v is Feel => v === 'easy' || v === 'ok' || v === 'hard';
+/** Pre-run drill moves (e.g. 20 forward lunges before every run). Body-weight, easy → counted at half a hard set per 10. */
+export interface DrillItem { exerciseId: string; reps: number }
+export const DEFAULT_DRILLS: DrillItem[] = [{ exerciseId: 'forward_lunge', reps: 20 }];
+export const drillsOf = (s: StrengthStore): DrillItem[] => (s.drillsOn === false ? [] : (s.drills ?? DEFAULT_DRILLS))
+  .filter(d => typeof d?.exerciseId === 'string' && Number.isFinite(d.reps) && d.reps > 0);
+/** Hard-set equivalents of one drill item: reps/10 for rep moves, 1 per set for a timed hold (not seconds/10). */
+export const drillSets = (s: StrengthStore, d: DrillItem) => (exerciseById(s, d.exerciseId)?.timed ? 1 : d.reps / 10);
 /** A set that counts: done, not a warm-up, with reps. */
 export const isWorkSet = (l: SetLog) => l.done && !l.warmup && l.reps > 0;
 export interface StrengthSession {
@@ -125,6 +133,19 @@ const EX: Exercise[] = [
   { id: 'cable_squat', name: 'Cable Squat', muscles: { quads: 1, glutes: 0.7, adductors: 0.3 }, bodyweightFrac: 0.8, cue: 'Low pulley, handle at the chest. Sit the hips down and back, torso upright, drive up through the whole foot. Don\'t lean back into a hip hinge.' },
   { id: 'close_grip_pushup', name: 'Close-Grip Push-up', muscles: { triceps: 1, chest: 0.6, front_delts: 0.4 }, bodyweightFrac: 0.65, cue: 'Hands under the shoulders, elbows brushing the ribs, body in one line. Knees down to make it easier. Don\'t let the hips sag.' },
   { id: 'overhead_cable_triceps_extension', name: 'Overhead Cable Triceps Extension', muscles: { triceps: 1 }, cue: 'Face away from the high pulley, staggered stance, upper arms by the ears. Extend to lockout, return to a full stretch. Don\'t flare the elbows.' },
+
+  // ── Runner strength (2026-10-08): the knowledge file's durability moves as loggable exercises + the drills' lunges ──
+  { id: 'forward_lunge', name: 'Forward Lunge', muscles: { quads: 1, glutes: 0.7, adductors: 0.4, hamstrings: 0.3, calves: 0.2 }, bodyweightFrac: 0.8, cue: 'Step forward, lower until both knees reach ~90°, front knee over the toes, torso tall; push back to standing. Don\'t let the front knee cave in.' },
+  { id: 'heel_drop', name: 'Eccentric Heel Drop', muscles: { calves: 1 }, bodyweightFrac: 1, cue: 'Rise on both feet, shift onto one, lower that heel slowly (~3 s) below the step. Do straight- and bent-knee sets. Don\'t drop fast or bounce.' },
+  { id: 'single_leg_squat', name: 'Single-Leg Squat (box / pistol progression)', muscles: { quads: 1, glutes: 0.8, adductors: 0.3, hamstrings: 0.2, calves: 0.2 }, bodyweightFrac: 0.9, cue: 'Sit back to a box or the Marcy seat, knee over the second toe, hips level. Control down, drive up. Don\'t let the knee cave in or the hip drop.' },
+  { id: 'step_down', name: 'Step-Down', muscles: { quads: 1, glutes: 0.6, calves: 0.2 }, bodyweightFrac: 0.9, cue: 'Stand on a step, slowly lower the free heel to tap the floor, then stand. Knee over the second toe, pelvis level. Don\'t let the knee dive inward.' },
+  { id: 'glute_bridge', name: 'Glute Bridge / Single-Leg Bridge', muscles: { glutes: 1, hamstrings: 0.5, lower_back: 0.2 }, bodyweightFrac: 0.5, cue: 'Feet flat, ribs down. Squeeze the glutes to lift the hips to a straight knee–hip–shoulder line, pause, lower. Don\'t over-arch the lower back.' },
+  { id: 'clamshell', name: 'Clamshell / Hip Abduction', muscles: { glutes: 0.8 }, cue: 'Side-lying, hips stacked, heels together. Open the top knee only as far as the pelvis stays still, lower slowly. Don\'t roll the hips back.' },
+  { id: 'tibialis_raise', name: 'Tibialis Raise', muscles: { calves: 0.4 }, bodyweightFrac: 0.3, cue: 'Back to a wall, heels ~30 cm out, legs straight. Lift the toes as high as you can, lower slowly. Don\'t let the heels lift or the hips rock. (Front shin — counted under lower leg.)' },
+  { id: 'nordic_curl', name: 'Nordic Curl (assisted)', muscles: { hamstrings: 1, glutes: 0.3, calves: 0.2 }, bodyweightFrac: 0.6, cue: 'Anchor the ankles, body straight from knees to head. Lower as slowly as you can, catch with the hands, push back up. Don\'t bend at the hips.' },
+  { id: 'copenhagen_plank', name: 'Copenhagen Plank', muscles: { adductors: 1, abs: 0.5 }, bodyweightFrac: 0.5, timed: true, cue: 'Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don\'t let the hips sag or pike.' },
+  { id: 'side_plank', name: 'Side Plank', muscles: { abs: 1, glutes: 0.3 }, bodyweightFrac: 0.5, timed: true, cue: 'Elbow under the shoulder, body one straight line from head to heels, hips lifted; breathe. Don\'t let the hips sag or rotate.' },
+  { id: 'front_plank', name: 'Plank', muscles: { abs: 1, front_delts: 0.2 }, bodyweightFrac: 0.6, timed: true, cue: 'Forearms under the shoulders, squeeze glutes and brace, body one straight line. Don\'t let the hips sag or pike up.' },
 ];
 
 // Verified YouTube technique videos (oEmbed-checked 2026-10-07; one per exercise, reputable coaching channels).
@@ -164,6 +185,18 @@ const VIDEOS: Record<string, ExerciseVideo> = {
   cable_squat: { url: "https://www.youtube.com/watch?v=VdWQ6Dn-o2k", title: "How To: Low Cable Squat With Rope", channel: "Live Lean TV" },
   close_grip_pushup: { url: "https://www.youtube.com/watch?v=J0DnG1_S92I", title: "How To: Diamond Push-Up", channel: "ScottHermanFitness" },
   overhead_cable_triceps_extension: { url: "https://www.youtube.com/watch?v=57fWTQID-1Y", title: "How to PROPERLY Overhead Cable Tricep Extension", channel: "Colossus Fitness" },
+  // runner strength (oEmbed-verified 2026-10-08)
+  forward_lunge: { url: 'https://www.youtube.com/watch?v=DKAILCp9POg', title: 'Want to get your LUNGE TECHNIQUE RIGHT?', channel: 'Physio REHAB' },
+  heel_drop: { url: 'https://www.youtube.com/watch?v=fHHbn_Odk4E', title: 'Alfredson Achilles Tendinopathy Rehab Protocol', channel: 'Physiotutors' },
+  single_leg_squat: { url: 'https://www.youtube.com/watch?v=vq5-vdgJc0I', title: 'How to Get Your First PISTOL SQUAT (Step-by-Step Progression)', channel: 'Squat University' },
+  step_down: { url: 'https://www.youtube.com/watch?v=fhS16XQBM3I', title: 'Step Downs Anterior vs Lateral vs Posterior - Whats The Difference?', channel: '[P]rehab' },
+  glute_bridge: { url: 'https://www.youtube.com/watch?v=7vTnfE6oiXk', title: 'How to Progress a Glute Bridge from 2 to 1 Leg | Tim Keeley | Physio REHAB', channel: 'Physio REHAB' },
+  clamshell: { url: 'https://www.youtube.com/watch?v=MYosRQfFs6A', title: 'Banded Clamshell | Band | Strength and Conditioning Exercises', channel: 'Rehab My Patient' },
+  tibialis_raise: { url: 'https://www.youtube.com/watch?v=VzIcGAgBiaM', title: 'Tibialis Wall Raises (Exercise Demo)', channel: 'The Barefoot Sprinter' },
+  nordic_curl: { url: 'https://www.youtube.com/watch?v=_e9vFU9-tkc', title: 'How to Set Up, Perform, & Program Nordic Hamstring Curls (Progressions | Regressions | Alternatives)', channel: 'E3 Rehab' },
+  copenhagen_plank: { url: 'https://www.youtube.com/watch?v=YRRnnZsRs9U', title: 'How to Set Up, Perform, & Program Copenhagen Planks (Progressions | Regressions | Alternatives)', channel: 'E3 Rehab' },
+  side_plank: { url: 'https://www.youtube.com/watch?v=rCxF2nG9vQ0', title: 'How to do the perfect Side Plank and most common mistakes', channel: 'Get Exercise Confident' },
+  front_plank: { url: 'https://www.youtube.com/watch?v=6LqqeBtFn9M', title: 'How to do the perfect PLANK: technique and common mistakes', channel: 'Get Exercise Confident' },
 };
 
 export const BUILTIN_EXERCISES: Exercise[] = EX.map(e => (VIDEOS[e.id] ? { ...e, video: VIDEOS[e.id] } : e));
@@ -179,7 +212,19 @@ const T = '3:1:2:1';
 const it = (exerciseId: string, sets: number, repsLo: number, repsHi: number, restSec: number, altIds?: string[]): RoutineItem =>
   ({ exerciseId, sets, repsLo, repsHi, restSec, tempo: T, ...(altIds ? { altIds } : {}) });
 
-export const STARTER_REV = 2;
+export const STARTER_REV = 3;   // 2 = Marcy home gym · 3 = + Runner Strength routine
+// Runner durability (the coach's strength-exercises knowledge file as a loggable routine; holds in SECONDS)
+export const RUNNER_ROUTINE: Routine = { id: 'runner_strength', name: 'Runner Strength', source: 'RunCoach — runner durability: eccentric calves, single-leg strength, hips, hamstrings, adductors', days: [], updatedAt: 0, items: [
+  it('heel_drop', 3, 12, 15, 60),
+  it('single_leg_squat', 3, 6, 8, 75),
+  it('step_down', 3, 10, 12, 60),
+  it('glute_bridge', 3, 12, 15, 60),
+  it('clamshell', 2, 15, 20, 45),
+  it('tibialis_raise', 3, 15, 20, 45),
+  it('nordic_curl', 3, 4, 6, 90),
+  it('copenhagen_plank', 2, 20, 30, 60),
+  it('side_plank', 3, 30, 45, 45),
+] };
 export const STARTER_ROUTINES: Routine[] = [
   { id: 'kd_push', name: 'Push', source: SRC, days: [], updatedAt: 0, items: [
     it('chest_press_machine', 4, 6, 8, 120),                                       // was incline DB press
@@ -217,13 +262,14 @@ export const STARTER_ROUTINES: Routine[] = [
 // ── Storage ──────────────────────────────────────────────────────────────────────────────────────────────────
 export const STRENGTH_FILE = `${FileSystem.documentDirectory}runcoach-strength.json`;
 export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boolean; hkExtrasAsked?: boolean; voice?: boolean;   // voice = spoken set announcements in the session (default on)
+  drills?: DrillItem[]; drillsOn?: boolean;   // pre-run drills done before EVERY run → counted on each run (default: 20 forward lunges, on)
   routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
 
 let cache: StrengthStore | null = null;
 let loading: Promise<StrengthStore> | null = null;   // one in-flight read shared by concurrent callers
 let writeQ: Promise<unknown> = Promise.resolve();     // every write goes through this queue, in order
 
-const fresh = (): StrengthStore => ({ v: 1, starterRev: STARTER_REV, routines: STARTER_ROUTINES.map(r => ({ ...r, days: [...r.days], items: r.items.map(i => ({ ...i })) })), customExercises: [], sessions: [] });
+const fresh = (): StrengthStore => ({ v: 1, starterRev: STARTER_REV, routines: [...STARTER_ROUTINES, RUNNER_ROUTINE].map(r => ({ ...r, days: [...r.days], items: r.items.map(i => ({ ...i })) })), customExercises: [], sessions: [] });
 const writeFile = (st: StrengthStore) => FileSystem.writeAsStringAsync(STRENGTH_FILE, JSON.stringify(st));
 
 /**
@@ -241,15 +287,24 @@ export function loadStrength(): Promise<StrengthStore> {
         let j: any = null;
         try { j = JSON.parse(raw); } catch { j = null; }
         if (j && Array.isArray(j.routines)) {
-          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
-          if ((cache.starterRev ?? 1) < STARTER_REV) {
-            // The starter programs changed (rev 2 = adapted to the Marcy home gym): swap the EXERCISES of the stored
-            // starter routines; keep their name, planned days and source, and every logged session.
-            const byId = new Map(STARTER_ROUTINES.map(r => [r.id, r]));
-            cache = { ...cache, starterRev: STARTER_REV, routines: cache.routines.map(r => {
-              const st = byId.get(r.id);
-              return st ? { ...r, source: st.source, items: st.items.map(i => ({ ...i, ...(i.altIds ? { altIds: [...i.altIds] } : {}) })), updatedAt: Date.now() } : r;
-            }) };
+          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
+          const rev0 = cache.starterRev ?? 1;
+          if (rev0 < STARTER_REV) {
+            // Step-wise, each step ONCE (a later rev must never redo an earlier one — rev 2 resets exercises, which would
+            // wipe the auto-updated weights):
+            //  rev 2 = adapted to the Marcy home gym: swap the EXERCISES of the stored starter routines (name, days,
+            //          source and every logged session kept);
+            //  rev 3 = the Runner Strength routine is added (if not already there).
+            let routines = cache.routines;
+            if (rev0 < 2) {
+              const byId = new Map(STARTER_ROUTINES.map(r => [r.id, r]));
+              routines = routines.map(r => {
+                const st = byId.get(r.id);
+                return st ? { ...r, source: st.source, items: st.items.map(i => ({ ...i, ...(i.altIds ? { altIds: [...i.altIds] } : {}) })), updatedAt: Date.now() } : r;
+              });
+            }
+            if (rev0 < 3 && !routines.some(r => r.id === RUNNER_ROUTINE.id)) routines = [...routines, { ...RUNNER_ROUTINE, items: RUNNER_ROUTINE.items.map(i => ({ ...i })), updatedAt: Date.now() }];
+            cache = { ...cache, starterRev: STARTER_REV, routines };
             await writeFile(cache).catch(() => {});
           }
           return cache;
@@ -368,6 +423,8 @@ export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: numbe
   };
   let streak = 0;
   for (const h of hist) { if (stable(h)) streak++; else break; }
+  // a HOLD (plank…): progress the TIME, not the weight — once every set reached the top of the range 3× in a row
+  if (ex?.timed) return { kg: top, why: streak >= STABLE_SESSIONS ? `${STABLE_SESSIONS} sessions holding ${hi} s on every set — lengthen the hold (edit the routine's seconds)` : `aim for ${hi} s on every set${streak ? ` (${streak}/${STABLE_SESSIONS} sessions so far)` : ''}` };
   if (streak >= STABLE_SESSIONS) {
     const bodyKg = s.sessions.filter(q => q.finishedAt && q.bodyKg).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))[0]?.bodyKg ?? 80;
     const load = ex?.bodyweightFrac ? bodyKg * ex.bodyweightFrac + top : top;
@@ -441,7 +498,7 @@ export function muscleLoad(s: StrengthStore, sessions: StrengthSession[], fallba
       if (!isWorkSet(l)) continue;
       const ex = exerciseById(s, l.exerciseId);
       if (!ex) continue;
-      const load = Math.max(0, (l.weightKg || 0) + (ex.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0));
+      const load = ex.timed ? 0 : Math.max(0, (l.weightKg || 0) + (ex.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0));   // a hold has no tonnage
       for (const [m, inv] of Object.entries(ex.muscles) as [Muscle, number][]) {
         const a = acc.get(m) ?? { t: 0, h: 0 };
         a.t += load * l.reps * inv;
@@ -464,6 +521,7 @@ export function sessionTonnage(s: StrengthStore, x: StrengthSession, fallbackBod
   for (const l of x.sets) {
     if (!isWorkSet(l)) continue;
     const ex = exerciseById(s, l.exerciseId);
+    if (ex?.timed) continue;   // a hold (seconds) isn't kg × reps
     t += Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0)) * l.reps;
   }
   return Math.round(t);
@@ -516,6 +574,7 @@ export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseS
     for (const l of sets) {
       const kg = setLoadKg(ex, l, x.bodyKg);
       topKg = Math.max(topKg, ex?.bodyweightFrac ? l.weightKg : kg);   // body-weight moves: "heaviest" = added kg (−20 → −15 = less assistance)
+      if (ex?.timed) continue;   // holds: seconds, not kg × reps → no e1RM / volume (bestReps = longest hold)
       bestE = Math.max(bestE, e1rm(kg, l.reps, l.rir) ?? 0);
       bestV = Math.max(bestV, kg * l.reps);
       vol += kg * l.reps;
@@ -594,8 +653,12 @@ export function sessionPRs(s: StrengthStore, sessionId: string): PrHit[] {
 export interface RunLike { date: string; duration: number; avgHeartRate?: number }
 export interface MuscleEvent { at: number; units: Partial<Record<Muscle, number>>; kind: 'strength' | 'run' }
 const RUN_LEGS: Partial<Record<Muscle, number>> = { calves: 0.5, quads: 0.4, hamstrings: 0.3, glutes: 0.3, adductors: 0.15 };
+export const DRILL_SET_FACTOR = 0.5;
+/** Muscular strain load of ONE run's pre-run drills (added per run day in the strain model). */
+export const drillStrainLoad = (s: StrengthStore) => drillsOf(s).reduce((a, d) => a + drillSets(s, d) * DRILL_SET_FACTOR * MUSC_LOAD_PER_SET * (4 / 7), 0);
 export function muscleEvents(s: StrengthStore, runs: RunLike[], maxHr = 188, sinceMs = Date.now() - 150 * 86_400_000): MuscleEvent[] {
   const ev: MuscleEvent[] = [];
+  const drills = drillsOf(s);
   for (const x of s.sessions) {
     if (!x.finishedAt || x.finishedAt < sinceMs) continue;
     const eff = x.rpe ? Math.max(0.75, Math.min(1.25, x.rpe / 8)) : 1;
@@ -614,6 +677,8 @@ export function muscleEvents(s: StrengthStore, runs: RunLike[], maxHr = 188, sin
     const f = (r.duration / 600) * (1 + 0.6 * Math.max(0, Math.min(1, (rel - 0.7) / 0.2)));   // 70 % HRmax → ×1.0 … 90 % → ×1.6, smooth
     const u: Partial<Record<Muscle, number>> = {};
     for (const [m, w] of Object.entries(RUN_LEGS) as [Muscle, number][]) u[m] = w * f;
+    // the pre-run drills done before every run (e.g. 20 forward lunges): body-weight, easy → half a hard set per 10 reps
+    for (const d of drills) for (const [m, inv] of Object.entries(exerciseById(s, d.exerciseId)?.muscles ?? {}) as [Muscle, number][]) u[m] = (u[m] ?? 0) + inv * drillSets(s, d) * DRILL_SET_FACTOR;
     ev.push({ at: end, units: u, kind: 'run' });
   }
   return ev.sort((a, b) => a.at - b.at);
@@ -904,7 +969,8 @@ export function exerciseSummary(s: StrengthStore, x: StrengthSession): string {
   return order.map(id => {
     const sets = x.sets.filter(l => l.exerciseId === id && isWorkSet(l));
     const reps = sets.map(l => l.reps), lo = Math.min(...reps), hi = Math.max(...reps), top = Math.max(...sets.map(l => l.weightKg));
-    return `${exerciseById(s, id)?.name ?? id} ${sets.length}×${lo === hi ? lo : `${lo}–${hi}`} @ ${top} kg`;
+    const ex = exerciseById(s, id);
+    return ex?.timed ? `${ex.name} ${sets.length}×${lo === hi ? lo : `${lo}–${hi}`} s` : `${ex?.name ?? id} ${sets.length}×${lo === hi ? lo : `${lo}–${hi}`} @ ${top} kg`;
   }).join('; ');
 }
 /** Save a finished session to Apple Health (unless switched off) and remember the outcome on the session. */

@@ -13,6 +13,7 @@ struct StrengthView: View {
       switch eng.phase {
       case .idle:      pickList
       case .lifting:   liftScreen
+      case .holding:   holdScreen
       case .resting:   restScreen
       case .finishing: finishScreen
       case .saving:    VStack(spacing: 8) { ProgressView(); Text("Saving…").font(.footnote) }
@@ -83,9 +84,16 @@ struct StrengthView: View {
             .font(.system(size: 11)).foregroundColor(.secondary)
           stepper(label: (it.bw ?? false) ? "BW \(eng.kg >= 0 ? "+" : "−")\(fmtKg(abs(eng.kg))) kg" : "\(fmtKg(eng.kg)) kg",
                   minus: { eng.stepKg(-1) }, plus: { eng.stepKg(1) })
-          stepper(label: "\(eng.reps) reps", minus: { eng.stepReps(-1) }, plus: { eng.stepReps(1) })
-          Button { eng.doneSet() } label: { Label("Done", systemImage: "checkmark").font(.system(size: 17, weight: .bold)).frame(maxWidth: .infinity) }
-            .tint(.green).disabled(eng.reps == 0)
+          if it.timed ?? false {
+            // a HOLD: seconds ±5, then ▶ starts the countdown (spoken cues); it ticks itself when time's up
+            stepper(label: "\(eng.reps) s", minus: { eng.stepReps(-5) }, plus: { eng.stepReps(5) })
+            Button { eng.startHold() } label: { Label("Start hold", systemImage: "timer").font(.system(size: 17, weight: .bold)).frame(maxWidth: .infinity) }
+              .tint(.green).disabled(eng.reps == 0)
+          } else {
+            stepper(label: "\(eng.reps) reps", minus: { eng.stepReps(-1) }, plus: { eng.stepReps(1) })
+            Button { eng.doneSet() } label: { Label("Done", systemImage: "checkmark").font(.system(size: 17, weight: .bold)).frame(maxWidth: .infinity) }
+              .tint(.green).disabled(eng.reps == 0)
+          }
           HStack(spacing: 6) {
             Button { eng.moveExercise(-1) } label: { Image(systemName: "chevron.left") }
             Button { eng.undoLast() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(eng.logged.isEmpty)
@@ -120,6 +128,18 @@ struct StrengthView: View {
     .font(.system(size: 12, weight: .semibold)).monospacedDigit().labelStyle(.titleAndIcon)
   }
 
+  // ── A running hold: big countdown, ■ to stop early (logs the seconds held) ──
+  private var holdScreen: some View {
+    VStack(spacing: 6) {
+      Text(eng.item?.name ?? "Hold").font(.system(size: 14, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
+      Text("\(eng.holdLeft)").font(.system(size: 56, weight: .bold, design: .rounded)).monospacedDigit()
+        .foregroundColor(eng.holdLeft <= 3 ? .green : .orange)
+      Text("seconds").font(.system(size: 11)).foregroundColor(.secondary)
+      Button(role: .destructive) { eng.stopHoldEarly() } label: { Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity) }
+      statLine
+    }
+  }
+
   // ── Rest countdown + what's next ──
   private var restScreen: some View {
     ScrollView {
@@ -131,7 +151,7 @@ struct StrengthView: View {
           Button { picking = true } label: {   // change what's next while resting
             Text("Next: \(it.name) ⌄").font(.system(size: 13, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
           }.buttonStyle(.plain)
-          Text("Set \(eng.setIdx + 1) · \((it.bw ?? false) ? "BW \(eng.kg >= 0 ? "+" : "−")\(fmtKg(abs(eng.kg)))" : fmtKg(eng.kg)) kg × \(eng.reps)")
+          Text((it.timed ?? false) ? "Set \(eng.setIdx + 1) · hold \(eng.reps) s" : "Set \(eng.setIdx + 1) · \((it.bw ?? false) ? "BW \(eng.kg >= 0 ? "+" : "−")\(fmtKg(abs(eng.kg)))" : fmtKg(eng.kg)) kg × \(eng.reps)")
             .font(.system(size: 12)).foregroundColor(.secondary)
         }
         feelButtons

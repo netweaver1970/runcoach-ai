@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
+import { ModeHeader } from '../src/components/ModeHeader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { DayNav } from '../src/components/DayNav';
@@ -198,13 +199,11 @@ export default function FoodMode() {
   return (
     <View style={s.screen}>
       <Stack.Screen options={{ headerShown: false }} />
-      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12, paddingBottom: 120 }}>
-        <View style={s.topRow}>
-          <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
-          <Text style={s.title}>🍽️ Food</Text>
-          <View style={{ width: 90 }} />
-        </View>
+      {/* the shared mode header (Biology's), day navigation as its second row */}
+      <ModeHeader title="Food" actions={[{ icon: '＋', onPress: () => setAdding(true), label: 'Log food' }]}>
         <DayNav date={isToday ? undefined : date} todayKey={today} />
+      </ModeHeader>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 120 }}>
 
         {/* Totals — neutral, no "over budget" red */}
         <View style={s.card}>
@@ -320,7 +319,7 @@ export default function FoodMode() {
         <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)} own={lib?.custom.find(x => x.key === editing.key)}
           onClose={() => { Keyboard.dismiss(); setEditing(null); reload(); }} />
       )}
-      {!adding && !editing && <ModeSwitcher current="food" side="left" />}
+      {!adding && !editing && <ModeSwitcher current="food" />}
     </View>
   );
 }
@@ -1131,7 +1130,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   toast:     { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.text, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14 },
   toastTxt:  { color: c.bg, fontSize: 14, fontWeight: '600', flex: 1 },
   toastBtn:  { color: c.accent, fontSize: 15, fontWeight: '800' },
-  fab:       { position: 'absolute', right: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
+  // left: the Modes button sits bottom-RIGHT on every mode screen
+  fab:       { position: 'absolute', left: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
   fabTxt:    { color: c.onAccent, fontSize: 30, fontWeight: '600', marginTop: -2 },
   sheet:     { flex: 1, padding: 16 },
   sheetHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 },

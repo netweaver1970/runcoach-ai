@@ -18,6 +18,7 @@ struct StrengthItem: Codable, Hashable {
   let rest: Double          // seconds after each set
   let lo: Int; let hi: Int  // rep range
   let bw: Bool?             // body-weight move: kg = ADDED weight (negative = assistance)
+  let timed: Bool?          // a HOLD (plank…): "reps" are SECONDS, done with a countdown (optional → older plans decode)
   let step: Double?         // weight step (2 kg dumbbells, 2.5 kg stack/plates)
   let sets: [StrengthSetPlan]
 }
@@ -41,7 +42,7 @@ private struct LiveState: Codable { let sid: String; let start: Double; let rout
   let feel: [String: String]?   // optional (older saved states have none)
 }
 
-enum StrengthPhase { case idle, lifting, resting, finishing, saving, done }
+enum StrengthPhase { case idle, lifting, holding, resting, finishing, saving, done }
 
 final class StrengthEngine: NSObject, ObservableObject {
   static let shared = StrengthEngine()
@@ -63,6 +64,10 @@ final class StrengthEngine: NSObject, ObservableObject {
   @Published var reps = 0
   @Published var logged: [LoggedSet] = []
   @Published var restLeft = 0
+  @Published var holdLeft = 0                   // a running HOLD's seconds left
+  private var holdStart: Date?
+  private var holdTarget = 0
+  private var holdCues: Set<String> = []
   @Published var feel: [String: String] = [:]   // optional per-exercise feedback: exId → easy / ok / hard
   @Published var lastDoneSlot = -1              // the slot of the set ticked last → "how did it feel?" once it's complete
   @Published var heartRate: Double = 0
@@ -87,7 +92,7 @@ final class StrengthEngine: NSObject, ObservableObject {
   }
   // A LIVE strength session (blocks a run Start, keeps the strength screen forward). NOT while saving: the HK session
   // has already been ended then, and a hung save must never lock the runner out of a run (watch review H1).
-  var running: Bool { session != nil && [.lifting, .resting, .finishing].contains(phase) }
+  var running: Bool { session != nil && [.lifting, .holding, .resting, .finishing].contains(phase) }
 
   override init() {
     super.init()
@@ -175,7 +180,7 @@ final class StrengthEngine: NSObject, ObservableObject {
     let v = ((kg + dir * st) * 4).rounded() / 4
     kg = (item?.bw ?? false) ? v : max(0, v)    // assistance (negative) only on body-weight moves
   }
-  func stepReps(_ d: Int) { reps = max(0, min(99, reps + d)) }
+  func stepReps(_ d: Int) { reps = max(0, min((item?.timed ?? false) ? 600 : 99, reps + d)) }   // holds: up to 10 min
 
   func doneSet() {
     guard phase == .lifting, let it = item, reps > 0, let r = routine else { return }
@@ -215,6 +220,10 @@ final class StrengthEngine: NSObject, ObservableObject {
   func announce() {
     guard voiceOn, let it = item else { return }
     let n = it.sets.count, k = setIdx + 1
+    if it.timed ?? false {
+      SpeechCue.shared.say("\(it.name), \(k > n ? "extra set" : "set \(k) of \(n)"), \(reps) seconds\(kg > 0 ? ", plus \(fmtKg(kg)) kilos" : "")")
+      return
+    }
     let w: String
     if it.bw ?? false { w = kg > 0 ? "body weight plus \(fmtKg(kg)) kilos" : kg < 0 ? "assisted, \(fmtKg(-kg)) kilos" : "body weight" }
     else { w = "\(fmtKg(kg)) kilos" }
@@ -245,7 +254,45 @@ final class StrengthEngine: NSObject, ObservableObject {
     saveLive()
   }
 
-  func askFinish() { if phase == .lifting || phase == .resting { skipRest(); phase = .finishing } }
+  // ─── Timed holds: ▶ countdown with cues ("Hold, 30 seconds" · "Halfway" · "10 seconds" · "3, 2, 1" · "Done") ───
+  func startHold() {
+    guard phase == .lifting, let it = item, it.timed ?? false, reps > 0 else { return }
+    holdStart = Date(); holdTarget = reps; holdLeft = reps; holdCues = []
+    phase = .holding
+    WKInterfaceDevice.current().play(.start)
+    if voiceOn { SpeechCue.shared.say("Hold, \(reps) seconds") }
+  }
+  // ■ early → log the seconds actually held (at least 1)
+  func stopHoldEarly() {
+    guard phase == .holding, let hs = holdStart else { return }
+    reps = max(1, Int(Date().timeIntervalSince(hs).rounded()))
+    endHold()
+  }
+  private func endHold() {
+    holdStart = nil; phase = .lifting
+    doneSet()
+  }
+  private func holdTick() {
+    guard phase == .holding, let hs = holdStart else { return }
+    let el = Date().timeIntervalSince(hs)
+    let left = Int(ceil(Double(holdTarget) - el))
+    holdLeft = max(0, left)
+    func cue(_ k: String, _ text: String) { if !holdCues.contains(k) { holdCues.insert(k); if voiceOn { SpeechCue.shared.say(text) } } }
+    if holdTarget >= 30 && el >= Double(holdTarget) / 2 { cue("half", "Halfway") }
+    if holdTarget >= 20 && left <= 10 && left > 3 { cue("10", "10 seconds") }
+    if left <= 3 && left > 0 { cue("321", "3, 2, 1") }
+    if left <= 0 {
+      cue("done", "Done")
+      WKInterfaceDevice.current().play(.success)
+      reps = holdTarget
+      endHold()
+    }
+  }
+
+  func askFinish() {
+    if phase == .holding { holdStart = nil; phase = .lifting }   // a hold in progress is dropped (not logged)
+    if phase == .lifting || phase == .resting { skipRest(); phase = .finishing }
+  }
   func backToWorkout() { if phase == .finishing && canResume { loadSet(exIdx, loggedCount(exIdx)); phase = .lifting } }
   func finishDone() { issue = ""; doneNote = ""; reset() }
 
@@ -392,6 +439,7 @@ final class StrengthEngine: NSObject, ObservableObject {
     ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       guard let self, let sd = self.startDate else { return }
       self.elapsed = Date().timeIntervalSince(sd)
+      if self.phase == .holding { self.holdTick(); return }
       guard self.phase == .resting, let e = self.restEnd else { return }
       let left = Int(ceil(e.timeIntervalSinceNow))
       self.restLeft = max(0, left)
@@ -413,7 +461,7 @@ extension StrengthEngine: HKWorkoutSessionDelegate {
     DispatchQueue.main.async {
       guard ws === self.session else { return }
       // ended by the SYSTEM while logging (not by our save/discard) → the sets so far still reach the phone
-      if toState == .ended && (self.phase == .lifting || self.phase == .resting || self.phase == .finishing) {
+      if toState == .ended && (self.phase == .lifting || self.phase == .holding || self.phase == .resting || self.phase == .finishing) {
         self.issue = "The watch ended the workout."
         self.canResume = false; self.skipRest()
         self.phase = .finishing
@@ -426,6 +474,7 @@ extension StrengthEngine: HKWorkoutSessionDelegate {
       self.issue = "Workout stopped by the system (\(error.localizedDescription)). Save sends your sets to the iPhone."
       WKInterfaceDevice.current().play(.failure)
       self.canResume = false
+      if self.phase == .holding { self.holdStart = nil; self.phase = .lifting }
       if self.phase == .lifting || self.phase == .resting { self.skipRest(); self.phase = .finishing }
     }
   }

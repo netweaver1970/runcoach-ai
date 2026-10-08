@@ -115,7 +115,7 @@ export default function StrengthRoutineScreen() {
             {it.altIds?.length ? <Text style={s.meta}>or {it.altIds.map(a => exerciseById(store, a)?.name ?? a).join(' / ')}</Text> : null}
             <View style={s.grid}>
               <View style={s.cell}><Text style={s.cellLbl}>Sets</Text><NumField style={s.num} value={it.sets} onCommit={n => n != null && n >= 1 && patchItem(i, { sets: Math.min(10, n) })} /></View>
-              <View style={s.cell}><Text style={s.cellLbl}>Reps</Text>
+              <View style={s.cell}><Text style={s.cellLbl}>{ex?.timed ? 'Hold s' : 'Reps'}</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <NumField style={[s.num, { flex: 1 }]} value={it.repsLo} onCommit={n => n != null && n >= 1 && patchItem(i, { repsLo: n })} />
                   <Text style={s.meta}> – </Text>

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Switch } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Switch, TextInput, Keyboard } from 'react-native';
 import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import Svg, { Polyline, Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,12 +8,13 @@ import {
   StrengthStore, loadStrength, updateStrength, routinesForDate, sessionsOn, estimateMinutes, muscleLoad,
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
-  exerciseStatLine, ExerciseStatLine,
+  exerciseStatLine, ExerciseStatLine, DEFAULT_DRILLS, exerciseById,
 } from '../src/services/strength';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
 import { getEffectiveMaxHr } from '../src/services/claude';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
+import { ModeHeader } from '../src/components/ModeHeader';
 import { BodyMap } from '../src/components/BodyMap';
 
 // Muscle-map layout for the freshness panel (front / back / legs), Bevel-style colour bands.
@@ -25,7 +26,8 @@ const FRESH_ROWS: { label: string; muscles: Muscle[] }[] = [
 
 // Fitness mode = the strength module (Build 1): today's planned routine, routines, per-muscle load, history.
 // "27.5 kg × 10 · e1RM 36 · ▲ 6% (8 wk) · 5×" — the exercise's numbers at a glance
-function exLine(st: ExerciseStatLine): string {
+function exLine(st: ExerciseStatLine, timed?: boolean): string {
+  if (timed) return `${st.lastReps} s hold · ${st.sessions}×`;
   const tr = st.trendPct == null ? '' : ` · ${st.trendPct > 1 ? '▲' : st.trendPct < -1 ? '▼' : '▶'} ${Math.abs(st.trendPct)}% (8 wk)`;
   return `${st.lastTop < 0 ? `${-st.lastTop} kg assist` : `${st.lastTop} kg`} × ${st.lastReps}${st.e1rm ? ` · e1RM ${st.e1rm}` : ''}${tr} · ${st.sessions}×`;
 }
@@ -50,11 +52,25 @@ export default function FitnessMode() {
   const [win, setWin] = useState<7 | 28>(7);
   const [runs, setRuns] = useState<{ runs: RunLike[]; maxHr: number } | null>(null);
   const [showEx, setShowEx] = useState(false);
+  const [exQ, setExQ] = useState('');            // search in the exercise list (name or muscle)
+  const [drillAdd, setDrillAdd] = useState(false);
+  const [drillQ, setDrillQ] = useState('');
   // the exercise list's stats rows — computed only while the list is open, and only when the store changes
   const exRows = useMemo(() => (showEx && store ? allExercises(store)
     .map(e => ({ e, st: exerciseStatLine(store, e.id) }))
     .sort((a, b) => (b.st?.lastAt ?? 0) - (a.st?.lastAt ?? 0) || a.e.name.localeCompare(b.e.name)) : []), [store, showEx]);
   const [selMuscle, setSelMuscle] = useState<Muscle | null>(null);
+  // reps 0 = remove the move
+  const setDrills = (i: number, reps: number) => {
+    const target = (store?.drills ?? DEFAULT_DRILLS)[i];   // the item tapped (a queued double tap must not hit the next one)
+    return updateStrength(st => {
+    const list = [...(st.drills ?? DEFAULT_DRILLS)];
+    const k = list.findIndex(d => d.exerciseId === target?.exerciseId);
+    if (k < 0) return st;
+    if (reps <= 0) list.splice(k, 1); else list[k] = { ...list[k], reps };
+    return { ...st, drills: list };
+  }).then(st => setStore({ ...st }));
+  };
 
   const opening = useRef(false);   // a double-tapped Start must not open (and create) two sessions
   useFocusEffect(useCallback(() => {
@@ -100,10 +116,14 @@ export default function FitnessMode() {
 
   return (
     <View style={s.screen}>
-    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: insets.top + 12, paddingBottom: 96 }}>
       <Stack.Screen options={{ headerShown: false }} />
-      <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠  Home</Text></TouchableOpacity>
-      <Text style={s.h1}>🏋️ Strength</Text>
+      {/* the shared mode header (Biology's) */}
+      <ModeHeader title="Strength" actions={[
+        { icon: '📅', onPress: () => router.push('/training-calendar' as any), label: 'Training calendar' },
+        { icon: '📈', onPress: () => router.push('/strength-stats' as any), label: 'Strength stats' },
+        { icon: '🗂', onPress: () => router.push('/routines' as any), label: 'Routines' },
+      ]} />
+    <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 96 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
 
       {/* Today */}
       <View style={s.card}>
@@ -221,16 +241,54 @@ export default function FitnessMode() {
 
       {/* Exercise library: per exercise its stats at a glance (trained ones first, most recent on top) → detail */}
       <TouchableOpacity onPress={() => setShowEx(v => !v)}><Text style={s.section}>Exercises ({allExercises(store).length}) {showEx ? '▾' : '▸'}</Text></TouchableOpacity>
-      {showEx && exRows.map(({ e, st }) => (
+      {showEx && (
+        <TextInput style={s.search} value={exQ} onChangeText={setExQ} placeholder="Search exercises or muscles…" placeholderTextColor="#999"
+          clearButtonMode="while-editing" autoCorrect={false} returnKeyType="search" />
+      )}
+      {showEx && exRows.filter(({ e }) => {
+        const q = exQ.trim().toLowerCase();
+        return !q || e.name.toLowerCase().includes(q) || Object.keys(e.muscles).some(m => MUSCLE_LABEL[m as Muscle]?.toLowerCase().includes(q));
+      }).map(({ e, st }) => (
           <TouchableOpacity key={e.id} style={s.exRow} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.id } })}>
             <View style={{ flex: 1 }}>
               <Text style={s.histName}>{e.name}{e.video ? <Text style={s.meta}>  ▶</Text> : null}</Text>
-              <Text style={s.meta} numberOfLines={1}>{st ? exLine(st) : 'not trained yet'}</Text>
+              <Text style={s.meta} numberOfLines={1}>{st ? exLine(st, e.timed) : 'not trained yet'}</Text>
             </View>
             {st && st.spark.length >= 2 ? <Spark vals={st.spark} color={st.trendPct != null && st.trendPct < -1 ? '#e5484d' : c.accent} /> : null}
             <Text style={s.meta}>›</Text>
           </TouchableOpacity>
         ))}
+
+      {/* Pre-run drills: done before EVERY run → counted on each run (muscle freshness / muscular load / strain) */}
+      <View style={[s.card, { marginTop: 12 }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.todayName}>Pre-run drills</Text>
+            <Text style={s.meta}>Done before every run — counted on each run into the leg muscles (freshness, muscular load, strain).</Text>
+          </View>
+          <Switch value={store.drillsOn !== false} onValueChange={v => updateStrength(st => ({ ...st, drillsOn: v })).then(st => setStore({ ...st }))} />
+        </View>
+        {store.drillsOn !== false && (store.drills ?? DEFAULT_DRILLS).map((d, i) => (
+          <View key={`${d.exerciseId}-${i}`} style={s.drillRow}>
+            <Text style={[s.histName, { flex: 1 }]}>{exerciseById(store, d.exerciseId)?.name ?? d.exerciseId}</Text>
+            <TouchableOpacity hitSlop={8} onPress={() => setDrills(i, Math.max(1, d.reps - 5))}><Text style={s.drillBtn}>−</Text></TouchableOpacity>
+            <Text style={s.drillReps}>{d.reps}{exerciseById(store, d.exerciseId)?.timed ? ' s' : '×'}</Text>
+            <TouchableOpacity hitSlop={8} onPress={() => setDrills(i, d.reps + 5)}><Text style={s.drillBtn}>＋</Text></TouchableOpacity>
+            <TouchableOpacity hitSlop={8} onPress={() => setDrills(i, 0)}><Text style={[s.drillBtn, { color: '#e5484d' }]}>✕</Text></TouchableOpacity>
+          </View>
+        ))}
+        {store.drillsOn !== false && (drillAdd ? (
+          <View>
+            <TextInput style={s.search} value={drillQ} onChangeText={setDrillQ} placeholder="Add a drill move…" placeholderTextColor="#999" autoCorrect={false} autoFocus />
+            {allExercises(store).filter(e => drillQ.trim() && e.name.toLowerCase().includes(drillQ.trim().toLowerCase())).slice(0, 6).map(e => (
+              <TouchableOpacity key={e.id} style={s.drillRow} onPress={() => {
+                updateStrength(st => ({ ...st, drills: [...(st.drills ?? DEFAULT_DRILLS), { exerciseId: e.id, reps: e.timed ? 30 : 10 }] })).then(st => setStore({ ...st }));
+                setDrillAdd(false); setDrillQ(''); Keyboard.dismiss();
+              }}><Text style={s.histName}>＋ {e.name}</Text></TouchableOpacity>
+            ))}
+          </View>
+        ) : <TouchableOpacity onPress={() => setDrillAdd(true)}><Text style={[s.meta, { color: c.accent, marginTop: 6 }]}>＋ add a drill move</Text></TouchableOpacity>)}
+      </View>
 
       {/* Apple Health */}
       <View style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]}>
@@ -284,6 +342,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   barTrack:  { flex: 1, height: 10, borderRadius: 5, backgroundColor: c.surfaceAlt, overflow: 'hidden', marginHorizontal: 8 },
   barFill:   { height: 10, borderRadius: 5, backgroundColor: c.accent },
   barVal:    { color: c.textSub, fontSize: 12, width: 84, textAlign: 'right', fontVariant: ['tabular-nums'] },
+  search:    { backgroundColor: c.surfaceAlt, color: c.text, borderRadius: 10, borderWidth: 1, borderColor: c.border, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15, marginBottom: 6, marginTop: 4 },
+  drillRow:  { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
+  drillBtn:  { color: c.accent, fontSize: 18, fontWeight: '800', paddingHorizontal: 4 },
+  drillReps: { color: c.text, fontSize: 15, fontWeight: '700', minWidth: 42, textAlign: 'center', fontVariant: ['tabular-nums'] },
   exRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   histRow:   { flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   histDate:  { color: c.textFaint, fontSize: 13, width: 44, fontVariant: ['tabular-nums'] },

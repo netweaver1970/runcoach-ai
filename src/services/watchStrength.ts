@@ -56,7 +56,7 @@ async function pushOnce(): Promise<boolean> {
         const int = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Math.max(0, Math.round(Number(v))) : d);
         return {
           exId: it.exerciseId, name: ex?.name ?? it.exerciseId, rest: Number(it.restSec) || 0, lo: int(lo, 8), hi: int(hi, 10),
-          bw: !!ex?.bodyweightFrac, step: weightStep(ex),
+          bw: !!ex?.bodyweightFrac, step: weightStep(ex), ...(ex?.timed ? { timed: true } : {}),   // timed: reps = SECONDS
           sets: Array.from({ length: int(it.sets, 3) }, (_, k) => ({ kg: Number(sug.kg ?? it.weightKg ?? 0) || 0, reps: int(last[k]?.reps ?? hi, 10) })),
         };
       }),

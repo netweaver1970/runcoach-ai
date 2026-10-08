@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, useWindowDimensions, PanResponder, Modal } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
+import { ModeHeader } from '../src/components/ModeHeader';
 import Svg, { Polyline, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { requestBiologyPermissions } from '../src/services/healthkit';
 import { getBiologyReport, compositionChange, BiologyReport, BioMetric, BioPoint } from '../src/services/biology';
@@ -274,29 +275,14 @@ export default function BiologyMode() {
   return (
     <View style={s.screen}>
       <Stack.Screen options={{ headerShown: false }} />
-      {/* Sticky header — the ONLY header (native one hidden to avoid duplicate title/back) */}
-      <View style={[s.header, { paddingTop: insets.top + 4 }]}>
-        <View style={s.headerTop}>
-          <TouchableOpacity style={s.homeBtn} onPress={() => router.back()}><Text style={s.homeBtnTxt}>🏠</Text></TouchableOpacity>
-          <Text style={s.hTitle}>Biology</Text>
-          <View style={{ flex: 1 }} />
-          {loading && <ActivityIndicator size="small" color={c.accent} style={{ marginRight: 8 }} />}
-          <TouchableOpacity style={s.eyeBtn} onPress={() => setCustomising(true)}>
-            <Text style={s.eyeTxt}>⚙︎</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/data-chat?mode=biology' as any)}>
-            <Text style={s.eyeTxt}>💬</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.eyeBtn} onPress={() => router.push('/labs' as any)}>
-            <Text style={s.eyeTxt}>🧪</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={s.eyeBtn} disabled={loading} onPress={() => load(true)}>
-            <Text style={[s.eyeTxt, loading && s.eyeTxtOff]}>↻</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[s.eyeBtn, !showEvents && s.eyeBtnOff]} onPress={() => setShowEvents(v => !v)}>
-            <Text style={[s.eyeTxt, !showEvents && s.eyeTxtOff]}>{showEvents ? '👁' : '🚫'}</Text>
-          </TouchableOpacity>
-        </View>
+      {/* Sticky header — the shared mode header (Biology is its model) */}
+      <ModeHeader title="Biology" loading={loading} actions={[
+        { icon: '⚙︎', onPress: () => setCustomising(true), label: 'Customise' },
+        { icon: '💬', onPress: () => router.push('/data-chat?mode=biology' as any), label: 'Ask' },
+        { icon: '🧪', onPress: () => router.push('/labs' as any), label: 'Labs' },
+        { icon: '↻', onPress: () => load(true), disabled: loading, label: 'Refresh' },
+        { icon: showEvents ? '👁' : '🚫', onPress: () => setShowEvents(v => !v), off: !showEvents, label: 'Events' },
+      ]}>
         <View style={s.tabs}>{RANGES.map(r => (
           <TouchableOpacity key={r} onPress={() => { setRange(r); setOffset(0); }} style={[s.tab, range === r && s.tabOn]}><Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text></TouchableOpacity>
         ))}</View>
@@ -314,7 +300,7 @@ export default function BiologyMode() {
               : <Text numberOfLines={1} style={s.eventHint}>Scrub any chart — events appear here</Text>}
           </View>
         )}
-      </View>
+      </ModeHeader>
 
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 96 }}>
         {loading && <View style={s.loadCard}><ActivityIndicator color={c.accent} /><Text style={s.loadCardTxt}>Loading your full history from Apple Health…</Text></View>}

@@ -5,6 +5,7 @@ import Svg, { Polyline, Line, Text as SvgText } from 'react-native-svg';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, sessionBreakdown, sessionPRs, strengthWindow, MUSCLE_LABEL, Muscle, FEEL_LABEL, sessionStrainLoad,
+  Feel, setExerciseFeel, exerciseById,
 } from '../src/services/strength';
 import { fetchHrSamples, loadSnapshotCache } from '../src/services/healthkit';
 import { getEffectiveMaxHr } from '../src/services/claude';
@@ -14,6 +15,8 @@ import { BodyMap } from '../src/components/BodyMap';
 // One strength session, broken down (Bevel activity details / JEFIT BodyMap): what it worked (a body map + bars of
 // this session's muscle load), each exercise, the records it set, the heart-rate curve with a tick per set, and how
 // the day's strain splits into cardio (heart rate) vs muscular (the logged sets).
+const FEEL_COLOR: Record<Feel, string> = { easy: '#2f9e44', ok: '#8a8f98', hard: '#e5484d' };
+
 export default function StrengthSessionDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { c } = useTheme();
@@ -66,7 +69,7 @@ export default function StrengthSessionDetail() {
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingBottom: 48 }}>
       <Stack.Screen options={{ title: x.routineName, headerBackTitle: 'Back' }} />
-      <Text style={s.meta}>{new Date(x.startedAt).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}{x.hk?.watch ? ' · ⌚ logged on the watch' : ''}</Text>
+      <Text style={s.meta}>{new Date(x.startedAt).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} · {new Date(x.startedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}–{new Date(x.finishedAt!).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}{x.hk?.watch ? ' · ⌚ logged on the watch' : ''}</Text>
       <View style={s.tiles}>
         <View style={s.tile}><Text style={s.tileVal}>{b.workSets}</Text><Text style={s.tileLbl}>work sets</Text></View>
         <View style={s.tile}><Text style={s.tileVal}>{b.tonnage >= 1000 ? `${(b.tonnage / 1000).toFixed(1)} t` : b.tonnage}</Text><Text style={s.tileLbl}>kg lifted</Text></View>
@@ -96,16 +99,36 @@ export default function StrengthSessionDetail() {
       ))}
       <Text style={s.meta}>Hard sets per muscle, weighted by how much each exercise uses it (× session effort).</Text>
 
-      <Text style={s.section}>Exercises</Text>
-      {b.exercises.map(e => (
-        <TouchableOpacity key={e.exerciseId} style={s.row} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.exerciseId } })}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.rowTitle}>{e.name}</Text>
-            <Text style={s.meta}>{e.sets} × {e.reps} @ {e.load} · {e.volume.toLocaleString()} kg{e.feel ? ` · felt ${FEEL_LABEL[e.feel].toLowerCase()}` : ''}</Text>
+      <Text style={s.section}>Exercises — how did each feel?</Text>
+      {b.exercises.map(e => {
+        const ex = exerciseById(st, e.exerciseId);
+        const sets = x.sets.filter(l => l.exerciseId === e.exerciseId && l.done && l.reps > 0);
+        return (
+          <View key={e.exerciseId} style={s.exCard}>
+            <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center' }} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: e.exerciseId } })}>
+              <Text style={[s.rowTitle, { flex: 1 }]}>{e.name}</Text>
+              <Text style={s.meta}>records ›</Text>
+            </TouchableOpacity>
+            {/* every set: reps (or seconds) @ weight, warm-ups marked, RIR when rated */}
+            <Text style={s.setLine}>
+              {sets.map(l => `${l.warmup ? 'W ' : ''}${l.reps}${ex?.timed ? ' s' : ''}${ex?.timed && !l.weightKg ? '' : ` @ ${ex?.bodyweightFrac ? (l.weightKg === 0 ? 'BW' : `BW${l.weightKg > 0 ? '+' : '−'}${Math.abs(l.weightKg)}`) : `${l.weightKg} kg`}`}${l.rir != null ? ` (RIR ${l.rir >= 3 ? '3+' : l.rir})` : ''}`).join('  ·  ')}
+            </Text>
+            {!ex?.timed ? <Text style={s.meta}>{e.volume.toLocaleString()} kg volume</Text> : null}
+            {/* the post-exercise feel, right here (Hard = this session doesn't count toward a raise) — tap again clears */}
+            <View style={s.feelRow}>
+              {(['easy', 'ok', 'hard'] as Feel[]).map(f => {
+                const on = e.feel === f;
+                return (
+                  <TouchableOpacity key={f} style={[s.feel, on && { backgroundColor: FEEL_COLOR[f], borderColor: FEEL_COLOR[f] }]}
+                    onPress={() => setExerciseFeel(x.id, e.exerciseId, on ? undefined : f).then(st2 => setSt({ ...st2 })).catch(() => {})}>
+                    <Text style={[s.feelTxt, on && { color: '#fff' }]}>{FEEL_LABEL[f]}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
-          <Text style={s.meta}>›</Text>
-        </TouchableOpacity>
-      ))}
+        );
+      })}
 
       {prs.length ? (
         <>
@@ -148,5 +171,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   barVal:   { color: c.textSub, fontSize: 12, width: 32, textAlign: 'right', fontVariant: ['tabular-nums'] },
   row:      { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },
   rowTitle: { color: c.text, fontSize: 15, fontWeight: '700' },
+  exCard:   { backgroundColor: c.surface, borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: c.border },
+  setLine:  { color: c.text, fontSize: 13.5, lineHeight: 20, marginTop: 6, fontVariant: ['tabular-nums'] },
+  feelRow:  { flexDirection: 'row', gap: 8, marginTop: 8 },
+  feel:     { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 14, borderWidth: 1, borderColor: c.border },
+  feelTxt:  { color: c.textSub, fontWeight: '700', fontSize: 13 },
   pr:       { color: '#B8860B', fontSize: 14, fontWeight: '700', marginBottom: 4 },
 });

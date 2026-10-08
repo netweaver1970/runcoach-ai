@@ -2281,7 +2281,10 @@ export async function fetchHealthSnapshot(opts: FetchOptions = {}): Promise<Heal
 
   // muscular part: the sets logged in the Strength module today (hard sets × session RPE)
   const strengthMod = require('./strength') as typeof import('./strength');   // lazy (strength lazily requires this file)
-  const muscularLoad = await strengthMod.loadStrength().then(st => strengthMod.strengthStrainLoad(st, trainingDayKey(now))).catch(() => 0);
+  // + the pre-run drills (e.g. 20 lunges) once per run today
+  const runsToday = (loadWorkoutsRaw as any[]).filter(w => w.workoutActivityType === 37 && trainingDayKey(toISOStr(w.startDate)) === trainingDayKey(now)).length;
+  const muscularLoad = await strengthMod.loadStrength()
+    .then(st => strengthMod.strengthStrainLoad(st, trainingDayKey(now)) + runsToday * strengthMod.drillStrainLoad(st)).catch(() => 0);
   const latestLoad = trainingLoad.length > 0 ? trainingLoad[trainingLoad.length - 1] : null;
   const latestTsb = latestLoad?.tsb ?? 0;
   // 14-day strain BASELINE (mean of completed days) — personalizes the target range to the athlete's
@@ -3950,7 +3953,8 @@ export async function fetchStrainHistory(
       actLoads.push(hasHr ? zoneStrainLoad(samples, restHR, dayMax, [{ s: w.s, e: w.e }])
                           : w.min * activityFactor(w.type));
     }
-    const musc = strengthSt ? strengthMod.strengthStrainLoad(strengthSt, day) : 0;
+    const runsDay = (actWinsByDay.get(day) ?? []).filter(w => w.type === 37).length;   // pre-run drills once per run
+    const musc = strengthSt ? strengthMod.strengthStrainLoad(strengthSt, day) + runsDay * strengthMod.drillStrainLoad(strengthSt) : 0;
     const cardioStrain = actLoads.reduce((s, L) => s + strainFromLoad(Math.max(0, L)), 0);
     const muscStrain = musc > 0 ? strainFromLoad(musc) : 0;
     const passiveStrain = strainFromLoad(stepStrainLoad(nwStepsByDay.get(day) ?? 0));

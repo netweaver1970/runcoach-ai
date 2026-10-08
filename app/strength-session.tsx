@@ -42,6 +42,7 @@ function describeSet(st: StrengthStore, x: StrengthSession, idx: number): string
   const k = work.indexOf(l) + 1;
   const kg = Math.round(l.weightKg * 100) / 100;
   const w = ex?.bodyweightFrac ? (kg > 0 ? `body weight plus ${kg} kilos` : kg < 0 ? `assisted, ${-kg} kilos` : 'body weight') : `${kg} kilos`;
+  if (ex?.timed) return `${ex.name}, ${l.warmup ? 'warm-up set' : `set ${k} of ${work.length}`}, ${l.reps} seconds${kg > 0 ? `, plus ${kg} kilos` : ''}`;
   return `${ex?.name ?? l.exerciseId}, ${l.warmup ? 'warm-up set' : `set ${k} of ${work.length}`}, ${l.reps} reps, ${w}`;
 }
 // Spoken on the phone through the native voice path (ducks music, hands it back); no-op on an older binary.
@@ -64,6 +65,11 @@ export default function StrengthSessionScreen() {
   const [now, setNow] = useState(Date.now());
   const [rpe, setRpe] = useState<number | undefined>();
   const focusEx = useRef<string | null>(null);   // exercise of the set ticked last → its next set comes first
+  // TIMED holds (planks): the running hold → countdown + spoken cues ("Hold, 30 seconds … 10 seconds … 3, 2, 1 … Done")
+  // the held set is identified by exercise + set number (Do next / Later can MOVE indices during a hold)
+  const [hold, setHold] = useState<{ idx: number; exerciseId: string; set: number; start: number; target: number; restSec: number } | null>(null);
+  const holdNotif = useRef<string | null>(null);   // "hold done" notification → a locked phone still hears the end
+  const holdCues = useRef<Set<string>>(new Set());
   const announced = useRef(false);               // the opening set was announced (once per screen)
   const storeRef = useRef<StrengthStore | null>(null);
   storeRef.current = store;
@@ -88,7 +94,9 @@ export default function StrengthSessionScreen() {
           const sug = suggestWeight(st, it);
           const last = lastSetsFor(st, it.exerciseId);
           for (let k = 0; k < it.sets; k++) {
-            sets.push({ exerciseId: it.exerciseId, set: k + 1, weightKg: sug.kg ?? it.weightKg ?? 0, reps: last[k]?.reps ?? repRange(it)[1], done: false });
+            // holds: never prefill BELOW the target (an early stop last time mustn't shrink this session's countdown)
+            const hi = repRange(it)[1], timed = !!exerciseById(st, it.exerciseId)?.timed;
+            sets.push({ exerciseId: it.exerciseId, set: k + 1, weightKg: sug.kg ?? it.weightKg ?? 0, reps: timed ? Math.max(last[k]?.reps ?? hi, hi) : (last[k]?.reps ?? hi), done: false });
           }
         }
         const kg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
@@ -111,6 +119,19 @@ export default function StrengthSessionScreen() {
     }, 500);
     return () => clearInterval(t);
   }, [restEnd]);
+  useEffect(() => {
+    if (!hold) return;
+    const t = setInterval(() => {
+      const el = (Date.now() - hold.start) / 1000, left = Math.ceil(hold.target - el);
+      setNow(Date.now());
+      const cue = (k: string, text: string) => { if (!holdCues.current.has(k)) { holdCues.current.add(k); if (voiceOn()) say(text); } };
+      if (hold.target >= 30 && el >= hold.target / 2) cue('half', 'Halfway');
+      if (hold.target >= 20 && left <= 10 && left > 3) cue('10', '10 seconds');
+      if (left <= 3 && left > 0) cue('321', '3, 2, 1');
+      if (left <= 0) { if (!holdCues.current.has('done')) Vibration.vibrate([0, 300, 150, 300]); cue('done', 'Done'); finishHold(hold.target); }
+    }, 250);
+    return () => clearInterval(t);
+  }, [hold]);
   // announce the first set once the session is on screen (voice on)
   useEffect(() => {
     if (sess && store && !announced.current) { announced.current = true; announceNext(); }
@@ -123,7 +144,10 @@ export default function StrengthSessionScreen() {
     notifGen.current++;
     if (notifId.current) { Notifications.cancelScheduledNotificationAsync(notifId.current).catch(() => {}); notifId.current = null; }
   }, []);
-  useEffect(() => navigation.addListener('beforeRemove', () => { Keyboard.dismiss(); cancelRestNotif(); }), [navigation, cancelRestNotif]);
+  useEffect(() => navigation.addListener('beforeRemove', () => {
+    Keyboard.dismiss(); cancelRestNotif();
+    if (holdNotif.current) { Notifications.cancelScheduledNotificationAsync(holdNotif.current).catch(() => {}); holdNotif.current = null; }
+  }), [navigation, cancelRestNotif]);
 
   // Apply a change to the LIVE session and write it into the latest store (never a stale full-store copy).
   const persist = (fn: (x: StrengthSession) => StrengthSession) => {
@@ -196,7 +220,39 @@ export default function StrengthSessionScreen() {
       return l;
     }) };
   });
+  const startHold = (idx: number, restSec: number) => {
+    const l = sessRef.current!.sets[idx];
+    holdCues.current = new Set();
+    focusEx.current = l.exerciseId;
+    cancelRestNotif(); setRestEnd(null);
+    if (voiceOn()) say(`Hold, ${l.reps} seconds`);
+    const target = Math.max(1, l.reps);
+    setHold({ idx, exerciseId: l.exerciseId, set: l.set, start: Date.now(), target, restSec });
+    // the phone may lock mid-plank (JS timers stop) → a notification marks the end
+    Notifications.scheduleNotificationAsync({ content: { title: '⏱ Hold done', body: `${target} s — next set.`, sound: true },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: target } })
+      .then(id => { holdNotif.current = id; }).catch(() => {});
+  };
+  const cancelHold = () => {
+    if (holdNotif.current) { Notifications.cancelScheduledNotificationAsync(holdNotif.current).catch(() => {}); holdNotif.current = null; }
+    setHold(null);
+  };
+  // the hold ended (time up, or ■ early → the seconds actually held) → tick the set with them + start the rest
+  const finishHold = (secs: number) => {
+    const h = hold; if (!h || holdCues.current.has('fin') || finishing.current) return;   // once; never after Finish
+    holdCues.current.add('fin');
+    cancelHold();
+    const held = Math.max(1, Math.round(secs));
+    persist(x => {
+      // find the held set by identity (indices may have moved), fall back to the recorded index
+      let k0 = x.sets.findIndex(l => l.exerciseId === h.exerciseId && l.set === h.set && !l.done);
+      if (k0 < 0) k0 = x.sets[h.idx]?.exerciseId === h.exerciseId ? h.idx : -1;
+      return k0 < 0 ? x : { ...x, sets: x.sets.map((l, k) => k === k0 ? { ...l, reps: held, done: true, doneAt: Date.now() } : l) };
+    });
+    startRest(h.restSec); if (h.restSec <= 0) announceNext();
+  };
   const toggle = (idx: number, restSec: number) => {
+    if (hold?.idx === idx) cancelHold();   // ✓ on the held set ends the hold (the typed seconds stand)
     const done = !sessRef.current!.sets[idx].done;
     if (done) focusEx.current = sessRef.current!.sets[idx].exerciseId;
     persist(x => ({ ...x, sets: x.sets.map((l, k) => k === idx ? { ...l, done, doneAt: done ? Date.now() : undefined } : l) }));
@@ -212,7 +268,7 @@ export default function StrengthSessionScreen() {
       return;
     }
     finishing.current = true;
-    cancelRestNotif(); setRestEnd(null);
+    cancelRestNotif(); setRestEnd(null); cancelHold();
     const fin = { ...cur, finishedAt: Date.now(), rpe };
     sessRef.current = fin;
     let routineChanges: string[] = [];
@@ -235,7 +291,7 @@ export default function StrengthSessionScreen() {
     });
   };
   const discard = () => {
-    cancelRestNotif(); setRestEnd(null); finishing.current = true;
+    cancelRestNotif(); setRestEnd(null); cancelHold(); finishing.current = true;
     const id = sessRef.current!.id;
     updateStrength(st => ({ ...st, sessions: st.sessions.filter(x => x.id !== id) })).then(() => router.back());
   };
@@ -297,7 +353,7 @@ export default function StrengthSessionScreen() {
               {alts.map(a => (
                 <TouchableOpacity key={a} onPress={() => swap(exId, a)}><Text style={s.link}>⇄ switch to {exerciseById(store, a)?.name ?? a}</Text></TouchableOpacity>
               ))}
-              <View style={s.hdrRow}><Text style={[s.hdr, { width: 34 }]}>Set</Text><Text style={[s.hdr, { flex: 1 }]}>kg</Text><Text style={[s.hdr, { flex: 1 }]}>Reps</Text><Text style={[s.hdr, { width: 44 }]}>RIR</Text><View style={{ width: 52 }} /></View>
+              <View style={s.hdrRow}><Text style={[s.hdr, { width: 34 }]}>Set</Text><Text style={[s.hdr, { flex: 1 }]}>kg</Text><Text style={[s.hdr, { flex: 1 }]}>{ex?.timed ? 'Sec' : 'Reps'}</Text><Text style={[s.hdr, { width: 44 }]}>{ex?.timed ? 'Hold' : 'RIR'}</Text><View style={{ width: 52 }} /></View>
               {(() => {
                 const prev = lastSetsFor(store, exId);   // last session's WORK sets → shown inline per set
                 let work = 0;
@@ -314,16 +370,26 @@ export default function StrengthSessionScreen() {
                         </TouchableOpacity>
                         <Cell decimal style={[s.cell, { flex: 1 }]} value={l.weightKg} onCommit={n => setAt(idx, { weightKg: n })} />
                         <Cell style={[s.cell, { flex: 1 }]} value={l.reps} onCommit={n => setAt(idx, { reps: Math.max(0, n) })} />
-                        {/* reps in reserve: – → 0 → 1 → 2 → 3+ → – (optional effort) */}
-                        <TouchableOpacity style={[s.rir, l.rir != null && s.rirOn]} disabled={!!l.warmup}
-                          onPress={() => setAt(idx, { rir: l.rir == null ? 0 : l.rir >= 3 ? undefined : l.rir + 1 })}>
-                          <Text style={[s.rirTxt, l.rir != null && { color: c.onAccent }]}>{l.warmup ? '' : l.rir == null ? '–' : l.rir >= 3 ? '3+' : l.rir}</Text>
-                        </TouchableOpacity>
+                        {ex?.timed ? (
+                          // a HOLD: ▶ starts the countdown (spoken cues), ■ stops early and logs the seconds actually held
+                          <TouchableOpacity style={[s.rir, hold?.idx === idx && s.rirOn]} disabled={hold?.idx === idx ? false : (l.done || !!hold)}
+                            onPress={() => { Keyboard.dismiss(); if (hold?.idx === idx) finishHold((Date.now() - hold.start) / 1000); else startHold(idx, l.warmup ? Math.min(60, restSec) : restSec); }}>
+                            <Text style={[s.rirTxt, hold?.idx === idx && { color: c.onAccent }]}>
+                              {hold?.idx === idx ? Math.max(0, Math.ceil(hold.target - (now - hold.start) / 1000)) : l.done ? '' : '▶'}
+                            </Text>
+                          </TouchableOpacity>
+                        ) : (
+                          /* reps in reserve: – → 0 → 1 → 2 → 3+ → – (optional effort) */
+                          <TouchableOpacity style={[s.rir, l.rir != null && s.rirOn]} disabled={!!l.warmup}
+                            onPress={() => setAt(idx, { rir: l.rir == null ? 0 : l.rir >= 3 ? undefined : l.rir + 1 })}>
+                            <Text style={[s.rirTxt, l.rir != null && { color: c.onAccent }]}>{l.warmup ? '' : l.rir == null ? '–' : l.rir >= 3 ? '3+' : l.rir}</Text>
+                          </TouchableOpacity>
+                        )}
                         <TouchableOpacity style={[s.tick, l.done && s.tickOn]} onPress={() => { Keyboard.dismiss(); toggle(idx, l.warmup ? Math.min(60, restSec) : restSec); }}>
                           <Text style={[s.tickTxt, l.done && { color: '#fff' }]}>✓</Text>
                         </TouchableOpacity>
                       </View>
-                      {p ? <Text style={s.prev}>last {p.weightKg} kg × {p.reps}{p.rir != null ? ` @ RIR ${p.rir >= 3 ? '3+' : p.rir}` : ''}</Text> : null}
+                      {p ? <Text style={s.prev}>{ex?.timed ? `last ${p.reps} s${p.weightKg ? ` @ ${p.weightKg} kg` : ''}` : `last ${p.weightKg} kg × ${p.reps}${p.rir != null ? ` @ RIR ${p.rir >= 3 ? '3+' : p.rir}` : ''}`}</Text> : null}
                     </View>
                   );
                 });
