@@ -151,11 +151,27 @@ export default function MarkdownBody({
   c: Palette;
 }) {
   const segs = parseSegments(content);
+  // The library MERGES each key with its own light-theme defaults (blockquote / fence / code_block = #F5F5F5
+  // background) — so a caller that only sets a border colour still got a light-grey box, and in dark mode the
+  // white text vanished into it (Stats chat "Bottom Line" quote = a big white box). Theme those keys here,
+  // under the caller's own style.
+  const themed = React.useMemo(() => {
+    const base: Record<string, any> = {
+      blockquote: { backgroundColor: c.surfaceAlt, borderColor: c.border, borderLeftWidth: 3, marginLeft: 0, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 4 },
+      fence: { backgroundColor: c.surfaceAlt, borderColor: c.border, color: c.text },
+      code_block: { backgroundColor: c.surfaceAlt, borderColor: c.border, color: c.text },
+      code_inline: { backgroundColor: c.surfaceAlt, borderColor: c.border, color: c.text },
+    };
+    const user = style ?? {};
+    const out: Record<string, any> = { ...user };
+    for (const k of Object.keys(base)) out[k] = { ...base[k], ...StyleSheet.flatten(user[k] ?? {}) };
+    return out;
+  }, [style, c]);
   return (
     <>
       {segs.map((seg, i) =>
         seg.type === 'md'
-          ? (seg.text.trim() ? <Markdown key={i} style={style} rules={rules}>{seg.text}</Markdown> : null)
+          ? (seg.text.trim() ? <Markdown key={i} style={themed} rules={rules}>{seg.text}</Markdown> : null)
           : <MdTable key={i} header={seg.header} rows={seg.rows} c={c} />,
       )}
     </>
