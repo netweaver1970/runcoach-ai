@@ -8,8 +8,8 @@
  *     + the strength history, picks the frequency, then places routines greedily under HARD rules:
  *       · leg-dominant work never the day before intervals / tempo / a long run, nor on a long-run day; best on the
  *         same day as a quality run (after it — "hard days hard") or before a rest day;
- *       · no routine whose main muscles were trained < 48 h earlier (history + already-planned days);
- *       · no lifting today when readiness < 35; readiness 35–49 → upper body only, one set fewer;
+ *       · muscles rest by the RPE of the session that trained them (≤ 5 → 1 day, 6–7 → 2, ≥ 8 → 3, +1 if graded hard);
+ *       · today: readiness < 20 → no lifting; 20–34 → at most a LIGHT upper session (extra); 35–49 → upper only, −1 set;
  *       · one session a day; sessions spread (no back-to-back unless 4/week).
  *     Then TAILORS each day: weights from the 3-stable-sessions progression (suggestWeight), −1 set on a low-readiness
  *     day, −1 set on leg moves with a run the next day. Short runner prehab on suitable non-lifting days.
@@ -32,7 +32,16 @@ const PREHAB_IDS = ['heel_drop', 'glute_bridge', 'clamshell', 'side_plank'];
 const PREHAB_ROUTINE = 'runner_strength';
 const MAX_PREHAB = 3;
 const LEG_SHARE = 0.4;          // routine is "legs" when ≥ 40 % of its set-weighted involvement is legs
-const MIN_GAP_DAYS = 2;         // ≥ 48 h before the same main muscles again
+const MIN_GAP_DAYS = 2;         // a PLANNED session's muscles: ≥ 48 h (assumed RPE ~7) before the same muscles again
+const NO_LIFT_READY = 20;       // readiness below this → no lifting today at all
+const LIGHT_READY = 35;         // below this → only a LIGHT upper session today (−1 set, stop ~3 reps short, RPE ≤ 6)
+/**
+ * Recovery days a logged session's muscles need, from its RPE (Geert 2026-10-08: "take into account the RPE of the
+ * previous strength trainings — my arms/chest are not that bad"): RPE ≤ 5 → 1 day, 6–7 → 2, ≥ 8 → 3; unknown → 2;
+ * an exercise graded 'hard' adds a day for its muscles.
+ */
+const gapForRpe = (rpe?: number) => (rpe == null ? 2 : rpe <= 5 ? 1 : rpe <= 7 ? 2 : 3);
+interface Trained { date: string; gap: number; rpe?: number }
 
 interface RunDay { date: string; kind: string; runMin: number; commitment?: string; label: string }
 interface Profile { primaries: Muscle[]; legShare: number }
@@ -59,15 +68,20 @@ const itemIsLeg = (st: StrengthStore, it: RoutineItem) => {
 };
 
 /** Last date each muscle took real work (≥ 0.6 involvement on a work set) in the last 14 days. */
-function muscleLastTrained(st: StrengthStore, today: string): Partial<Record<Muscle, string>> {
-  const out: Partial<Record<Muscle, string>> = {};
+function muscleLastTrained(st: StrengthStore, today: string): Partial<Record<Muscle, Trained>> {
+  const out: Partial<Record<Muscle, Trained>> = {};
   const since = addDays(today, -14);
   for (const x of st.sessions) {
     if (!x.finishedAt || x.date < since) continue;
+    const base = gapForRpe(x.rpe);
     for (const l of x.sets) {
       if (!isWorkSet(l)) continue;
+      const gap = Math.min(3, base + (x.feel?.[l.exerciseId] === 'hard' ? 1 : 0));
       for (const [m, v] of Object.entries(exerciseById(st, l.exerciseId)?.muscles ?? {})) {
-        if ((v as number) >= 0.6 && (!out[m as Muscle] || out[m as Muscle]! < x.date)) out[m as Muscle] = x.date;
+        if ((v as number) < 0.6) continue;
+        const cur = out[m as Muscle];
+        // the binding one = the latest "free again" date (date + gap)
+        if (!cur || addDays(x.date, gap) > addDays(cur.date, cur.gap)) out[m as Muscle] = { date: x.date, gap, ...(x.rpe ? { rpe: x.rpe } : {}) };
       }
     }
   }
@@ -77,16 +91,18 @@ function muscleLastTrained(st: StrengthStore, today: string): Partial<Record<Mus
 interface Ctx {
   st: StrengthStore; today: string; days: RunDay[]; readiness?: number; avgReady?: number;
   routines: Routine[]; prof: Map<string, Profile>; lastDone: Map<string, string>; hourNow: number;
+  lightDays?: Set<number>;        // days holding a LIGHT session (low-readiness today) → only a 1-day gap around them
 }
 
 /** Hard rules — shared by the deterministic placer and the AI validator. Returns a reason when NOT allowed. */
-function blocked(c: Ctx, i: number, r: Routine, placed: Map<number, string>, trained: Partial<Record<Muscle, string>>): string | null {
+function blocked(c: Ctx, i: number, r: Routine, placed: Map<number, string>, trained: Partial<Record<Muscle, Trained>>, light = false): string | null {
   const day = c.days[i], next = c.days[i + 1];
   const p = c.prof.get(r.id)!;
   const legs = p.legShare >= LEG_SHARE;
   if (placed.has(i)) return 'one session a day';
   if (i === 0) {
-    if (c.readiness != null && c.readiness < 35) return `readiness ${c.readiness}`;
+    if (c.readiness != null && c.readiness < NO_LIFT_READY) return `readiness ${c.readiness}`;
+    if (c.readiness != null && c.readiness < LIGHT_READY && !light) return `readiness ${c.readiness}: light session only`;
     if (c.readiness != null && c.readiness < 50 && legs) return `readiness ${c.readiness}: no leg day`;
     if (c.hourNow >= 21) return 'too late today';
   }
@@ -96,14 +112,16 @@ function blocked(c: Ctx, i: number, r: Routine, placed: Map<number, string>, tra
   }
   for (const m of p.primaries) {
     const last = trained[m];
-    if (last && dayDiff(last, day.date) < MIN_GAP_DAYS && dayDiff(last, day.date) >= 0) return `${MUSCLE_LABEL[m].toLowerCase()} trained ${last === day.date ? 'that day' : 'the day before'}`;
-    // a LATER planned day too (placement isn't chronological): keep 48 h either side
+    const since = last ? dayDiff(last.date, day.date) : 99;
+    if (last && since >= 0 && since < last.gap) return `${MUSCLE_LABEL[m].toLowerCase()} trained ${since === 0 ? 'that day' : `${since} day${since > 1 ? 's' : ''} before`}${last.rpe ? ` at RPE ${last.rpe}` : ''} — needs ${last.gap} day${last.gap > 1 ? 's' : ''}`;
+    // a planned session elsewhere in the week (placement isn't chronological): 48 h either side; a LIGHT one 24 h
     for (const [j, id] of placed) {
       if (j === i) continue;
-      if (Math.abs(j - i) < MIN_GAP_DAYS && c.prof.get(id)?.primaries.includes(m)) return `${MUSCLE_LABEL[m].toLowerCase()} also on ${wd(c.days[j].date)}`;
+      const need = light || c.lightDays?.has(j) ? 1 : MIN_GAP_DAYS;
+      if (Math.abs(j - i) < need && c.prof.get(id)?.primaries.includes(m)) return `${MUSCLE_LABEL[m].toLowerCase()} also on ${wd(c.days[j].date)}`;
     }
   }
-  if (c.routines.length >= 3 && [...placed.values()].includes(r.id)) return 'already planned this week';
+  if (!light && c.routines.length >= 3 && [...placed.values()].includes(r.id)) return 'already planned this week';
   return null;
 }
 
@@ -153,7 +171,7 @@ function tailor(c: Ctx, i: number, r: Routine, kind: 'session' | 'prehab'): { it
   }
   if (i === 0 && c.readiness != null && c.readiness < 50) {
     items = items.map(it => ({ ...it, sets: it.sets > 2 ? it.sets - 1 : it.sets }));
-    changes.push(`−1 set each: readiness ${c.readiness}`);
+    changes.push(c.readiness < LIGHT_READY ? `light: −1 set each, stop ~3 reps short (RPE ≤ 6) — readiness ${c.readiness}` : `−1 set each: readiness ${c.readiness}`);
   }
   const next = c.days[i + 1];
   if (next && next.runMin > 0 && c.prof.get(r.id)!.legShare >= 0.2) {
@@ -210,7 +228,28 @@ function draftPlan(c: Ctx, target: number): PlannedStrengthDay[] {
     out[0] = { date: c.today, kind: 'session', routineId: x.routineId, name: x.routineName, done: true, why: 'Done today ✅', run: c.days[0].label };
   }
   const pool = c.routines;
-  while (placed.size < target) {
+  // LOW readiness today (20–34): the whole body isn't ready for a full session, but muscles that recovered (by their
+  // last session's RPE) can still take a LIGHT upper session — an extra on top of the week's target, not instead of it
+  let extra = 0;
+  // (also at 35–49: a below-par day gets a lighter upper session today rather than nothing — at 26 it did, at 45 it didn't)
+  if (!placed.has(0) && c.readiness != null && c.readiness >= NO_LIFT_READY && c.readiness < 50 && c.hourNow < 21 && !QUALITY.has(c.days[0].kind)) {
+    c.lightDays = new Set([0]);
+    let best: { r: Routine; sc: number } | null = null;
+    for (const r of pool) {
+      if (r.id === PREHAB_ROUTINE || blocked(c, 0, r, placed, trained, true)) continue;
+      const sc = score(c, 0, r, placed);
+      if (!best || sc > best.sc) best = { r, sc };
+    }
+    if (best) {
+      placed.set(0, best.r.id); extra = 1;
+      const t = tailor(c, 0, best.r, 'session');
+      const fresh = c.prof.get(best.r.id)!.primaries.map(m => trained[m]).filter((x): x is Trained => !!x && x.date !== c.today);
+      const rpeNote = fresh.length ? ` — its muscles have had their recovery (last trained at RPE ${Math.max(...fresh.map(f => f.rpe ?? 7))})` : '';
+      out[0] = { date: c.today, kind: 'session', routineId: best.r.id, name: best.r.name, items: t.items, changes: t.changes,
+        minutes: estimateMinutes({ ...best.r, items: t.items }), why: `${c.readiness < LIGHT_READY ? 'Light session only' : 'Lighter session'}: readiness ${c.readiness}${rpeNote}. ${c.readiness < LIGHT_READY ? 'Keep every set ~3 reps short of failure; skip it if you feel worse once warm.' : 'One set fewer each; stop if the warm-up feels heavy.'}`, run: c.days[0].label };
+    } else c.lightDays = undefined;
+  }
+  while (placed.size - extra < target) {
     let best: { i: number; r: Routine; sc: number } | null = null;
     for (let i = 0; i < c.days.length; i++) for (const r of pool) {
       if (blocked(c, i, r, placed, trained)) continue;
@@ -230,8 +269,10 @@ function draftPlan(c: Ctx, target: number): PlannedStrengthDay[] {
   return out.map((d, i) => {
     if (d) return d;
     const day = c.days[i];
-    const noLiftWhy = i === 0 && c.readiness != null && c.readiness < 35
+    const noLiftWhy = i === 0 && c.readiness != null && c.readiness < NO_LIFT_READY
       ? `No lifting — readiness ${c.readiness}. Rest; the plan moves strength to a fresher day.`
+      : i === 0 && c.readiness != null && c.readiness < LIGHT_READY
+      ? `No lifting today — readiness ${c.readiness}, and the muscles of every routine still need recovery from their last session.`
       : null;
     if (i === 0 && prehabToday) return { date: day.date, kind: 'prehab', routineId: prehabBase?.id, name: 'Runner prehab', done: true, why: 'Done today ✅', run: day.label };
     if (!noLiftWhy && prehabBase && nPre < MAX_PREHAB && prehabOk(c, i, placed)) {
@@ -305,8 +346,8 @@ async function aiRefine(c: Ctx, draft: PlannedStrengthDay[], target: number, tar
 Rules (hard — a violation is discarded):
 - Use ONLY the given routine ids. kind "session" = a full routine; "prehab" = the short runner prehab (routineId "${PREHAB_ROUTINE}"); "rest" = no lifting.
 - Leg-dominant routines: never on a long-run day, never the day before intervals/tempo/hard/long. Best the same day as a quality run (after it) or before a rest day.
-- Not the same main muscles within 48 h (recent sessions count). One session per day. Days marked done stay as they are.
-- Today: no lifting if readiness < 35; readiness 35–49 → upper body only.
+- Muscle recovery follows the RPE of the session that trained them: RPE ≤ 5 → 1 day, 6–7 → 2 days, ≥ 8 → 3 days (+1 day for an exercise graded hard); planned sessions need 2 days between the same muscles. One session per day. Days marked done stay as they are.
+- Today: no lifting if readiness < ${NO_LIFT_READY}; ${NO_LIFT_READY}–${LIGHT_READY - 1} → at most a LIGHT upper session (muscles recovered by the RPE rule; it's extra, on top of the week's count); ${LIGHT_READY}–49 → upper body only.
 - 2–4 sessions in the 7 days (adaptive: fewer when recovery is low or running is building, more when recovery is good and lifting is consistent).
 Tailoring per session day (optional): setsDelta per exercise id (-1 or +1 only), swap an exercise ONLY to one of its listed alternatives.
 Return ONLY JSON: {"target":n,"summary":"≤40 words, the week's strength logic","days":[{"date":"YYYY-MM-DD","kind":"session|prehab|rest","routineId":"id or null","setsDelta":{"exId":-1},"swap":{"exId":"altId"},"why":"≤20 words, specific to that day"}]} — exactly the 7 dates given.`;
@@ -329,7 +370,7 @@ Return ONLY JSON: {"target":n,"summary":"≤40 words, the week's strength logic"
     if (!a) continue;
     const why = typeof a.why === 'string' && a.why.trim() ? a.why.trim().slice(0, 160) : undefined;
     if (a.kind === 'rest') { outDays[i] = { date: c.days[i].date, kind: 'rest', why: why ?? 'No lifting planned.', run: c.days[i].label }; continue; }
-    if (a.kind === 'prehab' && prehabBase && nPreAi < MAX_PREHAB && prehabOk(c, i, placed) && !(i === 0 && c.readiness != null && c.readiness < 35)) {
+    if (a.kind === 'prehab' && prehabBase && nPreAi < MAX_PREHAB && prehabOk(c, i, placed) && !(i === 0 && c.readiness != null && c.readiness < NO_LIFT_READY)) {
       nPreAi++;
       const t = tailor(c, i, prehabBase, 'prehab');
       if (t.items.length) outDays[i] = { date: c.days[i].date, kind: 'prehab', routineId: prehabBase.id, name: 'Runner prehab', items: t.items, changes: t.changes, minutes: estimateMinutes({ ...prehabBase, items: t.items }), why: why ?? 'Optional ~10 min runner prehab.', run: c.days[i].label };
@@ -340,7 +381,9 @@ Return ONLY JSON: {"target":n,"summary":"≤40 words, the week's strength logic"
     if (!r || placed.size >= 4) continue;                    // ≤ 4 sessions in the 7 days, whatever the model says
     // validate against what the AI has placed so far + the rest of the DRAFT's sessions it keeps
     const others = new Map(placed);
-    if (blocked(c, i, r, others, trained)) continue;          // invalid → keep the draft's day
+    const lightI = i === 0 && c.readiness != null && c.readiness < LIGHT_READY;
+    if (lightI) c.lightDays = new Set([0]);
+    if (blocked(c, i, r, others, trained, lightI)) continue;  // invalid → keep the draft's day
     placed.set(i, r.id);
     const t = tailor(c, i, r, 'session');
     let items = t.items; const changes = [...t.changes];
@@ -359,7 +402,7 @@ Return ONLY JSON: {"target":n,"summary":"≤40 words, the week's strength logic"
     if (d.done) continue;
     const rest = new Map(sessIdx.filter(j => j !== i).map(j => [j, outDays[j].routineId!] as [number, string]));
     const r = c.routines.find(x => x.id === d.routineId);
-    if (!r || blocked(c, i, r, rest, trained)) outDays[i] = { date: d.date, kind: 'rest', why: 'No lifting planned.', run: d.run };
+    if (!r || blocked(c, i, r, rest, trained, i === 0 && c.readiness != null && c.readiness < LIGHT_READY)) outDays[i] = { date: d.date, kind: 'rest', why: 'No lifting planned.', run: d.run };
   }
   // prehab next to a (kept or AI) leg session → drop it; and never more than 4 sessions overall
   const legIdx = outDays.map((d, i) => (d.kind === 'session' && (c.prof.get(d.routineId ?? '')?.legShare ?? 0) >= LEG_SHARE ? i : -1)).filter(i => i >= 0);
