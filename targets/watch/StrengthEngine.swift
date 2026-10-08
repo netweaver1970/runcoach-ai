@@ -283,8 +283,7 @@ final class StrengthEngine: NSObject, ObservableObject {
     if left <= 3 && left > 0 { cue("321", "3, 2, 1") }
     if left <= 0 {
       cue("done", "Done")
-      WKInterfaceDevice.current().play(.success)
-      reps = holdTarget
+      reps = holdTarget   // ONE buzz: doneSet() plays the .success haptic (playing it here too gave a double buzz)
       endHold()
     }
   }
