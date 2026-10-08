@@ -12,7 +12,7 @@ import { AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
   StrengthSession, SetLog, loadStrength, updateStrength, routinesForDate, exerciseById, suggestWeight, lastSetsFor,
-  repRange, weightStep, localDateKey, STRENGTH_FILE, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
+  repRange, weightStep, localDateKey, STRENGTH_FILE, baseRoutineId, isFeel, Feel, autoUpdatedRoutine, syncSessionToHealth, enrichSession, sessionPRs, sessionTonnage, isWorkSet,
 } from './strength';
 
 interface Native {
@@ -39,11 +39,11 @@ async function pushOnce(): Promise<boolean> {
   if (!W?.queue) return false;
   if (!(await W.isPaired().catch(() => false))) return false;
   const st = await loadStrength();
-  const todayIds = new Set(routinesForDate(st).map(r => r.id));
+  const todays = routinesForDate(st);   // the coach's TAILORED routine for today (auto-plan) or the weekday routines
+  const todayIds = new Set(todays.map(r => r.id));
   const { fetchBodyMassHistory } = require('./healthkit') as typeof import('./healthkit');   // lazy (import cycle)
   const bodyKg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
-  const routines = [...st.routines]
-    .sort((a, b) => Number(todayIds.has(b.id)) - Number(todayIds.has(a.id)))
+  const routines = [...todays, ...st.routines.filter(r => !todayIds.has(r.id))]
     .filter(r => r.items.length)
     .map(r => ({
       id: r.id, name: r.name, today: todayIds.has(r.id),
@@ -106,9 +106,14 @@ async function importOnce(): Promise<number> {
       const startedAt = Number(l.startedAt), finishedAt = Number(l.finishedAt);
       if (!sets.length || !startedAt || !finishedAt) { bad.push(id); continue; }   // nothing usable → ack, don't re-read forever
       const date = localDateKey(new Date(startedAt));
-      const routineId = String(l.routineId ?? '');
+      // the auto-plan's prehab day travels as "<routine>~prehab" → log it under the routine, tagged (see strength.ts)
+      const rawRid = String(l.routineId ?? '');
+      const routineId = baseRoutineId(rawRid);
+      const pd = cur.autoPlan?.days.find(d => d.date === date);
+      const tailored: StrengthSession['tailored'] = rawRid !== routineId ? 'prehab'
+        : pd?.kind === 'session' && pd.routineId === routineId && pd.changes?.length ? 'reduced' : undefined;
       // the same routine opened on the phone today but never ticked = an abandoned duplicate of this workout → drop it
-      sessions = sessions.filter(x => !(x.routineId === routineId && x.date === date && !x.finishedAt && !x.sets.some(s => s.done)));
+      sessions = sessions.filter(x => !(x.routineId === routineId && x.date === date && !x.finishedAt && !x.sets.some(s => s.done) && (x.tailored === 'prehab') === (tailored === 'prehab')));
       const uuid = typeof l.uuid === 'string' && l.uuid ? l.uuid : undefined;
       const sess: StrengthSession = {
         id, date, routineId, routineName: String(l.routineName ?? 'Strength'), startedAt, finishedAt,
@@ -121,6 +126,7 @@ async function importOnce(): Promise<number> {
           // the watch related the RPE as Effort itself → nothing left for the phone to add
           ...(l.effort === 'ok' ? { enriched: { uuid, effort: 'ok', hr: 'watch', at: Date.now() } } : {}) } } : {}),
         note: '⌚ Logged on Apple Watch',
+        ...(tailored ? { tailored } : {}),
       };
       sessions = [...sessions, sess];
       added.push({ id, linked: !!uuid });

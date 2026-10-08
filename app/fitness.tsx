@@ -9,7 +9,9 @@ import {
   sessionsWithinDays, sessionTonnage, MUSCLE_LABEL, WEEKDAYS, localDateKey, newId, Routine,
   muscleEvents, muscleFreshness, muscularLoad, syncRecentSessionsToHealth, isWorkSet, MuscleFresh, GroupLoad, FRESH_COLOR, LOAD_COLOR, allExercises, Muscle, RunLike,
   exerciseStatLine, ExerciseStatLine, DEFAULT_DRILLS, exerciseById,
+  plannedDay, plannedDone,
 } from '../src/services/strength';
+import { ensureStrengthPlan } from '../src/services/strengthPlan';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { importWatchStrengthLogs, pushStrengthToWatch } from '../src/services/watchStrength';
 import { getEffectiveMaxHr } from '../src/services/claude';
@@ -79,6 +81,8 @@ export default function FitnessMode() {
     // watch-logged sessions first (they arrive linked to the watch's workout), then the Health backfill/reconcile
     importWatchStrengthLogs().catch(() => 0).then(() => syncRecentSessionsToHealth()).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {});
     pushStrengthToWatch().catch(() => {});   // routines + today's weights → the watch app
+    // the coach's 7-day strength plan (AI-refined when a key works) — only regenerated when its inputs changed
+    ensureStrengthPlan({ ai: true }).then(p => { if (p) loadStrength().then(st => setStore({ ...st })).catch(() => {}); }).catch(() => {});
     // runs load the legs too (freshness + load status) — from the cached health snapshot, no HealthKit query
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as RunLike[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -94,6 +98,7 @@ export default function FitnessMode() {
 
   const today = localDateKey();
   const planned = routinesForDate(store);
+  const todayPlan = plannedDay(store);   // the coach's auto-plan for today (why / tailoring)
   const doneToday = sessionsOn(store, today);
   const load = muscleLoad(store, sessionsWithinDays(store, win));
   const maxSets = Math.max(1, ...load.map(l => l.hardSets));
@@ -131,22 +136,62 @@ export default function FitnessMode() {
         {doneToday.map(x => (
           <Text key={x.id} style={s.done}>✅ {x.routineName} done · {sessionTonnage(store, x).toLocaleString()} kg</Text>
         ))}
-        {planned.length ? planned.map(r => (
+        {planned.length ? planned.filter(r => !plannedDone(r, doneToday)).map(r => (
           <View key={r.id} style={s.todayRow}>
             <View style={{ flex: 1 }}>
-              <Text style={s.todayName}>{r.name}</Text>
+              <Text style={s.todayName}>{r.name}{todayPlan?.kind === 'prehab' ? ' (optional)' : ''}</Text>
               <Text style={s.meta}>{r.items.length} exercises · ~{estimateMinutes(r)} min</Text>
+              {todayPlan && !todayPlan.done ? <Text style={[s.meta, { color: c.text, marginTop: 2 }]}>{todayPlan.why}</Text> : null}
+              {todayPlan?.changes?.length && !todayPlan.done ? <Text style={s.meta}>Tailored: {todayPlan.changes.join(' · ')}</Text> : null}
             </View>
             <TouchableOpacity style={s.startBtn} onPress={() => start(r)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
           </View>
         )) : (
           <>
-            <Text style={s.meta}>Nothing planned for today — start any routine:</Text>
+            {todayPlan && !todayPlan.done ? <Text style={[s.meta, { color: c.text, marginBottom: 4 }]}>{todayPlan.why}</Text> : null}
+            <Text style={s.meta}>{todayPlan ? 'Start any routine anyway:' : 'Nothing planned for today — start any routine:'}</Text>
             <View style={s.chips}>
               {store.routines.map(r => (
                 <TouchableOpacity key={r.id} style={s.chip} onPress={() => start(r)}><Text style={s.chipTxt}>▶ {r.name}</Text></TouchableOpacity>
               ))}
             </View>
+          </>
+        )}
+      </View>
+
+      {/* The coach's strength week: tailored routines placed around the run plan (adaptive 2–4 sessions) */}
+      <View style={s.card}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.cardTitle}>Coach's strength week{store.autoPlan?.ai ? '  ✨ AI' : ''}</Text>
+            <Text style={s.meta}>Your routines, placed around the run plan and tailored per day. Also on the watch.</Text>
+          </View>
+          <Switch value={store.autoPlanOn !== false} onValueChange={v => updateStrength(st => ({ ...st, autoPlanOn: v })).then(st => {
+            setStore({ ...st });
+            if (v) ensureStrengthPlan({ ai: true, force: true }).then(() => loadStrength()).then(x => setStore({ ...x })).catch(() => {});
+            else pushStrengthToWatch().catch(() => {});
+          })} />
+        </View>
+        {store.autoPlanOn !== false && store.autoPlan && (
+          <>
+            <Text style={[s.meta, { marginTop: 8 }]}>{store.autoPlan.target} sessions · {store.autoPlan.targetWhy}</Text>
+            {store.autoPlan.summary ? <Text style={[s.meta, { color: c.text, marginTop: 4 }]}>{store.autoPlan.summary}</Text> : null}
+            {store.autoPlan.days.map(d => (
+              <View key={d.date} style={{ flexDirection: 'row', paddingVertical: 5, borderTopWidth: StyleSheet.hairlineWidth, borderColor: c.border, marginTop: 4 }}>
+                <Text style={[s.meta, { width: 44, color: d.date === today ? c.accent : c.textSub, fontWeight: '700' }]}>{d.date === today ? 'Today' : WEEKDAYS[new Date(d.date + 'T12:00:00').getDay()]}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.todayName, { fontSize: 14 }, d.kind === 'rest' && { color: c.textSub, fontWeight: '500' }]}>
+                    {d.kind === 'session' ? `${d.done ? '✅ ' : '🏋️ '}${d.name}${d.minutes && !d.done ? ` · ~${d.minutes} min` : ''}` : d.kind === 'prehab' ? `🦵 Runner prehab · ~${d.minutes ?? 10} min (optional)` : 'No lifting'}
+                    {d.run ? <Text style={[s.meta, { fontWeight: '400' }]}>{`   🏃 ${d.run}`}</Text> : null}
+                  </Text>
+                  {d.kind !== 'rest' || d.date === today ? <Text style={s.meta}>{d.why}</Text> : null}
+                  {d.changes?.length && !d.done && d.kind === 'session' ? <Text style={s.meta}>Tailored: {d.changes.join(' · ')}</Text> : null}
+                </View>
+              </View>
+            ))}
+            <TouchableOpacity onPress={() => ensureStrengthPlan({ ai: true, force: true }).then(() => loadStrength()).then(x => setStore({ ...x })).catch(() => {})} hitSlop={8}>
+              <Text style={[s.meta, { color: c.accent, marginTop: 8 }]}>↻ Re-plan the week</Text>
+            </TouchableOpacity>
           </>
         )}
       </View>

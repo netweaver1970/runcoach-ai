@@ -4,7 +4,7 @@ import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
-import { loadStrength, StrengthStore, routinesForDate, sessionTonnage, isWorkSet, localDateKey } from '../src/services/strength';
+import { loadStrength, StrengthStore, routinesForDate, plannedDone, sessionTonnage, isWorkSet, localDateKey } from '../src/services/strength';
 import { loadWeekPlanCache, WeekPlanDay } from '../src/services/coach';
 
 // One training calendar for runs + strength (Bevel Training Calendar / Hevy): a month grid where every day shows a
@@ -89,7 +89,7 @@ export default function TrainingCalendar() {
         const doneSess = st.sessions.filter(x => x.date === key && x.finishedAt);
         if (doneSess.length && !doneSess.some(x => st.routines.some(r => r.id === x.routineId))) continue;   // an ad-hoc session did the day
         const done = new Set(doneSess.map(x => x.routineId));
-        for (const r of routinesForDate(st, d)) if (!done.has(r.id)) add(key, { kind: 'strength', label: `Planned · ${r.name}`, size: 2, planned: true, sub: `${r.items.length} exercises` });
+        for (const r of routinesForDate(st, d)) if (!plannedDone(r, doneSess)) add(key, { kind: 'strength', label: `Planned · ${r.name}`, size: 2, planned: true, sub: `${r.items.length} exercises` });
       }
     }
     return m;

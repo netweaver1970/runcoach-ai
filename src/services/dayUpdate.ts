@@ -126,6 +126,7 @@ async function runDayView(opts: {
   let readiness: number | undefined;
   let structure = 'Rest day';
   let planOk = false;
+  let strengthLine: string | null = null;   // today's strength from the coach's auto-plan (notification)
   let planMs: number | undefined;
   let pushMs: number | undefined;
   try {
@@ -148,6 +149,13 @@ async function runDayView(opts: {
     const pushStart = Date.now();
     try { if (plan.workout) await pushWorkoutToWatch(plan.workout); else await clearWatchWorkout(); } catch { /* watch/OS missing */ }
     pushMs = Date.now() - pushStart;
+    // …and the coach's strength plan for today → +6 around the fresh run plan (deterministic here — the AI refinement
+    // runs when the app is opened); it pushes today's tailored routine to the watch itself.
+    try {
+      const { ensureStrengthPlan, strengthTodayLine } = require('./strengthPlan') as typeof import('./strengthPlan');
+      // bounded: an AI re-plan already in flight (app open) must not hold the morning notification
+      strengthLine = strengthTodayLine(await Promise.race([ensureStrengthPlan({ ai: false }), new Promise<null>(r => setTimeout(() => r(null), 8000))]));
+    } catch { /* strength plan is optional */ }
   } catch { /* deterministic plan failed (unexpected) — KPIs still refreshed; no notification */ }
 
   // Background, non-blocking: push the fresh recovery/strain/load up to the cloud so a coach sees the
@@ -172,7 +180,7 @@ async function runDayView(opts: {
       await Notifications.scheduleNotificationAsync({
         content: {
           title: 'Today’s plan is ready 🟢',
-          body: `Recovery ${rec.recoveryScore} · Readiness ${readiness ?? '—'} · ${structure}`,
+          body: `Recovery ${rec.recoveryScore} · Readiness ${readiness ?? '—'} · ${structure}${strengthLine ? ` · ${strengthLine}` : ''}`,
           data: { screen: 'coach', date, tag: 'dayview' },
         },
         trigger: null, // immediate

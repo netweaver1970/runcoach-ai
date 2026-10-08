@@ -91,7 +91,17 @@ export interface StrengthSession {
          watch?: boolean;
          kcalSrc?: 'watch' | 'est'; resaveFails?: number };   // kcalSrc: the watch's measured active energy or the MET estimate
   note?: string;
+  // started from the coach's auto-plan in a TRIMMED form: 'prehab' = the short runner prehab, 'reduced' = sets cut for
+  // the day. Such sets don't count toward (or break) the 3-stable-sessions progression streak when below the routine's.
+  tailored?: 'prehab' | 'reduced';
 }
+
+/** The auto-plan's prehab day is a separate routine id (base + this) so the FULL routine can still be started. */
+export const PREHAB_SUFFIX = '~prehab';
+export const baseRoutineId = (id: string) => (id.endsWith(PREHAB_SUFFIX) ? id.slice(0, -PREHAB_SUFFIX.length) : id);
+/** Was this (possibly prehab-suffixed) planned routine already logged among these sessions? */
+export const plannedDone = (r: { id: string }, done: StrengthSession[]) =>
+  done.some(d => d.routineId === baseRoutineId(r.id) && (d.tailored === 'prehab') === (r.id !== baseRoutineId(r.id)));
 
 // ── Exercise library ────────────────────────────────────────────────────────────────────────────────────────
 // Involvement weights are a pragmatic EMG/biomechanics consensus (prime mover 1, synergists 0.3–0.6). Videos are
@@ -263,7 +273,29 @@ export const STARTER_ROUTINES: Routine[] = [
 export const STRENGTH_FILE = `${FileSystem.documentDirectory}runcoach-strength.json`;
 export interface StrengthStore { v: 1; starterRev?: number; saveToHealth?: boolean; hkExtrasAsked?: boolean; voice?: boolean;   // voice = spoken set announcements in the session (default on)
   drills?: DrillItem[]; drillsOn?: boolean;   // pre-run drills done before EVERY run → counted on each run (default: 20 forward lunges, on)
+  autoPlanOn?: boolean;                       // the coach plans strength days around the runs (default ON) — see strengthPlan.ts
+  autoPlan?: StrengthAutoPlan;                // the latest 7-day strength plan (today → +6)
   routines: Routine[]; customExercises: Exercise[]; sessions: StrengthSession[] }
+
+/** One day of the coach's strength plan: a TAILORED routine (sets/weights for that day), short prehab, or no lifting. */
+export interface PlannedStrengthDay {
+  date: string;                    // local YYYY-MM-DD
+  kind: 'session' | 'prehab' | 'rest';
+  routineId?: string;              // session / prehab: the routine it's built from
+  name?: string;                   // shown name (e.g. "Runner prehab")
+  items?: RoutineItem[];           // the tailored items (sets, suggested weights, swaps) for THAT day
+  minutes?: number;
+  why: string;                     // one line: why this, why today
+  changes?: string[];              // what was tailored vs the routine ("−1 set each: readiness 42")
+  done?: boolean;                  // a session was already logged that day
+  run?: string;                    // the day's run, as the planner saw it ("Intervals 26 min")
+}
+export interface StrengthAutoPlan {
+  date: string; generatedAt: number; sig: string;
+  target: number; targetWhy: string;          // sessions planned this 7-day window (adaptive 2–4) and why
+  ai?: boolean; aiTried?: boolean; summary?: string;
+  days: PlannedStrengthDay[];
+}
 
 let cache: StrengthStore | null = null;
 let loading: Promise<StrengthStore> | null = null;   // one in-flight read shared by concurrent callers
@@ -287,7 +319,7 @@ export function loadStrength(): Promise<StrengthStore> {
         let j: any = null;
         try { j = JSON.parse(raw); } catch { j = null; }
         if (j && Array.isArray(j.routines)) {
-          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
+          cache = { v: 1, starterRev: j.starterRev ?? 1, ...(typeof j.saveToHealth === 'boolean' ? { saveToHealth: j.saveToHealth } : {}), ...(j.hkExtrasAsked ? { hkExtrasAsked: true } : {}), ...(typeof j.voice === 'boolean' ? { voice: j.voice } : {}), ...(Array.isArray(j.drills) ? { drills: j.drills } : {}), ...(typeof j.drillsOn === 'boolean' ? { drillsOn: j.drillsOn } : {}), ...(typeof j.autoPlanOn === 'boolean' ? { autoPlanOn: j.autoPlanOn } : {}), ...(j.autoPlan && Array.isArray(j.autoPlan.days) ? { autoPlan: j.autoPlan } : {}), routines: j.routines, customExercises: j.customExercises ?? [], sessions: j.sessions ?? [] };
           const rev0 = cache.starterRev ?? 1;
           if (rev0 < STARTER_REV) {
             // Step-wise, each step ONCE (a later rev must never redo an earlier one — rev 2 resets exercises, which would
@@ -348,7 +380,26 @@ export const localDateKey = (d = new Date()) => {
 
 // ── Planning ─────────────────────────────────────────────────────────────────────────────────────────────────
 export const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+/** The coach's plan for a date (auto-plan on and the plan covers it), else undefined. */
+export function plannedDay(s: StrengthStore, date = new Date()): PlannedStrengthDay | undefined {
+  if (s.autoPlanOn === false || !s.autoPlan) return undefined;
+  const key = localDateKey(date);
+  return s.autoPlan.days.find(d => d.date === key);
+}
+/**
+ * The routine(s) planned for a date. With the coach's auto-plan on (default) that's the plan's TAILORED routine for the
+ * day (or none); outside the plan's 7 days — or with it off — the routines' own weekdays.
+ */
 export function routinesForDate(s: StrengthStore, date = new Date()): Routine[] {
+  const day = plannedDay(s, date);
+  if (day) {
+    if (day.kind === 'rest' || !day.routineId) return [];
+    const base = s.routines.find(r => r.id === day.routineId);
+    if (!base) return [];
+    return [{ ...base, ...(day.kind === 'prehab' ? { id: base.id + PREHAB_SUFFIX } : {}), name: day.name ?? base.name, items: day.items?.length ? day.items : base.items }];
+  }
+  // auto-plan on (and made): it REPLACES the fixed weekdays — nothing planned outside its 7 days (calendar stays honest)
+  if (s.autoPlanOn !== false && s.autoPlan) return [];
   const dow = date.getDay();
   return s.routines.filter(r => r.days.includes(dow));
 }
@@ -377,11 +428,11 @@ export function lastSetsFor(s: StrengthStore, exerciseId: string): SetLog[] {
 /** Weight increment for manual steps and deloads: dumbbell racks go in 2 kg steps; stacks/plates 2.5. */
 export const weightStep = (ex?: Exercise) => (ex && /\bDB\b|Dumbbell/i.test(ex.name) ? 2 : 2.5);
 /** The last `n` finished sessions' WORK sets of this exercise (newest first), one entry per session, with its feel. */
-export function recentSetsFor(s: StrengthStore, exerciseId: string, n: number): { sets: SetLog[]; feel?: Feel }[] {
-  const out: { sets: SetLog[]; feel?: Feel }[] = [];
+export function recentSetsFor(s: StrengthStore, exerciseId: string, n: number): { sets: SetLog[]; feel?: Feel; tailored?: StrengthSession['tailored'] }[] {
+  const out: { sets: SetLog[]; feel?: Feel; tailored?: StrengthSession['tailored'] }[] = [];
   for (const x of s.sessions.filter(q => q.finishedAt).sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))) {
     const sets = x.sets.filter(l => l.exerciseId === exerciseId && isWorkSet(l));
-    if (sets.length) { out.push({ sets, feel: x.feel?.[exerciseId] }); if (out.length >= n) break; }
+    if (sets.length) { out.push({ sets, feel: x.feel?.[exerciseId], ...(x.tailored ? { tailored: x.tailored } : {}) }); if (out.length >= n) break; }
   }
   return out;
 }
@@ -403,7 +454,11 @@ export const raiseStep = (loadKg: number) => RAISE_STEPS.find(st => st <= loadKg
  *  · otherwise repeat the weight (and say how far along the 3-session streak is).
  */
 export function suggestWeight(s: StrengthStore, item: RoutineItem): { kg?: number; why?: string } {
-  const hist = recentSetsFor(s, item.exerciseId, STABLE_SESSIONS);
+  // a coach-TRIMMED session (prehab / sets cut for the day) with fewer sets than this routine plans neither counts toward
+  // nor breaks the streak — otherwise the planner's lighter days would stall progression for good
+  const all = recentSetsFor(s, item.exerciseId, STABLE_SESSIONS + 8);
+  const full = all.filter(h => !h.tailored || h.sets.length >= item.sets);
+  const hist = (full.length ? full : all).slice(0, STABLE_SESSIONS);
   const last = hist[0]?.sets;
   if (!last) return item.weightKg != null ? { kg: item.weightKg } : {};
   const top = Math.max(...last.map(l => l.weightKg));
@@ -531,7 +586,11 @@ export function sessionTonnage(s: StrengthStore, x: StrengthSession, fallbackBod
 /** One compact line: planned strength days, last 7 days' sessions and the most-loaded muscles. '' when unused. */
 export async function strengthLineForLLM(): Promise<string> {
   const st = await loadStrength();
-  const planned = st.routines.filter(r => r.days.length).map(r => `${r.name} (${r.days.slice().sort().map(d => WEEKDAYS[d]).join('/')})`);
+  const auto = st.autoPlanOn !== false && st.autoPlan ? st.autoPlan : null;
+  // the coach's strength auto-plan (today → +6) replaces the fixed weekdays when on
+  const planned = auto
+    ? auto.days.filter(d => d.kind !== 'rest').map(d => `${d.date === localDateKey() ? 'today' : WEEKDAYS[new Date(d.date + 'T12:00:00').getDay()]} ${d.kind === 'prehab' ? 'runner prehab (optional)' : d.name}${d.done ? ' ✅' : ''}`)
+    : st.routines.filter(r => r.days.length).map(r => `${r.name} (${r.days.slice().sort().map(d => WEEKDAYS[d]).join('/')})`);
   const week = sessionsWithinDays(st, 7);
   if (!planned.length && !week.length) return '';
   const top = muscleLoad(st, week).slice(0, 6).map(l => `${MUSCLE_LABEL[l.muscle]} ${l.hardSets}`).join(', ');
@@ -541,7 +600,7 @@ export async function strengthLineForLLM(): Promise<string> {
   const runs = ((await loadSnapshotCache().catch(() => null))?.runs ?? []) as RunLike[];
   const legs = muscleFreshness(muscleEvents(st, runs)).filter(f => ['quads', 'glutes', 'hamstrings', 'calves'].includes(f.muscle))
     .map(f => `${MUSCLE_LABEL[f.muscle]} ${f.state === 'Calibrating' ? 'calibrating' : `${f.pct}% ${f.state.toLowerCase()}`}`).join(', ');
-  return `• STRENGTH (athlete-logged sessions on a Marcy home gym, separate from running): planned ${planned.join(', ') || 'none'}; last 7 days ${week.length} session${week.length === 1 ? '' : 's'}${week.length ? ` (${week.map(x => `${x.date.slice(5)} ${x.routineName}${x.rpe ? ` RPE ${x.rpe}` : ''}`).join('; ')})` : ''}${top ? `; hard sets/muscle: ${top}` : ''}; leg freshness now: ${legs}. Strength load is NOT in CTL/ATL (it has its own muscular load) — account for heavy LEG days and low leg freshness before quality and long runs.`;
+  return `• STRENGTH (athlete-logged sessions on a Marcy home gym, separate from running): ${auto ? `the app's strength auto-plan (his routines placed around the run plan: no leg day before quality/long runs, 48 h per muscle group, ${auto.target} sessions/7 d — ${auto.targetWhy}) has` : 'planned'} ${planned.join(', ') || 'none'}; last 7 days ${week.length} session${week.length === 1 ? '' : 's'}${week.length ? ` (${week.map(x => `${x.date.slice(5)} ${x.routineName}${x.rpe ? ` RPE ${x.rpe}` : ''}`).join('; ')})` : ''}${top ? `; hard sets/muscle: ${top}` : ''}; leg freshness now: ${legs}. Strength load is NOT in CTL/ATL (it has its own muscular load) — account for heavy LEG days and low leg freshness before quality and long runs.`;
 }
 
 // ════ Build 2 (2026-10-07): records, muscle freshness, muscular-load status — Bevel 2026 Fall-release parity ════

@@ -6,7 +6,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { fetchBodyMassHistory } from '../src/services/healthkit';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL,
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId,
 } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
@@ -83,10 +83,16 @@ export default function StrengthSessionScreen() {
   useEffect(() => {
     (async () => {
       const st = await loadStrength();
-      const r = st.routines.find(x => x.id === routineId);
+      // today's coach-TAILORED version of the routine (sets / weights / swaps for the day) when it's the planned one
+      const planned = routinesForDate(st).find(x => x.id === routineId);
+      const r = planned ?? st.routines.find(x => x.id === routineId);
       if (!r) { setStore({ ...st }); return; }
       const today = localDateKey();
-      const open = st.sessions.find(x => x.routineId === r.id && x.date === today && !x.finishedAt);
+      // the prehab day is "<routine>~prehab": logged under the real routine, tagged, so the full routine stays separate
+      const baseId = baseRoutineId(r.id);
+      const day = plannedDay(st);
+      const tailored: StrengthSession['tailored'] = r.id !== baseId ? 'prehab' : planned && day?.routineId === baseId && day.changes?.length ? 'reduced' : undefined;
+      const open = st.sessions.find(x => x.routineId === baseId && x.date === today && !x.finishedAt && (x.tailored === 'prehab') === (tailored === 'prehab'));
       let session = open;
       if (!session) {
         const sets: SetLog[] = [];
@@ -100,7 +106,7 @@ export default function StrengthSessionScreen() {
           }
         }
         const kg = await fetchBodyMassHistory(3).then(w => (w as { value: number }[]).filter(x => x.value > 0).slice(-1)[0]?.value).catch(() => undefined);
-        session = { id: newId('ss'), date: today, routineId: r.id, routineName: r.name, startedAt: Date.now(), bodyKg: kg, sets };
+        session = { id: newId('ss'), date: today, routineId: baseId, routineName: r.name, startedAt: Date.now(), bodyKg: kg, sets, ...(tailored ? { tailored } : {}) };
         const created = session;
         const next = await updateStrength(cur => ({ ...cur, sessions: [...cur.sessions, created] }));
         sessRef.current = session; setStore({ ...next }); setSess(session);

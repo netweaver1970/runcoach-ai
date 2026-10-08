@@ -16,7 +16,7 @@ import { weekdaySlot } from '../src/services/watchWorkout';
 import { getLocalWeather, weatherSummary, WeatherNow } from '../src/services/weather';
 import { toDateKey } from '../src/services/dayView';
 import { useDetailSwipe } from '../src/components/useDetailSwipe';
-import { StrengthToday } from '../src/components/StrengthToday';
+import { StrengthToday, useAutoPlanOn } from '../src/components/StrengthToday';
 import { pushWorkoutToWatch, watchModuleAvailable, getWatchRecorder } from '../src/services/watchWorkout';
 import { sendWorkoutToWatch } from '../src/services/watchRoute';
 import { handOffRouteWorkout } from '../src/services/routeWorkoutHandoff';
@@ -235,6 +235,7 @@ export default function DailyCoachScreen() {
                    : date;
   const target     = comps[targetDate] ?? {};
   const targetIsToday = targetDate === realTodayKey;
+  const autoStrength = useAutoPlanOn();   // the coach's strength auto-plan covers today → its card replaces the generic line
   // Today's live strain/readiness object — ONLY for today. For a past day it used to show TODAY's strain and
   // readiness under that date; a past day now reads its stored strain (target.strainScore) and no readiness.
   const strainObj = targetIsToday ? (strain ?? snapStrain) : null;
@@ -602,7 +603,7 @@ export default function DailyCoachScreen() {
                   {plan.nextRunInDays === 1 ? ' (tomorrow)' : ` (in ${plan.nextRunInDays} days)`}
                 </Text>
               )}
-              {plan.strength ? (
+              {plan.strength && !(autoStrength && targetIsToday) ? (
                 <View style={s.strengthRow}>
                   <Text style={s.strengthLabel}>🦵 LEG STRENGTH</Text>
                   <Text style={s.strengthText}>{plan.strength}</Text>

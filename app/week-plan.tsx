@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { StrengthStore, loadStrength, legHardSets } from '../src/services/strength';
+import { StrengthStore, loadStrength, legHardSets, routinesForDate, plannedDay, plannedDone } from '../src/services/strength';
+import { ensureStrengthPlan } from '../src/services/strengthPlan';
 import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchTrainingLoadHistory } from '../src/services/healthkit';
@@ -158,7 +159,11 @@ export default function WeekPlan() {
   const [genAt, setGenAt] = useState<string | null>(null);
   // Strength routines planned on weekdays (+ logged sessions) → shown on each day of the plan (training calendar).
   const [strength, setStrength] = useState<StrengthStore | null>(null);
-  useFocusEffect(React.useCallback(() => { loadStrength().then(x => setStrength({ ...x })).catch(() => {}); }, []));
+  useFocusEffect(React.useCallback(() => {
+    loadStrength().then(x => setStrength({ ...x })).catch(() => {});
+    // the coach's strength plan for the same 7 days (AI-refined when a key works) → shown on each day
+    ensureStrengthPlan({ ai: true }).then(p => { if (p) loadStrength().then(x => setStrength({ ...x })).catch(() => {}); }).catch(() => {});
+  }, []));
   const [periodLabel, setPeriodLabel] = useState('');
   const [raceWeek, setRaceWeek] = useState<RaceWeek | null>(null);
   const [shrink, setShrink] = useState(false);
@@ -581,7 +586,10 @@ export default function WeekPlan() {
             const day = Number(r.date.slice(8, 10));
             // strength on this day: planned routines (by weekday) + any session already logged on the date
             const dow = new Date(r.date + 'T00:00:00').getDay();
-            const sPlanned = strength ? strength.routines.filter(x => x.days.includes(dow)) : [];
+            const dObj = new Date(r.date + 'T12:00:00');
+            const sDay = strength ? plannedDay(strength, dObj) : undefined;   // the coach's strength auto-plan for this date
+            const sPlanned = strength ? routinesForDate(strength, dObj) : [];
+            void dow;
             const sDone = strength ? strength.sessions.filter(x => x.finishedAt && x.date === r.date) : [];
             const QUALITY = ['long', 'tempo', 'intervals'];
             const legsHeavy = strength ? sPlanned.filter(x => legHardSets(strength, x) >= 6) : [];
@@ -612,8 +620,9 @@ export default function WeekPlan() {
                     {reduced ? `  → ${r.adjMin}min ${r.tsbTrim ? '(form)' : r.capped ? '(cap)' : r.travel ? '(travel heat)' : '(heat)'}` : ''}
                   </Text>
                   {(sPlanned.length > 0 || sDone.length > 0) && (
-                    <Text style={s.struct} numberOfLines={2}>
-                      🏋️ {[...sDone.map(x => `✅ ${x.routineName}`), ...sPlanned.filter(x => !sDone.some(d => d.routineId === x.id)).map(x => x.name)].join(' · ')}
+                    <Text style={s.struct} numberOfLines={3}>
+                      🏋️ {[...sDone.map(x => `✅ ${x.routineName}`), ...sPlanned.filter(x => !plannedDone(x, sDone)).map(x => `${x.name}${sDay?.kind === 'prehab' ? ' (optional)' : sDay?.minutes ? ` ~${sDay.minutes}′` : ''}`)].join(' · ')}
+                      {sDay && sDay.kind === 'session' && !sDay.done ? <Text style={{ color: c.textFaint }}>{`  — ${sDay.why}`}</Text> : null}
                       {legWarn ? <Text style={{ color: '#e67e22' }}>{`  ⚠ leg day ${legWarn} — keep it light or move it`}</Text> : null}
                     </Text>
                   )}

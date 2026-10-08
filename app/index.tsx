@@ -35,6 +35,7 @@ import {
 } from '../src/services/healthkit';
 import { warmDetailCache, clearDetailCache } from '../src/services/detailCache';
 import { getApiKey, getSyncMonths, setSyncMonths, SyncMonths, getRunOverrides, TrainingRecommendation, getOnboardingDone } from '../src/services/claude';
+import { ensureStrengthPlan } from '../src/services/strengthPlan';
 import { loadCachedPlan, saveCachedPlan, assembleCoachSnapshot, getCoachPlan, planNeedsRefresh, shrinkWantsQualityToday, formatWorkoutStructure, CoachPlan, getCoachingMode, synthesizeWorkout, weekdayName, ensureBlockPower } from '../src/services/coach';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
@@ -308,6 +309,8 @@ export default function HomeScreen() {
       // yourself from the coach screen). Rest / session-done / optional-2nd → clear the wrist.
       if (plan?.workout && !plan.optional2nd) pushWorkoutToWatch(plan.workout).catch(() => {});
       else clearWatchWorkout().catch(() => {});
+      // the coach's strength week around this run plan (AI-refined with a key; only when its inputs changed) → watch
+      ensureStrengthPlan({ ai: true }).catch(() => {});
     } catch {
       // silently ignore — card simply won't appear/update
     } finally {
