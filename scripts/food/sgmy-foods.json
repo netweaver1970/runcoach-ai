@@ -1946,6 +1946,115 @@
   "source": "Computed: Ya Kun kaya toast (FatSecret SG brand entry, 318 kcal) + 2× HPB soft-boiled egg F01060006 — https://www.fatsecret.com.sg/calories-nutrition/ya-kun/kaya-toast/2-slices"
  },
  {
+  "id": "toast_box_kaya_toast",
+  "name": "Toast Box kaya butter toast (traditional, thick)",
+  "aliases": [
+   "toast box",
+   "toastbox",
+   "toast box kaya toast",
+   "toastbox kaya toast",
+   "kaya toast"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 400,
+   "prot": 6.5,
+   "carb": 43.2,
+   "sug": 19,
+   "fat": 21.9,
+   "sat": 11.9,
+   "fib": 2.0,
+   "na": 380
+  },
+  "unit": "g",
+  "serving": {
+   "g": 100,
+   "label": "1 portion (~100 g, est.)"
+  },
+  "source": "ESTIMATE: Toast Box publishes no nutrition data and no brand entry exists in FatSecret/MyFitnessPal; values = HPB SG FoodID F05020057 'Kaya and butter toast' (lab) — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020057; the ~100 g portion is estimated"
+ },
+ {
+  "id": "toast_box_kaya_toast_set",
+  "name": "Toast Box kaya toast set (toast + 2 soft-boiled eggs, no drink)",
+  "aliases": [
+   "toast box set",
+   "toastbox set",
+   "toast box kaya toast set",
+   "kaya toast set"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 265.4,
+   "prot": 9.6,
+   "carb": 20.9,
+   "sug": 9.3,
+   "fat": 15.4,
+   "sat": 7.3,
+   "fib": 1.0,
+   "na": 336.5
+  },
+  "unit": "g",
+  "serving": {
+   "g": 210,
+   "label": "1 set: kaya butter toast (~100 g) + 2 soft-boiled eggs (110 g); add kopi/teh separately"
+  },
+  "source": "ESTIMATE, computed: Toast Box toast as above + 2× HPB SG FoodID F01060006 soft-boiled egg — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01060006"
+ },
+ {
+  "id": "killiney_kaya_toast",
+  "name": "Killiney kaya butter toast (traditional, charcoal-grilled)",
+  "aliases": [
+   "killiney",
+   "killiney kopitiam",
+   "killiney kaya toast",
+   "kaya toast"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 400,
+   "prot": 6.5,
+   "carb": 43.2,
+   "sug": 19,
+   "fat": 21.9,
+   "sat": 11.9,
+   "fib": 2.0,
+   "na": 380
+  },
+  "unit": "g",
+  "serving": {
+   "g": 94,
+   "label": "1 portion (~94 g, est.)"
+  },
+  "source": "ESTIMATE: Killiney publishes no nutrition data and no brand entry exists in FatSecret/MyFitnessPal; values = HPB SG FoodID F05020057 'Kaya and butter toast' (lab) — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020057; the ~94 g portion is estimated"
+ },
+ {
+  "id": "killiney_kaya_toast_set",
+  "name": "Killiney kaya toast set (toast + 2 soft-boiled eggs, no drink)",
+  "aliases": [
+   "killiney set",
+   "killiney kaya toast set",
+   "killiney breakfast",
+   "kaya toast set"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 261.4,
+   "prot": 9.7,
+   "carb": 20.3,
+   "sug": 9.0,
+   "fat": 15.2,
+   "sat": 7.2,
+   "fib": 0.9,
+   "na": 335.2
+  },
+  "unit": "g",
+  "serving": {
+   "g": 204,
+   "label": "1 set: kaya butter toast (~94 g) + 2 soft-boiled eggs (110 g); add kopi/teh separately"
+  },
+  "source": "ESTIMATE, computed: Killiney toast as above + 2× HPB SG FoodID F01060006 soft-boiled egg — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01060006"
+ },
+ {
   "id": "curry_puff_chicken",
   "name": "Curry puff, chicken",
   "aliases": [
