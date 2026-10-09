@@ -16,7 +16,7 @@ import { getPowerZones } from './claude';
 import { loadStatsRuns, mergeRuns } from './statsRunsCache';
 import { repairWorkStats } from './workStatsRepair';
 
-export type ChatMode = 'labs' | 'biology' | 'stats' | 'strength';
+export type ChatMode = 'labs' | 'biology' | 'stats' | 'strength' | 'food';
 export interface ChatMsg { role: 'user' | 'assistant'; content: string }
 
 const MAX_TOKENS = 4000, MAX_STEPS = 5;   // generous ceiling so a table + prose answer never truncates mid-way
@@ -39,7 +39,7 @@ export async function clearChatHistory(m: ChatMode): Promise<void> {
   try { await FileSystem.deleteAsync(histFile(m), { idempotent: true }); } catch { /* ignore */ }
 }
 
-interface ToolKit { schemas: any[]; run: (name: string, input: any) => any; context: string }
+interface ToolKit { schemas: any[]; run: (name: string, input: any) => any | Promise<any>; context: string }
 
 // ── LABS tools ──────────────────────────────────────────────────────────────
 async function labsKit(): Promise<ToolKit> {
@@ -162,6 +162,57 @@ async function strengthKit(): Promise<ToolKit> {
   };
 }
 
+// ── FOOD tools (log, meals, macros, micronutrients, caffeine, training context) ─────────────────
+async function foodKit(): Promise<ToolKit> {
+  const F = require('./foodLog') as typeof import('./foodLog');
+  const D = require('./foodDb') as typeof import('./foodDb');
+  const { trainingDayKey } = require('./trainingLoad') as typeof import('./trainingLoad');
+  const dc = (await (require('./healthkit') as typeof import('./healthkit')).peekDailyComponents().catch(() => ({ days: {} as Record<string, Record<string, number>> }))).days;
+  const today = trainingDayKey(Date.now());
+  const dayKey = (k: number) => { const d = new Date(today + 'T12:00:00'); d.setDate(d.getDate() - k); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  const r = (v?: number) => (v == null ? 0 : Math.round(v));
+  const days: { date: string; log: Awaited<ReturnType<typeof F.loadDay>> }[] = [];
+  for (let k = 0; k < 14; k++) { const date = dayKey(k); const log = await F.loadDay(date).catch(() => null); if (log && (log.entries.length || log.water.length)) days.push({ date, log }); }
+  const dayLine = (date: string, log: any) => { const t = F.dayTotals(log); return `${date}${log.complete ? ' (complete)' : ''}: ${r(t.kcal)} kcal · P ${r(t.prot)} C ${r(t.carb)} F ${r(t.fat)} g · fibre ${r(t.fib)}${t.rs ? ` · resistant starch ${r(t.rs)}` : ''}${t.caf ? ` · caffeine ${r(t.caf)} mg` : ''} · water ${(t.waterMl / 1000).toFixed(1)} L${dc[date]?.totalEnergy > 0 ? ` · watch energy ${r(dc[date].totalEnergy)} kcal` : ''}`; };
+  const entryLine = (e: any) => `${e.t.slice(11, 16)} [${F.entryMealLabel(e)}] ${e.name}${e.grams ? ` ${r(e.grams)}${e.unit === 'ml' ? 'ml' : 'g'}` : ''} — ${r(F.netNutr(e.n).kcal)} kcal, P ${r(e.n.prot)} C ${r(F.netNutr(e.n).carb)} F ${r(e.n.fat)}`;
+  // micronutrients: 14-day daily average vs the EU NRV (only days with food logged)
+  const logged = days.filter(d => d.log.entries.length);
+  const micro = F.MICROS.map(m => { const v = logged.reduce((a, d) => a + (F.dayTotals(d.log)[m.k] ?? 0), 0) / Math.max(1, logged.length); return `${m.label} ${Math.round((v / m.nrv) * 100)}%`; }).join(', ');
+  const lib = await F.loadLibrary();
+  const meals = lib.meals.map(m => { const n = F.sumNutr(m.items.map(it => (it.per100 && it.grams != null ? F.scaleNutr(F.withRs(it.key, it.per100), it.grams) : (it.n ?? {})))); return `${m.name} (${m.items.length} items): ${r(n.kcal)} kcal · P ${r(n.prot)} C ${r(n.carb)} F ${r(n.fat)} — ${m.items.map(i => `${i.name.split(',')[0]} ${i.grams ?? ''}g`).join(', ')}`; });
+  const coach = require('./coach') as typeof import('./coach');
+  const plan = await coach.loadCachedPlan(today).catch(() => null);
+  const cafLine = await (async () => { const C = require('./caffeineHrv') as typeof import('./caffeineHrv'); return C.cafHrvSummary(await C.caffeineHrv()); })().catch(() => '');
+  const kg = await (require('./healthkit') as typeof import('./healthkit')).fetchBodyMassHistory(3).then((x: any[]) => x.filter(v => v.value > 0).slice(-1)[0]?.value).catch(() => undefined);
+  const context = [
+    `Today (food day) ${today}.${kg ? ` Body weight ${Math.round(kg)} kg.` : ''}${plan ? ` Today's run plan: ${plan.intensity}${plan.runMinutes ? `, ${plan.runMinutes} min` : ''}${plan.sessionKind ? ` (${plan.sessionKind})` : ''}.` : ''}`,
+    `DAILY TOTALS (last 14 days, newest first; carbs = available, resistant starch excluded and at 2 kcal/g):\n${days.map(d => dayLine(d.date, d.log)).join('\n') || 'nothing logged'}`,
+    `TODAY'S ENTRIES:\n${(days.find(d => d.date === today)?.log.entries ?? []).map(entryLine).join('\n') || 'none yet'}`,
+    `YESTERDAY'S ENTRIES:\n${(days.find(d => d.date === dayKey(1))?.log.entries ?? []).map(entryLine).join('\n') || 'none'}`,
+    `MICRONUTRIENTS (14-day daily average, % of EU NRV; sodium vs 2.4 g max; unmeasured values count 0, so true intake can be higher): ${micro}`,
+    `SAVED MEALS:\n${meals.join('\n') || 'none'}`,
+    cafLine,
+  ].filter(Boolean).join('\n\n');
+  return {
+    context,
+    schemas: [
+      { name: 'get_day', description: 'Every logged item of one food day (YYYY-MM-DD): time, meal, food, amount, kcal + macros; and the day totals.', input_schema: { type: 'object', properties: { date: { type: 'string' } }, required: ['date'] } },
+      { name: 'get_range', description: 'Daily totals (kcal, protein, carbs, fat, fibre, resistant starch, caffeine, water, watch energy) for a date range, max 120 days.', input_schema: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } }, required: ['from', 'to'] } },
+      { name: 'find_food', description: "Nutrition per 100 g of foods matching a name (the athlete's own foods + the CIQUAL table + built-ins), incl. minerals/vitamins/caffeine.", input_schema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+    ],
+    run: async (tool: string, input: any) => {
+      if (tool === 'get_day') { const log = await F.loadDay(String(input?.date ?? today)); return { entries: log.entries.map(entryLine), totals: dayLine(log.date, log) }; }
+      if (tool === 'get_range') {
+        const out: string[] = []; const a = new Date(String(input?.from) + 'T12:00:00'), b = new Date(String(input?.to) + 'T12:00:00');
+        for (let d = new Date(a), n = 0; d <= b && n < 120; d.setDate(d.getDate() + 1), n++) { const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; const log = await F.loadDay(k).catch(() => null); if (log?.entries.length) out.push(dayLine(k, log)); }
+        return out;
+      }
+      if (tool === 'find_food') { const q = String(input?.name ?? ''); const own = F.searchCustom(lib, q, D.norm); return [...own, ...D.searchFoodsEx(q, 6).items].slice(0, 6).map(f => ({ name: f.name, src: f.src, per100: f.per100, serving: f.serving })); }
+      return { error: `unknown tool ${tool}` };
+    },
+  };
+}
+
 // ── STATS tools (running performance analytics) ───────────────────────────────
 async function statsKit(): Promise<ToolKit> {
   const snap: any = await loadSnapshotCache();
@@ -265,6 +316,16 @@ const SYSTEM: Record<ChatMode, string> = {
     '(latest values, trends, correlations, events). Keep replies BRIEF and conversational — a few sentences or a ' +
     'short list; the user can ask follow-ups. For a full series call get_metric_series. Note association≠causation ' +
     'and flag confounders. Not medical advice. Use light markdown — short paragraphs, bullets, and small tables where they help.',
+  food:
+    'You are the NUTRITION COACH inside a running-coach app, talking to a runner who also lifts. Answer from THE DATA BELOW (his food log, ' +
+    'daily totals vs the watch\'s energy, micronutrient averages, saved meals, today\'s run plan, the caffeine → HRV finding). The app\'s ' +
+    'conventions: carbs are AVAILABLE carbs; resistant starch (e.g. his raw potato starch) is excluded from carbs and counted at 2 kcal/g; ' +
+    'fibre 2 kcal/g; watch energy is ±15–20 %. FUELLING PREFERENCE: he runs FASTED by default — suggest carbs ONLY for interval sessions ' +
+    'and very long runs (≥ 90 min); say nothing about fuel for easy / tempo / recovery runs, and give no daily carb targets. Protein ' +
+    '~1.6 g/kg supports strength + endurance. For micronutrients flag clear gaps (< 70 % NRV) and sodium above the maximum, with food ' +
+    'suggestions — mind that unmeasured values count as 0. If he wants to change something, say exactly where in the app (📚 Food ' +
+    'database for foods / meals, ＋ Add on a meal card, ⋯ for time / meal). Be BRIEF and concrete; call the tools for older days or a ' +
+    'food\'s values instead of guessing. Never invent numbers. Not medical advice. Use light markdown — short paragraphs, bullets, small tables.',
   strength:
     'You are the STRENGTH COACH inside a running-coach app, talking to a runner who lifts (beginner with exercise names — explain movements plainly, ' +
     'name the muscles). Answer from THE DATA BELOW: his routines, the coach\'s 7-day plan (runs are FIXED, strength is placed around them), ' +
@@ -288,7 +349,7 @@ const SYSTEM: Record<ChatMode, string> = {
 };
 
 export async function runDataChat(mode: ChatMode, history: ChatMsg[]): Promise<string> {
-  const kit = mode === 'labs' ? await labsKit() : mode === 'biology' ? await biologyKit() : mode === 'strength' ? await strengthKit() : await statsKit();
+  const kit = mode === 'labs' ? await labsKit() : mode === 'biology' ? await biologyKit() : mode === 'strength' ? await strengthKit() : mode === 'food' ? await foodKit() : await statsKit();
   const system = `${SYSTEM[mode]}\n\n=== THE ATHLETE'S DATA ===\n${kit.context}`;
   try {
     if (await agenticSupported()) {
@@ -298,10 +359,11 @@ export async function runDataChat(mode: ChatMode, history: ChatMsg[]): Promise<s
         if (res.stopReason !== 'tool_use') return res.text;   // has data in context, so a plain answer is fine
         messages.push({ role: 'assistant', content: res.content });
         const uses = res.content.filter((b: any) => b.type === 'tool_use');
-        messages.push({ role: 'user', content: uses.map((u: any) => {
-          let out: any; try { out = kit.run(u.name, u.input ?? {}); } catch (e: any) { out = { error: e?.message ?? 'tool failed' }; }
+        // a tool may be async (the food tools read the log files) → await each result
+        messages.push({ role: 'user', content: await Promise.all(uses.map(async (u: any) => {
+          let out: any; try { out = await kit.run(u.name, u.input ?? {}); } catch (e: any) { out = { error: e?.message ?? 'tool failed' }; }
           return { type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 6000) };
-        }) });
+        })) });
       }
       const final = await callLLMTools({ system, messages, tools: [], maxTokens: MAX_TOKENS, temperature: 0.4 });
       return final.text || 'I ran out of steps — please ask again.';

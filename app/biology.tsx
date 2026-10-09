@@ -277,9 +277,10 @@ export default function BiologyMode() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* Sticky header — the shared mode header (Biology is its model) */}
       <ModeHeader title="Biology" loading={loading} actions={[
-        { icon: '⚙︎', onPress: () => setCustomising(true), label: 'Customise' },
+        // order as Strength: 💬 first, then the mode's screens, then its controls
         { icon: '💬', onPress: () => router.push('/data-chat?mode=biology' as any), label: 'Ask' },
         { icon: '🧪', onPress: () => router.push('/labs' as any), label: 'Labs' },
+        { icon: '⚙︎', onPress: () => setCustomising(true), label: 'Customise' },
         { icon: '↻', onPress: () => load(true), disabled: loading, label: 'Refresh' },
         { icon: showEvents ? '👁' : '🚫', onPress: () => setShowEvents(v => !v), off: !showEvents, label: 'Events' },
       ]}>

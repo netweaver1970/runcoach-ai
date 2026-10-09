@@ -230,6 +230,7 @@ export default function FoodMode() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* the shared mode header (Biology's), day navigation as its second row */}
       <ModeHeader title="Food" actions={[
+        { icon: '💬', onPress: () => router.push('/data-chat?mode=food' as any), label: 'Food chat' },   // order as Strength: 💬 📅 📈 📚 + extras
         { icon: '📈', onPress: () => router.push('/food-stats' as any), label: 'Food stats' },
         { icon: '📚', onPress: () => router.push('/food-library' as any), label: 'Food database' },   // foods & meals: add / edit / delete
         { icon: '＋', onPress: () => setAdding(true), label: 'Log food' },

@@ -64,6 +64,8 @@ export default function FitnessMode() {
   const exRows = useMemo(() => (showEx && store ? allExercises(store)
     .map(e => ({ e, st: exerciseStatLine(store, e.id) }))
     .sort((a, b) => (b.st?.lastAt ?? 0) - (a.st?.lastAt ?? 0) || a.e.name.localeCompare(b.e.name)) : []), [store, showEx]);
+  const [todayOpen, setTodayOpen] = useState(false);   // Today card folded by default
+  const [weekOpen, setWeekOpen] = useState(false);     // the 7-day strength plan folded by default
   const [selMuscle, setSelMuscle] = useState<Muscle | null>(null);
   // reps 0 = remove the move
   const setDrills = (i: number, reps: number) => {
@@ -136,90 +138,110 @@ export default function FitnessMode() {
         { icon: '💬', onPress: () => router.push('/data-chat?mode=strength' as any), label: 'Strength chat' },   // AI coach: routines / muscles / history / 7-day plan
         { icon: '📅', onPress: () => router.push('/training-calendar' as any), label: 'Training calendar' },
         { icon: '📈', onPress: () => router.push('/strength-stats' as any), label: 'Strength stats' },
-        { icon: '🗂', onPress: () => router.push('/routines' as any), label: 'Routines' },
+        { icon: '📚', onPress: () => router.push('/routines' as any), label: 'Routines & exercises' },   // same database icon as Food
       ]} />
     <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 96 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
 
-      {/* Today */}
+      {/* Today — COMPACT, folded by default (Geert 2026-10-09): one line + Start; unfold to choose any routine */}
       <View style={s.card}>
-        <Text style={s.cardTitle}>Today</Text>
-        <TouchableOpacity hitSlop={6} onPress={() => pickKit(store.here?.name ?? 'Merelbeke').then(k => (k ? setKitHere(k) : undefined)).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
-          <Text style={[s.meta, { marginBottom: 6 }]}>📍 {store.here && Date.now() - store.here.at < 12 * 3_600_000 ? store.here.name : 'Merelbeke (assumed)'} · {KITS[currentKit(store)].label} <Text style={{ color: c.accent }}>change</Text></Text>
+        <TouchableOpacity onPress={() => setTodayOpen(v => !v)} hitSlop={6} style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[s.cardTitle, { flex: 1, marginBottom: 0 }]}>{todayOpen ? '▾' : '▸'} Today</Text>
+          {!todayOpen && <Text style={s.meta}>choose ›</Text>}
         </TouchableOpacity>
-        {/* a finished session turns into its analysis: each exercise vs the last time you did it */}
-        {doneToday.map(x => <SessionVsPrevious key={x.id} st={store} sess={x} />)}
-        {planned.length ? planned.filter(r => !plannedDone(r, doneToday)).map(r => (
-          <View key={r.id} style={s.todayRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.todayName}>{r.name}{todayPlan?.kind === 'prehab' ? ' (optional)' : ''}</Text>
-              <Text style={s.meta}>{r.items.length} exercises · ~{estimateMinutes(r)} min</Text>
-              {todayPlan && !todayPlan.done ? <Text style={[s.meta, { color: c.text, marginTop: 2 }]}>{todayPlan.why}</Text> : null}
-              {todayPlan?.changes?.length && !todayPlan.done ? <Text style={s.meta}>Tailored: {todayPlan.changes.join(' · ')}</Text> : null}
+        {!todayOpen && (() => {
+          const first = planned.find(r => !plannedDone(r, doneToday));
+          if (doneToday.length && !first) return <Text style={[s.meta, { color: c.text, marginTop: 4 }]}>✅ {doneToday.map(x => x.routineName).join(' · ')} done — unfold for the analysis</Text>;
+          if (first) return (
+            <View style={[s.todayRow, { marginTop: 4 }]}>
+              <Text style={[s.todayName, { flex: 1 }]} numberOfLines={1}>{first.name}{todayPlan?.kind === 'prehab' ? ' (optional)' : ''}<Text style={s.meta}>  ~{estimateMinutes(first)} min</Text></Text>
+              <TouchableOpacity style={s.startBtn} onPress={() => start(first)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
             </View>
-            <TouchableOpacity style={s.startBtn} onPress={() => start(r)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
-          </View>
-        )) : (
+          );
+          return <Text style={[s.meta, { marginTop: 4 }]} numberOfLines={2}>{todayPlan && !todayPlan.done ? todayPlan.why : 'Nothing planned'} — unfold to start a routine{daily ? ' or the 🎲 Daily custom' : ''}.</Text>;
+        })()}
+        {todayOpen && (
           <>
-            {todayPlan && !todayPlan.done ? <Text style={[s.meta, { color: c.text, marginBottom: 4 }]}>{todayPlan.why}</Text> : null}
-            <Text style={s.meta}>{todayPlan ? 'Start any routine anyway:' : 'Nothing planned for today — start any routine:'}</Text>
-            <View style={s.chips}>
-              {store.routines.map(r => (
-                <TouchableOpacity key={r.id} style={s.chip} onPress={() => start(r)}><Text style={s.chipTxt}>▶ {r.name}</Text></TouchableOpacity>
-              ))}
-            </View>
+            <TouchableOpacity hitSlop={6} onPress={() => pickKit(store.here?.name ?? 'Merelbeke').then(k => (k ? setKitHere(k) : undefined)).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+              <Text style={[s.meta, { marginBottom: 6 }]}>📍 {store.here && Date.now() - store.here.at < 12 * 3_600_000 ? store.here.name : 'Merelbeke (assumed)'} · {KITS[currentKit(store)].label} <Text style={{ color: c.accent }}>change</Text></Text>
+            </TouchableOpacity>
+            {doneToday.map(x => <SessionVsPrevious key={x.id} st={store} sess={x} />)}
+            {planned.length ? planned.filter(r => !plannedDone(r, doneToday)).map(r => (
+              <View key={r.id} style={s.todayRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.todayName}>{r.name}{todayPlan?.kind === 'prehab' ? ' (optional)' : ''}</Text>
+                  <Text style={s.meta}>{r.items.length} exercises · ~{estimateMinutes(r)} min</Text>
+                  {todayPlan && !todayPlan.done ? <Text style={[s.meta, { color: c.text, marginTop: 2 }]}>{todayPlan.why}</Text> : null}
+                  {todayPlan?.changes?.length && !todayPlan.done ? <Text style={s.meta}>Tailored: {todayPlan.changes.join(' · ')}</Text> : null}
+                </View>
+                <TouchableOpacity style={s.startBtn} onPress={() => start(r)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
+              </View>
+            )) : (
+              <>
+                {todayPlan && !todayPlan.done ? <Text style={[s.meta, { color: c.text, marginBottom: 4 }]}>{todayPlan.why}</Text> : null}
+                <Text style={s.meta}>{todayPlan ? 'Start any routine anyway:' : 'Nothing planned for today — start any routine:'}</Text>
+                <View style={s.chips}>
+                  {store.routines.map(r => (
+                    <TouchableOpacity key={r.id} style={s.chip} onPress={() => start(r)}><Text style={s.chipTxt}>▶ {r.name}</Text></TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
           </>
         )}
       </View>
 
-      {/* Daily custom: a routine composed for TODAY from the recovered muscles, with your own exercises — choose / run */}
-      {daily && (
-        <View style={s.card}>
-          <View style={s.todayRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.todayName}>🎲 Daily custom{daily.composedFor !== today ? ' (yesterday’s)' : ''}</Text>
-              <Text style={s.meta}>{daily.items.length} exercises · ~{estimateMinutes(daily)} min</Text>
+      {todayOpen && (
+        <>
+          {daily && (
+            <View style={s.card}>
+              <View style={s.todayRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.todayName}>🎲 Daily custom{daily.composedFor !== today ? ' (yesterday’s)' : ''}</Text>
+                  <Text style={s.meta}>{daily.items.length} exercises · ~{estimateMinutes(daily)} min</Text>
+                </View>
+                <TouchableOpacity style={s.startBtn} onPress={() => start(daily)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
+              </View>
+              {daily.source ? <Text style={s.meta}>{daily.source}</Text> : null}
+              <Text style={[s.meta, { color: c.text, marginTop: 4 }]} numberOfLines={3}>
+                {daily.items.map(it => `${allExercises(store).find(e => e.id === it.exerciseId)?.name ?? it.exerciseId} ${it.sets}×${it.repsLo}–${it.repsHi}${it.weightKg ? ` @${it.weightKg}` : ''}`).join(' · ')}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
+                <TouchableOpacity hitSlop={8} onPress={() => ensureDailyCustom({ force: true }).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+                  <Text style={[s.meta, { color: c.accent }]}>↻ Recompose</Text>
+                </TouchableOpacity>
+                <TouchableOpacity hitSlop={8} onPress={() => router.push({ pathname: '/strength-routine' as any, params: { id: daily.id } })}>
+                  <Text style={[s.meta, { color: c.accent }]}>✎ Choose exercises</Text>
+                </TouchableOpacity>
+                <View style={{ flex: 1 }} />
+                <TouchableOpacity hitSlop={8} onPress={() => updateStrength(st => ({ ...st, dailyCustomOn: false })).then(() => ensureDailyCustom()).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+                  <Text style={s.meta}>Turn off</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <TouchableOpacity style={s.startBtn} onPress={() => start(daily)}><Text style={s.startTxt}>Start</Text></TouchableOpacity>
-          </View>
-          {daily.source ? <Text style={s.meta}>{daily.source}</Text> : null}
-          <Text style={[s.meta, { color: c.text, marginTop: 4 }]} numberOfLines={3}>
-            {daily.items.map(it => `${allExercises(store).find(e => e.id === it.exerciseId)?.name ?? it.exerciseId} ${it.sets}×${it.repsLo}–${it.repsHi}${it.weightKg ? ` @${it.weightKg}` : ''}`).join(' · ')}
-          </Text>
-          <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
-            <TouchableOpacity hitSlop={8} onPress={() => ensureDailyCustom({ force: true }).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
-              <Text style={[s.meta, { color: c.accent }]}>↻ Recompose</Text>
+          )}
+
+          {store.dailyCustomOn === false && (
+            <TouchableOpacity style={{ marginBottom: 12 }} onPress={() => updateStrength(st => ({ ...st, dailyCustomOn: true })).then(() => ensureDailyCustom({ force: true })).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
+              <Text style={[s.meta, { color: c.accent }]}>🎲 Turn on the Daily custom routine (composed each day from your recovered muscles)</Text>
             </TouchableOpacity>
-            <TouchableOpacity hitSlop={8} onPress={() => router.push({ pathname: '/strength-routine' as any, params: { id: daily.id } })}>
-              <Text style={[s.meta, { color: c.accent }]}>✎ Choose exercises</Text>
-            </TouchableOpacity>
-            <View style={{ flex: 1 }} />
-            <TouchableOpacity hitSlop={8} onPress={() => updateStrength(st => ({ ...st, dailyCustomOn: false })).then(() => ensureDailyCustom()).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
-              <Text style={s.meta}>Turn off</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+          )}
+        </>
       )}
 
-      {store.dailyCustomOn === false && (
-        <TouchableOpacity style={{ marginBottom: 12 }} onPress={() => updateStrength(st => ({ ...st, dailyCustomOn: true })).then(() => ensureDailyCustom({ force: true })).then(() => loadStrength()).then(st => setStore({ ...st })).catch(() => {})}>
-          <Text style={[s.meta, { color: c.accent }]}>🎲 Turn on the Daily custom routine (composed each day from your recovered muscles)</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* The coach's strength week: tailored routines placed around the run plan (adaptive 2–4 sessions) */}
       <View style={s.card}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.cardTitle}>Coach's strength week{store.autoPlan?.ai ? '  ✨ AI' : ''}</Text>
-            <Text style={s.meta}>Your routines, placed around the run plan and tailored per day. Also on the watch.</Text>
-          </View>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setWeekOpen(v => !v)} hitSlop={6}>
+            <Text style={s.cardTitle}>{weekOpen ? '▾' : '▸'} Coach's strength week{store.autoPlan?.ai ? '  ✨ AI' : ''}</Text>
+            <Text style={s.meta} numberOfLines={weekOpen ? undefined : 1}>{weekOpen ? 'Your routines, placed around the run plan and tailored per day. Also on the watch.'
+              : (() => { const nx = store.autoPlan?.days.find(d => d.kind === 'session' && !d.done); return store.autoPlanOn === false ? 'Off' : store.autoPlan ? `${store.autoPlan.target} sessions${nx ? ` · next: ${nx.date === today ? 'today' : WEEKDAYS[new Date(nx.date + 'T12:00:00').getDay()]} ${nx.name}` : ''}` : 'Planning…'; })()}</Text>
+          </TouchableOpacity>
           <Switch value={store.autoPlanOn !== false} onValueChange={v => updateStrength(st => ({ ...st, autoPlanOn: v })).then(st => {
             setStore({ ...st });
             if (v) ensureStrengthPlan({ ai: true, force: true }).then(() => loadStrength()).then(x => setStore({ ...x })).catch(() => {});
             else pushStrengthToWatch().catch(() => {});
           })} />
         </View>
-        {store.autoPlanOn !== false && store.autoPlan && (
+        {weekOpen && store.autoPlanOn !== false && store.autoPlan && (
           <>
             <Text style={[s.meta, { marginTop: 8 }]}>{store.autoPlan.target} sessions · {store.autoPlan.targetWhy}</Text>
             {store.autoPlan.summary ? <Text style={[s.meta, { color: c.text, marginTop: 4 }]}>{store.autoPlan.summary}</Text> : null}
