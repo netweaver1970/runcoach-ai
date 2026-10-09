@@ -11,7 +11,7 @@
  */
 import type { FoodItem, Nutr, NutrKey } from './foodLog';
 import { servingOverrides } from './foodLog';
-import { matchSports, sportsByKey } from './foodSports';
+import { matchSports, sportsByKey, COCKTAILS, LIQUEURS } from './foodSports';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const RAW = require('../../assets/food/ciqual-2025.json') as {
@@ -97,6 +97,11 @@ const NL: Record<string, string[]> = {
   // drinks
   water: ['eau', 'water'], koffie: ['cafe', 'coffee'], sap: ['jus', 'juice'], fruitsap: ['jus', 'juice'],
   appelsiensap: ['jus orange', 'orange juice'], bier: ['biere', 'beer'], wijn: ['vin', 'wine'], frisdrank: ['soda', 'boisson'],
+  // Belgian beer + bar words (Geert 2026-10-09: drinks section)
+  pintje: ['beer regular'], pintjes: ['beer regular'], pint: ['beer regular'], pinten: ['beer regular'], pilsner: ['beer regular'], trappist: ['beer strong'], tripel: ['beer strong'],
+  duvel: ['beer strong'], dubbel: ['beer abbey'], abdijbier: ['beer abbey'], witbier: ['beer white'], kriek: ['beer'], radler: ['shandy'],
+  rood: ['rouge', 'red'], rode: ['rouge', 'red'], rosé: ['rose'], rose: ['rose'], jenever: ['gin'], borrel: ['spirit'], whiskey: ['whisky'],
+  cava: ['wine sparkling'], prosecco: ['wine sparkling'],
   cola: ['cola'], soep: ['soupe', 'soup'],
   saus: ['sauce'], stoofvlees: ['boeuf', 'carbonade', 'stew'], vol: ['entier', 'whole'], mager: ['maigre', 'lean'],
   // compounds and Belgian words (review round 1)
@@ -157,8 +162,10 @@ function load(): Row[] {
     const per100: Nutr = {};
     nKeys.forEach((k, i) => { const v = f[4 + i]; if (typeof v === 'number') per100[k] = v; });
     const caf = CAFFEINE[String(f[0])]; if (caf != null) per100.caf = caf;
+    const grp0 = String(f[idx('grp')] ?? '');
     const fr = String(f[idx('fr')] ?? ''), en = String(f[idx('en')] ?? '');
-    const item: FoodItem = { key: `ciqual:${f[0]}`, src: 'ciqual', id: String(f[0]), name: en || fr, nameAlt: fr, per100, grp: String(f[idx('grp')] ?? '') };
+    // DRINKS (CIQUAL groups 06xx: waters, soft drinks, alcoholic drinks) are amounts in ml (per 100 g ≈ per 100 ml)
+    const item: FoodItem = { key: `ciqual:${f[0]}`, src: 'ciqual', id: String(f[0]), name: en || fr, nameAlt: fr, per100, grp: grp0, ...(grp0.startsWith('06') ? { unit: 'ml' as const } : {}) };
     const wf = words(fr), we = words(en);
     rows.push({ item, w: [...new Set([...wf, ...we])], first: [wf[0] ?? '', we[0] ?? ''], nWords: Math.min(wf.length || 99, we.length || 99), generic: /aliment moyen|average/.test(norm(fr + ' ' + en)) });
     BY_ID.set(item.key, item);
@@ -304,8 +311,48 @@ export function defaultServing(f: FoodItem): { g: number; label: string } {
   const own = servingOverrides[f.key];   // the serving size YOU set for this food wins
   if (own && own.g > 0) return own;
   if (f.serving) return f.serving;
+  // alcoholic drinks: the glass that drink is served in, not a 250 ml "glass" for everything
+  if (f.grp === '0603') {
+    const t = norm(`${f.name} ${f.nameAlt ?? ''}`);
+    if (/brandy|whisky|vodka|gin|rum|pastis|eau de vie|liqueur|cognac|armagnac|spirit|alcool pur|pure alcohol/.test(t) && !/cocktail|punch/.test(t)) return { g: 40, label: '1 shot' };
+    if (/marsala|aperitif|sake/.test(t)) return { g: 80, label: '1 glass' };
+    if (/champagne|sparkling|wine|vin|kir|sangria/.test(t)) return { g: 125, label: '1 glass' };
+    if (/cocktail|punch/.test(t)) return { g: 150, label: '1 glass' };
+    if (/beer|biere|cider|cidre|shandy/.test(t)) return { g: 250, label: '1 glass' };
+  }
   // dry grains / flakes / dry pasta are weighed dry: 180 g "cooked portion" of raw oats would be ~680 kcal
   if ((f.grp === '0301' || f.grp === '0707') && /\b(raw|cru|crue|crus|dry|sec|seche|seches|flakes|flocons)\b/.test(norm(`${f.name} ${f.nameAlt ?? ''}`))
     && !COOK.test(norm(`${f.name} ${f.nameAlt ?? ''}`))) return { g: 60, label: 'dry portion' };
   return GROUP_SERVING[f.grp ?? ''] ?? { g: 100, label: '100 g' };
+}
+
+// ─── drinks (Food database → Drinks; Add food → Drinks) ─────────────────────────────────────────────
+export const DRINK_CATS = ['Water', 'Coffee & tea', 'Soft drinks', 'Juices & smoothies', 'Milk drinks', 'Beer & cider', 'Wine', 'Spirits & liqueurs', 'Cocktails'] as const;
+export type DrinkCat = typeof DRINK_CATS[number];
+/** Is this a drink (any source)? */
+export function isDrink(f: FoodItem): boolean {
+  return f.unit === 'ml' || (f.grp ?? '').startsWith('06') || /^builtin:/.test(f.key) && !!(sportsByKey(f.key) as any)?.unit;
+}
+/** Drink category for the lists. */
+export function drinkCategory(f: FoodItem): DrinkCat {
+  const own = (sportsByKey(f.key) as any)?.drinkCat as DrinkCat | undefined;
+  if (own) return own;
+  if (COCKTAILS.some(x => x.key === f.key)) return 'Cocktails';
+  const t = norm(`${f.name} ${f.nameAlt ?? ''}`);
+  if (/cocktail|spritz|mojito|margarita|daiquiri|colada|cosmopolitan|negroni|martini|cuba libre|cola|mule|bloody|mimosa|fashioned|irish coffee|caipirinha|hugo|punch|sangria|kir/.test(t) && ((f.per100.alc ?? 0) > 0 || /cocktail/.test(t))) return 'Cocktails';
+  if ((f.per100.alc ?? 0) > 0.5 || f.grp === '0603') {
+    if (/beer|biere|cider|cidre|shandy/.test(t)) return 'Beer & cider';
+    if (/wine|vin |champagne|sparkling|rose|sake|marsala|aperitif/.test(t)) return 'Wine';
+    return 'Spirits & liqueurs';
+  }
+  if (f.grp === '0601' || /\bwater\b|\beau\b/.test(t)) return 'Water';
+  if (/coffee|cafe|espresso|cappuccino|tea\b|the\b|chicory|chicoree|infusion|herbal/.test(t)) return 'Coffee & tea';
+  if (/milk|lait|cocoa|cacao|chocolate|yogurt drink|kefir|soy|soja|oat drink|almond drink/.test(t)) return 'Milk drinks';
+  if (/juice|jus|nectar|smoothie/.test(t)) return 'Juices & smoothies';
+  return 'Soft drinks';
+}
+/** Every drink in the table + the built-in cocktails, by category. */
+export function allDrinks(): FoodItem[] {
+  const rows = load().map(r => r.item).filter(isDrink);
+  return [...rows, ...COCKTAILS, ...LIQUEURS];
 }

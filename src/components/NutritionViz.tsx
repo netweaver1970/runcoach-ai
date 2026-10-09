@@ -11,13 +11,15 @@ import type { Nutr } from '../services/foodLog';
  */
 export const MACRO_COLOR = { prot: '#3B82F6', carb: '#F59E0B', fat: '#EF4444', fib: '#10B981', alc: '#8B5CF6' };
 
-export interface Split { kcal: number; prot: number; carb: number; fat: number; fib: number; alc: number; pctP: number; pctC: number; pctF: number; pctOther: number }
+export interface Split { kcal: number; prot: number; carb: number; fat: number; fib: number; alc: number; pctP: number; pctC: number; pctF: number; pctA: number; pctOther: number }
+/** Standard drinks (Belgium / EU: 10 g pure alcohol each). */
+export const STD_DRINK_G = 10;
 /** n = totals with carbs already AVAILABLE (resistant starch out — netNutr / sumNutr). */
 export function macroSplit(n: Nutr): Split {
   const prot = n.prot ?? 0, carb = n.carb ?? 0, fat = n.fat ?? 0, fib = (n.fib ?? 0) + (n.rs ?? 0), alc = n.alc ?? 0;
-  const eP = prot * 4, eC = carb * 4, eF = fat * 9, eO = fib * 2 + alc * 7;
-  const tot = eP + eC + eF + eO || 1;
-  return { kcal: n.kcal ?? Math.round(tot), prot, carb, fat, fib, alc, pctP: (eP / tot) * 100, pctC: (eC / tot) * 100, pctF: (eF / tot) * 100, pctOther: (eO / tot) * 100 };
+  const eP = prot * 4, eC = carb * 4, eF = fat * 9, eA = alc * 7, eO = fib * 2;
+  const tot = eP + eC + eF + eA + eO || 1;
+  return { kcal: n.kcal ?? Math.round(tot), prot, carb, fat, fib, alc, pctP: (eP / tot) * 100, pctC: (eC / tot) * 100, pctF: (eF / tot) * 100, pctA: (eA / tot) * 100, pctOther: (eO / tot) * 100 };
 }
 
 function Arc({ size, sw, p, color, track }: { size: number; sw: number; p: number; color: string; track: string }) {
@@ -61,12 +63,12 @@ export function SplitBar({ n }: { n: Nutr }) {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const sp = macroSplit(n);
-  const parts = [{ w: sp.pctP, col: MACRO_COLOR.prot }, { w: sp.pctC, col: MACRO_COLOR.carb }, { w: sp.pctF, col: MACRO_COLOR.fat }, { w: sp.pctOther, col: MACRO_COLOR.fib }];
+  const parts = [{ w: sp.pctP, col: MACRO_COLOR.prot }, { w: sp.pctC, col: MACRO_COLOR.carb }, { w: sp.pctF, col: MACRO_COLOR.fat }, { w: sp.pctA, col: MACRO_COLOR.alc }, { w: sp.pctOther, col: MACRO_COLOR.fib }];
   return (
     <View>
       <View style={[s.bar, { backgroundColor: c.surfaceAlt }]}>{parts.map((p, i) => p.w > 0 ? <View key={i} style={{ width: `${p.w}%`, backgroundColor: p.col }} /> : null)}</View>
       <Text style={s.legend}>
-        <Text style={{ color: MACRO_COLOR.prot }}>■ protein {Math.round(sp.pctP)}%</Text>  <Text style={{ color: MACRO_COLOR.carb }}>■ carbs {Math.round(sp.pctC)}%</Text>  <Text style={{ color: MACRO_COLOR.fat }}>■ fat {Math.round(sp.pctF)}%</Text>{sp.pctOther >= 1 ? <Text style={{ color: MACRO_COLOR.fib }}>  ■ fibre{sp.alc ? '/alcohol' : ''} {Math.round(sp.pctOther)}%</Text> : null}
+        <Text style={{ color: MACRO_COLOR.prot }}>■ protein {Math.round(sp.pctP)}%</Text>  <Text style={{ color: MACRO_COLOR.carb }}>■ carbs {Math.round(sp.pctC)}%</Text>  <Text style={{ color: MACRO_COLOR.fat }}>■ fat {Math.round(sp.pctF)}%</Text>{sp.pctA >= 1 ? <Text style={{ color: MACRO_COLOR.alc }}>  ■ alcohol {Math.round(sp.pctA)}%</Text> : null}{sp.pctOther >= 1 ? <Text style={{ color: MACRO_COLOR.fib }}>  ■ fibre {Math.round(sp.pctOther)}%</Text> : null}
       </Text>
     </View>
   );
@@ -84,6 +86,7 @@ export function NutritionBreakdown({ items, total }: { items: { name: string; n:
     ['Energy', `${Math.round(sp.kcal)} kcal`], ['Protein', `${r1(total.prot)} g`], ['Carbs (available)', `${r1(total.carb)} g`], ['  of which sugars', `${r1(total.sug)} g`],
     ...((total.rs ?? 0) > 0 ? [['Resistant starch (not in carbs)', `${r1(total.rs)} g`] as [string, string]] : []),
     ['Fat', `${r1(total.fat)} g`], ['  of which saturated', `${r1(total.sat)} g`], ['Fibre', `${r1(total.fib)} g`], ['Salt', `${r1(total.salt)} g`],
+    ...((total.alc ?? 0) > 0 ? [['Alcohol', `${r1(total.alc)} g · ${(total.alc! / STD_DRINK_G).toFixed(1)} drinks · ${Math.round(total.alc! * 7)} kcal`] as [string, string]] : []),
     ...((total.caf ?? 0) > 0 ? [['Caffeine', `${Math.round(total.caf!)} mg`] as [string, string]] : []),
   ];
   return (

@@ -6,7 +6,7 @@
  * scanned products, foods you tagged); a search also reaches the whole food table, so any food can be starred/tagged.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Keyboard } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Keyboard, ScrollView } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SwipeRow } from '../src/components/SwipeRow';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -14,7 +14,7 @@ import {
   loadLibrary, setFavourites, setMealTags, forgetFoods, FoodLibrary, FavItem, KeptFood, MealTag, MEAL_TAGS, Nutr,
   deleteCustomFood, deleteMeal, scaleNutr, foodUsage, mealUsage,
 } from '../src/services/foodLog';
-import { searchFoodsEx, foodByKey, norm } from '../src/services/foodDb';
+import { searchFoodsEx, foodByKey, norm, allDrinks, drinkCategory, DRINK_CATS, DrinkCat } from '../src/services/foodDb';
 import { cachedProducts } from '../src/services/foodOff';
 
 interface Row { key: string; name: string; sub: string; snap: KeptFood['snap']; table?: boolean }
@@ -37,7 +37,8 @@ export default function FoodLibraryScreen() {
   const [filter, setFilter] = useState<Filter>('all');
   const [sel, setSel] = useState<Set<string> | null>(null);   // null = not selecting
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<'foods' | 'meals'>('foods');
+  const [tab, setTab] = useState<'foods' | 'drinks' | 'meals'>('foods');
+  const [dcat, setDcat] = useState<DrinkCat | 'All'>('All');   // Drinks tab: category filter
   const router = useRouter();
 
   useFocusEffect(useCallback(() => {
@@ -112,16 +113,57 @@ export default function FoodLibraryScreen() {
   const meals = lib?.meals ?? [];
   const tabs = (
     <View style={s.tabsRow}>
-      {(['foods', 'meals'] as const).map(t => (
+      {(['foods', 'drinks', 'meals'] as const).map(t => (
         <TouchableOpacity key={t} style={[s.tabBtn, tab === t && s.tabOn]} onPress={() => { Keyboard.dismiss(); setTab(t); setSel(null); }}>
-          <Text style={[s.tabTxt, tab === t && { color: c.onAccent }]}>{t === 'foods' ? `Foods (${mine.length})` : `Meals (${meals.length})`}</Text>
+          <Text style={[s.tabTxt, tab === t && { color: c.onAccent }]}>{t === 'foods' ? 'Foods' : t === 'drinks' ? 'Drinks' : 'Meals'}</Text>
         </TouchableOpacity>
       ))}
-      <TouchableOpacity style={s.newBtn} onPress={() => router.push({ pathname: (tab === 'foods' ? '/food-item' : '/food-meal') as any, params: tab === 'foods' ? { key: 'new' } : { id: 'new' } })}>
-        <Text style={s.newTxt}>＋ New {tab === 'foods' ? 'food' : 'meal'}</Text>
+      <TouchableOpacity style={s.newBtn} onPress={() => router.push({ pathname: (tab === 'meals' ? '/food-meal' : '/food-item') as any, params: tab === 'meals' ? { id: 'new' } : tab === 'drinks' ? { key: 'new', drink: '1' } : { key: 'new' } })}>
+        <Text style={s.newTxt}>＋ New {tab === 'meals' ? 'meal' : tab === 'drinks' ? 'drink' : 'food'}</Text>
       </TouchableOpacity>
     </View>
   );
+  // ── DRINKS: every drink in the food table (waters, coffee & tea, soft drinks, juices, milk drinks, beer & cider, wine,
+  //    spirits) + the built-in cocktails + your own drinks / products, by category; alcohol % and caffeine shown
+  if (tab === 'drinks') {
+    const own = mine.filter(r => r.snap.unit === 'ml').map(r => foodByKey(r.key) ?? ({ key: r.key, src: r.snap.src, id: r.key, name: r.name, per100: r.snap.per100 ?? {}, unit: 'ml' } as any));
+    const all = [...own, ...allDrinks().filter(d => !own.some(o => o.key === d.key))];
+    const qw = norm(q.trim()).split(' ').filter(Boolean);
+    const list = all.filter(d => (dcat === 'All' || drinkCategory(d) === dcat) && (!qw.length || qw.every(w => norm(`${d.name} ${d.nameAlt ?? ''}`).includes(w))))
+      .sort((a, b) => DRINK_CATS.indexOf(drinkCategory(a)) - DRINK_CATS.indexOf(drinkCategory(b)) || a.name.localeCompare(b.name));
+    return (
+      <View style={s.screen}>
+        {tabs}
+        <View style={s.top}>
+          <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="Search drinks — beer, wine, mojito, cola…" placeholderTextColor={c.textFaint} clearButtonMode="while-editing" autoCorrect={false} />
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
+          {(['All', ...DRINK_CATS] as const).map(k => (
+            <TouchableOpacity key={k} style={[s.chip, dcat === k && s.chipOn]} onPress={() => setDcat(k)}>
+              <Text style={[s.chipTxt, dcat === k && { color: c.onAccent }]}>{k}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+        <FlatList data={list} keyExtractor={d => d.key} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={{ paddingBottom: 40 }}
+          renderItem={({ item: d, index }) => {
+            const cat = drinkCategory(d), head = index === 0 || drinkCategory(list[index - 1]) !== cat;
+            const abv = (d.per100.alc ?? 0) / 0.789;   // g alcohol per 100 ml → % vol
+            return (
+              <>
+                {head && <Text style={s.head}>{cat}</Text>}
+                <TouchableOpacity style={s.row} activeOpacity={0.7} onPress={() => router.push({ pathname: '/food-item' as any, params: { key: d.key } })}>
+                  <Text style={s.star}>{favs.has(d.key) ? '★' : cat === 'Cocktails' ? '🍸' : abv > 0.5 ? '🍺' : '🥤'}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.name} numberOfLines={2}>{d.name}</Text>
+                    <Text style={s.meta} numberOfLines={1}>{r0(d.per100.kcal)} kcal/100 ml · carbs {r0(d.per100.carb)} g{abv > 0.5 ? ` · ${abv.toFixed(1)} % vol` : ''}{(d.per100.caf ?? 0) > 0 ? ` · ☕ ${r0(d.per100.caf)} mg` : ''}</Text>
+                  </View>
+                </TouchableOpacity>
+              </>
+            );
+          }} />
+      </View>
+    );
+  }
   if (tab === 'meals') return (
     <View style={s.screen}>
       {tabs}

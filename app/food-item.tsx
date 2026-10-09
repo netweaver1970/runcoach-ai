@@ -24,7 +24,7 @@ const num = (t: string) => { const v = parseFloat(t.replace(',', '.')); return N
 const txt = (v?: number) => (v == null ? '' : String(Math.round(v * 10) / 10));
 
 export default function FoodItemScreen() {
-  const { key, replace } = useLocalSearchParams<{ key: string; replace?: string }>();
+  const { key, replace, drink } = useLocalSearchParams<{ key: string; replace?: string; drink?: string }>();
   const isNew = key === 'new';
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
@@ -33,7 +33,7 @@ export default function FoodItemScreen() {
   const [base, setBase] = useState<(Partial<FoodItem> & { n?: Nutr }) | null>(null);   // the food as found (any source)
   const [name, setName] = useState('');
   const [brand, setBrand] = useState('');
-  const [unit, setUnit] = useState<'g' | 'ml'>('g');
+  const [unit, setUnit] = useState<'g' | 'ml'>(drink === '1' ? 'ml' : 'g');   // ＋ New drink → per 100 ml
   const [vals, setVals] = useState<Partial<Record<NutrKey, string>>>({});
   const [srv, setSrv] = useState('');
   // ⇄ replace this food everywhere by another (required before deleting a food that's used on logged days)

@@ -8,7 +8,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useFocusEffect } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { TChart, TPt, inWin } from '../src/components/TimeChart';
-import { MacroRings, SplitBar, MACRO_COLOR } from '../src/components/NutritionViz';
+import { MacroRings, SplitBar, MACRO_COLOR, STD_DRINK_G } from '../src/components/NutritionViz';
 import { loadDay, dayTotals, Nutr } from '../src/services/foodLog';
 import { peekDailyComponents, fetchBodyMassHistory } from '../src/services/healthkit';
 import { trainingDayKey } from '../src/services/trainingLoad';
@@ -99,6 +99,10 @@ export default function FoodStatsScreen() {
               <TChart pts={series(d => d.n.fib)} t0={t0} t1={t1} color={MACRO_COLOR.fib} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
                 refs={[{ y: 30, color: MACRO_COLOR.fib, dash: true }]} />
             ), 'Dashed: 30 g/day (EFSA adequate intake for adults ≥ 25 g).')}
+            {win.some(d => (d.n.alc ?? 0) > 0) && card('Alcohol', (
+              <TChart pts={series(d => d.n.alc ? d.n.alc / STD_DRINK_G : 0)} t0={t0} t1={t1} color={MACRO_COLOR.alc} events={[]} showEvents={false} yfmt={v => v.toFixed(1)} innerW={innerW}
+                refs={[{ y: 2, color: '#e67e22', dash: true }]} />
+            ), `Standard drinks per day (10 g alcohol each) · window total ${(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) / STD_DRINK_G).toFixed(1)} drinks, ${Math.round(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) * 7)} kcal. Dashed: 2 a day — Belgian guidance is ≤ 10 a week with alcohol-free days.`)}
             {inWin(series(d => d.n.caf), t0, t1).some(p => p.v > 0) && card('Caffeine', (
               <TChart pts={series(d => d.n.caf)} t0={t0} t1={t1} color="#8B5E3C" events={[]} showEvents={false} yfmt={v => `${r0(v)}`} innerW={innerW}
                 refs={[{ y: 400, color: '#e67e22', dash: true }]} />

@@ -20,7 +20,7 @@ import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-rou
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
 import { SwipeRow } from '../src/components/SwipeRow';
-import { MacroRings, SplitBar } from '../src/components/NutritionViz';
+import { MacroRings, SplitBar, STD_DRINK_G } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
 import { caffeineHrv, cafHrvSummary } from '../src/services/caffeineHrv';
@@ -30,7 +30,7 @@ import { DayNav } from '../src/components/DayNav';
 import { PhotoTest } from '../src/components/PhotoTest';
 import * as ImagePicker from 'expo-image-picker';
 import { detectBarcodes, scanBarcodeLive } from '../modules/runcoach-pdf';
-import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT } from '../src/services/foodDb';
+import { searchFoodsEx, defaultServing, foodByKey, norm, CIQUAL_CREDIT, isDrink } from '../src/services/foodDb';
 import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
@@ -233,7 +233,6 @@ export default function FoodMode() {
         { icon: '💬', onPress: () => router.push('/data-chat?mode=food' as any), label: 'Food chat' },   // order as Strength: 💬 📅 📈 📚 + extras
         { icon: '📈', onPress: () => router.push('/food-stats' as any), label: 'Food stats' },
         { icon: '📚', onPress: () => router.push('/food-library' as any), label: 'Food database' },   // foods & meals: add / edit / delete
-        { icon: '＋', onPress: () => setAdding(true), label: 'Log food' },
       ]}>
         <DayNav date={isToday ? undefined : date} todayKey={today} />
       </ModeHeader>
@@ -257,6 +256,7 @@ export default function FoodMode() {
               <Text style={s.kcal}>{r0(totals?.kcal)}</Text><Text style={s.kcalUnit}>kcal</Text>
             </View>
           )}
+          {(totals?.alc ?? 0) > 0 && <Text style={[s.sub, { color: (totals!.alc! / STD_DRINK_G) > 2 ? '#e67e22' : c.textSub }]}>🍷 Alcohol {r1(totals!.alc!)} g ≈ {(totals!.alc! / STD_DRINK_G).toFixed(1)} standard drinks · {r0(totals!.alc! * 7)} kcal of the day{(totals!.alc! / STD_DRINK_G) > 2 ? ' — above the 2/day guidance; alcohol lowers overnight HRV and sleep quality' : ''}</Text>}
           <Text style={s.sub}>💧 {r1((totals?.waterMl ?? 0) / 1000)} L drinks · Sodium {r1((totals?.na ?? 0) / 1000)} g · Fibre {r0(totals?.fib)} g{totals?.rs ? ` + ${r0(totals.rs)} g resistant starch (not in carbs)` : ''}</Text>
           {burn != null && !(isToday && !sameDay) && (
             isToday
@@ -366,7 +366,7 @@ export default function FoodMode() {
         </View>
       )}
 
-      <TouchableOpacity style={[s.fab, { bottom: insets.bottom + 24 }]} onPress={() => setAdding(true)} activeOpacity={0.85}>
+      <TouchableOpacity style={[s.fab, { bottom: 22 }]} onPress={() => setAdding(true)} activeOpacity={0.85}>
         <Text style={s.fabTxt}>＋</Text>
       </TouchableOpacity>
 
@@ -383,7 +383,11 @@ export default function FoodMode() {
 }
 
 // ─── Add sheet ────────────────────────────────────────────────────────────────────────────────────
-type Tab = 'recent' | 'fav' | 'meals';
+type Tab = 'recent' | 'fav' | 'drinks' | 'meals';
+/** The Drinks tab's quick list (search finds every other drink): table ids + built-in cocktails. */
+const QUICK_DRINKS = ['ciqual:18066', 'ciqual:18004', 'ciqual:18071', 'ciqual:18154', 'ciqual:18155', 'ciqual:18018', 'ciqual:18060', 'ciqual:2013',
+  'ciqual:5001', 'ciqual:5010', 'ciqual:5002', 'ciqual:5214', 'ciqual:5215', 'ciqual:5216', 'ciqual:5207', 'ciqual:1008', 'ciqual:1005', 'ciqual:1002',
+  'builtin:vodka_redbull', 'builtin:vodka_redbull_sf', 'builtin:gin_tonic', 'builtin:aperol_spritz', 'builtin:mojito', 'builtin:cuba_libre', 'builtin:hugo', 'builtin:espresso_martini'];
 type Mode =
   | { m: 'search' }
   | { m: 'portion'; item: FoodItem | OffProduct; grams?: number }
@@ -648,6 +652,19 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
       return [...local, ...head, ...prods];
     }
     if (digits) return [];
+    if (tab === 'drinks') {
+      // your recent drinks first (with the amount you used), then the common ones — search reaches every other drink
+      const recentDrinks = lib.recents.filter(r => r.unit === 'ml' || (() => { const f = foodByKey(r.key); return !!f && isDrink(f); })()).slice(0, 12);
+      const rows: Li[] = recentDrinks.map(r => ({ key: `r-${r.key}`, title: r.name, star: favs.has(r.key),
+        sub: r.grams ? `${amt(r.grams, 'ml')} · ${r0(r.per100 ? scaleNutr(r.per100, r.grams).kcal : r.n?.kcal)} kcal` : `${r0(r.per100?.kcal)} kcal/100 ml`,
+        onPress: () => pickRecent(r), onLong: () => pickRecent(r, true) }));
+      const quick = QUICK_DRINKS.map(k => foodByKey(k)).filter((f): f is FoodItem => !!f && !recentDrinks.some(r => r.key === f.key));
+      return [
+        ...(rows.length ? [{ key: '__rd', title: 'Your recent drinks', sub: '', onPress: () => {}, header: true } as Li, ...rows] : []),
+        { key: '__qd', title: 'Common drinks — or search any drink above', sub: '', onPress: () => {}, header: true } as Li,
+        ...quick.map(f => ({ ...foodRow(f), sub: `${r0(f.per100.kcal)} kcal/100 ml${(f.per100.alc ?? 0) > 0.5 ? ` · ${((f.per100.alc ?? 0) / 0.789).toFixed(1)} % vol` : ''} · ${defaultServing(f).label} ${defaultServing(f).g} ml` })),
+      ];
+    }
     if (tab === 'meals') return lib.meals.map(m => ({
       key: m.id, title: `🍽️ ${m.name}`,
       sub: `${m.items.length} items · ${r0(m.items.reduce((a, it) => a + ((it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams).kcal : it.n?.kcal) ?? 0), 0))} kcal`,
@@ -842,9 +859,9 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
 
             {qt.length < 2 && (
               <View style={s.tabs}>
-                {(['recent', 'fav', 'meals'] as Tab[]).map(t => (
+                {(['recent', 'fav', 'drinks', 'meals'] as Tab[]).map(t => (
                   <TouchableOpacity key={t} onPress={() => setTab(t)} style={[s.tab, tab === t && s.tabOn]}>
-                    <Text style={[s.tabTxt, tab === t && s.tabTxtOn]}>{t === 'recent' ? 'Recents' : t === 'fav' ? '★ Favourites' : 'Meals'}</Text>
+                    <Text style={[s.tabTxt, tab === t && s.tabTxtOn]}>{t === 'recent' ? 'Recents' : t === 'fav' ? '★ Favs' : t === 'drinks' ? '🥤 Drinks' : 'Meals'}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1465,7 +1482,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   toastTxt:  { color: c.bg, fontSize: 14, fontWeight: '600', flex: 1 },
   toastBtn:  { color: c.accent, fontSize: 15, fontWeight: '800' },
   // left: the Modes button sits bottom-RIGHT on every mode screen
-  fab:       { position: 'absolute', left: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
+  // same size and height as the mode selector button (ModeSwitcher: 52 pt, bottom 22) — mirrored on the left
+  fab:       { position: 'absolute', left: 18, width: 52, height: 52, borderRadius: 26, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
   fabTxt:    { color: c.onAccent, fontSize: 30, fontWeight: '600', marginTop: -2 },
   sheet:     { flex: 1, padding: 16 },
   sheetHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 },
