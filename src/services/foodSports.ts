@@ -30,6 +30,11 @@ export const SPORTS_ITEMS: SportsItem[] = [
     ['electrolyte', 'electrolytes', 'elektrolyten', 'electrolyte tablet', 'hydration tablet', 'nuun'], 'Typical 4 g effervescent tablet: ~300 mg sodium, ~2 kcal.', /electro|elektro|nuun/i),
   item('collagen', 'Collagen peptides', { kcal: 360, prot: 90, carb: 0, fat: 0 }, { g: 10, label: '1 scoop' },
     ['collagen', 'collageen', 'collagene'], 'Typical hydrolysed collagen label.', /collag/i),
+  // CIQUAL has no psyllium (Geert 2026-10-09). EU label convention: fibre is NOT in the carbs and counts 2 kcal/g →
+  // ~88 g fibre ≈ 176 kcal of the 194 (Kruidvat / Holland & Barrett psyllium labels on Open Food Facts).
+  item('psyllium', 'Psyllium husk (whole husks)', { kcal: 194, prot: 1.4, carb: 2.5, fat: 0.25, sug: 0, fib: 88 }, { g: 7, label: '1 heaped tbsp' },
+    ['psyllium', 'psyllium husk', 'psyllium husks', 'psylliumvezels', 'psyllium vezels', 'vlozaad', 'vlozaadvezels', 'vlozaad vezels', 'vlozaadvlies', 'ispaghula', 'ispaghul', 'metamucil', 'psyllium powder'],
+    'Typical label: ~88 % fibre. 1 heaped tbsp of WHOLE husks ≈ 7 g (a level one ≈ 4–5 g); powder is denser — 1 tbsp ≈ 10 g. Take it with plenty of water.', /psyll|vlozaad|ispaghul/i),
 ];
 
 const n = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();

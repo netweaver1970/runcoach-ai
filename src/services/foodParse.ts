@@ -105,7 +105,10 @@ export function parseFragment(frag: string, boost?: Record<string, number>, find
   const alternatives = own ? found.slice(0, 3) : found.slice(1);
   const n = qty ?? 1;
   let grams: number;
-  if (unit && unit.g != null) grams = n * unit.g;
+  // a food whose own serving IS that spoon ("1 heaped tbsp" psyllium ≈ 7 g) uses its weight, not the generic 15 g
+  const ownSpoon = !!food && !!unit && (unit.key === 'tbsp' || unit.key === 'tsp') && new RegExp(`\\b${unit.key}\\b`).test(defaultServing(food).label);
+  if (ownSpoon && food) grams = n * defaultServing(food).g;
+  else if (unit && unit.g != null) grams = n * unit.g;
   // a bare number ≥ 10 with no unit is grams ("200 rijst", "kip 150"), not 200 servings
   else if (!unit && qty != null && qty >= 10) grams = qty;   // (but see `countable` below)
   else if (food) grams = n * defaultServing(food).g;
