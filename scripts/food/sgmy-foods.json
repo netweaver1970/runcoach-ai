@@ -1,0 +1,2743 @@
+[
+ {
+  "id": "bak_kwa_hpb_generic",
+  "name": "Bak kwa, barbecued honey pork slice (generic, HPB)",
+  "aliases": [
+   "bak kwa",
+   "bakkwa",
+   "bak gua",
+   "rou gan",
+   "rougan",
+   "barbecued pork slice",
+   "bbq pork jerky",
+   "pork jerky",
+   "肉干",
+   "long yuk",
+   "lung yuk",
+   "dried meat"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 394,
+   "prot": 38.4,
+   "carb": 50.3,
+   "sug": 46,
+   "fat": 4.3,
+   "sat": 1.9,
+   "fib": 1.8,
+   "na": 901
+  },
+  "unit": "g",
+  "serving": {
+   "g": 94,
+   "label": "1 large square slice (94 g, HPB lab sample)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F07030001 'Bak kwa', Lab Analysis 2010; HPB/HealthHub quote ~370 kcal per slice — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F07030001"
+ },
+ {
+  "id": "bak_kwa_bch_signature_pork",
+  "name": "Bee Cheng Hiang signature pork bak kwa (square slice)",
+  "aliases": [
+   "bee cheng hiang",
+   "bch",
+   "bak kwa",
+   "bakkwa",
+   "signature pork",
+   "sliced pork",
+   "rou gan",
+   "美珍香"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 331,
+   "prot": 27.8,
+   "carb": 40.7,
+   "sug": 37.1,
+   "fat": 5.6,
+   "sat": 1.9,
+   "fib": 0.0,
+   "na": 893
+  },
+  "unit": "g",
+  "serving": {
+   "g": 54,
+   "label": "1 square slice (54 g, brand label serving)"
+  },
+  "source": "Bee Cheng Hiang label as listed on FatSecret SG (1 slice 54 g = 179 kcal, P15 C22 F3 SF1 Na482); sugar est. = 91% of carbs (HPB ratio), fibre not declared — https://www.fatsecret.com.sg/calories-nutrition/bee-cheng-hiang/bak-kwa/1-slice"
+ },
+ {
+  "id": "bak_kwa_bch_chilli_pork",
+  "name": "Bee Cheng Hiang chilli pork bak kwa (sliced chilli pork)",
+  "aliases": [
+   "bee cheng hiang",
+   "bch",
+   "chilli bak kwa",
+   "chili bakkwa",
+   "spicy bak kwa",
+   "sliced chilli pork",
+   "la rou gan"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 331,
+   "prot": 27.8,
+   "carb": 40.7,
+   "sug": 37.1,
+   "fat": 5.6,
+   "sat": 1.9,
+   "fib": 0.0,
+   "na": 893
+  },
+  "unit": "g",
+  "serving": {
+   "g": 54,
+   "label": "1 square slice (~54 g, est. = signature slice)"
+  },
+  "source": "ESTIMATE: no published label found; uses Bee Cheng Hiang signature pork label values (FatSecret SG) and same slice weight — https://beechenghiang.com.my/product/sliced-chilli-pork"
+ },
+ {
+  "id": "bak_kwa_bch_gold_coin",
+  "name": "Bee Cheng Hiang golden coin minced pork bak kwa (medallion)",
+  "aliases": [
+   "bee cheng hiang",
+   "bch",
+   "gold coin",
+   "golden coin",
+   "medallion",
+   "coin bak kwa",
+   "jin qian rou gan",
+   "minced pork bakkwa",
+   "mini bak kwa"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 348,
+   "prot": 28.0,
+   "carb": 39.2,
+   "sug": 36.8,
+   "fat": 8.4,
+   "sat": 3.2,
+   "fib": 0.0,
+   "na": 912
+  },
+  "unit": "g",
+  "serving": {
+   "g": 25,
+   "label": "1 gold coin (25 g, brand label serving)"
+  },
+  "source": "Bee Cheng Hiang Golden Coin label as listed on MyNetDiary (25 g = 87 kcal, F2.1 SF0.8 C9.8 S9.2 P7 Na228); fibre not declared — https://www.mynetdiary.com/food/calories-in-golden-coin-minced-pork-bakkwa-by-bee-cheng-hiang-serving-61977602-0.html"
+ },
+ {
+  "id": "bak_kwa_bch_chicken",
+  "name": "Bee Cheng Hiang chicken bak kwa (sliced chicken)",
+  "aliases": [
+   "bee cheng hiang",
+   "bch",
+   "chicken bak kwa",
+   "chicken bakkwa",
+   "sliced chicken",
+   "ji rou gan"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 314,
+   "prot": 27.8,
+   "carb": 40.7,
+   "sug": 37.1,
+   "fat": 4.5,
+   "sat": 1.5,
+   "fib": 0.0,
+   "na": 893
+  },
+  "unit": "g",
+  "serving": {
+   "g": 54,
+   "label": "1 square slice (~54 g, est.)"
+  },
+  "source": "ESTIMATE: no published label found; BCH signature pork label values with fat −20% (leaner chicken) — https://beechenghiang.com.my/product/sliced-chicken"
+ },
+ {
+  "id": "bak_kwa_bch_honey_pork",
+  "name": "Bee Cheng Hiang honey minced pork bak kwa",
+  "aliases": [
+   "bee cheng hiang",
+   "bch",
+   "honey bak kwa",
+   "honey bakkwa",
+   "honey minced pork",
+   "mi zhi rou gan"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 394,
+   "prot": 38.4,
+   "carb": 50.3,
+   "sug": 46,
+   "fat": 4.3,
+   "sat": 1.9,
+   "fib": 1.8,
+   "na": 901
+  },
+  "unit": "g",
+  "serving": {
+   "g": 54,
+   "label": "1 square slice (~54 g, est.)"
+  },
+  "source": "ESTIMATE: no brand label found; HPB 'Bak kwa – barbeque glazed honey pork slice' per-100 g × BCH slice weight — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F07030001 ; https://beechenghiang.com.my/product/honey-minced-pork"
+ },
+ {
+  "id": "bak_kwa_lim_chee_guan_pork",
+  "name": "Lim Chee Guan pork bak kwa (square slice)",
+  "aliases": [
+   "lim chee guan",
+   "lcg",
+   "bak kwa",
+   "bakkwa",
+   "sliced pork",
+   "rou gan",
+   "林志源"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 394,
+   "prot": 38.4,
+   "carb": 50.3,
+   "sug": 46,
+   "fat": 4.3,
+   "sat": 1.9,
+   "fib": 1.8,
+   "na": 901
+  },
+  "unit": "g",
+  "serving": {
+   "g": 70,
+   "label": "1 large thin square slice (~70 g, est.)"
+  },
+  "source": "ESTIMATE: Lim Chee Guan publishes no nutrition label; HPB 'Bak kwa' per-100 g with an estimated large-slice weight — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F07030001"
+ },
+ {
+  "id": "bak_kwa_fragrance_sliced_pork",
+  "name": "Fragrance sliced pork bak kwa",
+  "aliases": [
+   "fragrance",
+   "fragrance bak kwa",
+   "sliced tender pork",
+   "bak kwa",
+   "bakkwa",
+   "bb bak kwa",
+   "rou gan",
+   "香味"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 392,
+   "prot": 23.0,
+   "carb": 30.0,
+   "sug": 15.0,
+   "fat": 16.0,
+   "sat": 6.5,
+   "fib": 0.0,
+   "na": 922
+  },
+  "unit": "g",
+  "serving": {
+   "g": 50,
+   "label": "1 slice (~50 g, est.)"
+  },
+  "source": "Fragrance 'BB bak kwa pork jerky' label per 100 g as listed on MyNetDiary (392 kcal, P23 C30 S15 F16 SF6.5 Na922 — note macros sum to ~356 kcal, label as published); slice weight estimated — https://www.mynetdiary.com/food/calories-in-bb-bak-kwa-pork-jerky-by-fragrance-serving-38122240-0.html"
+ },
+ {
+  "id": "bak_kwa_fragrance_gold_coin",
+  "name": "Fragrance gold coin bak kwa",
+  "aliases": [
+   "fragrance",
+   "gold coin",
+   "golden coin",
+   "coin bak kwa",
+   "medallion",
+   "mini bak kwa",
+   "jin qian rou gan"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 392,
+   "prot": 23.0,
+   "carb": 30.0,
+   "sug": 15.0,
+   "fat": 16.0,
+   "sat": 6.5,
+   "fib": 0.0,
+   "na": 922
+  },
+  "unit": "g",
+  "serving": {
+   "g": 20,
+   "label": "1 gold coin (~20 g, est.)"
+  },
+  "source": "ESTIMATE: Fragrance sliced-pork label per 100 g (MyNetDiary) applied to an estimated ~20 g coin — https://www.mynetdiary.com/food/calories-in-bb-bak-kwa-pork-jerky-by-fragrance-serving-38122240-0.html"
+ },
+ {
+  "id": "bak_kwa_kim_joo_guan_pork",
+  "name": "Kim Joo Guan pork bak kwa (square slice)",
+  "aliases": [
+   "kim joo guan",
+   "bak kwa",
+   "bakkwa",
+   "sliced pork",
+   "rou gan",
+   "金裕源"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 394,
+   "prot": 38.4,
+   "carb": 50.3,
+   "sug": 46,
+   "fat": 4.3,
+   "sat": 1.9,
+   "fib": 1.8,
+   "na": 901
+  },
+  "unit": "g",
+  "serving": {
+   "g": 60,
+   "label": "1 square slice (~60 g, est.)"
+  },
+  "source": "ESTIMATE: no brand label published; HPB 'Bak kwa' per-100 g with typical slice weight — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F07030001"
+ },
+ {
+  "id": "bak_kwa_kim_hock_guan_pork",
+  "name": "Kim Hock Guan pork bak kwa (square slice)",
+  "aliases": [
+   "kim hock guan",
+   "khg",
+   "bak kwa",
+   "bakkwa",
+   "sliced pork",
+   "rou gan",
+   "金福源"
+  ],
+  "category": "Bak kwa",
+  "per100": {
+   "kcal": 394,
+   "prot": 38.4,
+   "carb": 50.3,
+   "sug": 46,
+   "fat": 4.3,
+   "sat": 1.9,
+   "fib": 1.8,
+   "na": 901
+  },
+  "unit": "g",
+  "serving": {
+   "g": 60,
+   "label": "1 square slice (~60 g, est.)"
+  },
+  "source": "ESTIMATE: no brand label published; HPB 'Bak kwa' per-100 g with typical slice weight — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F07030001"
+ },
+ {
+  "id": "chicken_rice_steamed",
+  "name": "Hainanese chicken rice, steamed (白鸡饭)",
+  "aliases": [
+   "chicken rice",
+   "hainanese chicken rice",
+   "steamed chicken rice",
+   "white chicken rice",
+   "bai ji fan",
+   "nasi ayam"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 147,
+   "prot": 6.0,
+   "carb": 21.9,
+   "sug": 0,
+   "fat": 3.6,
+   "sat": 1.3,
+   "fib": 1.6,
+   "na": 380
+  },
+  "unit": "g",
+  "serving": {
+   "g": 346,
+   "label": "1 plate (346 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100133 'Steamed chicken rice', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100133"
+ },
+ {
+  "id": "chicken_rice_roasted",
+  "name": "Hainanese chicken rice, roasted (烧鸡饭)",
+  "aliases": [
+   "chicken rice",
+   "roasted chicken rice",
+   "roast chicken rice",
+   "shao ji fan",
+   "nasi ayam panggang"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 178,
+   "prot": 8.2,
+   "carb": 23.3,
+   "sug": 0.2,
+   "fat": 5.8,
+   "sat": 1.9,
+   "fib": 0,
+   "na": 294
+  },
+  "unit": "g",
+  "serving": {
+   "g": 363,
+   "label": "1 plate (363 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100112 'Roasted chicken rice', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100112"
+ },
+ {
+  "id": "nasi_lemak_rice_only",
+  "name": "Nasi lemak, coconut rice only (with sambal)",
+  "aliases": [
+   "nasi lemak",
+   "coconut rice",
+   "nasi lemak plain",
+   "santan rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 168,
+   "prot": 3.4,
+   "carb": 30.5,
+   "sug": 0,
+   "fat": 3.4,
+   "sat": 2.0,
+   "fib": 1.3,
+   "na": 367
+  },
+  "unit": "g",
+  "serving": {
+   "g": 214,
+   "label": "1 plate rice only (214 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100090 'Nasi lemak (rice only)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100090"
+ },
+ {
+  "id": "nasi_lemak_bungkus_my",
+  "name": "Nasi lemak, standard Malaysian packet (bungkus: rice, sambal, egg, ikan bilis, peanuts)",
+  "aliases": [
+   "nasi lemak",
+   "nasi lemak bungkus",
+   "nasi lemak biasa",
+   "malaysian nasi lemak",
+   "coconut rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 169,
+   "prot": 4.2,
+   "carb": 25.3,
+   "sug": 1.5,
+   "fat": 5.7,
+   "sat": 3.4,
+   "fib": 0.3,
+   "na": 338
+  },
+  "unit": "g",
+  "serving": {
+   "g": 230,
+   "label": "1 packet / plate (230 g, MyFCD portion)"
+  },
+  "source": "MyFCD (Malaysia) 221019 'Rice, coconut milk (Nasi lemak)'; sat fat (=59% of fat, HPB coconut-rice ratio) and sugar estimated — https://myfcd.moh.gov.my/myfcd97/index.php/site/detail_product/221019/0/10/-1/0/0/"
+ },
+ {
+  "id": "nasi_lemak_chicken_wing",
+  "name": "Nasi lemak with fried chicken wing set",
+  "aliases": [
+   "nasi lemak",
+   "nasi lemak ayam",
+   "nasi lemak chicken wing",
+   "chicken wing nasi lemak"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 214,
+   "prot": 9.6,
+   "carb": 20.9,
+   "sug": 2.1,
+   "fat": 9.8,
+   "sat": 3.5,
+   "fib": 2.0,
+   "na": 415
+  },
+  "unit": "g",
+  "serving": {
+   "g": 410,
+   "label": "1 plate (410 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100087 'Nasi lemak (chicken wing set)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100087"
+ },
+ {
+  "id": "nasi_lemak_fish",
+  "name": "Nasi lemak with fried fish set",
+  "aliases": [
+   "nasi lemak",
+   "nasi lemak ikan",
+   "nasi lemak fish"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 207,
+   "prot": 8.5,
+   "carb": 22.6,
+   "sug": 2.3,
+   "fat": 8.7,
+   "sat": 3.3,
+   "fib": 2.0,
+   "na": 460
+  },
+  "unit": "g",
+  "serving": {
+   "g": 349,
+   "label": "1 plate (349 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100089 'Nasi lemak (fish set)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100089"
+ },
+ {
+  "id": "nasi_goreng",
+  "name": "Nasi goreng (Malay fried rice)",
+  "aliases": [
+   "nasi goreng",
+   "fried rice",
+   "malay fried rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 153,
+   "prot": 4.9,
+   "carb": 17.1,
+   "sug": 0,
+   "fat": 6.9,
+   "sat": 2.5,
+   "fib": 1.4,
+   "na": 442
+  },
+  "unit": "g",
+  "serving": {
+   "g": 485,
+   "label": "1 plate (485 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100083 'Nasi goreng', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100083"
+ },
+ {
+  "id": "economic_rice_1veg_1meat",
+  "name": "Economic rice / cai fan (1 veg + 1 meat)",
+  "aliases": [
+   "economic rice",
+   "economy rice",
+   "cai fan",
+   "cai png",
+   "chap fan",
+   "mixed rice",
+   "nasi campur",
+   "zi char rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 123,
+   "prot": 6.2,
+   "carb": 12.4,
+   "sug": 0.9,
+   "fat": 5.0,
+   "sat": 1.8,
+   "fib": 1.4,
+   "na": 263
+  },
+  "unit": "g",
+  "serving": {
+   "g": 553,
+   "label": "1 plate (553 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100032 'Economic rice (1 vegetable, 1 meat)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100032"
+ },
+ {
+  "id": "economic_rice_2meat_1fried",
+  "name": "Economic rice / cai fan (2 meats, 1 fried)",
+  "aliases": [
+   "economic rice",
+   "economy rice",
+   "cai fan",
+   "cai png",
+   "chap fan",
+   "mixed rice",
+   "nasi campur"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 178,
+   "prot": 11.2,
+   "carb": 14.9,
+   "sug": 1.7,
+   "fat": 7.8,
+   "sat": 2.6,
+   "fib": 1.0,
+   "na": 278
+  },
+  "unit": "g",
+  "serving": {
+   "g": 488,
+   "label": "1 plate (488 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100036 'Economic rice (2 meats (1 fried))', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100036"
+ },
+ {
+  "id": "nasi_padang",
+  "name": "Nasi padang (rice with sambal goreng – typical plate)",
+  "aliases": [
+   "nasi padang",
+   "nasi campur",
+   "malay rice",
+   "sambal goreng",
+   "padang rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 175,
+   "prot": 6.4,
+   "carb": 21.9,
+   "sug": 1.3,
+   "fat": 7.6,
+   "sat": 2.4,
+   "fib": 3.1,
+   "na": 240
+  },
+  "unit": "g",
+  "serving": {
+   "g": 469,
+   "label": "1 plate (469 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100095 'Nasi padang (sambal goreng)', Lab Analysis 2023 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100095"
+ },
+ {
+  "id": "char_siu_rice",
+  "name": "Char siu rice (叉烧饭)",
+  "aliases": [
+   "char siu rice",
+   "char siew rice",
+   "cha shao fan",
+   "bbq pork rice",
+   "barbecued pork rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 170,
+   "prot": 8.8,
+   "carb": 24.7,
+   "sug": 0.6,
+   "fat": 3.5,
+   "sat": 1.2,
+   "fib": 2.4,
+   "na": 236
+  },
+  "unit": "g",
+  "serving": {
+   "g": 353,
+   "label": "1 plate (353 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100013 'Char siew rice', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100013"
+ },
+ {
+  "id": "roast_duck_rice",
+  "name": "Roast duck rice (烧鸭饭)",
+  "aliases": [
+   "roast duck rice",
+   "roasted duck rice",
+   "shao ya fan",
+   "duck rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 169,
+   "prot": 8.2,
+   "carb": 22.2,
+   "sug": 0,
+   "fat": 5.2,
+   "sat": 1.4,
+   "fib": 0.7,
+   "na": 159
+  },
+  "unit": "g",
+  "serving": {
+   "g": 411,
+   "label": "1 plate (411 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100113 'Roasted duck rice', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100113"
+ },
+ {
+  "id": "bak_kut_teh_with_rice",
+  "name": "Bak kut teh (peppery Teochew soup) with a bowl of rice (肉骨茶)",
+  "aliases": [
+   "bak kut teh",
+   "bkt",
+   "rou gu cha",
+   "pork rib soup",
+   "bak kut teh rice"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 67,
+   "prot": 3.7,
+   "carb": 7.3,
+   "sug": 0.0,
+   "fat": 2.4,
+   "sat": 0.9,
+   "fib": 0.1,
+   "na": 275
+  },
+  "unit": "g",
+  "serving": {
+   "g": 774,
+   "label": "1 bowl soup (574 g) + 1 bowl rice (200 g)"
+  },
+  "source": "Computed: HPB https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F06100003 (Bak kut teh soup, lab 2025) + HPB https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05090006 (cooked white rice); trace carbs/sugar/fibre in soup = 0"
+ },
+ {
+  "id": "bak_kut_teh_herbal_my",
+  "name": "Bak kut teh, Malaysian herbal (Klang style, soup only)",
+  "aliases": [
+   "bak kut teh",
+   "bkt",
+   "klang bak kut teh",
+   "herbal bak kut teh",
+   "rou gu cha"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 143,
+   "prot": 9.6,
+   "carb": 2.8,
+   "sug": 2.2,
+   "fat": 10.4,
+   "sat": 4.1,
+   "fib": 0,
+   "na": 253
+  },
+  "unit": "g",
+  "serving": {
+   "g": 502,
+   "label": "1 bowl (502 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F06100018 'Herbal bak kut teh (Malaysian)', Lab Analysis 2023; eat with rice: add 'cooked white rice' — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F06100018"
+ },
+ {
+  "id": "bak_kut_teh_soup",
+  "name": "Bak kut teh soup only (Singapore peppery)",
+  "aliases": [
+   "bak kut teh",
+   "bkt",
+   "pork rib soup",
+   "rou gu cha"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 45,
+   "prot": 4.1,
+   "carb": 0,
+   "sug": 0,
+   "fat": 3.1,
+   "sat": 1.2,
+   "fib": 0,
+   "na": 371
+  },
+  "unit": "g",
+  "serving": {
+   "g": 574,
+   "label": "1 bowl (574 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F06100003 'Bak kut teh (soup)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F06100003"
+ },
+ {
+  "id": "fish_soup_with_rice",
+  "name": "Sliced fish soup with rice (鱼片汤饭)",
+  "aliases": [
+   "fish soup",
+   "sliced fish soup",
+   "fish soup rice",
+   "yu pian tang",
+   "fish slice soup"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 54,
+   "prot": 2.9,
+   "carb": 8.4,
+   "sug": 0.6,
+   "fat": 0.9,
+   "sat": 0.1,
+   "fib": 0.5,
+   "na": 317
+  },
+  "unit": "g",
+  "serving": {
+   "g": 761,
+   "label": "1 bowl soup (561 g) + 1 bowl rice (200 g)"
+  },
+  "source": "Computed: HPB https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F03020025 (sliced fish soup, no milk) + HPB https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05090006 (cooked white rice)"
+ },
+ {
+  "id": "fish_soup_beehoon",
+  "name": "Sliced fish bee hoon soup (鱼片米粉汤)",
+  "aliases": [
+   "fish soup",
+   "fish beehoon",
+   "fish bee hoon",
+   "sliced fish beehoon",
+   "yu pian mi fen",
+   "fish noodle soup"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 56,
+   "prot": 2.6,
+   "carb": 9.6,
+   "sug": 0.6,
+   "fat": 0.8,
+   "sat": 0.2,
+   "fib": 0.8,
+   "na": 299
+  },
+  "unit": "g",
+  "serving": {
+   "g": 811,
+   "label": "1 bowl (811 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060118 'Sliced fish beehoon soup (no milk)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060118"
+ },
+ {
+  "id": "nasi_briyani_chicken",
+  "name": "Nasi briyani, chicken",
+  "aliases": [
+   "briyani",
+   "biryani",
+   "nasi briyani",
+   "chicken briyani",
+   "nasi beriani"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 150,
+   "prot": 7.1,
+   "carb": 13.8,
+   "sug": 0.5,
+   "fat": 6.9,
+   "sat": 2.5,
+   "fib": 2.1,
+   "na": 392
+  },
+  "unit": "g",
+  "serving": {
+   "g": 759,
+   "label": "1 plate (759 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100079 'Nasi briyani (chicken)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100079"
+ },
+ {
+  "id": "nasi_briyani_mutton",
+  "name": "Nasi briyani, mutton",
+  "aliases": [
+   "briyani",
+   "biryani",
+   "nasi briyani",
+   "mutton briyani",
+   "nasi beriani kambing"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 176,
+   "prot": 6.7,
+   "carb": 17.6,
+   "sug": 0.7,
+   "fat": 8.3,
+   "sat": 3.3,
+   "fib": 2.2,
+   "na": 460
+  },
+  "unit": "g",
+  "serving": {
+   "g": 724,
+   "label": "1 plate (724 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100081 'Nasi briyani (mutton)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100081"
+ },
+ {
+  "id": "white_rice_cooked",
+  "name": "Cooked white rice",
+  "aliases": [
+   "rice",
+   "white rice",
+   "steamed rice",
+   "bai fan",
+   "nasi putih"
+  ],
+  "category": "Rice",
+  "per100": {
+   "kcal": 130,
+   "prot": 2.7,
+   "carb": 28.2,
+   "sug": 0.1,
+   "fat": 0.3,
+   "sat": 0,
+   "fib": 0.4,
+   "na": 1
+  },
+  "unit": "g",
+  "serving": {
+   "g": 200,
+   "label": "1 bowl (200 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05090006 'Cooked white rice', Borrowed 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05090006"
+ },
+ {
+  "id": "char_kway_teow",
+  "name": "Char kway teow (炒粿条)",
+  "aliases": [
+   "char kway teow",
+   "char kuey teow",
+   "ckt",
+   "fried kway teow",
+   "chao guo tiao",
+   "kuey teow goreng"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 203,
+   "prot": 5.4,
+   "carb": 24.9,
+   "sug": 2.4,
+   "fat": 8.9,
+   "sat": 3.0,
+   "fib": 1.1,
+   "na": 439
+  },
+  "unit": "g",
+  "serving": {
+   "g": 480,
+   "label": "1 plate (480 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060020 'Char kway teow', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060020"
+ },
+ {
+  "id": "laksa_singapore",
+  "name": "Singapore curry laksa (叻沙)",
+  "aliases": [
+   "laksa",
+   "curry laksa",
+   "katong laksa",
+   "singapore laksa",
+   "lemak laksa",
+   "curry mee"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 69,
+   "prot": 3.3,
+   "carb": 6.9,
+   "sug": 0.1,
+   "fat": 3.0,
+   "sat": 1.4,
+   "fib": 0.9,
+   "na": 511
+  },
+  "unit": "g",
+  "serving": {
+   "g": 604,
+   "label": "1 bowl (604 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060073 'Laksa', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060073"
+ },
+ {
+  "id": "laksa_penang_assam",
+  "name": "Penang assam laksa",
+  "aliases": [
+   "assam laksa",
+   "asam laksa",
+   "penang laksa",
+   "laksa penang"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 59,
+   "prot": 2.8,
+   "carb": 10.5,
+   "sug": 0.7,
+   "fat": 0.7,
+   "sat": 0.3,
+   "fib": 0.9,
+   "na": 380
+  },
+  "unit": "g",
+  "serving": {
+   "g": 734,
+   "label": "1 bowl (734 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060093 'Penang laksa', Lab Analysis 2023 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060093"
+ },
+ {
+  "id": "hokkien_prawn_mee",
+  "name": "Hokkien prawn mee (fried, Singapore)",
+  "aliases": [
+   "hokkien mee",
+   "hokkien prawn mee",
+   "fried hokkien mee",
+   "prawn mee",
+   "fu jian mian"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 149,
+   "prot": 5.4,
+   "carb": 13.4,
+   "sug": 0,
+   "fat": 8.0,
+   "sat": 2.7,
+   "fib": 1.2,
+   "na": 355
+  },
+  "unit": "g",
+  "serving": {
+   "g": 549,
+   "label": "1 plate (549 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060064 'Hokkien mee', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060064"
+ },
+ {
+  "id": "wanton_mee_dry",
+  "name": "Wanton mee, dry (云吞面)",
+  "aliases": [
+   "wanton mee",
+   "wonton noodles",
+   "wanton noodles",
+   "wan tan mee",
+   "yun tun mian",
+   "dry wanton mee"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 161,
+   "prot": 8.7,
+   "carb": 19.1,
+   "sug": 2.4,
+   "fat": 5.5,
+   "sat": 1.8,
+   "fib": 0,
+   "na": 403
+  },
+  "unit": "g",
+  "serving": {
+   "g": 388,
+   "label": "1 bowl (388 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060134 'Wanton noodles (dry)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060134"
+ },
+ {
+  "id": "fishball_noodles_soup",
+  "name": "Fishball noodles, soup (鱼丸面)",
+  "aliases": [
+   "fishball noodles",
+   "fish ball noodle",
+   "fishball mee",
+   "yu wan mian",
+   "mee pok soup"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 64,
+   "prot": 4.2,
+   "carb": 9.7,
+   "sug": 0,
+   "fat": 0.8,
+   "sat": 0.1,
+   "fib": 0.6,
+   "na": 301
+  },
+  "unit": "g",
+  "serving": {
+   "g": 798,
+   "label": "1 bowl (798 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060057 'Fishball noodles (soup)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060057"
+ },
+ {
+  "id": "fishball_noodles_dry",
+  "name": "Fishball noodles, dry (mee pok tah)",
+  "aliases": [
+   "fishball noodles",
+   "fish ball noodle",
+   "mee pok",
+   "mee pok tah",
+   "yu wan mian dry"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 136,
+   "prot": 5.4,
+   "carb": 17.9,
+   "sug": 1.6,
+   "fat": 4.2,
+   "sat": 1.4,
+   "fib": 2.4,
+   "na": 455
+  },
+  "unit": "g",
+  "serving": {
+   "g": 377,
+   "label": "1 bowl (377 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060056 'Fishball noodles (dry)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060056"
+ },
+ {
+  "id": "bak_chor_mee_dry",
+  "name": "Bak chor mee, dry (肉脞面)",
+  "aliases": [
+   "bak chor mee",
+   "minced pork noodles",
+   "bcm",
+   "rou cuo mian",
+   "mee pok dry"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 125,
+   "prot": 5.0,
+   "carb": 17.0,
+   "sug": 1,
+   "fat": 3.6,
+   "sat": 1.2,
+   "fib": 2.5,
+   "na": 377
+  },
+  "unit": "g",
+  "serving": {
+   "g": 430,
+   "label": "1 bowl (430 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060002 'Bak chor mee (dry)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060002"
+ },
+ {
+  "id": "bak_chor_mee_soup",
+  "name": "Bak chor mee, soup",
+  "aliases": [
+   "bak chor mee",
+   "minced pork noodle soup",
+   "bcm soup"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 76,
+   "prot": 5.7,
+   "carb": 9.4,
+   "sug": 0,
+   "fat": 1.4,
+   "sat": 0.4,
+   "fib": 1.4,
+   "na": 313
+  },
+  "unit": "g",
+  "serving": {
+   "g": 682,
+   "label": "1 bowl (682 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060003 'Bak chor mee (soup)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060003"
+ },
+ {
+  "id": "mee_goreng_mamak",
+  "name": "Mee goreng (mamak / Indian-Muslim style)",
+  "aliases": [
+   "mee goreng",
+   "mee goreng mamak",
+   "mi goreng",
+   "mee goreng india",
+   "fried noodles mamak"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 178,
+   "prot": 5.7,
+   "carb": 20.6,
+   "sug": 1.5,
+   "fat": 7.3,
+   "sat": 2.7,
+   "fib": 3.4,
+   "na": 656
+  },
+  "unit": "g",
+  "serving": {
+   "g": 465,
+   "label": "1 plate (465 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060080 'Mee goreng', Lab Analysis 2025; cf. MyFCD 403013 Mee goreng India 184 kcal/100 g, 325 g plate — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060080"
+ },
+ {
+  "id": "mee_siam",
+  "name": "Mee siam",
+  "aliases": [
+   "mee siam",
+   "mee siam gravy",
+   "mi siam"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 110,
+   "prot": 3.2,
+   "carb": 12.9,
+   "sug": 1.1,
+   "fat": 4.2,
+   "sat": 1.5,
+   "fib": 4.2,
+   "na": 517
+  },
+  "unit": "g",
+  "serving": {
+   "g": 731,
+   "label": "1 plate (731 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060085 'Mee siam', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060085"
+ },
+ {
+  "id": "mee_rebus",
+  "name": "Mee rebus",
+  "aliases": [
+   "mee rebus",
+   "mi rebus",
+   "mee kuah"
+  ],
+  "category": "Noodles",
+  "per100": {
+   "kcal": 113,
+   "prot": 4.2,
+   "carb": 13.5,
+   "sug": 0.3,
+   "fat": 4.1,
+   "sat": 1.2,
+   "fib": 2.6,
+   "na": 399
+  },
+  "unit": "g",
+  "serving": {
+   "g": 619,
+   "label": "1 plate (619 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05060084 'Mee rebus', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05060084"
+ },
+ {
+  "id": "yong_tau_foo_soup",
+  "name": "Yong tau foo, clear soup (7 pcs mixed, no noodles)",
+  "aliases": [
+   "yong tau foo",
+   "ytf",
+   "yong tau fu",
+   "niang dou fu",
+   "stuffed tofu soup"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 75,
+   "prot": 2.9,
+   "carb": 4.4,
+   "sug": 1.1,
+   "fat": 4.9,
+   "sat": 1.5,
+   "fib": 0.9,
+   "na": 359
+  },
+  "unit": "g",
+  "serving": {
+   "g": 771,
+   "label": "1 bowl (771 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F08010063 'Yong tau foo (clear soup, 7 pieces, mixed)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F08010063"
+ },
+ {
+  "id": "yong_tau_foo_soup_noodles",
+  "name": "Yong tau foo, clear soup with rice/noodles",
+  "aliases": [
+   "yong tau foo",
+   "ytf",
+   "yong tau foo noodles",
+   "yong tau foo beehoon"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 86,
+   "prot": 2.8,
+   "carb": 9.3,
+   "sug": 0.9,
+   "fat": 3.9,
+   "sat": 1.2,
+   "fib": 0.9,
+   "na": 286
+  },
+  "unit": "g",
+  "serving": {
+   "g": 971,
+   "label": "1 bowl (971 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F08010064 'Yong tau foo (clear soup, with rice/noodles)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F08010064"
+ },
+ {
+  "id": "satay_chicken",
+  "name": "Chicken satay (1 stick, no sauce)",
+  "aliases": [
+   "satay",
+   "sate",
+   "chicken satay",
+   "satay ayam",
+   "sate ayam"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 223,
+   "prot": 21.8,
+   "carb": 16.4,
+   "sug": 16.3,
+   "fat": 7.4,
+   "sat": 1.9,
+   "fib": 1.9,
+   "na": 543
+  },
+  "unit": "g",
+  "serving": {
+   "g": 10,
+   "label": "1 stick (10 g, HPB portion; Malaysian sticks ≈17 g per MyFCD R222029)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F11020020 'Chicken satay', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F11020020"
+ },
+ {
+  "id": "satay_beef",
+  "name": "Beef satay (1 stick, no sauce)",
+  "aliases": [
+   "satay",
+   "sate",
+   "beef satay",
+   "satay daging",
+   "sate sapi"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 223,
+   "prot": 24.9,
+   "carb": 20.4,
+   "sug": 20.3,
+   "fat": 4.7,
+   "sat": 2.1,
+   "fib": 3.3,
+   "na": 516
+  },
+  "unit": "g",
+  "serving": {
+   "g": 12,
+   "label": "1 stick (12 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F06040006 'Beef satay', Lab Analysis 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F06040006"
+ },
+ {
+  "id": "satay_peanut_sauce",
+  "name": "Satay peanut sauce",
+  "aliases": [
+   "satay sauce",
+   "peanut sauce",
+   "kuah kacang",
+   "kuah satay"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 190,
+   "prot": 6.6,
+   "carb": 16.2,
+   "sug": 6.2,
+   "fat": 9.7,
+   "sat": 2.5,
+   "fib": 6.0,
+   "na": 373
+  },
+  "unit": "g",
+  "serving": {
+   "g": 15,
+   "label": "1 tablespoon (15 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F10040002 'Satay sauce', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F10040002"
+ },
+ {
+  "id": "beef_rendang",
+  "name": "Beef rendang",
+  "aliases": [
+   "rendang",
+   "beef rendang",
+   "rendang daging"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 223,
+   "prot": 25.5,
+   "carb": 1.4,
+   "sug": 0.8,
+   "fat": 12.9,
+   "sat": 6.2,
+   "fib": 2.8,
+   "na": 501
+  },
+  "unit": "g",
+  "serving": {
+   "g": 100,
+   "label": "1 serving-spoon scoop (100 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F06040005 'Beef rendang', Lab Analysis 2010 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F06040005"
+ },
+ {
+  "id": "chilli_crab",
+  "name": "Chilli crab (with gravy)",
+  "aliases": [
+   "chilli crab",
+   "chili crab",
+   "la jiao xie",
+   "crab"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 86,
+   "prot": 4.6,
+   "carb": 5.5,
+   "sug": 4.1,
+   "fat": 5.1,
+   "sat": 2.2,
+   "fib": 1.0,
+   "na": 379
+  },
+  "unit": "g",
+  "serving": {
+   "g": 384,
+   "label": "1 quarter crab with gravy (384 g, HPB alt. portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F03060005 'Chilli crab', Lab Analysis 2024 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F03060005"
+ },
+ {
+  "id": "oyster_omelette",
+  "name": "Oyster omelette (orh luak / 蚝煎)",
+  "aliases": [
+   "oyster omelette",
+   "orh luak",
+   "or luak",
+   "orh jian",
+   "o chien",
+   "oyster omelet"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 255,
+   "prot": 7.1,
+   "carb": 12.8,
+   "sug": 1.0,
+   "fat": 19.5,
+   "sat": 7.9,
+   "fib": 0,
+   "na": 295
+  },
+  "unit": "g",
+  "serving": {
+   "g": 100,
+   "label": "1 serving-spoon scoop (100 g, HPB); a plate ≈ 2 scoops"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F01050009 'Oyster omelette', Lab Analysis 2010; est. (HPB blank): sug — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01050009"
+ },
+ {
+  "id": "carrot_cake_white",
+  "name": "Fried carrot cake, white (chai tow kway)",
+  "aliases": [
+   "carrot cake",
+   "chai tow kway",
+   "chye tow kueh",
+   "white carrot cake",
+   "fried radish cake",
+   "cai tou guo"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 144,
+   "prot": 3.5,
+   "carb": 15.3,
+   "sug": 0.2,
+   "fat": 7.2,
+   "sat": 2.3,
+   "fib": 2.2,
+   "na": 490
+  },
+  "unit": "g",
+  "serving": {
+   "g": 321,
+   "label": "1 plate (321 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100055 'Fried carrot cake (white)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100055"
+ },
+ {
+  "id": "carrot_cake_black",
+  "name": "Fried carrot cake, black (sweet soy)",
+  "aliases": [
+   "carrot cake",
+   "chai tow kway",
+   "black carrot cake",
+   "fried radish cake black",
+   "cai tou guo"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 177,
+   "prot": 3.8,
+   "carb": 20.8,
+   "sug": 5.2,
+   "fat": 8.1,
+   "sat": 2.7,
+   "fib": 2.8,
+   "na": 542
+  },
+  "unit": "g",
+  "serving": {
+   "g": 331,
+   "label": "1 plate (331 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05100054 'Fried carrot cake (black)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05100054"
+ },
+ {
+  "id": "murtabak_mutton",
+  "name": "Murtabak, mutton (with curry)",
+  "aliases": [
+   "murtabak",
+   "martabak",
+   "mutton murtabak",
+   "murtabak kambing"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 246,
+   "prot": 14.1,
+   "carb": 16.6,
+   "sug": 1.8,
+   "fat": 13.6,
+   "sat": 6.2,
+   "fib": 1.4,
+   "na": 369
+  },
+  "unit": "g",
+  "serving": {
+   "g": 345,
+   "label": "1 plate (345 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05020066 'Murtabak (mutton)', Lab Analysis 2023 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020066"
+ },
+ {
+  "id": "murtabak_chicken",
+  "name": "Murtabak, chicken",
+  "aliases": [
+   "murtabak",
+   "martabak",
+   "chicken murtabak",
+   "murtabak ayam"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 258,
+   "prot": 12.9,
+   "carb": 18.6,
+   "sug": 2,
+   "fat": 14.7,
+   "sat": 6.6,
+   "fib": 1.7,
+   "na": 410
+  },
+  "unit": "g",
+  "serving": {
+   "g": 330,
+   "label": "1 plate (330 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05020064 'Murtabak (chicken)', Lab Analysis 2023 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020064"
+ },
+ {
+  "id": "popiah",
+  "name": "Popiah (fresh spring roll)",
+  "aliases": [
+   "popiah",
+   "poh piah",
+   "fresh spring roll",
+   "bao bing"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 109,
+   "prot": 3.7,
+   "carb": 13.1,
+   "sug": 4.7,
+   "fat": 3.7,
+   "sat": 1.1,
+   "fib": 4.2,
+   "na": 338
+  },
+  "unit": "g",
+  "serving": {
+   "g": 191,
+   "label": "1 roll (191 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05020083 'Popiah', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020083"
+ },
+ {
+  "id": "rojak_chinese",
+  "name": "Rojak, Chinese fruit & vegetable (with prawn-paste sauce)",
+  "aliases": [
+   "rojak",
+   "chinese rojak",
+   "fruit rojak",
+   "rojak buah"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 190,
+   "prot": 5.0,
+   "carb": 23.0,
+   "sug": 14.2,
+   "fat": 7.7,
+   "sat": 2.2,
+   "fib": 4.6,
+   "na": 395
+  },
+  "unit": "g",
+  "serving": {
+   "g": 318,
+   "label": "1 plate (318 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F08010018 'Chinese rojak (mixed)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F08010018"
+ },
+ {
+  "id": "rojak_indian",
+  "name": "Rojak, Indian (fritters with sweet-spicy sauce)",
+  "aliases": [
+   "indian rojak",
+   "rojak mamak",
+   "pasembur"
+  ],
+  "category": "Hawker mains",
+  "per100": {
+   "kcal": 164,
+   "prot": 5.9,
+   "carb": 15.4,
+   "sug": 0.8,
+   "fat": 8.7,
+   "sat": 3.6,
+   "fib": 1.7,
+   "na": 327
+  },
+  "unit": "g",
+  "serving": {
+   "g": 987,
+   "label": "1 plate (987 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F08010036 'Indian rojak', Lab Analysis 2023; HPB plate is very large (987 g); scale to what you ate — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F08010036"
+ },
+ {
+  "id": "roti_prata_plain",
+  "name": "Roti prata, plain (1 piece, no curry)",
+  "aliases": [
+   "roti prata",
+   "prata",
+   "roti canai",
+   "plain prata",
+   "prata kosong",
+   "roti kosong"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 347,
+   "prot": 8.9,
+   "carb": 49.9,
+   "sug": 3.9,
+   "fat": 12,
+   "sat": 5.1,
+   "fib": 2.1,
+   "na": 571
+  },
+  "unit": "g",
+  "serving": {
+   "g": 71,
+   "label": "1 piece (71 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05030010 'Plain prata', Lab Analysis 2025; cf. MyFCD roti canai 317 kcal/100 g, 95 g piece — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05030010"
+ },
+ {
+  "id": "roti_prata_egg",
+  "name": "Roti prata, egg (1 piece)",
+  "aliases": [
+   "roti prata",
+   "prata",
+   "egg prata",
+   "prata telur",
+   "roti telur"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 266,
+   "prot": 10.9,
+   "carb": 28.0,
+   "sug": 3.3,
+   "fat": 11.1,
+   "sat": 3.9,
+   "fib": 5.5,
+   "na": 420
+  },
+  "unit": "g",
+  "serving": {
+   "g": 119,
+   "label": "1 piece (119 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05020090 'Prata (egg)', Lab Analysis 2025; cf. MyFCD roti telur 264 kcal/100 g, 135 g piece — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020090"
+ },
+ {
+  "id": "roti_prata_2pc_curry",
+  "name": "Roti prata, 2 plain pieces with curry (set)",
+  "aliases": [
+   "roti prata",
+   "prata",
+   "prata set",
+   "roti canai",
+   "prata with curry",
+   "roti canai kuah"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 185,
+   "prot": 4.7,
+   "carb": 22,
+   "sug": 1.4,
+   "fat": 8.1,
+   "sat": 3.3,
+   "fib": 2.5,
+   "na": 654
+  },
+  "unit": "g",
+  "serving": {
+   "g": 535,
+   "label": "1 set (535 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05020082 'Plain prata (2 pc, with curry)', Derived 2026 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020082"
+ },
+ {
+  "id": "prata_curry_gravy",
+  "name": "Curry gravy for prata (chicken curry gravy)",
+  "aliases": [
+   "curry",
+   "curry gravy",
+   "prata curry",
+   "kuah kari",
+   "dhal"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 105,
+   "prot": 4.0,
+   "carb": 2,
+   "sug": 1.4,
+   "fat": 8.8,
+   "sat": 4.7,
+   "fib": 1.1,
+   "na": 409
+  },
+  "unit": "g",
+  "serving": {
+   "g": 47,
+   "label": "1 small bowl (47 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F10040003 'Chicken curry gravy', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F10040003"
+ },
+ {
+  "id": "thosai_plain",
+  "name": "Thosai / dosa, plain",
+  "aliases": [
+   "thosai",
+   "tosai",
+   "dosa",
+   "dosai",
+   "thosai kosong"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 252,
+   "prot": 7,
+   "carb": 37.8,
+   "sug": 0.7,
+   "fat": 7.4,
+   "sat": 2.8,
+   "fib": 3.2,
+   "na": 321
+  },
+  "unit": "g",
+  "serving": {
+   "g": 156,
+   "label": "1 piece (156 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05010009 'Thosai', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05010009"
+ },
+ {
+  "id": "chapati",
+  "name": "Chapati",
+  "aliases": [
+   "chapati",
+   "capati",
+   "chapatti",
+   "roti chapati"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 326,
+   "prot": 8.2,
+   "carb": 47.1,
+   "sug": 4.7,
+   "fat": 10.6,
+   "sat": 4.2,
+   "fib": 4.7,
+   "na": 278
+  },
+  "unit": "g",
+  "serving": {
+   "g": 133,
+   "label": "1 piece (133 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05030004 'Chapati', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05030004"
+ },
+ {
+  "id": "kaya_butter_toast",
+  "name": "Kaya butter toast (1 sandwich)",
+  "aliases": [
+   "kaya toast",
+   "kaya butter toast",
+   "roti bakar kaya",
+   "kaya bread"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 400,
+   "prot": 6.5,
+   "carb": 43.2,
+   "sug": 19,
+   "fat": 21.9,
+   "sat": 11.9,
+   "fib": 2.0,
+   "na": 380
+  },
+  "unit": "g",
+  "serving": {
+   "g": 94,
+   "label": "1 toast sandwich (94 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F05020057 'Kaya and butter toast', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020057"
+ },
+ {
+  "id": "soft_boiled_egg",
+  "name": "Soft-boiled egg (kopitiam style)",
+  "aliases": [
+   "soft boiled egg",
+   "half boiled egg",
+   "telur separuh masak",
+   "kopitiam egg",
+   "egg"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 143,
+   "prot": 12.5,
+   "carb": 0.7,
+   "sug": 0.4,
+   "fat": 9.5,
+   "sat": 3.1,
+   "fib": 0,
+   "na": 297
+  },
+  "unit": "g",
+  "serving": {
+   "g": 55,
+   "label": "1 egg (55 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F01060006 'Soft-boiled chicken egg, whole', Borrowed 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01060006"
+ },
+ {
+  "id": "kaya_toast_set",
+  "name": "Kaya toast set (kaya butter toast + 2 soft-boiled eggs, no drink)",
+  "aliases": [
+   "kaya toast set",
+   "set a",
+   "kaya toast",
+   "toast set",
+   "kopitiam breakfast",
+   "ya kun set"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 261,
+   "prot": 9.7,
+   "carb": 20.3,
+   "sug": 9.0,
+   "fat": 15.2,
+   "sat": 7.2,
+   "fib": 0.9,
+   "na": 335
+  },
+  "unit": "g",
+  "serving": {
+   "g": 204,
+   "label": "1 set: 1 kaya-butter toast (94 g) + 2 soft-boiled eggs (110 g); add kopi/teh separately"
+  },
+  "source": "Computed: HPB https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F05020057 (kaya and butter toast) + 2× HPB https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01060006 (soft-boiled egg)"
+ },
+ {
+  "id": "curry_puff_chicken",
+  "name": "Curry puff, chicken",
+  "aliases": [
+   "curry puff",
+   "karipap",
+   "epok epok",
+   "chicken curry puff"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 336,
+   "prot": 8.2,
+   "carb": 29.1,
+   "sug": 3.6,
+   "fat": 20.1,
+   "sat": 9.7,
+   "fib": 2.7,
+   "na": 478
+  },
+  "unit": "g",
+  "serving": {
+   "g": 81,
+   "label": "1 piece (81 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F11090008 'Curry puff (chicken)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F11090008"
+ },
+ {
+  "id": "curry_puff_potato",
+  "name": "Curry puff, potato",
+  "aliases": [
+   "curry puff",
+   "karipap",
+   "epok epok",
+   "potato curry puff",
+   "sardine curry puff"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 318,
+   "prot": 5.3,
+   "carb": 31.8,
+   "sug": 3.6,
+   "fat": 18.1,
+   "sat": 8.6,
+   "fib": 3.2,
+   "na": 497
+  },
+  "unit": "g",
+  "serving": {
+   "g": 94,
+   "label": "1 piece (94 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F11090010 'Curry puff (potato)', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F11090010"
+ },
+ {
+  "id": "kueh_lapis_layer_cake",
+  "name": "Kueh lapis (Indonesian butter layer cake / lapis legit)",
+  "aliases": [
+   "kueh lapis",
+   "kek lapis",
+   "lapis legit",
+   "layer cake",
+   "spekkoek"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 440,
+   "prot": 8.3,
+   "carb": 26.9,
+   "sug": 18.6,
+   "fat": 33.1,
+   "sat": 15.5,
+   "fib": 0.8,
+   "na": 282
+  },
+  "unit": "g",
+  "serving": {
+   "g": 72,
+   "label": "1 piece (72 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F02010013 'Kueh lapis', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F02010013"
+ },
+ {
+  "id": "kueh_lapis_rainbow",
+  "name": "Rainbow kueh lapis (steamed layered kueh)",
+  "aliases": [
+   "kueh lapis",
+   "rainbow kueh",
+   "kuih lapis",
+   "nine layer kueh",
+   "steamed layer cake"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 174,
+   "prot": 1,
+   "carb": 31.3,
+   "sug": 9,
+   "fat": 5,
+   "sat": 4.3,
+   "fib": 0.3,
+   "na": 104
+  },
+  "unit": "g",
+  "serving": {
+   "g": 69,
+   "label": "1 piece (69 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F11090050 'Rainbow lapis kueh', Lab Analysis 2010 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F11090050"
+ },
+ {
+  "id": "ondeh_ondeh",
+  "name": "Ondeh ondeh (onde-onde)",
+  "aliases": [
+   "ondeh ondeh",
+   "onde onde",
+   "kuih buah melaka",
+   "klepon"
+  ],
+  "category": "Snacks & kueh",
+  "per100": {
+   "kcal": 272,
+   "prot": 2.7,
+   "carb": 44.5,
+   "sug": 12.4,
+   "fat": 10,
+   "sat": 7.6,
+   "fib": 2.5,
+   "na": 76
+  },
+  "unit": "g",
+  "serving": {
+   "g": 50,
+   "label": "1 HPB portion (50 g ≈ 3–4 balls; 1 ball ≈ 12–15 g)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F11090041 'Ondeh ondeh', Lab Analysis 2010 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F11090041"
+ },
+ {
+  "id": "chendol",
+  "name": "Chendol / cendol",
+  "aliases": [
+   "chendol",
+   "cendol",
+   "chendul",
+   "ice chendol"
+  ],
+  "category": "Desserts",
+  "per100": {
+   "kcal": 81,
+   "prot": 1.5,
+   "carb": 10.1,
+   "sug": 4.7,
+   "fat": 3.1,
+   "sat": 2.5,
+   "fib": 3.3,
+   "na": 51
+  },
+  "unit": "g",
+  "serving": {
+   "g": 423,
+   "label": "1 bowl (423 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F02020002 'Chendol', Lab Analysis 2025 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F02020002"
+ },
+ {
+  "id": "ice_kacang",
+  "name": "Ice kacang / ABC",
+  "aliases": [
+   "ice kacang",
+   "ais kacang",
+   "abc",
+   "air batu campur",
+   "ice kachang"
+  ],
+  "category": "Desserts",
+  "per100": {
+   "kcal": 63,
+   "prot": 1.2,
+   "carb": 14.1,
+   "sug": 9.5,
+   "fat": 0.3,
+   "sat": 0.1,
+   "fib": 2.6,
+   "na": 27
+  },
+  "unit": "g",
+  "serving": {
+   "g": 425,
+   "label": "1 bowl (425 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F02020007 'Ice kacang', Lab Analysis 2010 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F02020007"
+ },
+ {
+  "id": "durian",
+  "name": "Durian (flesh)",
+  "aliases": [
+   "durian",
+   "musang king",
+   "d24",
+   "king of fruits",
+   "liu lian"
+  ],
+  "category": "Fruit",
+  "per100": {
+   "kcal": 165,
+   "prot": 2.5,
+   "carb": 29.6,
+   "sug": 21.1,
+   "fat": 4.1,
+   "sat": 1.1,
+   "fib": 3.2,
+   "na": 3
+  },
+  "unit": "g",
+  "serving": {
+   "g": 27,
+   "label": "1 seed pod of flesh (27 g, HPB portion)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F04010011 'Durian', Lab Analysis 2010; MyFCD 106023: 153 kcal/100 g — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F04010011"
+ },
+ {
+  "id": "mangosteen",
+  "name": "Mangosteen (flesh)",
+  "aliases": [
+   "mangosteen",
+   "manggis",
+   "shan zhu"
+  ],
+  "category": "Fruit",
+  "per100": {
+   "kcal": 34,
+   "prot": 0.6,
+   "carb": 5.6,
+   "sug": 5.0,
+   "fat": 1,
+   "sat": 0.0,
+   "fib": 5.1,
+   "na": 7
+  },
+  "unit": "g",
+  "serving": {
+   "g": 32,
+   "label": "1 large fruit, flesh only (~32 g; MyFCD 3 big = 95.8 g)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F04010024 'Mangosteen', Borrowed 2025; est. (HPB blank): sug,sat,fib; values borrowed from MyFCD 106058 (fibre 5.1 g) — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F04010024"
+ },
+ {
+  "id": "rambutan",
+  "name": "Rambutan (flesh)",
+  "aliases": [
+   "rambutan",
+   "hong mao dan"
+  ],
+  "category": "Fruit",
+  "per100": {
+   "kcal": 59,
+   "prot": 0.7,
+   "carb": 13.9,
+   "sug": 13.9,
+   "fat": 0.1,
+   "sat": 0.0,
+   "fib": 0.5,
+   "na": 5
+  },
+  "unit": "g",
+  "serving": {
+   "g": 17,
+   "label": "1 fruit, flesh only (~17 g; MyFCD 5 = 84.5 g)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) F04010036 'Rambutan', Borrowed 2025; est. (HPB blank): sat; values borrowed from MyFCD 106084 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F04010036"
+ },
+ {
+  "id": "kopi",
+  "name": "Kopi (coffee with condensed + evaporated milk)",
+  "aliases": [
+   "kopi",
+   "kopi susu",
+   "nanyang coffee",
+   "local coffee",
+   "kopi panas"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 77,
+   "prot": 0.7,
+   "carb": 13.7,
+   "sug": 7.6,
+   "fat": 2.2,
+   "sat": 1.1,
+   "fib": 0.0,
+   "na": 20,
+   "caf": 50
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09010035 'Kopi', Derived 2026; est. (HPB blank): fib,na; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09010035"
+ },
+ {
+  "id": "kopi_o",
+  "name": "Kopi-O (black coffee with sugar)",
+  "aliases": [
+   "kopi o",
+   "kopi-o",
+   "kopi oh",
+   "black coffee sugar",
+   "kopi o panas"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 31,
+   "prot": 0.2,
+   "carb": 7.6,
+   "sug": 4.7,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0.0,
+   "na": 2,
+   "caf": 60
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09010039 'Kopi O', Derived 2026; est. (HPB blank): fib,na; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09010039"
+ },
+ {
+  "id": "kopi_c",
+  "name": "Kopi-C (coffee with evaporated milk + sugar)",
+  "aliases": [
+   "kopi c",
+   "kopi-c",
+   "kopi si",
+   "kopi cino"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 52,
+   "prot": 0.8,
+   "carb": 9.3,
+   "sug": 6.2,
+   "fat": 1.3,
+   "sat": 0.7,
+   "fib": 0.0,
+   "na": 15,
+   "caf": 50
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09010036 'Kopi C', Derived 2026; est. (HPB blank): fib,na; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09010036"
+ },
+ {
+  "id": "kopi_o_kosong",
+  "name": "Kopi-O kosong (black coffee, no sugar)",
+  "aliases": [
+   "kopi o kosong",
+   "kopi-o kosong",
+   "black coffee",
+   "kopi kosong",
+   "kopi o no sugar"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 13,
+   "prot": 0.3,
+   "carb": 2.9,
+   "sug": 0,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0.0,
+   "na": 2,
+   "caf": 60
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09010040 'Kopi O kosong', Derived 2026; est. (HPB blank): fib,na; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml; Nanyang beans are roasted with sugar/margarine, hence ~13 kcal — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09010040"
+ },
+ {
+  "id": "teh",
+  "name": "Teh (tea with condensed + evaporated milk)",
+  "aliases": [
+   "teh",
+   "teh susu",
+   "milk tea",
+   "local tea",
+   "teh panas"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 60,
+   "prot": 0.5,
+   "carb": 10.3,
+   "sug": 9.4,
+   "fat": 1.9,
+   "sat": 1.0,
+   "fib": 0.0,
+   "na": 20,
+   "caf": 20
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09020066 'Teh', Derived 2026; est. (HPB blank): fib,na; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09020066"
+ },
+ {
+  "id": "teh_c",
+  "name": "Teh-C (tea with evaporated milk + sugar)",
+  "aliases": [
+   "teh c",
+   "teh-c",
+   "teh si",
+   "teh cino"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 50,
+   "prot": 0.7,
+   "carb": 8.7,
+   "sug": 7.3,
+   "fat": 1.4,
+   "sat": 0.7,
+   "fib": 0.0,
+   "na": 15,
+   "caf": 20
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09020067 'Teh C', Derived 2026; est. (HPB blank): fib,na; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09020067"
+ },
+ {
+  "id": "teh_tarik",
+  "name": "Teh tarik (pulled milk tea)",
+  "aliases": [
+   "teh tarik",
+   "pulled tea",
+   "teh tarik panas",
+   "la cha"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 48,
+   "prot": 0.6,
+   "carb": 7.9,
+   "sug": 6.6,
+   "fat": 1.6,
+   "sat": 0.7,
+   "fib": 0.4,
+   "na": 21,
+   "caf": 20
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 mug (250 ml; HPB small cup = 150 ml)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09020075 'Teh Tarik', Lab Analysis 2023; caffeine est.: robusta sock-brewed kopi ~60 mg/100 ml black (blogs cite up to ~230 mg/cup), milk versions diluted; teh ~20 mg/100 ml — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09020075"
+ },
+ {
+  "id": "teh_o_ice_limau",
+  "name": "Teh-O ice limau (iced lime tea with sugar)",
+  "aliases": [
+   "teh o ice limau",
+   "teh o limau",
+   "teh o ais limau",
+   "iced lemon tea",
+   "lime tea"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 29,
+   "prot": 0.0,
+   "carb": 7.4,
+   "sug": 6.8,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0.0,
+   "na": 2,
+   "caf": 12
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 450,
+   "label": "1 glass (450 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D09020050 'Iced Teh O limau', Derived 2026; est. (HPB blank): fib,na; caffeine est. (diluted by ice) — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09020050"
+ },
+ {
+  "id": "milo_hawker",
+  "name": "Milo, hawker (hot, with condensed milk)",
+  "aliases": [
+   "milo",
+   "milo panas",
+   "hot milo",
+   "milo kosong",
+   "chocolate malt"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 93,
+   "prot": 1.6,
+   "carb": 16.3,
+   "sug": 11.2,
+   "fat": 2.4,
+   "sat": 1.3,
+   "fib": 0.0,
+   "na": 40,
+   "caf": 2
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 regular cup (250 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D04020016 'Milo', Derived 2026; est. (HPB blank): fib,na; sodium & caffeine est. from Milo powder — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D04020016"
+ },
+ {
+  "id": "milo_iced",
+  "name": "Milo ice / Milo peng",
+  "aliases": [
+   "milo",
+   "milo ice",
+   "milo peng",
+   "milo ais",
+   "iced milo"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 72,
+   "prot": 1.2,
+   "carb": 12.7,
+   "sug": 8.7,
+   "fat": 1.9,
+   "sat": 1.0,
+   "fib": 0.0,
+   "na": 30,
+   "caf": 2
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 400,
+   "label": "1 regular cup (400 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D04020015 'Iced Milo', Derived 2026; est. (HPB blank): fib,na; sodium & caffeine est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D04020015"
+ },
+ {
+  "id": "milo_dinosaur",
+  "name": "Milo dinosaur (iced Milo topped with Milo powder)",
+  "aliases": [
+   "milo dinosaur",
+   "milo dino",
+   "milo godzilla"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 91,
+   "prot": 1.9,
+   "carb": 14.7,
+   "sug": 11.3,
+   "fat": 2.7,
+   "sat": 1.2,
+   "fib": 0.0,
+   "na": 40,
+   "caf": 3
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 550,
+   "label": "1 medium cup (550 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D04020021 'Milo dinosaur', Derived 2026; est. (HPB blank): fib,na; sodium & caffeine est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D04020021"
+ },
+ {
+  "id": "bandung",
+  "name": "Bandung (rose syrup milk)",
+  "aliases": [
+   "bandung",
+   "bandong",
+   "air bandung",
+   "sirap bandung",
+   "rose milk"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 35,
+   "prot": 0.5,
+   "carb": 6.5,
+   "sug": 6.5,
+   "fat": 0.8,
+   "sat": 0.5,
+   "fib": 0.0,
+   "na": 15
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 400,
+   "label": "1 regular cup (400 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D05010001 'Bandung', Derived 2026; est. (HPB blank): fib,na; sodium est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D05010001"
+ },
+ {
+  "id": "sugarcane_juice",
+  "name": "Sugarcane juice, fresh",
+  "aliases": [
+   "sugarcane juice",
+   "sugar cane",
+   "air tebu",
+   "tebu",
+   "gan zhe zhi"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 55,
+   "prot": 0.2,
+   "carb": 13.4,
+   "sug": 13.4,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0.0,
+   "na": 5
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 550,
+   "label": "1 medium cup (550 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D03040010 'Fresh sugarcane juice', Derived 2026; est. (HPB blank): fib,na; sodium est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D03040010"
+ },
+ {
+  "id": "barley_drink",
+  "name": "Barley drink (sweetened, hawker)",
+  "aliases": [
+   "barley",
+   "barley water",
+   "barley drink",
+   "air barli",
+   "yi mi shui"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 32,
+   "prot": 0.1,
+   "carb": 7.8,
+   "sug": 6.1,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0.0,
+   "na": 2
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 400,
+   "label": "1 regular cup (400 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D05010003 'Barley drink', Derived 2026; est. (HPB blank): fib,na; sodium est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D05010003"
+ },
+ {
+  "id": "bubble_milk_tea_full",
+  "name": "Bubble milk tea with pearls, 100 % sugar (500 ml)",
+  "aliases": [
+   "bubble tea",
+   "boba",
+   "pearl milk tea",
+   "milk tea",
+   "bbt",
+   "koi",
+   "liho",
+   "gong cha",
+   "zhen zhu nai cha"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 75,
+   "prot": 0.3,
+   "carb": 13.3,
+   "sug": 7.4,
+   "fat": 2.3,
+   "sat": 2.3,
+   "fib": 0.0,
+   "na": 15,
+   "caf": 15
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 500,
+   "label": "1 medium cup (500 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D08010090 'Pearl milk tea', Derived 2026; est. (HPB blank): fib,na; caffeine & sodium est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D08010090"
+ },
+ {
+  "id": "bubble_milk_tea_less_sugar",
+  "name": "Bubble milk tea with pearls, less sugar (~50 %) (500 ml)",
+  "aliases": [
+   "bubble tea",
+   "boba",
+   "pearl milk tea",
+   "less sugar",
+   "50% sugar",
+   "half sugar",
+   "bbt"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 71,
+   "prot": 0.4,
+   "carb": 12.5,
+   "sug": 5.7,
+   "fat": 2.3,
+   "sat": 2.2,
+   "fib": 0.0,
+   "na": 15,
+   "caf": 15
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 500,
+   "label": "1 medium cup (500 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D08010091 'Pearl milk tea (less sugar)', Derived 2026; est. (HPB blank): fib,na; HPB 'less sugar' (not strictly 50 %); caffeine & sodium est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D08010091"
+ },
+ {
+  "id": "bubble_milk_tea_no_sugar",
+  "name": "Bubble milk tea with pearls, 0 % sugar (500 ml)",
+  "aliases": [
+   "bubble tea",
+   "boba",
+   "pearl milk tea",
+   "no sugar",
+   "0% sugar",
+   "bbt"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 64,
+   "prot": 0.3,
+   "carb": 10.5,
+   "sug": 3.7,
+   "fat": 2.3,
+   "sat": 2.3,
+   "fib": 0.0,
+   "na": 15,
+   "caf": 15
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 500,
+   "label": "1 medium cup (500 ml, HPB)"
+  },
+  "source": "HPB SG FoodID (ex-FOCOS) D08010359 'Pearl milk tea (no sugar)', Derived 2026; est. (HPB blank): fib,na; pearls & creamer still add sugar; caffeine & sodium est. — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D08010359"
+ },
+ {
+  "id": "100plus_original",
+  "name": "100PLUS original (isotonic)",
+  "aliases": [
+   "100plus",
+   "100 plus",
+   "hundred plus",
+   "isotonic",
+   "sports drink"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 24,
+   "prot": 0,
+   "carb": 6.0,
+   "sug": 6.0,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0,
+   "na": 41
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 325,
+   "label": "1 can (325 ml)"
+  },
+  "source": "F&N 100PLUS Original label per 100 ml via Open Food Facts (24 kcal, 6 g sugar) — https://world.openfoodfacts.org/product/9556570312131 ; sodium from HPB 'Isotonic drink' NIP https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D05020006 (label rounds salt to 0)"
+ },
+ {
+  "id": "tiger_beer",
+  "name": "Tiger lager beer (5 % ABV)",
+  "aliases": [
+   "tiger",
+   "tiger beer",
+   "beer",
+   "lager",
+   "bir",
+   "pi jiu"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 42,
+   "prot": 0.4,
+   "carb": 3.4,
+   "sug": 0,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0,
+   "na": 3,
+   "alc": 3.9
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 330,
+   "label": "1 can (330 ml)"
+  },
+  "source": "Tiger Lager label per 100 ml (42 kcal, carbs 3.4 g, protein 0.4 g, 5 % ABV) as listed by FatSecret SG / NZ retail; alc g = 5 % × 0.789; sodium from HPB beer NIP — https://www.fatsecret.com.sg/calories-nutrition/tiger-beer/lager/100ml"
+ },
+ {
+  "id": "singapore_sling",
+  "name": "Singapore Sling (Raffles recipe)",
+  "aliases": [
+   "singapore sling",
+   "sling",
+   "raffles sling",
+   "cocktail"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 112,
+   "prot": 0.2,
+   "carb": 15.0,
+   "sug": 13.0,
+   "fat": 0,
+   "sat": 0,
+   "fib": 0.1,
+   "na": 2,
+   "alc": 7.4
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 230,
+   "label": "1 glass (~230 ml incl. ice melt)"
+  },
+  "source": "COMPUTED from Raffles Hotel recipe (30 ml gin, 15 ml cherry liqueur, 7.5 ml Cointreau, 7.5 ml Bénédictine, 120 ml pineapple juice, 15 ml lime, 10 ml grenadine) with USDA FDC component values: ≈17 g alcohol, ≈34 g carbs, ≈257 kcal per drink — https://www.raffles.com/singapore/dining/long-bar/"
+ }
+]

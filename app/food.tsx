@@ -992,7 +992,9 @@ function PortionPanel({ item, initial, isFav, onFav, onCancel, onConfirm, onDele
         <TouchableOpacity onPress={() => { setFav(f => !f); onFav(); }} hitSlop={10}><Text style={{ fontSize: 24, color: fav ? c.accent : c.textFaint }}>{fav ? '★' : '☆'}</Text></TouchableOpacity>
       </View>
       {item.nameAlt && item.nameAlt !== item.name && <Text style={s.resultSub}>{item.nameAlt}</Text>}
-      {item.src === 'builtin' && <Text style={s.hint}>Typical label values (estimate) — {sportsByKey(item.key)?.note ?? ''} For exact values, use 🏷️ Label with your product.</Text>}
+      {item.src === 'builtin' && (item.key.startsWith('builtin:sgmy_')
+        ? <Text style={s.hint}>Singapore / Malaysia — {sportsByKey(item.key)?.note ?? ''} Hawker portions vary; adjust the grams if yours was bigger or smaller.</Text>
+        : <Text style={s.hint}>Typical label values (estimate) — {sportsByKey(item.key)?.note ?? ''} For exact values, use 🏷️ Label with your product.</Text>)}
       {forChip && <Text style={s.warn}>For "{forChip}" from your typed meal — Cancel if this is something else.</Text>}
       {off?.rcn8 && <Text style={s.warn}>Store codes starting with 2 are reused across countries — check this is really your product.</Text>}
       {off?.incomplete && <Text style={s.warn}>Open Food Facts is missing some values for this product — check them against the pack, or enter the label.</Text>}

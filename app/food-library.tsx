@@ -15,10 +15,11 @@ import {
   deleteCustomFood, deleteMeal, scaleNutr, foodUsage, mealUsage,
 } from '../src/services/foodLog';
 import { searchFoodsEx, foodByKey, norm, allDrinks, drinkCategory, DRINK_CATS, DrinkCat } from '../src/services/foodDb';
+import { ASIA_ITEMS, ASIA_CATS } from '../src/services/foodAsia';
 import { cachedProducts } from '../src/services/foodOff';
 
-interface Row { key: string; name: string; sub: string; snap: KeptFood['snap']; table?: boolean }
-type Filter = 'all' | 'fav' | MealTag | 'untagged';
+interface Row { key: string; name: string; sub: string; snap: KeptFood['snap']; table?: boolean; cat?: string }
+type Filter = 'all' | 'fav' | MealTag | 'untagged' | 'sgmy';
 
 const r0 = (v?: number) => (v == null ? '–' : String(Math.round(v)));
 const subOf = (f: { per100?: Nutr; n?: Nutr; unit?: 'g' | 'ml'; brand?: string }) =>
@@ -68,6 +69,12 @@ export default function FoodLibraryScreen() {
   const rows = useMemo<Row[]>(() => {
     const words = qn.split(' ').filter(Boolean);
     const hit = (r: Row) => !words.length || words.every(w => norm(r.name).split(' ').some(x => x.startsWith(w)));
+    // SG/MY: browse the built-in Singapore / Malaysia foods by category (their drinks are on the Drinks tab)
+    if (filter === 'sgmy') {
+      return ASIA_ITEMS.filter(x => x.unit !== 'ml' && (!words.length || words.every(w => norm(`${x.name} ${x.aliases.join(' ')}`).split(' ').some(y => y.startsWith(w)))))
+        .sort((a, b) => ASIA_CATS.indexOf(a.asiaCat) - ASIA_CATS.indexOf(b.asiaCat))
+        .map(f => ({ key: f.key, name: f.name, sub: subOf(f), snap: snapOf(f), table: true, cat: f.asiaCat }));
+    }
     const pass = (r: Row) => filter === 'all' ? true : filter === 'fav' ? favs.has(r.key) : filter === 'untagged' ? !tagsOf(r.key).length : tagsOf(r.key).includes(filter);
     const own = mine.filter(r => hit(r) && pass(r));
     // a search also reaches the food table → star / tag a food you've never logged
@@ -108,7 +115,7 @@ export default function FoodLibraryScreen() {
   ]); };
 
   const FILTERS: { id: Filter; label: string }[] = [
-    { id: 'all', label: 'All' }, { id: 'fav', label: '★' }, ...MEAL_TAGS.map(t => ({ id: t.id as Filter, label: t.label })), { id: 'untagged', label: 'No meal' },
+    { id: 'all', label: 'All' }, { id: 'fav', label: '★' }, ...MEAL_TAGS.map(t => ({ id: t.id as Filter, label: t.label })), { id: 'untagged', label: 'No meal' }, { id: 'sgmy', label: 'SG/MY' },
   ];
   const meals = lib?.meals ?? [];
   const tabs = (
@@ -222,10 +229,10 @@ export default function FoodLibraryScreen() {
         ListEmptyComponent={<Text style={s.empty}>{q.trim().length >= 2 ? 'No match.' : filter === 'all' ? 'No foods yet — search above to find any food and ★ / tag it.' : 'Nothing here yet.'}</Text>}
         renderItem={({ item: r, index }) => {
           const on = favs.has(r.key), tg = tagsOf(r.key), picked = !!sel?.has(r.key);
-          const firstTable = r.table && !rows[index - 1]?.table;
+          const head = r.cat ? (r.cat !== rows[index - 1]?.cat ? r.cat : null) : r.table && !rows[index - 1]?.table ? 'From the food table' : null;
           return (
             <>
-              {firstTable && <Text style={s.head}>From the food table</Text>}
+              {head && <Text style={s.head}>{head}</Text>}
               <SwipeRow disabled={!!sel || r.table || r.snap.src === 'off'} onDelete={() => delOne(r)} label={lib?.custom.some(x => x.key === r.key) ? 'Delete' : 'Remove'}>
               <TouchableOpacity style={[s.row, picked && s.rowOn]} activeOpacity={0.7}
                 onPress={() => (sel ? toggleSel(r.key) : router.push({ pathname: '/food-item' as any, params: { key: r.key } }))} onLongPress={() => { setSel(cur => new Set([...(cur ?? []), r.key])); }}>

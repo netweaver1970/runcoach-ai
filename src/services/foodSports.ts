@@ -5,8 +5,9 @@
  * also marks a matching supplement (by name) as taken that day.
  */
 import type { FoodItem } from './foodLog';
+import { ASIA_ITEMS } from './foodAsia';
 
-export interface SportsItem extends FoodItem { aliases: string[]; supp?: RegExp; note: string; powder?: boolean; drinkCat?: string }
+export interface SportsItem extends FoodItem { aliases: string[]; supp?: RegExp; note: string; powder?: boolean; drinkCat?: string; full?: boolean }
 
 const item = (id: string, name: string, per100: FoodItem['per100'], serving: { g: number; label: string }, aliases: string[], note: string, supp?: RegExp, powder = true): SportsItem =>
   ({ key: `builtin:${id}`, src: 'builtin', id, name, per100, serving, aliases, note, powder, ...(supp ? { supp } : {}) });
@@ -73,15 +74,30 @@ const n = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036
 /**
  * Built-in items whose alias contains all query words. Words under 4 letters must match a WHOLE alias word
  * ("ei" = egg must never hit "eiwitpoeder", "ma" must not hit maltodextrin); longer words may prefix-match.
+ * FULL-ALIAS items (`full`: the SG/MY dishes) need one alias named completely, and every query word must belong to
+ * the item ("bee cheng hiang gold coin" → the BCH coin, not Fragrance's) — "chicken" alone never pulls up chicken rice.
  */
+const wEq = (q: string, w: string) => w === q || (q.length >= 4 && w.startsWith(q)) || (q.length >= 4 && q.endsWith('s') && q.slice(0, -1) === w);
+const bags = new Map<string, string[]>();
+const bagOf = (it: SportsItem) => {
+  let b = bags.get(it.key);
+  if (!b) { b = [...new Set([it.name, ...it.aliases, it.brand ?? ''].flatMap(x => n(x).split(' ')).filter(Boolean))]; bags.set(it.key, b); }
+  return b;
+};
 export function matchSports(queryWords: string[]): SportsItem[] {
   if (!queryWords.length) return [];
-  return SPORTS_ITEMS.filter(it => it.aliases.some(a => {
-    const aw = n(a).split(' ');
-    const all = queryWords.every(q => aw.some(w => w === q || (q.length >= 4 && w.startsWith(q))));
-    // a DRINK alias of several words ('whiskey cola') must be named in full — 'whiskey' alone is the spirit, not the mix
-    return all && (!it.unit || aw.every(w => queryWords.some(q => q === w || (q.length >= 4 && w.startsWith(q)))));
-  }));
+  return SPORTS_ITEMS.filter(it => {
+    if (it.full) {
+      const bag = bagOf(it);
+      return queryWords.every(q => bag.some(w => wEq(q, w))) && it.aliases.some(a => n(a).split(' ').every(w => queryWords.some(q => wEq(q, w))));
+    }
+    return it.aliases.some(a => {
+      const aw = n(a).split(' ');
+      const all = queryWords.every(q => aw.some(w => wEq(q, w)));
+      // a DRINK alias of several words ('whiskey cola') must be named in full — 'whiskey' alone is the spirit, not the mix
+      return all && (!it.unit || aw.every(w => queryWords.some(q => wEq(q, w))));
+    });
+  });
 }
 /** Liqueurs CIQUAL doesn't have. */
 export const LIQUEURS: SportsItem[] = [
@@ -90,5 +106,5 @@ export const LIQUEURS: SportsItem[] = [
   { ...drink('advocaat', 'Advocaat (egg liqueur)', { kcal: 290, carb: 28.5, sug: 28.4, fat: 6.9, sat: 2, prot: 4.4, alc: 13.6 }, 15, '1 tbsp',
     ['advocaat', 'advokaat', 'eierlikeur', 'eierlikör', 'egg liqueur', 'warninks'], 'Egg liqueur ~17 % vol; 1 tbsp ≈ 15 ml ≈ 2 g alcohol, 44 kcal.'), drinkCat: 'Spirits & liqueurs' },
 ];
-SPORTS_ITEMS.push(...COCKTAILS, ...LIQUEURS);   // drinks are searched / logged like the other built-ins
+SPORTS_ITEMS.push(...COCKTAILS, ...LIQUEURS, ...ASIA_ITEMS);   // drinks are searched / logged like the other built-ins
 export const sportsByKey = (key: string) => SPORTS_ITEMS.find(s => s.key === key);

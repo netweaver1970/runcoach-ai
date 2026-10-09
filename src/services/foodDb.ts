@@ -12,6 +12,7 @@
 import type { FoodItem, Nutr, NutrKey } from './foodLog';
 import { servingOverrides } from './foodLog';
 import { matchSports, sportsByKey, COCKTAILS, LIQUEURS } from './foodSports';
+import { ASIA_ITEMS } from './foodAsia';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const RAW = require('../../assets/food/ciqual-2025.json') as {
@@ -351,8 +352,8 @@ export function drinkCategory(f: FoodItem): DrinkCat {
   if (/juice|jus|nectar|smoothie/.test(t)) return 'Juices & smoothies';
   return 'Soft drinks';
 }
-/** Every drink in the table + the built-in cocktails, by category. */
+/** Every drink in the table + the built-in cocktails + the SG/MY kopitiam drinks, by category. */
 export function allDrinks(): FoodItem[] {
   const rows = load().map(r => r.item).filter(isDrink);
-  return [...rows, ...COCKTAILS, ...LIQUEURS];
+  return [...rows, ...COCKTAILS, ...LIQUEURS, ...ASIA_ITEMS.filter(x => x.unit === 'ml')];
 }
