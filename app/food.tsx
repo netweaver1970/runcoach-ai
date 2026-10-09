@@ -236,10 +236,6 @@ export default function FoodMode() {
       ]}>
         <DayNav date={isToday ? undefined : date} todayKey={today} />
       </ModeHeader>
-      {/* the food DATABASE (foods + meals, like the exercise database) — reachable without logging anything */}
-      <TouchableOpacity style={s.dbLink} onPress={() => router.push('/food-library' as any)}>
-        <Text style={s.dbLinkTxt}>📚 Food database — your foods & meals: add · edit · delete  ›</Text>
-      </TouchableOpacity>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 120 }}>
 
         {/* Totals — neutral, no "over budget" red */}
