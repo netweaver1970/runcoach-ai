@@ -20,6 +20,7 @@ import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-rou
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
 import { SwipeRow } from '../src/components/SwipeRow';
+import { MacroRings, SplitBar } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
 import { caffeineHrv, cafHrvSummary } from '../src/services/caffeineHrv';
@@ -229,6 +230,7 @@ export default function FoodMode() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* the shared mode header (Biology's), day navigation as its second row */}
       <ModeHeader title="Food" actions={[
+        { icon: '📈', onPress: () => router.push('/food-stats' as any), label: 'Food stats' },
         { icon: '📚', onPress: () => router.push('/food-library' as any), label: 'Food database' },   // foods & meals: add / edit / delete
         { icon: '＋', onPress: () => setAdding(true), label: 'Log food' },
       ]}>
@@ -242,10 +244,18 @@ export default function FoodMode() {
 
         {/* Totals — neutral, no "over budget" red */}
         <View style={s.card}>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-            <Text style={s.kcal}>{r0(totals?.kcal)}</Text><Text style={s.kcalUnit}>kcal</Text>
-          </View>
-          <Text style={s.macros}>Carbs {r0(totals?.carb)} g · Protein {r0(totals?.prot)} g · Fat {r0(totals?.fat)} g</Text>
+          {/* compact rings like Home's sleep / recovery / strain: kcal (vs the watch's energy) + protein / carbs / fat
+              as % of energy; tap → Food stats */}
+          {totals && (totals.kcal ?? 0) > 0 ? (
+            <TouchableOpacity activeOpacity={0.8} onPress={() => router.push('/food-stats' as any)}>
+              <MacroRings n={totals} burnKcal={burn && !(isToday && !sameDay) ? burn.kcal : null} size={66} />
+              <View style={{ marginTop: 10 }}><SplitBar n={totals} /></View>
+            </TouchableOpacity>
+          ) : (
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
+              <Text style={s.kcal}>{r0(totals?.kcal)}</Text><Text style={s.kcalUnit}>kcal</Text>
+            </View>
+          )}
           <Text style={s.sub}>💧 {r1((totals?.waterMl ?? 0) / 1000)} L drinks · Sodium {r1((totals?.na ?? 0) / 1000)} g · Fibre {r0(totals?.fib)} g{totals?.rs ? ` + ${r0(totals.rs)} g resistant starch (not in carbs)` : ''}</Text>
           {burn != null && !(isToday && !sameDay) && (
             isToday
@@ -1179,6 +1189,9 @@ function MealPanel({ meal, onCancel, onConfirm, onSaveItems }: {
     <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ paddingBottom: 40 }}>
       <Text style={s.portionName}>🍽️ {meal.name}</Text>
       <Text style={s.hint}>Untick what you don't have or eat later, adjust grams, or 🎤 add components — then add it to {mealLabel(timeForDay(todayFoodDay())).toLowerCase()}.</Text>
+      <TouchableOpacity style={[s.action, { alignSelf: 'flex-start', marginTop: 4, marginBottom: 6 }, dict.state === 'recording' && { backgroundColor: '#ef4444', borderColor: '#ef4444' }]} onPress={() => { Keyboard.dismiss(); dict.toggle(); }}>
+        <Text style={[s.actionTxt, dict.state === 'recording' && { color: '#fff' }]}>{dict.state === 'recording' ? '⏹ Stop — add these' : dict.state === 'transcribing' ? 'Transcribing…' : '🎤 Add components by voice'}</Text>
+      </TouchableOpacity>
       {rows.map((r, i) => (
         <SwipeRow key={`${r.it.key}-${i}`} onDelete={() => { setRows(prev => prev.filter((_, j) => j !== i)); setDirty(true); }} label="Remove">
         <View style={[s.parseRow, { backgroundColor: c.bg }, !r.on && { opacity: 0.45 }]}>
@@ -1193,9 +1206,7 @@ function MealPanel({ meal, onCancel, onConfirm, onSaveItems }: {
         </View>
         </SwipeRow>
       ))}
-      <TouchableOpacity style={[s.action, { alignSelf: 'flex-start', marginTop: 8 }, dict.state === 'recording' && { backgroundColor: '#ef4444', borderColor: '#ef4444' }]} onPress={() => { Keyboard.dismiss(); dict.toggle(); }}>
-        <Text style={[s.actionTxt, dict.state === 'recording' && { color: '#fff' }]}>{dict.state === 'recording' ? '⏹ Stop — add these' : dict.state === 'transcribing' ? 'Transcribing…' : '🎤 Add components by voice'}</Text>
-      </TouchableOpacity>
+
       <View style={s.btnRow}>
         <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => { Keyboard.dismiss(); onCancel(); }}><Text style={s.btnGhostTxt}>Cancel</Text></TouchableOpacity>
         <TouchableOpacity style={[s.btn, !final.length && { opacity: 0.4 }]} disabled={!final.length} onPress={() => { Keyboard.dismiss(); onConfirm(final); }}>

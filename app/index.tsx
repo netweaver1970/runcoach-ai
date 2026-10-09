@@ -618,7 +618,10 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={styles.container}>
       <ModeHeader title="RunCoach AI" showHome={false} insetTop={false}
-        actions={[{ icon: '⚙️', onPress: () => router.push('/settings'), label: 'Settings' }]} />
+        actions={[
+          { icon: '📈', onPress: () => router.push('/statistics' as any), label: 'Statistics' },
+          { icon: '⚙️', onPress: () => router.push('/settings'), label: 'Settings' },
+        ]} />
       <View style={styles.center}>
         <ActivityIndicator size="large" color={c.accent} />
         <Text style={styles.loadingText}>
@@ -709,7 +712,10 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.container}>
       {/* the shared mode header (Biology's): title + Settings; no 🏠 on Home itself */}
       <ModeHeader title="RunCoach AI" showHome={false} insetTop={false}
-        actions={[{ icon: '⚙️', onPress: () => router.push('/settings'), label: 'Settings' }]} />
+        actions={[
+          { icon: '📈', onPress: () => router.push('/statistics' as any), label: 'Statistics' },
+          { icon: '⚙️', onPress: () => router.push('/settings'), label: 'Settings' },
+        ]} />
       {/* Whole screen is day-swipeable (← → between days); the responder only claims
           horizontal gestures so vertical scroll + pull-to-refresh still work. */}
       <View style={{ flex: 1 }} {...swipe.panHandlers}>
@@ -866,13 +872,7 @@ export default function HomeScreen() {
           <Text style={styles.coachBtnText}>📆 7-Day Plan</Text>
         </TouchableOpacity>
 
-        {/* 📈 Performance trend moved into the Statistics screen (compact "Performance" card). */}
-        <TouchableOpacity
-          style={[styles.coachBtn, styles.coachBtnSecondary]}
-          onPress={() => router.push('/statistics' as any)}
-        >
-          <Text style={styles.coachBtnText}>📊 Statistics</Text>
-        </TouchableOpacity>
+        {/* 📊 Statistics: now the 📈 icon in the header row (like Strength / Food) */}
 
         <TouchableOpacity
           style={[styles.coachBtn, styles.coachBtnSecondary]}

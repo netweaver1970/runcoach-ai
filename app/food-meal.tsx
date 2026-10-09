@@ -7,10 +7,11 @@ import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert,
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { SwipeRow } from '../src/components/SwipeRow';
+import { NutritionBreakdown } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import {
   loadLibrary, addMeal, renameMeal, updateMealItems, deleteMeal, scaleNutr, FoodLibrary, FoodItem, SavedMealItem, searchCustom,
-  SavedMeal, mealUsage, relogMealEverywhere, logMeal, timeOnDay, mealLabel, MEAL_LABELS, timeForDay, todayFoodDay,
+  SavedMeal, mealUsage, relogMealEverywhere, logMeal, withRs, sumNutr, timeOnDay, mealLabel, MEAL_LABELS, timeForDay, todayFoodDay,
 } from '../src/services/foodLog';
 import { searchFoodsEx, defaultServing, norm } from '../src/services/foodDb';
 import { parseMeal, looksLikeMeal } from '../src/services/foodParse';
@@ -30,6 +31,7 @@ export default function FoodMealScreen() {
   const [q, setQ] = useState('');
   const [dq, setDq] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const [orig, setOrig] = useState<SavedMeal | null>(null);       // the meal as saved — finds its logged instances
   const [pickMeal, setPickMeal] = useState<false | 'replace' | 'delete'>(false);   // ⇄ replace by another meal (required to delete a used one)
   useEffect(() => { const t = setTimeout(() => setDq(q.trim()), 200); return () => clearTimeout(t); }, [q]);
@@ -67,7 +69,9 @@ export default function FoodMealScreen() {
 
   const gOf = (t: string) => parseFloat(t.replace(',', '.'));
   const items: SavedMealItem[] = rows.map(r => (r.it.per100 && gOf(r.gTxt) > 0 ? { ...r.it, grams: gOf(r.gTxt) } : r.it));
-  const kcal = items.reduce((a, it) => a + ((it.per100 && it.grams != null ? scaleNutr(it.per100, it.grams).kcal : it.n?.kcal) ?? 0), 0);
+  // each component's nutrients (your resistant-starch / caffeine values merged in) — the 📊 breakdown
+  const itemNutr = items.map(it => ({ name: it.name, n: it.per100 && it.grams != null ? scaleNutr(withRs(it.key, it.per100), it.grams) : (it.n ?? {}) }));
+  const kcal = sumNutr(itemNutr.map(x => x.n)).kcal ?? 0;   // resistant starch at 2 kcal/g, as on the day
 
   const save = async () => {
     Keyboard.dismiss();
@@ -148,24 +152,6 @@ export default function FoodMealScreen() {
       <Text style={s.lbl}>Name</Text>
       <TextInput style={s.input} value={name} onChangeText={v => { setName(v); setDirty(true); }} placeholder="e.g. Sunday breakfast" placeholderTextColor={c.textFaint} />
 
-      <Text style={s.lbl}>Components · {r0(kcal)} kcal</Text>
-      {!rows.length && <Text style={s.hint}>None yet — search below, type a list, or 🎤 say them all.</Text>}
-      {rows.map((r, i) => (
-        <SwipeRow key={`${r.it.key}-${i}`} onDelete={() => { setRows(prev => prev.filter((_, j) => j !== i)); setDirty(true); }}>
-          <View style={s.comp}>
-            <Text style={s.compName} numberOfLines={2}>{r.it.name}</Text>
-            {r.it.per100 ? (
-              <>
-                <TextInput style={s.grams} value={r.gTxt} keyboardType="decimal-pad" selectTextOnFocus
-                  onChangeText={v => { setRows(prev => prev.map((x, j) => (j === i ? { ...x, gTxt: v } : x))); setDirty(true); }} />
-                <Text style={s.unit}>{r.it.unit === 'ml' ? 'ml' : 'g'}</Text>
-              </>
-            ) : <Text style={s.unit}>{r0(r.it.n?.kcal)} kcal</Text>}
-          </View>
-        </SwipeRow>
-      ))}
-      {rows.length > 0 && <Text style={s.hint}>Swipe a component left to delete it.</Text>}
-
       <Text style={s.lbl}>Add components</Text>
       <View style={{ flexDirection: 'row', gap: 8 }}>
         <TextInput style={[s.input, { flex: 1 }]} value={q} onChangeText={setQ} placeholder="Search, or a list: 2 eggs, toast, 200 ml milk" placeholderTextColor={c.textFaint} autoCorrect={false} returnKeyType="done" />
@@ -186,10 +172,41 @@ export default function FoodMealScreen() {
         </TouchableOpacity>
       ))}
 
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Text style={[s.lbl, { flex: 1 }]}>Components · {r0(kcal)} kcal</Text>
+        {rows.length > 0 && <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowStats(true); }} hitSlop={8}><Text style={[s.ghostTxt, { marginTop: 12 }]}>📊 Breakdown</Text></TouchableOpacity>}
+      </View>
+      {!rows.length && <Text style={s.hint}>None yet — search above, type a list, or 🎤 say them all.</Text>}
+      {rows.map((r, i) => (
+        <SwipeRow key={`${r.it.key}-${i}`} onDelete={() => { setRows(prev => prev.filter((_, j) => j !== i)); setDirty(true); }}>
+          <View style={s.comp}>
+            <Text style={s.compName} numberOfLines={2}>{r.it.name}</Text>
+            {r.it.per100 ? (
+              <>
+                <TextInput style={s.grams} value={r.gTxt} keyboardType="decimal-pad" selectTextOnFocus
+                  onChangeText={v => { setRows(prev => prev.map((x, j) => (j === i ? { ...x, gTxt: v } : x))); setDirty(true); }} />
+                <Text style={s.unit}>{r.it.unit === 'ml' ? 'ml' : 'g'}</Text>
+              </>
+            ) : <Text style={s.unit}>{r0(r.it.n?.kcal)} kcal</Text>}
+          </View>
+        </SwipeRow>
+      ))}
+      {rows.length > 0 && <Text style={s.hint}>Swipe a component left to delete it.</Text>}
+
       <TouchableOpacity style={[s.save, !dirty && !isNew && { opacity: 0.5 }]} onPress={save}><Text style={s.saveTxt}>{isNew ? 'Create meal' : 'Save meal'}</Text></TouchableOpacity>
       {!isNew && <TouchableOpacity style={[s.save, { marginTop: 12, backgroundColor: c.surfaceAlt }]} onPress={logToDay}><Text style={[s.saveTxt, { color: c.accent }]}>＋ Add this meal to a day…</Text></TouchableOpacity>}
       {!isNew && <TouchableOpacity style={s.ghost} onPress={() => setPickMeal('replace')}><Text style={s.ghostTxt}>⇄ Replace by another meal everywhere</Text></TouchableOpacity>}
       {!isNew && <TouchableOpacity style={s.ghost} onPress={() => { del().catch(() => {}); }}><Text style={[s.ghostTxt, { color: '#e5484d' }]}>🗑 Delete meal</Text></TouchableOpacity>}
+      {/* 📊 the meal's calories / macros / energy split / contributors */}
+      <Modal visible={showStats} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowStats(false)}>
+        <ScrollView style={s.screen} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+            <Text style={[s.lbl, { flex: 1, marginTop: 0 }]}>{name || 'Meal'} — breakdown</Text>
+            <TouchableOpacity onPress={() => setShowStats(false)} hitSlop={10}><Text style={s.ghostTxt}>Close</Text></TouchableOpacity>
+          </View>
+          {showStats && <NutritionBreakdown items={itemNutr} total={sumNutr(itemNutr.map(x => x.n))} />}
+        </ScrollView>
+      </Modal>
       <Modal visible={!!pickMeal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setPickMeal(false)}>
         <ScrollView style={s.screen} contentContainerStyle={{ padding: 16 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
