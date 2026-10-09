@@ -16,7 +16,7 @@ import { getPowerZones } from './claude';
 import { loadStatsRuns, mergeRuns } from './statsRunsCache';
 import { repairWorkStats } from './workStatsRepair';
 
-export type ChatMode = 'labs' | 'biology' | 'stats';
+export type ChatMode = 'labs' | 'biology' | 'stats' | 'strength';
 export interface ChatMsg { role: 'user' | 'assistant'; content: string }
 
 const MAX_TOKENS = 4000, MAX_STEPS = 5;   // generous ceiling so a table + prose answer never truncates mid-way
@@ -106,6 +106,58 @@ async function biologyKit(): Promise<ToolKit> {
       if (name === 'get_metric_series') { const m = byKey(String(input?.key ?? '')); if (!m) return { error: `no metric "${input?.key}" (use weight|bodyfat|lean|bpSys|bpDia)` }; return { key: m.key, unit: m.unit, series: m.points.map(p => `${p.date.slice(0, 10)}:${f(p.value)}`) }; }
       if (name === 'get_events') return { events: rep.events.map(e => ({ date: e.date, label: e.label, category: e.category, endDate: e.endDate })), impacts: rep.eventImpacts.map(ei => ({ event: ei.label, date: ei.date, effects: ei.effects.filter(e => e.delta != null).map(e => `${e.label}: ${f(e.before)}→${f(e.after)} (Δ${f(e.delta)})`) })) };
       return { error: `unknown tool ${name}` };
+    },
+  };
+}
+
+// ── STRENGTH tools (routines, sessions, progression, muscles, the 7-day plan) ─────────────────
+async function strengthKit(): Promise<ToolKit> {
+  const S = require('./strength') as typeof import('./strength');
+  const st = await S.loadStrength();
+  const { getEffectiveMaxHr } = require('./claude') as typeof import('./claude');
+  const snap = await loadSnapshotCache().catch(() => null);
+  const maxHr = await getEffectiveMaxHr().catch(() => 188);
+  const events = S.muscleEvents(st, ((snap?.runs ?? []) as any[]), maxHr || 188);
+  const fresh = S.muscleFreshness(events);
+  const load = S.muscularLoad(events);
+  const name = (id: string) => S.exerciseById(st, id)?.name ?? id;
+  const kit = S.currentKit(st);
+  const routines = st.routines.filter(r => r.items.length);
+  const finished = st.sessions.filter(x => x.finishedAt).sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
+  const sessLine = (x: typeof finished[number]) => {
+    const by = new Map<string, string[]>();
+    for (const l of x.sets) if (S.isWorkSet(l)) by.set(l.exerciseId, [...(by.get(l.exerciseId) ?? []), `${l.weightKg}×${l.reps}${l.rir != null ? `@${l.rir}` : ''}`]);
+    const feel = Object.entries(x.feel ?? {}).map(([k, v]) => `${name(k)} ${v}`).join(', ');
+    return `${x.date} ${x.routineName}${x.rpe ? ` RPE ${x.rpe}` : ''}${x.tailored ? ` (${x.tailored})` : ''}: ${[...by].map(([k, v]) => `${name(k)} ${v.join(' ')}`).join('; ')}${feel ? ` | feel: ${feel}` : ''}`;
+  };
+  const plan = st.autoPlanOn !== false ? st.autoPlan : undefined;
+  const planLines = plan ? plan.days.map(d => `${d.date} ${S.WEEKDAYS[new Date(d.date + 'T12:00:00').getDay()]}: run ${d.run ?? '?'} · strength ${d.kind === 'session' ? `${d.name}${d.done ? ' ✅' : ''}${d.minutes ? ` ~${d.minutes}′` : ''}` : d.kind === 'prehab' ? 'runner prehab (optional)' : 'none'} — ${d.why}${d.changes?.length ? ` [tailored: ${d.changes.join('; ')}]` : ''}`) : [];
+  const progress = routines.flatMap(r => S.flatRoutine(st, r).items).filter((it, i, a) => a.findIndex(x => x.exerciseId === it.exerciseId) === i)
+    .map(it => { const sg = S.suggestWeight(st, it); return sg.why ? `${name(it.exerciseId)}: ${sg.kg != null ? `${sg.kg} kg — ` : ''}${sg.why}` : ''; }).filter(Boolean);
+  const context = [
+    `Today ${S.localDateKey()} · equipment: ${st.here?.name ?? 'Merelbeke'} — ${S.KITS[kit].label}.`,
+    plan ? `COACH'S 7-DAY PLAN (runs fixed; strength placed around them — ${plan.target} sessions, ${plan.targetWhy}${plan.summary ? `; ${plan.summary}` : ''}):\n${planLines.join('\n')}` : 'Strength auto-plan: off.',
+    `ROUTINES: ${routines.map(r => `${r.name}${r.mode === 'superset' ? ' [superset]' : ''}: ${S.flatRoutine(st, r).items.map(it => `${name(it.exerciseId)} ${it.sets}×${it.repsLo}-${it.repsHi}${it.weightKg != null ? ` @${it.weightKg}kg` : ''}${it.ss ? ' (ss)' : ''}`).join(', ')}`).join('\n')}`,
+    `LAST SESSIONS (newest last):\n${finished.slice(-8).map(sessLine).join('\n') || 'none yet'}`,
+    `PROGRESSION (next weight per exercise, the app's rule):\n${progress.join('\n')}`,
+    `MUSCLE FRESHNESS now: ${fresh.filter(f => f.state !== 'Calibrating').map(f => `${S.MUSCLE_LABEL[f.muscle]} ${f.pct}% ${f.state}`).join(', ') || 'calibrating'}`,
+    `MUSCULAR LOAD (7 d vs 6 wk): ${load.map(g => `${g.label} ${g.status}${g.ratio != null ? ` ×${g.ratio.toFixed(2)}` : ''}`).join(', ')}`,
+  ].join('\n\n');
+  const findEx = (q: string) => { const n = String(q ?? '').toLowerCase(); return S.allExercises(st).find(e => e.id === q || e.name.toLowerCase() === n) ?? S.allExercises(st).find(e => e.name.toLowerCase().includes(n)); };
+  return {
+    context,
+    schemas: [
+      { name: 'get_exercise_history', description: "One exercise's full history: per session date, top kg, best reps, est. 1RM, volume, sets, feel. Accepts the exercise name or id.", input_schema: { type: 'object', properties: { exercise: { type: 'string' } }, required: ['exercise'] } },
+      { name: 'list_exercises', description: 'Every exercise in the database with muscles, equipment needs and (if trained) last top weight × reps, est. 1RM and 8-week trend.', input_schema: { type: 'object', properties: {} } },
+      { name: 'get_sessions', description: 'Logged strength sessions in a date range (YYYY-MM-DD), each with every work set (kg×reps@RIR), RPE, feel.', input_schema: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } } },
+      { name: 'get_muscles', description: 'Per-muscle freshness (0-100 %, state) and muscular-load status per group (7-day vs 6-week ratio).', input_schema: { type: 'object', properties: {} } },
+    ],
+    run: (tool, input) => {
+      if (tool === 'get_exercise_history') { const e = findEx(input?.exercise); if (!e) return { error: `no exercise "${input?.exercise}"` }; return { exercise: e.name, sessions: S.exerciseHistory(st, e.id).map(h => ({ date: h.date, topKg: f(h.topKg), bestReps: h.bestReps, e1rm: f(h.bestE1rm), volume: h.volume, sets: h.sets, feel: h.feel })) }; }
+      if (tool === 'list_exercises') return S.allExercises(st).map(e => { const l = S.exerciseStatLine(st, e.id); return { name: e.name, muscles: Object.entries(e.muscles).filter(([, v]) => (v ?? 0) >= 0.5).map(([m]) => m), needs: e.needs ?? [], available_here: S.exerciseAvailable(e, kit), ...(l ? { sessions: l.sessions, last: `${l.lastTop}×${l.lastReps}`, e1rm: f(l.e1rm), trendPct: f(l.trendPct) } : {}) }; });
+      if (tool === 'get_sessions') { const a = String(input?.from ?? '0000'), b = String(input?.to ?? '9999'); return finished.filter(x => x.date >= a && x.date <= b).map(sessLine); }
+      if (tool === 'get_muscles') return { freshness: fresh.map(x => ({ muscle: x.muscle, pct: x.pct, state: x.state })), load: load.map(g => ({ group: g.label, status: g.status, ratio: f(g.ratio), days: g.days })) };
+      return { error: `unknown tool ${tool}` };
     },
   };
 }
@@ -213,6 +265,18 @@ const SYSTEM: Record<ChatMode, string> = {
     '(latest values, trends, correlations, events). Keep replies BRIEF and conversational — a few sentences or a ' +
     'short list; the user can ask follow-ups. For a full series call get_metric_series. Note association≠causation ' +
     'and flag confounders. Not medical advice. Use light markdown — short paragraphs, bullets, and small tables where they help.',
+  strength:
+    'You are the STRENGTH COACH inside a running-coach app, talking to a runner who lifts (beginner with exercise names — explain movements plainly, ' +
+    'name the muscles). Answer from THE DATA BELOW: his routines, the coach\'s 7-day plan (runs are FIXED, strength is placed around them), ' +
+    'recent sessions (kg×reps@RIR, RPE, feel), the progression status, muscle freshness and muscular load, and where he trains today. ' +
+    'Know the app\'s rules and stay consistent with them: weights go up only after 3 STABLE sessions in a row (every planned set at the top ' +
+    'of the rep range, same weight, not graded hard), in steps of 5 / 2.5 / 1 kg within ~8 %; a muscle rests by the RPE of the session that ' +
+    'trained it (RPE ≤ 5 → 1 day, 6–7 → 2, ≥ 8 → 3, +1 day if graded hard); no leg day on a long-run day or the day before intervals / tempo / ' +
+    'a long run; readiness < 20 → no lifting, < 50 → upper body only, lighter; supersets alternate one set each (A1 B1 A2 B2); the equipment ' +
+    'depends on the location (Merelbeke = Marcy machine + one cable stack + dumbbells, no dual cable). If he wants a change (move a session, ' +
+    'swap an exercise, different sets/reps), say exactly what to do in the app (Fitness → Coach\'s strength week → Re-plan; the routine ' +
+    'editor; ⇄ switch in a session). Be BRIEF and concrete — a few sentences or a short list; he can ask follow-ups. Call the tools for an ' +
+    'exercise\'s full history or older sessions rather than guessing. Never invent numbers. Use light markdown — short paragraphs, bullets, small tables where they help.',
   stats:
     'You are a running-performance analyst for an athlete reviewing their OWN training statistics. Answer from THE DATA BELOW ' +
     '(efficiency EC/EF/SE, intensity distribution & polarization, load CTL/ATL/TSB/ACWR, power-duration curve & critical power, ' +
@@ -224,7 +288,7 @@ const SYSTEM: Record<ChatMode, string> = {
 };
 
 export async function runDataChat(mode: ChatMode, history: ChatMsg[]): Promise<string> {
-  const kit = mode === 'labs' ? await labsKit() : mode === 'biology' ? await biologyKit() : await statsKit();
+  const kit = mode === 'labs' ? await labsKit() : mode === 'biology' ? await biologyKit() : mode === 'strength' ? await strengthKit() : await statsKit();
   const system = `${SYSTEM[mode]}\n\n=== THE ATHLETE'S DATA ===\n${kit.context}`;
   try {
     if (await agenticSupported()) {

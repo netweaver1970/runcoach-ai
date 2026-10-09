@@ -133,6 +133,7 @@ export default function FitnessMode() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* the shared mode header (Biology's) */}
       <ModeHeader title="Strength" actions={[
+        { icon: '💬', onPress: () => router.push('/data-chat?mode=strength' as any), label: 'Strength chat' },   // AI coach: routines / muscles / history / 7-day plan
         { icon: '📅', onPress: () => router.push('/training-calendar' as any), label: 'Training calendar' },
         { icon: '📈', onPress: () => router.push('/strength-stats' as any), label: 'Strength stats' },
         { icon: '🗂', onPress: () => router.push('/routines' as any), label: 'Routines' },

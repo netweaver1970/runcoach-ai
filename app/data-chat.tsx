@@ -13,6 +13,12 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
 const SUGGEST: Record<ChatMode, string[]> = {
+  strength: [
+    'What should I lift today, and why?',
+    'How is my chest press progressing?',
+    'Which muscles are still fatigued?',
+    'Explain the face pull — what does it train?',
+  ],
   labs: ['Summarise what stands out across all my labs', 'How is my iron panel trending?', 'Read my lipids / cardiovascular risk', 'Anything I should raise with my GP?'],
   biology: ['How is my weight trend vs my training?', 'Is my recent loss fat or lean mass?', 'How does my blood pressure look over time?', 'Any event that clearly moved a metric?'],
   stats: ['Is my running economy actually declining, or is it my weight?', 'How is my aerobic fitness (EF/EC) trending?', 'Is my intensity mix well polarised?', 'What do my power curve and critical power say about my zones?'],
@@ -24,8 +30,8 @@ export default function DataChat() {
   const md = useThemedStyles(makeMarkdownStyles);
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
-  const mode: ChatMode = params.mode === 'biology' ? 'biology' : params.mode === 'stats' ? 'stats' : 'labs';
-  const title = mode === 'biology' ? '🧬 Biology chat' : mode === 'stats' ? '📊 Stats chat' : '🧪 Labs chat';
+  const mode: ChatMode = params.mode === 'biology' ? 'biology' : params.mode === 'stats' ? 'stats' : params.mode === 'strength' ? 'strength' : 'labs';
+  const title = mode === 'biology' ? '🧬 Biology chat' : mode === 'stats' ? '📊 Stats chat' : mode === 'strength' ? '🏋️ Strength chat' : '🧪 Labs chat';
 
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -131,7 +137,7 @@ export default function DataChat() {
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
           {msgs.length === 0 && (
             <View style={s.empty}>
-              <Text style={s.emptyTitle}>Ask about your {mode === 'biology' ? 'body metrics & blood pressure' : mode === 'stats' ? 'running stats — efficiency, load, power, decoupling' : 'blood-lab history'}.</Text>
+              <Text style={s.emptyTitle}>Ask about your {mode === 'biology' ? 'body metrics & blood pressure' : mode === 'stats' ? 'running stats — efficiency, load, power, decoupling' : mode === 'strength' ? 'strength training — routines, progression, muscles, this week\'s plan' : 'blood-lab history'}.</Text>
               <Text style={s.emptyHint}>It reads your own data (agentic — it pulls what it needs) and answers with context. Not medical advice.</Text>
               {SUGGEST[mode].map(q => (
                 <TouchableOpacity key={q} style={s.suggest} onPress={() => send(q)}><Text style={s.suggestTxt}>{q}</Text></TouchableOpacity>
