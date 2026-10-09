@@ -22,6 +22,7 @@ import { ModeHeader } from '../src/components/ModeHeader';
 import { SwipeRow } from '../src/components/SwipeRow';
 import { MacroRings, SplitBar, STD_DRINK_G } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
+import { photoMeal } from '../src/services/foodPhoto';
 import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
 import { caffeineHrv, cafHrvSummary } from '../src/services/caffeineHrv';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -349,9 +350,6 @@ export default function FoodMode() {
           </View>
         )}
 
-        <TouchableOpacity style={s.testBtn} onPress={() => setPhotoTest(true)}>
-          <Text style={s.testTxt}>🧪 Photo test — one-time check before photo meals are built</Text>
-        </TouchableOpacity>
         <Text style={s.credit}>Generic foods: {CIQUAL_CREDIT}. Products: {OFF_CREDIT} Totals are calculated by RunCoach.</Text>
       </ScrollView>
 
@@ -401,6 +399,22 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
   const [q, setQ] = useState('');
   const [tab, setTab] = useState<Tab>('recent');
   const [mode, setMode] = useState<Mode>(startMeal ? { m: 'meal', meal: startMeal } : { m: 'search' });
+  // 📷 photo of the plate → the AI lists the foods + amounts → the same tick-off preview as typing / voice
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoNote, setPhotoNote] = useState<{ phrase: string; text: string } | null>(null);
+  const runPhoto = (src: 'camera' | 'library') => {
+    setPhotoBusy(true);
+    photoMeal(src).then(r => {
+      if (!r) return;
+      setPhotoNote({ phrase: r.phrase, text: `📷 ${r.dish ?? 'Your meal'} — ${r.items.length} item${r.items.length > 1 ? 's' : ''} recognised${r.items.some(i => !i.sure) ? ' (some unsure)' : ''}. Amounts are estimates: check them, tap a name for another match, untick what's wrong.` });
+      setAsOne(false); setQ(r.phrase); setDq(r.phrase); setMode({ m: 'search' });
+    }).catch((e: any) => Alert.alert('Photo', String(e?.message ?? e))).finally(() => setPhotoBusy(false));
+  };
+  const askPhoto = () => Alert.alert('Photo of your meal', 'The AI estimates the foods and amounts; you check them before anything is added.', [
+    { text: 'Take a photo', onPress: () => runPhoto('camera') },
+    { text: 'Choose from library', onPress: () => runPhoto('library') },
+    { text: 'Cancel', style: 'cancel' },
+  ]);
   // 🎤 dictate a meal ("two eggs, toast with butter and a coffee") → the same live parser as typing
   const dict = useDictation(text => { const t = cleanDictation(text); setAsOne(false); setQ(t); setDq(t); setMode({ m: 'search' }); });
   const [batches, setBatches] = useState<FoodEntry[][]>([]);   // each log action = one batch → Undo removes a batch
@@ -786,6 +800,10 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
             <TouchableOpacity style={s.scanBtn} onPress={() => { scan().catch(e => { setLookingUp(false); Alert.alert('Scan failed', String(e?.message ?? e)); }); }}>
               <Text style={s.scanIcon}>▥</Text><Text style={s.scanTxt}>Scan</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={s.scanBtn} disabled={photoBusy} onPress={() => { Keyboard.dismiss(); askPhoto(); }}>
+              {photoBusy ? <ActivityIndicator color={c.onAccent} /> : <Text style={s.scanIcon}>📷</Text>}
+              <Text style={s.scanTxt}>{photoBusy ? '…' : 'Photo'}</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={[s.scanBtn, dict.state === 'recording' && { backgroundColor: '#ef4444', borderColor: '#ef4444' }]} onPress={() => { Keyboard.dismiss(); dict.toggle(); }}>
               <Text style={s.scanIcon}>{dict.state === 'recording' ? '⏹' : dict.state === 'transcribing' ? '…' : '🎤'}</Text>
               <Text style={[s.scanTxt, dict.state === 'recording' && { color: '#fff' }]}>{dict.state === 'recording' ? 'Stop' : 'Say it'}</Text>
@@ -827,6 +845,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
                 <Text style={s.resultSub}>Asks Open Food Facts (only the barcode is sent).</Text>
               </TouchableOpacity>
             )}
+            {showParse && photoNote && photoNote.phrase === dqt && <Text style={s.hint}>{photoNote.text}</Text>}
             {showParse && (
               <ParsePanel key={dqt} items={parsed}
                 onAsOne={() => setAsOne(true)}
@@ -1500,7 +1519,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   resultTitle: { color: c.text, fontSize: 15, fontWeight: '600' },
   resultSub: { color: c.textSub, fontSize: 12.5, marginTop: 2, fontVariant: ['tabular-nums'] },
   badge:     { color: c.accent, fontSize: 11, fontWeight: '800' },
-  scanBtn:   { paddingHorizontal: 14, borderRadius: 12, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+  scanBtn:   { paddingHorizontal: 10, borderRadius: 12, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
   scanIcon:  { color: c.onAccent, fontSize: 20, fontWeight: '800', lineHeight: 22 },
   scanTxt:   { color: c.onAccent, fontSize: 12, fontWeight: '800' },
   prodHead:  { color: c.textSub, fontSize: 12.5, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase', paddingTop: 14, paddingBottom: 4 },
