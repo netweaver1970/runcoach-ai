@@ -10,8 +10,8 @@ CJK = re.compile(r'[　-鿿]')
 CAT = {'kopi':'Coffee & tea','kopi_o':'Coffee & tea','kopi_c':'Coffee & tea','kopi_o_kosong':'Coffee & tea','teh':'Coffee & tea','teh_c':'Coffee & tea',
   'teh_tarik':'Coffee & tea','teh_o_ice_limau':'Coffee & tea','bubble_milk_tea_full':'Coffee & tea','bubble_milk_tea_less_sugar':'Coffee & tea',
   'bubble_milk_tea_no_sugar':'Coffee & tea','milo_hawker':'Milk drinks','milo_iced':'Milk drinks','milo_dinosaur':'Milk drinks','bandung':'Milk drinks',
-  'sugarcane_juice':'Juices & smoothies','barley_drink':'Soft drinks','100plus_original':'Soft drinks','tiger_beer':'Beer & cider','singapore_sling':'Cocktails'}
-BRAND = [('ock','Old Chang Kee'),('toast_box','Toast Box'),('killiney','Killiney'),('ya_kun','Ya Kun'),('bch','Bee Cheng Hiang'),('lim_chee_guan','Lim Chee Guan'),('fragrance','Fragrance'),('kim_joo_guan','Kim Joo Guan'),('kim_hock_guan','Kim Hock Guan'),('100plus','100PLUS'),('tiger','Tiger')]
+  'sugarcane_juice':'Juices & smoothies','barley_drink':'Soft drinks','100plus_original':'Soft drinks','tiger_beer':'Beer & cider','singapore_sling':'Cocktails','old_town_white_coffee_cafe':'Coffee & tea','old_town_white_coffee_3in1':'Coffee & tea','old_town_white_coffee_can':'Coffee & tea'}
+BRAND = [('ock','Old Chang Kee'),('old_town','OldTown'),('toast_box','Toast Box'),('killiney','Killiney'),('ya_kun','Ya Kun'),('bch','Bee Cheng Hiang'),('lim_chee_guan','Lim Chee Guan'),('fragrance','Fragrance'),('kim_joo_guan','Kim Joo Guan'),('kim_hock_guan','Kim Hock Guan'),('100plus','100PLUS'),('tiger','Tiger')]
 def num(v): return ('%g' % round(v, 2))
 out = []
 for x in d:

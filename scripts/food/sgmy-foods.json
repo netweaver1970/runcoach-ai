@@ -2055,6 +2055,63 @@
   "source": "ESTIMATE, computed: Killiney toast as above + 2× HPB SG FoodID F01060006 soft-boiled egg — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01060006"
  },
  {
+  "id": "old_town_kaya_toast",
+  "name": "OldTown kaya butter toast (2 pieces)",
+  "aliases": [
+   "old town",
+   "oldtown",
+   "old town kaya toast",
+   "oldtown kaya toast",
+   "old town toast",
+   "kaya toast"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 390.0,
+   "prot": 13.0,
+   "carb": 50.0,
+   "sug": 22.0,
+   "fat": 17.0,
+   "sat": 9.2,
+   "fib": 2.0,
+   "na": 380.0
+  },
+  "unit": "g",
+  "serving": {
+   "g": 100,
+   "label": "1 portion (2 pieces, ~100 g est.)"
+  },
+  "source": "FatSecret SG brand entry: 2 pieces 390 kcal, F17 C50 P13 — https://www.fatsecret.com.sg/calories-nutrition/oldtown/kaya-butter-toast/2-pieces. Sugar, saturated fat, fibre, sodium (HPB kaya-toast ratios) and the ~100 g weight are ESTIMATES"
+ },
+ {
+  "id": "old_town_kaya_toast_set",
+  "name": "OldTown kaya toast set (toast + 2 soft-boiled eggs, no drink)",
+  "aliases": [
+   "old town set",
+   "oldtown set",
+   "old town kaya toast set",
+   "old town breakfast",
+   "kaya toast set"
+  ],
+  "category": "Breakfast",
+  "per100": {
+   "kcal": 260.6,
+   "prot": 12.7,
+   "carb": 24.2,
+   "sug": 10.7,
+   "fat": 13.1,
+   "sat": 6.0,
+   "fib": 1.0,
+   "na": 336.5
+  },
+  "unit": "g",
+  "serving": {
+   "g": 210,
+   "label": "1 set: kaya butter toast (~100 g) + 2 soft-boiled eggs (110 g); add the coffee separately"
+  },
+  "source": "Computed: OldTown kaya butter toast (FatSecret SG brand entry, 390 kcal) + 2× HPB soft-boiled egg F01060006 — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/F01060006"
+ },
+ {
   "id": "curry_puff_chicken",
   "name": "Curry puff, chicken",
   "aliases": [
@@ -2584,6 +2641,95 @@
    "label": "1 glass (450 ml, HPB)"
   },
   "source": "HPB SG FoodID (ex-FOCOS) D09020050 'Iced Teh O limau', Derived 2026; est. (HPB blank): fib,na; caffeine est. (diluted by ice) — https://pphtpc.hpb.gov.sg/web/sgfoodid/tools/food-search/details/D09020050"
+ },
+ {
+  "id": "old_town_white_coffee_cafe",
+  "name": "OldTown white coffee, hot (café, with condensed milk)",
+  "aliases": [
+   "old town",
+   "oldtown",
+   "old town white coffee",
+   "oldtown white coffee",
+   "old town cafe",
+   "old town coffee"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 77,
+   "prot": 0.7,
+   "carb": 13.7,
+   "sug": 7.6,
+   "fat": 2.2,
+   "sat": 1.1,
+   "fib": 0.0,
+   "na": 20,
+   "caf": 50
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 250,
+   "label": "1 cup (~250 ml, est.)"
+  },
+  "source": "ESTIMATE: OldTown publishes no café nutrition; uses HPB kopi (coffee + condensed/evaporated milk) values — https://pphtpc.hpb.gov.sg/web/sgfoodid — caffeine ~50 mg/100 ml estimated. Ask 'kurang manis' / less sweet for ~⅓ less sugar"
+ },
+ {
+  "id": "old_town_white_coffee_3in1",
+  "name": "OldTown 3-in-1 white coffee, Classic (1 sachet made up)",
+  "aliases": [
+   "old town",
+   "oldtown",
+   "old town white coffee",
+   "old town instant",
+   "oldtown instant",
+   "old town sachet",
+   "old town 3in1",
+   "oldtown 3in1",
+   "old town classic"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 89.3,
+   "prot": 0.6,
+   "carb": 13.9,
+   "sug": 6.9,
+   "fat": 3.6,
+   "sat": 3.6,
+   "na": 29.6,
+   "caf": 30.0,
+   "fib": 0.0
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 200,
+   "label": "1 sachet (38 g) + ~170 ml water"
+  },
+  "source": "OldTown White Coffee 3-in-1 Classic label via Open Food Facts 9555076300086 (per 100 g powder: 470 kcal, P3.4 C73.3 S36.4 F18.8 SF18.8 Na156) — 1 sachet 38 g = 179 kcal, 13.8 g sugar; made up to ~200 ml. Caffeine ~60 mg per sachet is an ESTIMATE (not on the label)"
+ },
+ {
+  "id": "old_town_white_coffee_can",
+  "name": "OldTown white coffee, canned (ready to drink)",
+  "aliases": [
+   "old town",
+   "oldtown",
+   "old town can",
+   "old town canned",
+   "old town canned white coffee",
+   "oldtown can"
+  ],
+  "category": "Drinks",
+  "per100": {
+   "kcal": 53.3,
+   "prot": 1.0,
+   "carb": 9.8,
+   "fat": 1.1,
+   "caf": 20
+  },
+  "unit": "ml",
+  "serving": {
+   "g": 240,
+   "label": "1 can (240 ml)"
+  },
+  "source": "FatSecret SG brand entry: 1 can (240 ml) 128 kcal, F2.6 C23.5 P2.5 — https://www.fatsecret.com.sg/calories-nutrition/oldtown/white-coffee/1-can. Sugar/sodium not listed; caffeine ~50 mg per can ESTIMATED"
  },
  {
   "id": "milo_hawker",
