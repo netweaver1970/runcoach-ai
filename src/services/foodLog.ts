@@ -62,7 +62,11 @@ export interface FoodEntry {
   groupId?: string;       // entries logged together (a saved meal, a copied meal, a parsed phrase)
   mealId?: string;        // logged from this SAVED meal (→ a meal edit / replacement can redo the logged instances)
   mealSkip?: string[];    // components of that meal left out when it was logged (the preview's unticked items)
+  label?: string;         // the meal it belongs to as CHOSEN when adding ("Lunch") — else derived from the time
 }
+export const MEAL_LABELS = ['Breakfast', 'Lunch', 'Snack', 'Dinner', 'Evening snack'] as const;
+/** The meal heading of a logged group: the label chosen when adding, else from the clock. */
+export const entryMealLabel = (e: { t: string; label?: string }) => e.label ?? mealLabel(e.t);
 export interface WaterEntry { id: string; t: string; ml: number }
 export interface DayLog { date: string; entries: FoodEntry[]; water: WaterEntry[]; complete?: boolean }
 
@@ -247,7 +251,7 @@ function mutateDay(date: string, fn: (d: DayLog) => void): Promise<DayLog> {
 /** Log a food by grams (per-100 g item) or a quick-add item with absolute nutrients. Returns the new entry. */
 export async function logFood(
   item: FoodItem | { key: string; name: string; src: FoodSrc; n: Nutr },
-  opts: { grams?: number; t?: string; via: EntryVia; groupId?: string; confidence?: number; date?: string },
+  opts: { grams?: number; t?: string; via: EntryVia; groupId?: string; confidence?: number; date?: string; label?: string },
 ): Promise<FoodEntry> {
   const t = opts.t ?? (opts.date ? timeForDay(opts.date) : localIso(new Date()));
   const date = foodDayOf(t);
@@ -257,6 +261,7 @@ export async function logFood(
     ...(opts.grams != null ? { grams: opts.grams } : {}),
     ...('unit' in item && item.unit === 'ml' ? { unit: 'ml' as const } : {}),
     ...(opts.groupId ? { groupId: opts.groupId } : {}),
+    ...(opts.label ? { label: opts.label } : {}),
     ...(opts.confidence != null ? { confidence: opts.confidence } : {}),
   };
   await mutateDay(date, d => { d.entries.push(e); });
@@ -266,12 +271,12 @@ export async function logFood(
 }
 
 /** Log several items as ONE atomic write (a parsed phrase): all or nothing, one groupId. */
-export async function logFoods(items: { item: FoodItem; grams: number }[], opts: { via: EntryVia; date: string; groupId?: string; t?: string }): Promise<FoodEntry[]> {
+export async function logFoods(items: { item: FoodItem; grams: number }[], opts: { via: EntryVia; date: string; groupId?: string; t?: string; label?: string }): Promise<FoodEntry[]> {
   const t = opts.t ?? timeForDay(opts.date);   // t = add INTO an existing meal (its time)
   const groupId = opts.groupId ?? uid();
   const out: FoodEntry[] = items.map(({ item, grams }) => ({
     id: uid(), t, key: item.key, name: item.name, src: item.src, n: scaleNutr(withRs(item.key, item.per100), grams), grams, via: opts.via, groupId,
-    ...(item.unit === 'ml' ? { unit: 'ml' as const } : {}),
+    ...(item.unit === 'ml' ? { unit: 'ml' as const } : {}), ...(opts.label ? { label: opts.label } : {}),
   }));
   await mutateDay(foodDayOf(t), d => { d.entries.push(...out); });
   for (const { item, grams } of items) await touchRecent(item, grams, t).catch(() => undefined);
@@ -692,11 +697,11 @@ export async function updateMealItems(id: string, items: SavedMealItem[]): Promi
 }
 export async function deleteMeal(id: string): Promise<void> { await mutateLib(l => { l.meals = l.meals.filter(m => m.id !== id); }); }
 
-export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal', skip?: string[], at?: { t: string; groupId?: string }): Promise<FoodEntry[]> {
+export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal', skip?: string[], at?: { t: string; groupId?: string; label?: string }): Promise<FoodEntry[]> {
   const t = at?.t ?? timeForDay(date);
   const groupId = at?.groupId ?? uid();
   const out: FoodEntry[] = meal.items.map(it => ({
-    id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId, mealId: meal.id, ...(skip?.length ? { mealSkip: skip } : {}),
+    id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId, mealId: meal.id, ...(skip?.length ? { mealSkip: skip } : {}), ...(at?.label ? { label: at.label } : {}),
     n: it.per100 && it.grams != null ? scaleNutr(withRs(it.key, it.per100), it.grams) : (it.n ?? {}),
     ...(it.grams != null ? { grams: it.grams } : {}),
     ...(it.unit ? { unit: it.unit } : {}),
@@ -713,6 +718,20 @@ export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'me
  * Move a logged meal (its entries) to another clock time on the SAME food day — "dinner wasn't at that time".
  * hhmm "19:30"; 00:00–03:59 = after midnight (still that food day under the 4 am rule).
  */
+/** Re-label a logged meal ("it was lunch, not a snack"). */
+export async function relabelEntries(date: string, ids: string[], label: string): Promise<void> {
+  const keep = new Set(ids);
+  await mutateDay(date, day => { day.entries = day.entries.map(e => (keep.has(e.id) ? { ...e, label } : e)); });
+}
+/** "19:30" → the ISO time on that FOOD day (00:00–03:59 = after midnight, next calendar day). null = not a time. */
+export function timeOnDay(date: string, hhmm: string): string | null {
+  const m = /^(\d{1,2})[:.h]?(\d{2})$/.exec(hhmm.trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+  const d = new Date(date + 'T12:00:00');
+  if (Number(m[1]) < 4) d.setDate(d.getDate() + 1);
+  d.setHours(Number(m[1]), Number(m[2]), 0, 0);
+  return localIso(d);
+}
 export async function retimeEntries(date: string, ids: string[], hhmm: string): Promise<void> {
   const m = /^(\d{1,2})[:.h]?(\d{2})$/.exec(hhmm.trim());
   if (!m) throw new Error('Use a time like 19:30');
@@ -726,9 +745,9 @@ export async function retimeEntries(date: string, ids: string[], hhmm: string): 
   await mutateDay(date, day => { day.entries = day.entries.map(e => (keep.has(e.id) ? { ...e, t } : e)); });
 }
 /** Re-log a recent with its remembered serving (the 1–2 tap path). */
-export async function logRecent(r: Recent, date: string, via: EntryVia = 'recent', groupId?: string, t?: string): Promise<FoodEntry> {
-  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? servingOverrides[r.key]?.g ?? r.serving?.g ?? 100, via, date, groupId, ...(t ? { t } : {}) });
-  return logFood({ key: r.key, name: r.name, src: r.src, n: r.n ?? {} }, { via, date, groupId, ...(t ? { t } : {}) });
+export async function logRecent(r: Recent, date: string, via: EntryVia = 'recent', groupId?: string, t?: string, label?: string): Promise<FoodEntry> {
+  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? servingOverrides[r.key]?.g ?? r.serving?.g ?? 100, via, date, groupId, ...(t ? { t } : {}), ...(label ? { label } : {}) });
+  return logFood({ key: r.key, name: r.name, src: r.src, n: r.n ?? {} }, { via, date, groupId, ...(t ? { t } : {}), ...(label ? { label } : {}) });
 }
 
 /**

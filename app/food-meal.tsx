@@ -10,7 +10,7 @@ import { SwipeRow } from '../src/components/SwipeRow';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import {
   loadLibrary, addMeal, renameMeal, updateMealItems, deleteMeal, scaleNutr, FoodLibrary, FoodItem, SavedMealItem, searchCustom,
-  SavedMeal, mealUsage, relogMealEverywhere,
+  SavedMeal, mealUsage, relogMealEverywhere, logMeal, timeOnDay, mealLabel, MEAL_LABELS, timeForDay, todayFoodDay,
 } from '../src/services/foodLog';
 import { searchFoodsEx, defaultServing, norm } from '../src/services/foodDb';
 import { parseMeal, looksLikeMeal } from '../src/services/foodParse';
@@ -102,6 +102,35 @@ export default function FoodMealScreen() {
       { text: 'Delete', style: 'destructive', onPress: async () => { await deleteMeal(id).catch(() => {}); router.back(); } },
     ]);
   };
+  // ＋ log this saved meal on a day: which day → what time (default now) → which meal
+  const logToDay = () => {
+    Keyboard.dismiss();
+    if (!orig) return;
+    if (dirty) { Alert.alert('Save first', 'Save the changes to the meal, then add it to a day.'); return; }
+    const today = todayFoodDay();
+    const y = new Date(today + 'T12:00:00'); y.setDate(y.getDate() - 1);
+    const yesterday = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, '0')}-${String(y.getDate()).padStart(2, '0')}`;
+    const pick = (day: string, dayName: string) => {
+      const def = timeForDay(day).slice(11, 16);
+      Alert.prompt(`${dayName} — time`, 'When? (e.g. 12:30)', (v?: string) => {
+        if (v == null) return;
+        const t = timeOnDay(day, v);
+        if (!t) { Alert.alert('Time', 'Use a time like 12:30'); return; }
+        Alert.alert('Which meal?', undefined, [
+          ...MEAL_LABELS.map(l => ({ text: l === mealLabel(t) ? `${l} ✓` : l, onPress: async () => {
+            try { const es = await logMeal(orig, day, 'meal', [], { t, label: l }); Alert.alert('Added', `${orig.name} → ${dayName} · ${l} ${t.slice(11, 16)} (${es.length} items).`); }
+            catch (e: any) { Alert.alert('Not added', String(e?.message ?? e)); }
+          } })),
+          { text: 'Cancel', style: 'cancel' as const },
+        ]);
+      }, 'plain-text', def);
+    };
+    Alert.alert(`Add "${orig.name}" to…`, undefined, [
+      { text: 'Today', onPress: () => pick(today, 'Today') },
+      { text: 'Yesterday', onPress: () => pick(yesterday, 'Yesterday') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
   const replaceWith = (to: SavedMeal, thenDelete: boolean) => Alert.alert(`Replace by "${to.name}"?`,
     `Every logged "${name}" becomes "${to.name}": its components, values recalculated (components you'd left out stay out).${thenDelete ? ` Then "${name}" is deleted.` : ''}`, [
       { text: 'Cancel', style: 'cancel' },
@@ -158,6 +187,7 @@ export default function FoodMealScreen() {
       ))}
 
       <TouchableOpacity style={[s.save, !dirty && !isNew && { opacity: 0.5 }]} onPress={save}><Text style={s.saveTxt}>{isNew ? 'Create meal' : 'Save meal'}</Text></TouchableOpacity>
+      {!isNew && <TouchableOpacity style={[s.save, { marginTop: 12, backgroundColor: c.surfaceAlt }]} onPress={logToDay}><Text style={[s.saveTxt, { color: c.accent }]}>＋ Add this meal to a day…</Text></TouchableOpacity>}
       {!isNew && <TouchableOpacity style={s.ghost} onPress={() => setPickMeal('replace')}><Text style={s.ghostTxt}>⇄ Replace by another meal everywhere</Text></TouchableOpacity>}
       {!isNew && <TouchableOpacity style={s.ghost} onPress={() => { del().catch(() => {}); }}><Text style={[s.ghostTxt, { color: '#e5484d' }]}>🗑 Delete meal</Text></TouchableOpacity>}
       <Modal visible={!!pickMeal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setPickMeal(false)}>

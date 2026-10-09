@@ -35,6 +35,7 @@ import {
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
   updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs, MICROS, relogMealEverywhere, retimeEntries,
+  relabelEntries, timeOnDay, entryMealLabel, MEAL_LABELS,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -182,11 +183,11 @@ export default function FoodMode() {
 
   // ＋ add INTO this meal (same day, time and group) · 🕑 move the whole meal to another time
   const addToMeal = (items: FoodEntry[]) => {
-    setAddTarget({ t: items[0].t, groupId: items.find(e => e.groupId)?.groupId, label: `${mealLabel(items[0].t)} ${hhmm(items[0].t)}` });
+    setAddTarget({ t: items[0].t, groupId: items.find(e => e.groupId)?.groupId, label: entryMealLabel(items[0]) });
     setAdding(true);
   };
   const retimeMeal = (items: FoodEntry[]) => {
-    Alert.prompt(`${mealLabel(items[0].t)} — time`, 'When was it? (e.g. 19:30)', (v?: string) => {
+    Alert.prompt(`${entryMealLabel(items[0])} — time`, 'When was it? (e.g. 19:30)', (v?: string) => {
       if (v == null) return;
       once(async () => {
         try { await retimeEntries(date, items.map(e => e.id), v); }
@@ -196,9 +197,13 @@ export default function FoodMode() {
   };
   const mealMenu = (items: FoodEntry[]) => {
     const kcal = r0(items.reduce((a, e) => a + (e.n.kcal ?? 0), 0));
-    Alert.alert(`${mealLabel(items[0].t)} · ${kcal} kcal`, items.map(e => `• ${e.name}`).join('\n'), [
+    Alert.alert(`${entryMealLabel(items[0])} · ${kcal} kcal`, items.map(e => `• ${e.name}`).join('\n'), [
       { text: '＋ Add food to this meal', onPress: () => addToMeal(items) },
       { text: '🕑 Change the time', onPress: () => retimeMeal(items) },
+      { text: '🏷 Change the meal (lunch, dinner…)', onPress: () => Alert.alert('Which meal?', undefined, [
+        ...MEAL_LABELS.map(l => ({ text: l, onPress: () => once(async () => { await relabelEntries(date, items.map(e => e.id), l); }) })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]) },
       { text: 'Save as meal', onPress: () => promptSaveMeal(items) },
       ...(!isToday ? [{ text: 'Copy to today', onPress: () => once(async () => { const es = await copyEntries(items, today, timeForDay(today)); showUndo({ msg: 'Copied to today', date: today, ids: es.map(e => e.id) }); }) }] : []),
       { text: 'Delete meal', style: 'destructive' as const, onPress: () => once(async () => { await removeEntries(date, items.map(e => e.id)); }) },
@@ -301,7 +306,7 @@ export default function FoodMode() {
             <View key={row.items[0].id} style={s.mealCard}>
               <View style={s.mealHead}>
                 <TouchableOpacity onPress={() => retimeMeal(row.items)} hitSlop={6} style={{ flex: 1 }}>
-                  <Text style={s.mealTitle}>{hhmm(row.t)}  {mealLabel(row.t)} <Text style={s.mealKcal}>🕑</Text></Text>
+                  <Text style={s.mealTitle}>{hhmm(row.t)}  {entryMealLabel(row.items[0])} <Text style={s.mealKcal}>🕑</Text></Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => addToMeal(row.items)} hitSlop={6} style={s.mealAdd}><Text style={s.mealAddTxt}>＋ Add</Text></TouchableOpacity>
                 <TouchableOpacity onPress={() => mealMenu(row.items)} hitSlop={6}><Text style={s.mealKcal}>  {kcal} kcal  ⋯</Text></TouchableOpacity>
@@ -410,7 +415,18 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
   const batchesRef = useRef<FoodEntry[][]>([]);
   const inflight = useRef<Promise<void> | null>(null);
   const groupId = useRef(target?.groupId ?? `g${Date.now().toString(36)}`).current;   // everything added in one sheet = one meal
-  const at = target?.t;   // the existing meal's time → items join it instead of "now"
+  // WHEN and WHICH MEAL every item added here goes to: default now (that day's clock) + the meal of that time;
+  // ＋ on an existing meal = its time and meal (Geert 2026-10-09: "a time box, default now, and a meal label")
+  const [when, setWhen] = useState(() => target?.t ?? timeForDay(date));
+  const [label, setLabel] = useState<string>(() => target?.label ?? mealLabel(target?.t ?? timeForDay(date)));
+  const [labelSet, setLabelSet] = useState(!!target);   // a label picked by hand isn't overwritten by a time change
+  const at = when;
+  const pickTime = () => Alert.prompt('Time', 'When? (e.g. 12:30)', (v?: string) => {
+    if (v == null) return;
+    const t = timeOnDay(date, v);
+    if (!t) { Alert.alert('Time', 'Use a time like 12:30'); return; }
+    setWhen(t); if (!labelSet) setLabel(mealLabel(t));
+  }, 'plain-text', hhmm(when));
   const busy = useRef(false);
 
   useEffect(() => { cachedProducts().then(setOffCache).catch(() => {}); }, []);
@@ -444,9 +460,11 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
   const recentOf = (key: string) => lib.recents.find(r => r.key === key);
 
   const refreshLib = async () => setLib(await loadLibrary());
+  const busySince = useRef(0);
   const guard = async (fn: () => Promise<void>) => {
-    if (busy.current) return;
-    busy.current = true;
+    // a double tap is still ignored, but never silently for long: a save stuck > 8 s no longer blocks every add after it
+    if (busy.current && Date.now() - busySince.current < 8000) { Alert.alert('One moment', 'Still saving the previous item — tap again in a second.'); return; }
+    busy.current = true; busySince.current = Date.now();
     const p = (async () => { try { await fn(); } catch (e) { saveFailed(e); } finally { busy.current = false; } })();
     inflight.current = p;
     await p;
@@ -472,7 +490,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
     const typed = chipGrams();                          // "200 g quinoa" typed in the meal → keep the 200 g
     if (!longPress && !typed && rec?.grams) {
       if (item.src === 'off') await rememberProduct(item as OffProduct).catch(() => undefined);
-      await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId, ...(at ? { t: at } : {}) })]); return;
+      await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId, t: at, label })]); return;
     }
     Keyboard.dismiss();
     setMode({ m: 'portion', item, grams: typed ?? rec?.grams });
@@ -487,7 +505,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
     // a remembered serving (or a fixed quick-add) logs in one tap; a favourite never logged before asks the amount
     if ((!longPress && r.grams) || !r.per100) {
       const asRecent: Recent = { key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams, ...ownExtras(r.key, r), count: 0, last: '', hrs: [] };
-      await logged([await logRecent(asRecent, date, 'recent', groupId, at)]);
+      await logged([await logRecent(asRecent, date, 'recent', groupId, at, label)]);
       return;
     }
     Keyboard.dismiss();
@@ -657,6 +675,17 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
           <Text style={s.sheetTitle} numberOfLines={1}>{target ? `Add to ${target.label}` : 'Add food'}</Text>
           <TouchableOpacity onPress={close} hitSlop={12}><Text style={s.done}>{added.length ? `Done · ${added.length} added` : 'Done'}</Text></TouchableOpacity>
         </View>
+        {/* time + meal for everything added here */}
+        <View style={s.whenRow}>
+          <TouchableOpacity onPress={pickTime} style={s.whenBtn}><Text style={s.whenTxt}>🕑 {hhmm(when)}</Text></TouchableOpacity>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+            {MEAL_LABELS.map(l => (
+              <TouchableOpacity key={l} onPress={() => { setLabel(l); setLabelSet(true); }} style={[s.whenChip, label === l && s.whenChipOn]}>
+                <Text style={[s.whenChipTxt, label === l && { color: c.onAccent }]}>{l}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
 
         {/* confirmation + Undo sit ABOVE the list so the keyboard never hides them */}
         {/* THIS MEAL: everything added in this sheet, always visible — tap to change the amount, ✕ to remove */}
@@ -689,12 +718,12 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
             onCancel={() => setMode({ m: 'search' })}
             onConfirm={g => guard(async () => {
               if (mode.item.src === 'off') await rememberProduct(mode.item as OffProduct);
-              await logged([await logFood(mode.item, { grams: g, via: mode.item.src === 'off' ? 'ean' : 'search', date, groupId, ...(at ? { t: at } : {}) })]);
+              await logged([await logFood(mode.item, { grams: g, via: mode.item.src === 'off' ? 'ean' : 'search', date, groupId, t: at, label })]);
             })} />
         ) : mode.m === 'quick' ? (
           <QuickPanel key={`q${mode.name ?? ''}`} name0={mode.name} onCancel={() => setMode({ m: 'search' })}
             onPer100={name => setMode({ m: 'label', name, ean: mode.ean })}
-            onConfirm={(label, n) => guard(async () => { await logged([await logFood(quickItem(label, n), { via: 'quick', date, groupId, ...(at ? { t: at } : {}) })]); })} />
+            onConfirm={(qLabel, n) => guard(async () => { await logged([await logFood(quickItem(qLabel, n), { via: 'quick', date, groupId, t: at, label })]); })} />
         ) : mode.m === 'label' ? (
           <LabelPanel key={`l${mode.name ?? ''}${mode.ean ?? ''}`} ean={mode.ean} name={mode.name} onCancel={() => setMode({ m: 'search' })}
             onTotals={name => setMode({ m: 'quick', name, ean: mode.ean })}
@@ -716,7 +745,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
             onConfirm={items => guard(async () => {
               // components unticked in the preview are remembered → a later edit / replacement of the meal keeps them out
               const skip = mode.meal.items.map(i => i.key).filter(k => !items.some(x => x.key === k));
-              await logged(await logMeal({ ...mode.meal, items }, date, 'meal', skip, at ? { t: at, groupId } : undefined));
+              await logged(await logMeal({ ...mode.meal, items }, date, 'meal', skip, { t: at, groupId, label }));
             })} />
         ) : mode.m === 'online' ? (
           <OnlinePanel query={mode.query} results={mode.results} error={mode.error} onCancel={() => setMode({ m: 'search' })}
@@ -780,7 +809,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
                 onConfirm={(items, missing, saveAs) => guard(async () => {
                   // one atomic write for the matched items; every unmatched part becomes a "still to find" chip
                   // (with its typed grams) and the search jumps to the first one — nothing is dropped
-                  const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId, ...(at ? { t: at } : {}) }) : [];
+                  const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId, t: at, label }) : [];
                   if (es.length) pushBatch(es);
                   if (saveAs && es.length) await saveMeal(saveAs, es);   // …and kept as a saved meal to re-use
                   // keep typed grams only when the unit has a fixed weight (g, ml, tbsp, glass…) — "2 sneetjes xyz" has none
@@ -1372,6 +1401,12 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 15 },
   title:     { color: c.text, fontSize: 18, fontWeight: '800' },
   card:      { backgroundColor: c.surface, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: c.border },
+  whenRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  whenBtn:   { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: c.accent },
+  whenTxt:   { color: c.accent, fontWeight: '800', fontSize: 14 },
+  whenChip:  { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface },
+  whenChipOn:{ backgroundColor: c.accent, borderColor: c.accent },
+  whenChipTxt:{ color: c.text, fontSize: 13, fontWeight: '600' },
   mealAdd:   { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 10, borderWidth: 1, borderColor: c.accent, marginLeft: 6 },
   mealAddTxt:{ color: c.accent, fontWeight: '700', fontSize: 12.5 },
   dbLink:    { marginHorizontal: 16, marginTop: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
