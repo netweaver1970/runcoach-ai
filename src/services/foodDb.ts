@@ -223,8 +223,8 @@ function searchCore(query: string, limit: number, boost?: Record<string, number>
   const core = searchTable(query, limit, boost);
   if (!sports.length) return core;
   const qw = words(query).filter(t => !/^\d+$/.test(t));
-  // words the built-in items matched are not "ignored"
-  return { items: [...sports, ...core.items].slice(0, limit), ignored: core.ignored.filter(w => !qw.includes(w) || !matchSports([w]).length) };
+  // a built-in hit matched EVERY query word (matchSports requires it) → none of them is "ignored"
+  return { items: [...sports, ...core.items].slice(0, limit), ignored: core.ignored.filter(w => !qw.includes(w)) };
 }
 
 function searchTable(query: string, limit: number, boost?: Record<string, number>): { items: FoodItem[]; ignored: string[] } {

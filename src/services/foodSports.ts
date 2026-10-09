@@ -89,7 +89,9 @@ export function matchSports(queryWords: string[]): SportsItem[] {
   return SPORTS_ITEMS.filter(it => {
     if (it.full) {
       const bag = bagOf(it);
-      return queryWords.every(q => bag.some(w => wEq(q, w))) && it.aliases.some(a => n(a).split(' ').every(w => queryWords.some(q => wEq(q, w))));
+      // the alias must be named EXACTLY (plural ok) — prefix matching made "mango" hit mangosteen and "spek" spekkoek
+      const named = (w: string) => queryWords.some(q => q === w || (q.endsWith('s') && q.slice(0, -1) === w));
+      return queryWords.every(q => bag.some(w => wEq(q, w))) && it.aliases.some(a => n(a).split(' ').every(named));
     }
     return it.aliases.some(a => {
       const aw = n(a).split(' ');
