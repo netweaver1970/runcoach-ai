@@ -266,8 +266,8 @@ export async function logFood(
 }
 
 /** Log several items as ONE atomic write (a parsed phrase): all or nothing, one groupId. */
-export async function logFoods(items: { item: FoodItem; grams: number }[], opts: { via: EntryVia; date: string; groupId?: string }): Promise<FoodEntry[]> {
-  const t = timeForDay(opts.date);
+export async function logFoods(items: { item: FoodItem; grams: number }[], opts: { via: EntryVia; date: string; groupId?: string; t?: string }): Promise<FoodEntry[]> {
+  const t = opts.t ?? timeForDay(opts.date);   // t = add INTO an existing meal (its time)
   const groupId = opts.groupId ?? uid();
   const out: FoodEntry[] = items.map(({ item, grams }) => ({
     id: uid(), t, key: item.key, name: item.name, src: item.src, n: scaleNutr(withRs(item.key, item.per100), grams), grams, via: opts.via, groupId,
@@ -692,9 +692,9 @@ export async function updateMealItems(id: string, items: SavedMealItem[]): Promi
 }
 export async function deleteMeal(id: string): Promise<void> { await mutateLib(l => { l.meals = l.meals.filter(m => m.id !== id); }); }
 
-export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal', skip?: string[]): Promise<FoodEntry[]> {
-  const t = timeForDay(date);
-  const groupId = uid();
+export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'meal', skip?: string[], at?: { t: string; groupId?: string }): Promise<FoodEntry[]> {
+  const t = at?.t ?? timeForDay(date);
+  const groupId = at?.groupId ?? uid();
   const out: FoodEntry[] = meal.items.map(it => ({
     id: uid(), t, key: it.key, name: it.name, src: it.src, via, groupId, mealId: meal.id, ...(skip?.length ? { mealSkip: skip } : {}),
     n: it.per100 && it.grams != null ? scaleNutr(withRs(it.key, it.per100), it.grams) : (it.n ?? {}),
@@ -709,10 +709,26 @@ export async function logMeal(meal: SavedMeal, date: string, via: EntryVia = 'me
   return out;
 }
 
+/**
+ * Move a logged meal (its entries) to another clock time on the SAME food day — "dinner wasn't at that time".
+ * hhmm "19:30"; 00:00–03:59 = after midnight (still that food day under the 4 am rule).
+ */
+export async function retimeEntries(date: string, ids: string[], hhmm: string): Promise<void> {
+  const m = /^(\d{1,2})[:.h]?(\d{2})$/.exec(hhmm.trim());
+  if (!m) throw new Error('Use a time like 19:30');
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) throw new Error('Use a time like 19:30');
+  const d = new Date(date + 'T12:00:00');
+  if (h < 4) d.setDate(d.getDate() + 1);   // after midnight → the next calendar day, same food day
+  d.setHours(h, mi, 0, 0);
+  const t = localIso(d);
+  const keep = new Set(ids);
+  await mutateDay(date, day => { day.entries = day.entries.map(e => (keep.has(e.id) ? { ...e, t } : e)); });
+}
 /** Re-log a recent with its remembered serving (the 1–2 tap path). */
-export async function logRecent(r: Recent, date: string, via: EntryVia = 'recent', groupId?: string): Promise<FoodEntry> {
-  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? servingOverrides[r.key]?.g ?? r.serving?.g ?? 100, via, date, groupId });
-  return logFood({ key: r.key, name: r.name, src: r.src, n: r.n ?? {} }, { via, date, groupId });
+export async function logRecent(r: Recent, date: string, via: EntryVia = 'recent', groupId?: string, t?: string): Promise<FoodEntry> {
+  if (r.per100) return logFood({ key: r.key, name: r.name, src: r.src, per100: r.per100, id: r.key.split(':').slice(1).join(':'), ...(r.unit ? { unit: r.unit } : {}), ...(r.serving ? { serving: r.serving } : {}) }, { grams: r.grams ?? servingOverrides[r.key]?.g ?? r.serving?.g ?? 100, via, date, groupId, ...(t ? { t } : {}) });
+  return logFood({ key: r.key, name: r.name, src: r.src, n: r.n ?? {} }, { via, date, groupId, ...(t ? { t } : {}) });
 }
 
 /**

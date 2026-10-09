@@ -121,7 +121,7 @@ function toItem(p: any): OffProduct | null {
     key: `off:${code}`, src: 'off', id: code,
     name: name || `Product ${code}`,
     nameAlt: [p.product_name_fr, p.product_name].find((x: unknown) => typeof x === 'string' && x && x !== name) as string | undefined,
-    brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() : undefined,
+    brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() : Array.isArray(p.brands) && p.brands.length ? String(p.brands[0]).trim() : undefined,
     per100,
     ...(pack ? { serving: pack } : sq && sq > 0 && sq < 2000 && !isEcho100(sq, p.serving_size) ? { serving: { g: sq, label: '1 serving' } } : {}),
     ...(liquid ? { unit: 'ml' as const } : {}),
@@ -180,6 +180,7 @@ export async function searchOff(query: string): Promise<OffProduct[]> {
   // OFF only returns products matching EVERY word, so one extra word ("vanilla" when only the choc variant is
   // listed) gives nothing. Retry with the last word dropped, down to 2 words (≤ 3 rounds → within 10 searches/min).
   const ws = query.trim().split(/\s+/).filter(Boolean);
+  try { const hit = await searchNew(query); if (hit.length) return hit; } catch { /* fall back to the legacy word-dropping loop */ }
   let err: unknown = null;
   for (let n = ws.length, round = 0; n >= Math.min(2, ws.length) && round < 3; n--, round++) {
     try {
@@ -202,9 +203,45 @@ function takeSearchBudget(): boolean {
   searchTimes.push(now); return true;
 }
 
+/**
+ * Product search on OFF's NEW search service (search-a-licious, search.openfoodfacts.org — Elasticsearch, ~0.2 s, no
+ * 10/min cap). Geert 2026-10-09: the old cgi/search.pl kept answering 503 → "Open Food Facts is busy". Belgian products
+ * first (a filtered query in parallel with the open one). Falls back to search.pl only if the new service fails.
+ */
+async function searchNew(query: string): Promise<OffProduct[]> {
+  const base = 'https://search.openfoodfacts.org/search';
+  const words = query.trim().split(/\s+/).filter(w => w.length > 1).map(w => w.replace(/["():]/g, ''));
+  // every word must match (like the old search) — the service's default is ANY word, which ranks junk first
+  const q = (terms: string, extra: string) => `${base}?q=${encodeURIComponent(terms + extra)}&page_size=20&fields=${FIELDS}`;
+  const run = async (terms: string) => Promise.all([
+    get(q(terms, ' AND countries_tags:"en:belgium"'), 8000).then(j => (j?.hits ?? []) as any[]).catch(() => null),
+    get(q(terms, ''), 8000).then(j => (j?.hits ?? []) as any[]).catch(() => null),
+  ]);
+  // all words; nothing → drop the LAST word (down to 2 words, like the old search); nothing → any word
+  let be: any[] | null = null, all: any[] | null = null, reached = false;
+  for (let n = words.length; n >= Math.min(2, words.length); n--) {
+    [be, all] = await run(words.slice(0, n).join(' AND '));
+    if (be != null || all != null) reached = true;
+    if (be?.length || all?.length) break;
+  }
+  if (!reached) throw new Error('search service unreachable');
+  if (!(be?.length) && !(all?.length) && words.length > 1) [be, all] = await run(words.join(' '));
+  const seen = new Set<string>(), out: OffProduct[] = [];
+  for (const p of [...(be ?? []), ...(all ?? [])]) {
+    const it = toItem(p);
+    if (!it || seen.has(it.id) || it.per100.kcal == null) continue;
+    seen.add(it.id); out.push(it);
+  }
+  // most of YOUR words in the product's own name / brand first (Belgian order kept within a tie)
+  const lw = words.map(w => w.toLowerCase());
+  const hits = (it: OffProduct) => { const t = `${it.name} ${it.nameAlt ?? ''} ${it.brand ?? ''}`.toLowerCase(); return lw.filter(w => t.includes(w)).length; };
+  return out.map((it, i) => ({ it, i, h: hits(it) })).sort((a, b) => b.h - a.h || a.i - b.i).map(x => x.it);
+}
+
 async function searchOffOnce(query: string): Promise<OffProduct[]> {
   const q = encodeURIComponent(query.trim());
   if (!q) return [];
+  try { return await searchNew(query); } catch { /* new service down → the legacy endpoint below */ }
   const url = (extra: string) => `${BASE}/cgi/search.pl?search_terms=${q}&search_simple=1&action=process&json=1&page_size=20&fields=${FIELDS}${extra}`;
   // Belgium first, then worldwide; one failing call (search.pl often 503s) must not sink the other
   let prods: any[] = [];

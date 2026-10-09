@@ -34,7 +34,7 @@ import {
   loadDay, loadLibrary, logFood, logRecent, logMeal, removeEntries, updateEntry, addWater, copyEntries, saveMeal,
   deleteMeal, toggleFav, favouriteList, setDayComplete, dayTotals, groupMeals, mealLabel, usualNow, quickItem,
   scaleNutr, todayFoodDay, timeForDay, foodDayOf, addCustomFood, searchCustom, logFoods, setServing, servingOverrides, mealTagAt, MEAL_TAGS,
-  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs, MICROS, relogMealEverywhere,
+  updateMealItems, SavedMealItem, setFavourites, removeRecent, netNutr, withRs, MICROS, relogMealEverywhere, retimeEntries,
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
@@ -84,8 +84,9 @@ export default function FoodMode() {
   const [runs, setRuns] = useState<RunMark[]>([]);
   const [fuel, setFuel] = useState<FuelAdvice | null>(null);
   const [burn, setBurn] = useState<{ kcal: number; at: number } | null>(null);   // watch active + basal kcal (stored, not recomputed)
-  const [adding, setAdding] = useState<boolean | SavedMeal>(false);
-  const [bedMin, setBedMin] = useState<number | null>(null);   // usual bedtime (min after midnight) from recent nights   // a SavedMeal = open straight in its preview
+  const [adding, setAdding] = useState<boolean | SavedMeal>(false);   // a SavedMeal = open straight in its preview
+  const [bedMin, setBedMin] = useState<number | null>(null);   // usual bedtime (min after midnight) from recent nights
+  const [addTarget, setAddTarget] = useState<{ t: string; groupId?: string; label: string } | null>(null);   // ＋ into an existing meal
   const [editing, setEditing] = useState<FoodEntry | null>(null);
   const [photoTest, setPhotoTest] = useState(false);
   const [undo, setUndo] = useState<Undo>(null);
@@ -179,9 +180,25 @@ export default function FoodMode() {
     }
   });
 
+  // ＋ add INTO this meal (same day, time and group) · 🕑 move the whole meal to another time
+  const addToMeal = (items: FoodEntry[]) => {
+    setAddTarget({ t: items[0].t, groupId: items.find(e => e.groupId)?.groupId, label: `${mealLabel(items[0].t)} ${hhmm(items[0].t)}` });
+    setAdding(true);
+  };
+  const retimeMeal = (items: FoodEntry[]) => {
+    Alert.prompt(`${mealLabel(items[0].t)} — time`, 'When was it? (e.g. 19:30)', (v?: string) => {
+      if (v == null) return;
+      once(async () => {
+        try { await retimeEntries(date, items.map(e => e.id), v); }
+        catch (e: any) { Alert.alert('Time', String(e?.message ?? e)); }
+      });
+    }, 'plain-text', hhmm(items[0].t));
+  };
   const mealMenu = (items: FoodEntry[]) => {
     const kcal = r0(items.reduce((a, e) => a + (e.n.kcal ?? 0), 0));
     Alert.alert(`${mealLabel(items[0].t)} · ${kcal} kcal`, items.map(e => `• ${e.name}`).join('\n'), [
+      { text: '＋ Add food to this meal', onPress: () => addToMeal(items) },
+      { text: '🕑 Change the time', onPress: () => retimeMeal(items) },
       { text: 'Save as meal', onPress: () => promptSaveMeal(items) },
       ...(!isToday ? [{ text: 'Copy to today', onPress: () => once(async () => { const es = await copyEntries(items, today, timeForDay(today)); showUndo({ msg: 'Copied to today', date: today, ids: es.map(e => e.id) }); }) }] : []),
       { text: 'Delete meal', style: 'destructive' as const, onPress: () => once(async () => { await removeEntries(date, items.map(e => e.id)); }) },
@@ -282,10 +299,13 @@ export default function FoodMode() {
           const kcal = r0(row.items.reduce((a, e) => a + (netNutr(e.n).kcal ?? 0), 0));   // resistant starch at 2 kcal/g
           return (
             <View key={row.items[0].id} style={s.mealCard}>
-              <TouchableOpacity style={s.mealHead} onPress={() => mealMenu(row.items)}>
-                <Text style={s.mealTitle}>{hhmm(row.t)}  {mealLabel(row.t)}</Text>
-                <Text style={s.mealKcal}>{kcal} kcal  ⋯</Text>
-              </TouchableOpacity>
+              <View style={s.mealHead}>
+                <TouchableOpacity onPress={() => retimeMeal(row.items)} hitSlop={6} style={{ flex: 1 }}>
+                  <Text style={s.mealTitle}>{hhmm(row.t)}  {mealLabel(row.t)} <Text style={s.mealKcal}>🕑</Text></Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => addToMeal(row.items)} hitSlop={6} style={s.mealAdd}><Text style={s.mealAddTxt}>＋ Add</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => mealMenu(row.items)} hitSlop={6}><Text style={s.mealKcal}>  {kcal} kcal  ⋯</Text></TouchableOpacity>
+              </View>
               {row.items.map(e => (
                 // swipe left → Delete (it used to hide inside the edit sheet)
                 <SwipeRow key={e.id} onDelete={() => once(async () => { await removeEntries(foodDayOf(e.t), [e.id]); })}>
@@ -335,7 +355,8 @@ export default function FoodMode() {
       </TouchableOpacity>
 
       {photoTest && <PhotoTest onClose={() => setPhotoTest(false)} />}
-      {adding && lib && <AddSheet date={date} lib={lib} startMeal={typeof adding === 'object' ? adding : undefined} onClose={() => { Keyboard.dismiss(); setAdding(false); reload(); }} />}
+      {adding && lib && <AddSheet date={date} lib={lib} startMeal={typeof adding === 'object' ? adding : undefined} target={addTarget ?? undefined}
+        onClose={() => { Keyboard.dismiss(); setAdding(false); setAddTarget(null); reload(); }} />}
       {editing && (
         <EditSheet entry={editing} date={date} isFav={!!lib?.favs.includes(editing.key)} own={lib?.custom.find(x => x.key === editing.key)}
           onClose={() => { Keyboard.dismiss(); setEditing(null); reload(); }} />
@@ -356,7 +377,8 @@ type Mode =
   | { m: 'online'; query: string; results: OffProduct[] | null; error?: string }
   | { m: 'meal'; meal: SavedMeal };   // a saved meal, previewed: untick / re-weigh / add components before logging
 
-function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: FoodLibrary; onClose: () => void; startMeal?: SavedMeal }) {
+function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: string; lib: FoodLibrary; onClose: () => void; startMeal?: SavedMeal;
+  target?: { t: string; groupId?: string; label: string } }) {   // target = add INTO this existing meal (its time + group)
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const [lib, setLib] = useState(lib0);
@@ -387,7 +409,8 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
   useEffect(() => { setAsOne(false); }, [dq]);
   const batchesRef = useRef<FoodEntry[][]>([]);
   const inflight = useRef<Promise<void> | null>(null);
-  const groupId = useRef(`g${Date.now().toString(36)}`).current;   // everything added in one sheet = one meal
+  const groupId = useRef(target?.groupId ?? `g${Date.now().toString(36)}`).current;   // everything added in one sheet = one meal
+  const at = target?.t;   // the existing meal's time → items join it instead of "now"
   const busy = useRef(false);
 
   useEffect(() => { cachedProducts().then(setOffCache).catch(() => {}); }, []);
@@ -449,7 +472,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
     const typed = chipGrams();                          // "200 g quinoa" typed in the meal → keep the 200 g
     if (!longPress && !typed && rec?.grams) {
       if (item.src === 'off') await rememberProduct(item as OffProduct).catch(() => undefined);
-      await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId })]); return;
+      await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId, ...(at ? { t: at } : {}) })]); return;
     }
     Keyboard.dismiss();
     setMode({ m: 'portion', item, grams: typed ?? rec?.grams });
@@ -464,7 +487,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
     // a remembered serving (or a fixed quick-add) logs in one tap; a favourite never logged before asks the amount
     if ((!longPress && r.grams) || !r.per100) {
       const asRecent: Recent = { key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams, ...ownExtras(r.key, r), count: 0, last: '', hrs: [] };
-      await logged([await logRecent(asRecent, date, 'recent', groupId)]);
+      await logged([await logRecent(asRecent, date, 'recent', groupId, at)]);
       return;
     }
     Keyboard.dismiss();
@@ -631,7 +654,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
       <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={50} style={{ flex: 1, backgroundColor: c.bg }}>
       <View style={[s.sheet, { backgroundColor: c.bg }]}>
         <View style={s.sheetHead}>
-          <Text style={s.sheetTitle}>Add food</Text>
+          <Text style={s.sheetTitle} numberOfLines={1}>{target ? `Add to ${target.label}` : 'Add food'}</Text>
           <TouchableOpacity onPress={close} hitSlop={12}><Text style={s.done}>{added.length ? `Done · ${added.length} added` : 'Done'}</Text></TouchableOpacity>
         </View>
 
@@ -666,12 +689,12 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
             onCancel={() => setMode({ m: 'search' })}
             onConfirm={g => guard(async () => {
               if (mode.item.src === 'off') await rememberProduct(mode.item as OffProduct);
-              await logged([await logFood(mode.item, { grams: g, via: mode.item.src === 'off' ? 'ean' : 'search', date, groupId })]);
+              await logged([await logFood(mode.item, { grams: g, via: mode.item.src === 'off' ? 'ean' : 'search', date, groupId, ...(at ? { t: at } : {}) })]);
             })} />
         ) : mode.m === 'quick' ? (
           <QuickPanel key={`q${mode.name ?? ''}`} name0={mode.name} onCancel={() => setMode({ m: 'search' })}
             onPer100={name => setMode({ m: 'label', name, ean: mode.ean })}
-            onConfirm={(label, n) => guard(async () => { await logged([await logFood(quickItem(label, n), { via: 'quick', date, groupId })]); })} />
+            onConfirm={(label, n) => guard(async () => { await logged([await logFood(quickItem(label, n), { via: 'quick', date, groupId, ...(at ? { t: at } : {}) })]); })} />
         ) : mode.m === 'label' ? (
           <LabelPanel key={`l${mode.name ?? ''}${mode.ean ?? ''}`} ean={mode.ean} name={mode.name} onCancel={() => setMode({ m: 'search' })}
             onTotals={name => setMode({ m: 'quick', name, ean: mode.ean })}
@@ -693,7 +716,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
             onConfirm={items => guard(async () => {
               // components unticked in the preview are remembered → a later edit / replacement of the meal keeps them out
               const skip = mode.meal.items.map(i => i.key).filter(k => !items.some(x => x.key === k));
-              await logged(await logMeal({ ...mode.meal, items }, date, 'meal', skip));
+              await logged(await logMeal({ ...mode.meal, items }, date, 'meal', skip, at ? { t: at, groupId } : undefined));
             })} />
         ) : mode.m === 'online' ? (
           <OnlinePanel query={mode.query} results={mode.results} error={mode.error} onCancel={() => setMode({ m: 'search' })}
@@ -757,7 +780,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal }: { date: string; lib: 
                 onConfirm={(items, missing, saveAs) => guard(async () => {
                   // one atomic write for the matched items; every unmatched part becomes a "still to find" chip
                   // (with its typed grams) and the search jumps to the first one — nothing is dropped
-                  const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId }) : [];
+                  const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId, ...(at ? { t: at } : {}) }) : [];
                   if (es.length) pushBatch(es);
                   if (saveAs && es.length) await saveMeal(saveAs, es);   // …and kept as a saved meal to re-use
                   // keep typed grams only when the unit has a fixed weight (g, ml, tbsp, glass…) — "2 sneetjes xyz" has none
@@ -1349,6 +1372,8 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   homeBtnTxt:{ color: c.text, fontWeight: '600', fontSize: 15 },
   title:     { color: c.text, fontSize: 18, fontWeight: '800' },
   card:      { backgroundColor: c.surface, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: c.border },
+  mealAdd:   { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 10, borderWidth: 1, borderColor: c.accent, marginLeft: 6 },
+  mealAddTxt:{ color: c.accent, fontWeight: '700', fontSize: 12.5 },
   dbLink:    { marginHorizontal: 16, marginTop: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border },
   dbLinkTxt: { color: c.accent, fontWeight: '700', fontSize: 14 },
   kcal:      { color: c.text, fontSize: 34, fontWeight: '800', fontVariant: ['tabular-nums'] },
