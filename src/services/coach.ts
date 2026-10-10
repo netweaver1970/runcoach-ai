@@ -174,6 +174,12 @@ export function planNeedsRefresh(plan: CoachPlan, snap: CoachSnapshot): boolean 
   // build) and must regenerate to the current logic ("session done → recover"). Fires at most once: the new
   // plan never sets optional2nd, so it can't loop.
   if (plan.optional2nd) return true;
+  // The plan was written while last night's recovery hadn't landed (the morning flow fires on the sleep observer,
+  // often before HRV / sleep are in the components store) → it carries the "watch not worn overnight" caution and
+  // a schedule-carried session. Once recovery IS known, regenerate so the warning goes and the plan uses it.
+  // recoveryStale must be explicitly false (callers that don't know it pass undefined → no flip). Can't loop: the
+  // regenerated plan has no stale caution while recovery stays known.
+  if (snap.recoveryStale === false && (plan.cautions ?? '').includes('Watch not worn overnight')) return true;
   // COMPLETION: today's prescribed run is now essentially DONE (you ran ≥70% of it). Regenerate so the plan
   // becomes "session done → recover" instead of re-offering the session you just did — the "2nd run ghost".
   // Skipped once the plan is already a rest (no re-loop).

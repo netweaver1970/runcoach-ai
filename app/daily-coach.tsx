@@ -480,6 +480,7 @@ export default function DailyCoachScreen() {
       tofNextRunInDays: capCtx?.cap.nextRunInDays,
       recentTimeOnFeet: tof?.series14,   // so planNeedsRefresh can see today's run → drop a stale force-placed run
       readiness: readiness.readiness,    // so the force-place staleness check below can gate on green/red
+      recoveryStale,                     // recovery landed since the morning plan → drop its 'watch not worn' caution
       date: targetDate,
     } as any;
     (async () => {
@@ -496,7 +497,7 @@ export default function DailyCoachScreen() {
         requestPlan(false);   // deterministic — auto-refresh never hits the LLM
       }
     })();
-  }, [plan, weather, targetIsToday, planLoading, proseLoading, real, strainObj, capCtx, cacheChecked, selfMode]);
+  }, [plan, weather, targetIsToday, planLoading, proseLoading, real, strainObj, capCtx, cacheChecked, selfMode, recoveryStale]);
 
   return (
     <SafeAreaView style={s.container}>
