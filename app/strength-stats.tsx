@@ -1,4 +1,4 @@
-import { HEAT_C } from '../src/services/runStats';
+import { efficiencyTrend } from '../src/services/runStats';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, LayoutChangeEvent, Switch } from 'react-native';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
@@ -10,7 +10,7 @@ import {
   muscleEvents, muscularLoadSeries, legLoadDaily, prTimeline, muscleSetsBetween, RunLike, LOAD_COLOR, LegDay,
   exerciseMetricSeries, ExMetric, EX_METRIC_LABEL, rirWeekly, RirWeek, legStrengthIndex,
 } from '../src/services/strength';
-import { loadSnapshotCache, fetchStrainHistory, fetchBodyMassHistory } from '../src/services/healthkit';
+import { loadSnapshotCache, fetchStrainHistory } from '../src/services/healthkit';
 import { loadStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
 import { cached } from '../src/services/detailCache';
 import * as SecureStore from 'expo-secure-store';
@@ -141,8 +141,7 @@ export default function StrengthStatsScreen() {
   const [runs, setRuns] = useState<{ runs: (RunLike & { label?: string })[]; maxHr: number } | null>(null);
   const [exMetric, setExMetric] = useState<ExMetric>('e1rm');
   const [strainParts, setStrainParts] = useState<StrainDay[] | null>(null);
-  const [weights, setWeights] = useState<{ t: number; v: number }[]>([]);
-  const [econRuns, setEconRuns] = useState<{ t: number; wp: number; hr: number; easy: boolean }[]>([]);
+  const [econRuns, setEconRuns] = useState<{ t: number; v: number }[]>([]);
   const [editing, setEditing] = useState(false);
   const [layout, setLayout] = useState<{ id: string; on: boolean }[]>(DEFAULT_CARDS.map(id => ({ id, on: true })));
   const saveLayout = (l: { id: string; on: boolean }[]) => { setLayout(l); SecureStore.setItemAsync(LAYOUT_KEY, JSON.stringify(l)).catch(() => {}); };
@@ -167,13 +166,13 @@ export default function StrengthStatsScreen() {
       const known = saved.filter(l => DEFAULT_CARDS.includes(l.id));
       setLayout([...known, ...DEFAULT_CARDS.filter(id => !known.some(l => l.id === id)).map(id => ({ id, on: true }))]);
     }).catch(() => {});
-    // economy: body weight (to weight-adjust) + the durable run history (beyond the snapshot window)
-    fetchBodyMassHistory(24).then(w => setWeights((w as { date: string; value: number }[]).filter(x => x.value > 0).map(x => ({ t: new Date(x.date).getTime(), v: x.value })))).catch(() => {});
+    // speed per heartbeat: the durable run history (beyond the snapshot window)
     Promise.all([loadSnapshotCache().catch(() => null), loadStatsRuns().catch(() => [])]).then(([sn, cached]) => {
       const rr = mergeRuns(((sn as any)?.runs ?? []) as any, cached as any) as any[];
       // EASY, non-hot runs with a trustworthy HR — speed per heartbeat depends on intensity and heat
-      setEconRuns(rr.filter(r => r.workPace > 0 && r.workHR > 0 && (r.label === 'Z2' || r.label === 'Recovery' || r.label === 'LongRun') && !((r.tempC ?? -99) >= HEAT_C) && !r.hrUnreliableManual && !r.hrLowRes)
-        .map(r => ({ t: new Date(r.date).getTime(), wp: r.workPace, hr: r.workHR, easy: true })).sort((a, b) => a.t - b.t));
+      // the despiked SE points of the Statistics SE card (HR dropouts filtered), easy + non-hot runs only
+      setEconRuns(efficiencyTrend(rr).filter(p => p.se > 0 && !p.hot && (p.label === 'Z2' || p.label === 'Recovery' || p.label === 'LongRun'))
+        .map(p => ({ t: new Date(p.date + 'T12:00:00').getTime(), v: p.se })));
     }).catch(() => {});
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as any[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -224,7 +223,7 @@ export default function StrengthStatsScreen() {
   // SPEED PER HEARTBEAT (SE = speed ÷ work HR) on easy, non-hot runs — the aerobic-efficiency signal. NOT speed÷power:
   // Apple Watch power is modelled from speed + slope + weight, so that ratio is ≈ constant by construction (2026-10-10).
   // Both lines as % of their own baseline IN the window = the median of the first 3 points, so one odd run can't set it.
-  const ecAll = econRuns.filter(r => r.t >= t0 && r.t <= t1).map(r => ({ t: r.t, v: (60000 / r.wp) / r.hr, easy: r.easy }));
+  const ecAll = econRuns.filter(r => r.t >= t0 && r.t <= t1).map(r => ({ t: r.t, v: r.v, easy: true }));
   const med3 = (a: number[]) => { const x = a.slice(0, 3).sort((p, q) => p - q); return x.length ? x[Math.floor(x.length / 2)] : 0; };
   const ecBase = med3((ecAll.filter(r => r.easy).length >= 3 ? ecAll.filter(r => r.easy) : ecAll).map(r => r.v));
   const ecPts: TPt[] = ecBase > 0 ? ecAll.map(r => ({ t: r.t, v: Math.round((r.v / ecBase) * 1000) / 10 })) : [];
@@ -424,7 +423,7 @@ export default function StrengthStatsScreen() {
       <>
         {/* Is lifting making me a better runner? Leg strength vs running economy, both as % of their start */}
         <View style={s.card}>
-          <Text style={s.cardTitle}>Leg strength × running economy</Text>
+          <Text style={s.cardTitle}>Leg strength × speed per heartbeat</Text>
           {legIdx.length >= 2 ? (
             <>
               <TChart pts={legIdx} t0={t0} t1={t1} color="#F97316" trend events={[]} showEvents={false} yfmt={v => `${Math.round(v)}%`} innerW={innerW}

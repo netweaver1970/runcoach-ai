@@ -58,7 +58,7 @@ function reconcile(saved: StatCard[]): StatCard[] {
 export async function loadStatsLayout(): Promise<StatCard[]> {
   try {
     const info = await FileSystem.getInfoAsync(FILE);
-    if (!info.exists) return DEFAULT_STATS_LAYOUT;
+    if (!info.exists) { await FileSystem.writeAsStringAsync(MIG_FILE, '1').catch(() => {}); return DEFAULT_STATS_LAYOUT; }   // defaults already have EC off
     const parsed = JSON.parse(await FileSystem.readAsStringAsync(FILE)) as StatCard[];
     if (Array.isArray(parsed) && parsed.length) {
       // one-time: switch the EC cards off in an existing layout (the user can switch them back on in Customise)
@@ -77,4 +77,6 @@ export async function loadStatsLayout(): Promise<StatCard[]> {
 
 export async function saveStatsLayout(layout: StatCard[]): Promise<void> {
   try { await FileSystem.writeAsStringAsync(FILE, JSON.stringify(layout)); } catch { /* ignore */ }
+  // a layout the user saved is their choice → the one-time "EC off" migration must never revert it
+  await FileSystem.writeAsStringAsync(MIG_FILE, '1').catch(() => {});
 }

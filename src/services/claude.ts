@@ -482,7 +482,8 @@ function reportRestHR(snap: HealthSnapshot): number {
 }
 
 // Precomputed EFFICIENCY table (markdown) so the report never has to derive EC/EF/SE from prose — that's
-// where it misread/invented numbers. EC=speed÷power (HR-independent), EF=power÷HR, SE=speed÷HR; higher=better.
+// where it misread/invented numbers. SE=speed÷HR (aerobic efficiency), EF=power÷HR; higher=better. No EC column:
+// with Apple Watch's MODELLED power speed÷power is ≈ constant by construction (2026-10-10).
 function buildEfficiencyTable(runs: RunWorkout[], restHR: number, maxHR: number, maxRows = 12): string {
   const reserve = Math.max(1, maxHR - restHR);
   const rows = (runs ?? []).slice(0, maxRows).map(r => {
@@ -490,16 +491,15 @@ function buildEfficiencyTable(runs: RunWorkout[], restHR: number, maxHR: number,
     const power   = r.workPower ?? 0;
     const hr      = r.workHR ?? r.avgHeartRate ?? 0;
     const spd     = paceSec > 0 ? 60000 / paceSec : 0;   // m/min
-    const ec = spd > 0 && power > 0 ? (spd / power).toFixed(2) : '—';
     const ef = power > 0 && hr > 0  ? (power / hr).toFixed(2)  : '—';
     const se = spd > 0 && hr > 0    ? (spd / hr).toFixed(2)    : '—';
     const hrr = hr > 0 ? ((hr - restHR) / reserve).toFixed(2) : '—';   // HR-reserve → zone context
-    return `| ${fd(r.date)} | ${LSHORT[r.label ?? 'Unknown'] ?? '?'} | ${fp(paceSec)} | ${hr || '—'} | ${hrr} | ${power || '—'} | ${ec} | ${ef} | ${se} |`;
+    return `| ${fd(r.date)} | ${LSHORT[r.label ?? 'Unknown'] ?? '?'} | ${fp(paceSec)} | ${hr || '—'} | ${hrr} | ${power || '—'} | ${se} | ${ef} |`;
   });
   if (!rows.length) return '';
-  return `EFFICIENCY (precomputed per run — use THESE, do not recompute; higher EC/EF/SE = better; HRr = HR-reserve for zone context):
-| Date | Type | pace | wHR | HRr | W | EC | EF | SE |
-|---|---|---|---|---|---|---|---|---|
+  return `EFFICIENCY (precomputed per run — use THESE, do not recompute; higher SE/EF = better; SE = speed per heartbeat leads; HRr = HR-reserve for zone context):
+| Date | Type | pace | wHR | HRr | W | SE | EF |
+|---|---|---|---|---|---|---|---|
 ${rows.join('\n')}`;
 }
 

@@ -19,7 +19,7 @@
 
 import { fetchOurDailyComponents, fetchTrainingLoadHistory } from './healthkit';
 import { RunWorkout } from '../types';
-import { HEAT_C } from './runStats';
+import { efficiencyTrend } from './runStats';
 
 export interface GpiPoint {
   date:     string;                 // YYYY-MM-DD
@@ -68,13 +68,13 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
  *  depends on intensity), and not hot (≥ HEAT_C: heat lifts HR) or with a known-bad HR. Mean of the day's easy runs. */
 const EASY = new Set(['Z2', 'Recovery', 'LongRun']);
 function seByDay(runs: RunWorkout[]): Map<string, number> {
+  // the SAME despiked points as the Statistics SE card (efficiencyTrend Hampel-filters HR-dropout spikes, drops
+  // manually-flagged / low-res HR) — a dropout run inflates raw SE 15–30 % and would peg the sub-score at 90
   const sum = new Map<string, { s: number; n: number }>();
-  for (const r of runs ?? []) {
-    const paceSec = r.workPace ?? r.pace ?? 0;
-    const hr      = r.workHR ?? 0;
-    if (!(paceSec > 0 && hr > 0) || !EASY.has(r.label ?? '') || (r.tempC ?? -99) >= HEAT_C || r.hrUnreliableManual || r.hrLowRes) continue;
-    const k = r.date.slice(0, 10), cur = sum.get(k) ?? { s: 0, n: 0 };
-    sum.set(k, { s: cur.s + (60000 / paceSec) / hr, n: cur.n + 1 });
+  for (const p of efficiencyTrend(runs ?? [])) {
+    if (!(p.se > 0) || !EASY.has(p.label) || p.hot) continue;
+    const cur = sum.get(p.date) ?? { s: 0, n: 0 };
+    sum.set(p.date, { s: cur.s + p.se, n: cur.n + 1 });
   }
   return new Map([...sum].map(([k, v]) => [k, v.s / v.n]));
 }
