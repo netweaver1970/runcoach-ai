@@ -4,6 +4,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import Svg, { Polyline, Circle } from 'react-native-svg';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { TimeWindowBar, useTimeWindow } from '../src/components/TimeWindowBar';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, allExercises, exerciseHistory, sessionStats, LOAD_GROUPS, MUSCLES, MUSCLE_LABEL, Muscle,
@@ -20,9 +21,6 @@ import { TChart, TPt, WeeklyBars, weeklySum, inWin, trendDelta, signed } from '.
 
 // Strength statistics — the cardio Statistics screen's building blocks (shared time window, weekly bars, the
 // scrubbable time chart with its grey OLS trend line + the caption that quotes that same fit) applied to lifting.
-type Range = '1M' | '3M' | '6M' | '1Y' | 'All';
-const RANGES: Range[] = ['1M', '3M', '6M', '1Y', 'All'];
-const RANGE_DAYS: Record<Range, number> = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, All: 0 };
 const AREA_COLOR: Record<string, string> = { legs: '#2f9e44', push: '#e8590c', pull: '#1c7ed6', core: '#ae3ec9' };
 const kgFmt = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v)}`);
 const GOLD = '#F5B400';
@@ -132,7 +130,7 @@ export default function StrengthStatsScreen() {
   const { c } = useTheme();
   const s = useThemedStyles(makeStyles);
   const [st, setSt] = useState<StrengthStore | null>(null);
-  const [range, setRange] = useState<Range>('3M');
+  const tw = useTimeWindow('3M', null);   // same periods + ◀ ▶ paging as Statistics / Food stats
   const [exId, setExId] = useState<string | null>(null);
   const [w, setW] = useState(0);
   const [musWin, setMusWin] = useState<7 | 30>(7);
@@ -194,8 +192,8 @@ export default function StrengthStatsScreen() {
   })), [runs]);
 
   if (!st) return <View style={[s.screen, { justifyContent: 'center' }]}><ActivityIndicator color={c.accent} /></View>;
-  const t1 = Date.now();
-  const t0 = RANGE_DAYS[range] ? t1 - RANGE_DAYS[range] * 86_400_000 : Math.min(t1 - 7 * 86_400_000, stats[0]?.t ?? t1);
+  const t1 = tw.t1;
+  const t0 = tw.days ? tw.t0 : Math.min(t1 - 7 * 86_400_000, stats[0]?.t ?? t1);
   const innerW = Math.max(0, w - 24);
   const onLay = (e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width);
 
@@ -441,13 +439,7 @@ export default function StrengthStatsScreen() {
       <Stack.Screen options={{ title: 'Strength stats', headerBackTitle: 'Back', headerRight: () => (
         <TouchableOpacity onPress={() => setEditing(e => !e)} hitSlop={10}><Text style={{ color: c.accent, fontSize: 15, fontWeight: '700' }}>{editing ? 'Done' : '⚙︎'}</Text></TouchableOpacity>
       ) }} />
-      <View style={s.ctrlRow}>
-        {RANGES.map(r => (
-          <TouchableOpacity key={r} style={[s.tab, range === r && s.tabOn]} onPress={() => setRange(r)}>
-            <Text style={[s.tabTxt, range === r && s.tabTxtOn]}>{r}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <TimeWindowBar w={tw} />
       <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 }}>
         <View onLayout={onLay}>
         {!stats.length && <Text style={s.meta}>No finished strength sessions yet — the charts fill in as you log.</Text>}

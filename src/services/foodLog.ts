@@ -556,6 +556,15 @@ async function shardPaths(): Promise<string[]> {
   const files = await FileSystem.readDirectoryAsync(DIR).catch(() => [] as string[]);
   return files.filter(f => f.startsWith(FOOD_LOG_PREFIX) && f.endsWith('.json')).map(f => `${DIR}${f}`);
 }
+/** Every logged day across all monthly shards (one read per month — for the Food stats history). */
+export async function loadAllDays(): Promise<DayLog[]> {
+  const out: DayLog[] = [];
+  for (const p of await shardPaths()) {
+    const sh = await readJson<Shard>(p, { v: 1, days: {} });
+    for (const [date, d] of Object.entries(sh.days ?? {})) out.push({ ...d, date: d.date ?? date, entries: d.entries ?? [], water: d.water ?? [] });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
 /** Where a food is used: logged entries (and on how many days) + saved meals containing it. */
 export async function foodUsage(key: string): Promise<{ entries: number; days: number; meals: string[] }> {
   let entries = 0; const days = new Set<string>();
