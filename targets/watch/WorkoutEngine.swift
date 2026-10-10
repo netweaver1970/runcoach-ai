@@ -92,6 +92,9 @@ final class WorkoutEngine: NSObject, ObservableObject {
   private var isIndoor = false            // treadmill/indoor run → speak PACE cues (from motion), not power
   private var paceOutSince: Date?         // when pace went out of the target band
   private var lastPaceCue: Date?          // throttle the under/over PACE cue
+  private var inBandSince: Date?          // when power / pace came back INTO the target band
+  private var countdownSpokeAt: Date?     // a countdown cue just spoke → "In zone" waits (no stacked utterances)
+  private var inBandSaid = false          // "In zone" already said for this in-band stretch (reset by an under/over cue + per segment)
   private var paceSamples: [(t: Double, d: Double)] = []   // ~last 22 s of (elapsed, distance) → rolling pace
   private var cueSpoken: Set<String> = []      // which countdown cues (half/20/10/321) fired for the current interval
   private var isIntervalWorkout = false        // ≥2 work reps → an intervals session (countdown only fires for these)
@@ -394,6 +397,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
         self.workCount = self.segs.filter { $0.kind == "work" }.count
         self.segDistM = 0; self.segPaceStr = "--:--"; self.prevWorkPaceStr = ""; self.prevWorkPaceSecPerKm = 0; self.paceTrend = 0
         self.paceSamples = []; self.paceOutSince = nil; self.lastPaceCue = nil
+        self.inBandSince = nil; self.inBandSaid = false; self.countdownSpokeAt = nil; self.outSince = nil; self.lastTargetCue = nil
         self.recomputeWorkIndex()
         if !self.segs.isEmpty { self.announceSegment(self.segs[0]) }   // "Warm-up …"
       }
@@ -565,6 +569,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       stopResumeWatch(); autoPaused = false   // ANY resume (ours, manual, system) ends the auto-pause episode
       if let ps = pausedSince { pausedTotal += max(0, date.timeIntervalSince(ps)) }   // the pause no longer counts as run time
       pausedSince = nil
+      inBandSince = nil; outSince = nil; paceOutSince = nil   // the pre-pause reading is stale → no instant In zone / Under
       WKInterfaceDevice.current().play(.start)
       speak("Resumed")
     }
@@ -692,7 +697,8 @@ final class WorkoutEngine: NSObject, ObservableObject {
       openRemindAt = inTime + 300
     }
     if done { advanceSegment() }
-    else { updateSegDisplay(seg, inTime, inDist); if isIndoor { checkPaceTarget(seg) } else { checkTarget(seg) }; countdownEnd(seg, inTime) }
+    // countdown FIRST: a cue it speaks this tick holds back "In zone" (confirmInBand) so the two never stack
+    else { updateSegDisplay(seg, inTime, inDist); countdownEnd(seg, inTime); if isIndoor { checkPaceTarget(seg) } else { checkTarget(seg) } }
   }
 
   // Rolling pace (sec/km) over the last ~20 s — reflects a treadmill-speed change within seconds, unlike the
@@ -708,11 +714,12 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // terse under/over-PACE cue (haptic says which way). Pace comes from the watch's motion sensor indoors.
   private func checkPaceTarget(_ seg: RouteSeg) {
     guard seg.kind == "work", let fast = seg.paceLo, let slow = seg.paceHi, let cur = rollingPaceSec() else {
-      targetState = 0; paceOutSince = nil; return
+      targetState = 0; paceOutSince = nil; inBandSince = nil; return
     }
     let st = cur < fast ? -1 : (cur > slow ? 1 : 0)   // -1 = too FAST (ahead), +1 = too SLOW (behind)
     targetState = st == -1 ? 1 : (st == 1 ? -1 : 0)   // colour: fast→"over" tint, slow→"under" tint (reuse powerColor)
-    if st == 0 { paceOutSince = nil; return }
+    if st == 0 { paceOutSince = nil; confirmInBand("On pace", seg); return }
+    inBandSince = nil
     if paceOutSince == nil { paceOutSince = Date() }
     let now = Date()
     if now.timeIntervalSince(paceOutSince!) > 8, lastPaceCue == nil || now.timeIntervalSince(lastPaceCue!) > 25 {
@@ -721,6 +728,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
       WKInterfaceDevice.current().play(st < 0 ? .directionDown : .directionUp)   // too fast → ease (down); too slow → push (up)
       let mmss = String(format: "%d:%02d", Int(cur) / 60, Int(cur) % 60)
       speak(st < 0 ? "Ease, \(mmss)" : "Push, \(mmss)")   // terse — pace number; haptic says ease/push
+      inBandSaid = false
     }
   }
 
@@ -729,15 +737,25 @@ final class WorkoutEngine: NSObject, ObservableObject {
   // the earbuds like every other cue (honours the mute toggle), with a light tick. Longer intervals get the full
   // set; short ones only the cues that fit (a 30 s rep skips halfway + 20 s). Recovery/warm-up/drills are silent.
   private func countdownEnd(_ seg: RouteSeg, _ inTime: TimeInterval) {
+    // STEP UP coming (Geert 2026-10-10): a timed recovery / drills block followed by a WORK rep → count it in ~4 s
+    // early so you can start accelerating in the last second and the first reading already lands in the band
+    // (instead of an "Under" cue). One utterance, like the 3-2-1 at the end of a rep.
+    if isIntervalWorkout, seg.kind != "work", let d = seg.dur, d >= 8, segIndex + 1 < segs.count, segs[segIndex + 1].kind == "work" {
+      let rem = d - inTime
+      if !cueSpoken.contains("up"), rem > 3.7, rem <= 4.7 {
+        cueSpoken.insert("up"); countdownSpokeAt = Date(); WKInterfaceDevice.current().play(.directionUp); speak("Speed up, 3, 2, 1")
+      }
+      return
+    }
     guard isIntervalWorkout, seg.kind == "work", let d = seg.dur else { return }
     let rem = d - inTime
     // Halfway — only for intervals long enough to be worth it, and clear of the 20 s cue.
     if d >= 50, !cueSpoken.contains("half"), inTime >= d / 2, inTime < d / 2 + 1.2 {
-      cueSpoken.insert("half"); speak("Halfway")
+      cueSpoken.insert("half"); countdownSpokeAt = Date(); speak("Halfway")
     }
     func fire(_ key: String, _ at: Double, _ phrase: String, _ minDur: Double) {
       if d >= minDur, !cueSpoken.contains(key), rem > at - 0.5, rem <= at + 0.5 {
-        cueSpoken.insert(key); WKInterfaceDevice.current().play(.click); speak(phrase)
+        cueSpoken.insert(key); countdownSpokeAt = Date(); WKInterfaceDevice.current().play(.click); speak(phrase)
       }
     }
     fire("20", 20, "20 seconds", 28)
@@ -750,10 +768,11 @@ final class WorkoutEngine: NSObject, ObservableObject {
 
   // During a WORK segment with a power band, colour the power (targetState) and speak a throttled under/over cue.
   private func checkTarget(_ seg: RouteSeg) {
-    guard seg.kind == "work", let lo = seg.pLo, let hi = seg.pHi, power > 5 else { targetState = 0; outSince = nil; return }
+    guard seg.kind == "work", let lo = seg.pLo, let hi = seg.pHi, power > 5 else { targetState = 0; outSince = nil; inBandSince = nil; return }
     let st = power < lo ? -1 : (power > hi ? 1 : 0)
     targetState = st
-    if st == 0 { outSince = nil; return }
+    if st == 0 { outSince = nil; confirmInBand("In zone", seg); return }
+    inBandSince = nil
     if outSince == nil { outSince = Date() }
     let now = Date()
     if now.timeIntervalSince(outSince!) > 8, lastTargetCue == nil || now.timeIntervalSince(lastTargetCue!) > 25 {
@@ -761,7 +780,23 @@ final class WorkoutEngine: NSObject, ObservableObject {
       announceTick += 1                                // flash the info strip with the power cue too
       WKInterfaceDevice.current().play(st < 0 ? .directionUp : .directionDown)
       speak(st < 0 ? "Under, \(Int(power)) watts" : "Over, \(Int(power)) watts")   // terse — number only, the haptic says up/down
+      inBandSaid = false                               // → confirm with "In zone" once you're back in the band
     }
+  }
+
+  // Geert 2026-10-10: "I hear a message when I'm under, but afterwards nothing — over, in the zone, no clue." Say
+  // "In zone" once the reading has HELD inside the band for 3 s: the first time in each work rep, and again after
+  // every under/over cue. A brief flicker out and back without a cue says nothing (inBandSaid stays set).
+  // Not in the last 5 s of a timed rep (it's ending — the 3-2-1 owns that), and not within 2.5 s of a countdown cue.
+  private func confirmInBand(_ phrase: String, _ seg: RouteSeg) {
+    let now = Date()
+    if inBandSince == nil { inBandSince = now }
+    guard !inBandSaid, now.timeIntervalSince(inBandSince!) >= 3 else { return }
+    if let d = seg.dur, d - (elapsed - segStartElapsed) <= 5 { return }
+    if let c = countdownSpokeAt, now.timeIntervalSince(c) < 2.5 { return }
+    inBandSaid = true
+    WKInterfaceDevice.current().play(.success)
+    speak(phrase)
   }
 
   private func advanceSegment() {
@@ -781,6 +816,7 @@ final class WorkoutEngine: NSObject, ObservableObject {
     segStartElapsed = elapsed; segStartWall = wallElapsed; segStartDist = distanceM
     segDistM = 0; segPaceStr = "--:--"; paceTrend = 0; recomputeWorkIndex()   // reset section stats for the new phase
     targetState = 0; outSince = nil; lastTargetCue = nil; paceOutSince = nil; lastPaceCue = nil; cueSpoken = []   // reset per-segment trackers
+    inBandSince = nil; inBandSaid = false
     openRemindAt = 480                                 // first "still in <open step>" reminder 8 min into it
     if segIndex >= segs.count {
       segLabel = "Done"; segRemain = ""; segZone = ""; segKind = ""; segOpen = false
