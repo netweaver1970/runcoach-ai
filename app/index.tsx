@@ -52,7 +52,7 @@ const batteryColor = (v: number) => (v >= 60 ? '#22C55E' : v >= 30 ? '#F59E0B' :
 const SCAN_MARKER = `${Constants.expoConfig?.version ?? '0'}|s1`;
 const SCAN_MARKER_KEY = 'scan_marker_v1';
 import { getLocalWeather, weatherSummary } from '../src/services/weather';
-import { tsbStatus, strainStatus, cardioLoadStatus, ratioTrend, activityCategory } from '../src/services/trainingLoad';
+import { tsbStatus, strainStatus, cardioLoadStatus, ratioTrend, activityCategory, trainingDayKey } from '../src/services/trainingLoad';
 import { recordActuals } from '../src/services/forecastLog';
 import { maybeRunDayView, startSleepObserver, startWorkoutObserver, isAutoDayViewEnabled } from '../src/services/dayUpdate';
 import { requestNotificationPermissions } from '../src/services/notifications';
@@ -781,8 +781,10 @@ export default function HomeScreen() {
         {/* Last run analysis — reduced; tap through to the full prescription-aware review.
             Only while it's RECENT (≤18h, same window the analyzer uses) so a previous day's run
             doesn't linger on the morning view. */}
+        {/* only TODAY's run (4 am day boundary) — an 18 h window kept last evening's review up the next morning,
+            before today's run (Geert 2026-10-10) */}
         {isTodayView && runAnalysis &&
-          Date.now() - new Date(runAnalysis.runDate).getTime() < 18 * 3_600_000 && (
+          trainingDayKey(runAnalysis.runDate) === trainingDayKey(Date.now()) && (
           <TouchableOpacity
             style={styles.raCard}
             onPress={() => router.push('/run-analysis' as any)}
