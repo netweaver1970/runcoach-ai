@@ -11,6 +11,7 @@ import { fetchHrSamples, loadSnapshotCache } from '../src/services/healthkit';
 import { getEffectiveMaxHr } from '../src/services/claude';
 import { zoneStrainLoad, strainFromLoad } from '../src/services/trainingLoad';
 import { BodyMap } from '../src/components/BodyMap';
+import { Note } from '../src/components/Notes';
 
 // One strength session, broken down (Bevel activity details / JEFIT BodyMap): what it worked (a body map + bars of
 // this session's muscle load), each exercise, the records it set, the heart-rate curve with a tick per set, and how
@@ -114,7 +115,7 @@ export default function StrengthSessionDetail() {
           <Text style={s.barVal}>{u.toFixed(1)}</Text>
         </View>
       ))}
-      <Text style={s.meta}>Hard sets per muscle, weighted by how much each exercise uses it (× session effort).</Text>
+      <Note>Hard sets per muscle, weighted by how much each exercise uses it (× session effort).</Note>
 
       <Text style={s.section}>Exercises — how did each feel?</Text>
       {b.exercises.map(e => {

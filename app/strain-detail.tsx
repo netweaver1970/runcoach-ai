@@ -21,6 +21,7 @@ import { DayNav } from '../src/components/DayNav';
 import { cached } from '../src/services/detailCache';
 import { pushWorkoutToWatch, watchModuleAvailable } from '../src/services/watchWorkout';
 import { getPowerZones } from '../src/services/claude';
+import { Note } from '../src/components/Notes';
 
 /** Label + colour for a strain score on a PAST day (the readiness band lives on today's DayStrain only). */
 function strainVisual(v: number): { label: string; color: string } {
@@ -539,10 +540,10 @@ export default function StrainDetailScreen() {
             </>
           ) : (
             <>
-              <Text style={s.coachIntro}>
+              <Note style={{ marginTop: 0, marginBottom: 12 }}>
                 A coach-grade session that weighs recovery, HRV, sleep, form and your acute:chronic load — not
                 recovery alone. Structure is instant; tap “Coach's notes” afterwards for the AI narrative.
-              </Text>
+              </Note>
               <TouchableOpacity style={[s.coachBtn, { backgroundColor: status.color }]} onPress={() => requestPlan(false)} disabled={planLoading || loadingH}>
                 {planLoading
                   ? <ActivityIndicator size="small" color="#fff" />

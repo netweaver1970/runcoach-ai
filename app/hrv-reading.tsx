@@ -8,6 +8,7 @@ import { fetchHRVReadings, clearSnapshotCache } from '../src/services/healthkit'
 import { toggleHRVIgnore, isHRVIgnored } from '../src/services/hrvIgnore';
 import { clearDetailCache } from '../src/services/detailCache';
 import { ReorderList } from '../src/ReorderList';
+import { Note } from '../src/components/Notes';
 import { HRVCard, HRVCardId, HRV_CARD_TITLES, DEFAULT_HRV_LAYOUT, loadHRVLayout, saveHRVLayout } from '../src/services/hrvLayout';
 
 const HR_RED = '#e5484d';
@@ -170,7 +171,7 @@ export default function HRVReadingScreen() {
             </Svg>
           );
         })()}
-        <Text style={s.hint}>RRₙ vs RRₙ₊₁. SD1 = beat-to-beat spread, SD2 = long-term; the ellipse is drawn from them.</Text>
+        <Note style={{ paddingHorizontal: 14, paddingBottom: 10, marginTop: 2 }}>RRₙ vs RRₙ₊₁. SD1 = beat-to-beat spread, SD2 = long-term; the ellipse is drawn from them.</Note>
       </View>
     ),
   };
@@ -214,7 +215,7 @@ export default function HRVReadingScreen() {
             </React.Fragment>
           ))}
 
-          <Text style={s.foot}>Computed on-device from the reading's raw R-R (NN) intervals. Grade weighs coverage, missing time and artifacts — a chunk of gaps drops it from “good”.</Text>
+          <Note style={{ marginTop: 14, paddingHorizontal: 4 }}>Computed on-device from the reading's raw R-R (NN) intervals. Grade weighs coverage, missing time and artifacts — a chunk of gaps drops it from “good”.</Note>
         </ScrollView>
       )}
 

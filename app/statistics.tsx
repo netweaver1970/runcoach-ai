@@ -7,6 +7,7 @@ import {
 } from '../src/services/statsLayout';
 import { TChart, TPt, Ev, EV_COLOR, TS_H, TS_YW, TX_H, inWin, olsFit, trendDelta, signed, dLabel } from '../src/components/TimeChart';
 import { ReorderList } from '../src/ReorderList';
+import { CardHead, Note } from '../src/components/Notes';
 import { loadEvents } from '../src/services/timelineEvents';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
@@ -205,30 +206,6 @@ function TSChart({ vals, colors, innerW, band, refs, yfmt, dotAt, trend }: {
           return <View pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c.textSub, opacity: 0.75, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />;
         })()}
       </View>
-    </View>
-  );
-}
-
-// ─── Card header with a collapsible note ──────────────────────────────────────────────────────────
-// Both the "what is this chart" blurb and the per-chart footnote are useful the first few times and
-// clutter afterwards, so they live together behind one ▸ Notes toggle sitting on the TITLE row — the
-// card then costs a single line of chrome and the charts stay dense.
-function CardHead({ title, children }: { title: string; children?: React.ReactNode }) {
-  const { c } = useTheme();
-  const s = useThemedStyles(makeS);
-  const [open, setOpen] = useState(false);
-  const has = React.Children.toArray(children).length > 0;
-  return (
-    <View>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={[s.cardTitle, { flex: 1 }]} numberOfLines={1}>{title}</Text>
-        {has && (
-          <TouchableOpacity onPress={() => setOpen(o => !o)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={{ color: c.textFaint, fontSize: 11.5, fontWeight: '700' }}>{open ? '▾ Notes' : '▸ Notes'}</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-      {has && open && <Text style={{ color: c.textSub, fontSize: 11.5, lineHeight: 16, marginTop: 5 }}>{children}</Text>}
     </View>
   );
 }
@@ -506,7 +483,7 @@ function EffTrendsCard({ ef, t1 }: { ef: EfPoint[]; t1: number }) {
   const sum = useMemo(() => efficiencyTrendSummary(aer), [aer]);
   return (
     <View style={s.card}>
-      <CardHead title="Efficiency Trends">
+      <CardHead title="Efficiency Trends" titleStyle={s.cardTitle}>
         The least-squares (OLS) trend the AI run review quotes after every run: a straight line fitted through your
         last {aer.length || 12} steady aerobic runs, read as start → end of that line. Higher = better.
         {' '}“Flat” = the line moved less than 1% of the average. SE (speed per heartbeat) is the one to trust; EF ≈ SE × your
@@ -580,10 +557,12 @@ function RacePredictorCard({ curve, runs }: { curve: PowerCurve | null; runs: an
         </View>
       ))}
       <Text style={{ color: c.textFaint, fontSize: 11, lineHeight: 16, marginTop: 10 }}>
-        Anchored on your all-time-best CP {curve.cp} W (≈ threshold pace {fmtRacePace(pred.thresholdPaceSec)}/km), so this is
-        what your best-ever power supports, not today's form or the selected window. Target paces are
-        even splits — run the first km ~2–3 s/km easier and negative-split from there.
+        Anchored on all-time-best CP {curve.cp} W (≈ threshold {fmtRacePace(pred.thresholdPaceSec)}/km)
       </Text>
+      <Note>
+        Based on what your best-ever power supports, not today's form or the selected window. Target paces are
+        even splits — run the first km ~2–3 s/km easier and negative-split from there.
+      </Note>
     </View>
   );
 }
@@ -790,7 +769,7 @@ export default function StatisticsScreen() {
   const cardNodes: Record<StatCardId, React.ReactNode> = {
     performance: (
       <View style={s.card}>
-        <CardHead title="Performance">
+        <CardHead title="Performance" titleStyle={s.cardTitle}>
           Your overall trajectory — recovery, sleep &amp; training folded into one line, each vs your own
           baseline (50 = your starting point; above = improved). Tap for the full breakdown.
         </CardHead>
@@ -834,7 +813,7 @@ export default function StatisticsScreen() {
     ),
     weeklyTss: (
       <View style={s.card}>
-        <CardHead title="Weekly TSS">
+        <CardHead title="Weekly TSS" titleStyle={s.cardTitle}>
           Training load per week — TrainingPeaks Training Stress Score (power-based), summed across each
           week's runs. Rising = building; a drop = a recovery/taper week or time off. Every week in the window
           is shown — a week with no runs counts as 0. Grey = the in-progress week, left out of the average.
@@ -844,7 +823,7 @@ export default function StatisticsScreen() {
     ),
     pdc: (
       <View style={s.card}>
-        <CardHead title="Power–Duration Curve">
+        <CardHead title="Power–Duration Curve" titleStyle={s.cardTitle}>
           Best average running power you've held for each duration — ALL-TIME bests across your loaded history,
           so this card (and CP / W′) does not follow the time window.
           {curve ? ` From ${curve.runsUsed} runs with power. Shaded band = your current threshold zone (Z4). A fed, paced 20-min test refines the long end of this curve.` : ''}
@@ -880,7 +859,7 @@ export default function StatisticsScreen() {
     ),
     race: !loading ? (
       <View style={s.card}>
-        <CardHead title="Race Predictor">
+        <CardHead title="Race Predictor" titleStyle={s.cardTitle}>
           Fresh-legs race times from your ALL-TIME-best Critical Power (Power–Duration card) + your median running
           economy across your history, scaled across distances with Riegel. It does not follow the time window. A
           guide to your fitness — not a goal; TSB, heat, terrain & fueling move it.
@@ -896,7 +875,7 @@ export default function StatisticsScreen() {
       const ad = trendDelta(pw.filter(x => x.aerobic).map(x => x.ef));   // same OLS, steady aerobic runs only
       return (
       <View style={s.card}>
-        <CardHead title="Efficiency Factor">
+        <CardHead title="Efficiency Factor" titleStyle={s.cardTitle}>
           Power ÷ HR per run. Watch power is modelled from speed, slope and weight, so EF ≈ speed-per-heartbeat × your weight — a weight change shifts it (lighter → lower) without any fitness change. SE is the cleaner read.
           {' '}Grey line = trend. Green = steady aerobic runs.
           {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].ef.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
@@ -916,7 +895,7 @@ export default function StatisticsScreen() {
       const nRep = pw.filter(x => x.repaired).length;
       return (
       <View style={s.card}>
-        <CardHead title="Running Economy (EC)">
+        <CardHead title="Running Economy (EC)" titleStyle={s.cardTitle}>
           Speed ÷ power. ⚠️ NOT a fitness signal: Apple Watch power is MODELLED from your speed, the slope and your body weight, so this ratio is ≈ constant by construction — it only moves with body weight, hills and GPS noise. Use it as a data check; read aerobic efficiency on Speed Efficiency (SE).
           {' '}Grey line = trend.
           {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].ec.toFixed(3)} (trend ${signed(d, 3)} over the window).` : ''}
@@ -942,7 +921,7 @@ export default function StatisticsScreen() {
       const d = trendDelta(pw.map(x => x.v));    // = the grey trend line's Δ
       return (
         <View style={s.card}>
-          <CardHead title="Economy (weight-adjusted)">
+          <CardHead title="Economy (weight-adjusted)" titleStyle={s.cardTitle}>
             Speed ÷ power-per-kg (raw EC × body weight). ⚠️ With Apple Watch power this is ≈ CONSTANT by construction (~58 = the standard ~1 J/kg/m cost of running the watch's model assumes) — it can't show an economy change. Kept as a data check only; read aerobic efficiency on Speed Efficiency (SE).
             {' '}Grey line = trend.
             {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].v.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
@@ -958,7 +937,7 @@ export default function StatisticsScreen() {
       const d = trendDelta(pw.map(x => x.se));                             // = the grey trend line's Δ
       return (
       <View style={s.card}>
-        <CardHead title="Speed Efficiency (SE)">
+        <CardHead title="Speed Efficiency (SE)" titleStyle={s.cardTitle}>
           Speed ÷ HR per run — speed per heartbeat, THE aerobic-efficiency signal (no modelled power, no body weight). Rising = a better aerobic engine.
           {' '}Grey line = trend.
           {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].se.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
@@ -973,7 +952,7 @@ export default function StatisticsScreen() {
     efftrend: ef.some(p => p.aerobic) ? <EffTrendsCard ef={ef} t1={t1} /> : null,
     intensity: allRuns.length ? (
       <View style={s.card}>
-        <CardHead title="Intensity Distribution">
+        <CardHead title="Intensity Distribution" titleStyle={s.cardTitle}>
           Where your running time goes over the selected time window. Most endurance plans want ~80% easy.
           {' '}PI = Seiler polarization index (&gt;0 leans polarised).
           {zones && zones.modPct > 35 ? ' You have a lot of moderate "gray zone" — the classic flat-fitness trap.'
@@ -985,7 +964,7 @@ export default function StatisticsScreen() {
     ) : null,
     mix: zoneWeeks.length >= 1 ? (
       <View style={s.card}>
-        <CardHead title="Intensity Mix Over Time">
+        <CardHead title="Intensity Mix Over Time" titleStyle={s.cardTitle}>
           Easy / moderate / hard share of each week's running (🟢 easy · 🟠 moderate · 🔴 hard).
           A mostly-green base with a little red = well polarised.
         </CardHead>
@@ -997,7 +976,7 @@ export default function StatisticsScreen() {
       const aw = inWin(ap, t0, t1);   // "Latest" = the last point drawn in the window, not the newest overall
       return (
       <View style={s.card}>
-        <CardHead title="Load Ratio (ACWR)">
+        <CardHead title="Load Ratio (ACWR)" titleStyle={s.cardTitle}>
           Acute ÷ chronic load. The 0.8–1.3 band is the injury-risk sweet spot.
           {aw.length ? ` Latest in window ${aw[aw.length - 1].v.toFixed(2)}.` : ''} Green band = sweet spot; red dashed = 1.5 (spike-risk).
         </CardHead>
@@ -1008,7 +987,7 @@ export default function StatisticsScreen() {
     ); })() : null,
     decoupling: (
       <View style={s.card}>
-        <CardHead title="Aerobic Decoupling (Pw:HR)">
+        <CardHead title="Aerobic Decoupling (Pw:HR)" titleStyle={s.cardTitle}>
           How much HR drifts up relative to power over a steady run. Under 5% = strong aerobic base.
           One point per steady run ≥30 min; green line = 5% threshold.
           {dcWin.length >= 2 ? `  ${dcMed != null ? `Recent normal ≈ ${dcMed.toFixed(1)}% (median of the last ${Math.min(8, dcWin.length)} in this window), ` : ''}latest run ${dcWin[dcWin.length - 1].pct.toFixed(1)}%.` : ''}
@@ -1031,7 +1010,7 @@ export default function StatisticsScreen() {
     ),
     volume: (
       <View style={s.card}>
-        <CardHead title="Volume vs Budget">
+        <CardHead title="Volume vs Budget" titleStyle={s.cardTitle}>
           Each week's running (bar) vs its +cap% ceiling (the line atop the faint track) — heat-credited off the
           best of your recent weeks so a hot week can't drag it down. Reach ~90% to hold volume flat; under that,
           next week's ceiling drifts down. 🟢 ≥90% · 🟠 ≥70% · 🔴 under · grey = the in-progress week · 🌡 = that

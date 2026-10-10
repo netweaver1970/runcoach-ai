@@ -17,6 +17,7 @@ import { cached } from '../src/services/detailCache';
 import * as SecureStore from 'expo-secure-store';
 import { getEffectiveMaxHr } from '../src/services/claude';
 import { BodyMap } from '../src/components/BodyMap';
+import { CardHead, Note } from '../src/components/Notes';
 import { TChart, TPt, WeeklyBars, weeklySum, inWin, trendDelta, signed } from '../src/components/TimeChart';
 
 // Strength statistics — the cardio Statistics screen's building blocks (shared time window, weekly bars, the
@@ -233,8 +234,7 @@ export default function StrengthStatsScreen() {
     volume: () => (
       <>
         <View style={s.card}>
-          <Text style={s.cardTitle}>Weekly volume</Text>
-          <Text style={s.meta}>Tonnage = kg × reps over all work sets (body-weight moves include your body-weight share)</Text>
+          <CardHead title="Weekly volume" titleStyle={s.cardTitle}>Tonnage = kg × reps over all work sets (body-weight moves include your body-weight share)</CardHead>
           <WeeklyBars weeks={tonnage} innerW={innerW} fmt={kgFmt} unit="kg" />
         </View>
       </>
@@ -250,8 +250,7 @@ export default function StrengthStatsScreen() {
     areas: () => (
       <>
         <View style={s.card}>
-          <Text style={s.cardTitle}>Hard sets per area</Text>
-          <Text style={s.meta}>Per week, last 4 completed weeks vs the 4 before (per area — ~10–20 hard sets per MUSCLE per week is the usual growth range)</Text>
+          <CardHead title="Hard sets per area" titleStyle={s.cardTitle}>Per week, last 4 completed weeks vs the 4 before (per area — ~10–20 hard sets per MUSCLE per week is the usual growth range)</CardHead>
           {areas.map(a => (
             <View key={a.g.key} style={s.areaRow}>
               <View style={[s.dot, { backgroundColor: AREA_COLOR[a.g.key] ?? c.accent }]} />
@@ -284,7 +283,8 @@ export default function StrengthStatsScreen() {
             const max = Math.max(22, ...rows.map(r => r.v));
             return (
               <>
-                <Text style={s.meta}>Hard sets per week (weighted by how much each exercise uses the muscle) · grey none · amber &lt;10 · green 10–20 · red &gt;20</Text>
+                <Text style={s.meta}>Hard sets per week · grey none · amber &lt;10 · green 10–20 · red &gt;20</Text>
+                <Note>Weighted by how much each exercise uses the muscle. ~10–20 hard sets per muscle per week is the usual growth range.</Note>
                 <View style={{ marginTop: 8 }}>
                   <BodyMap colorOf={m => setsColor(perWk(m), c.mode === 'dark')} onSelect={m => setSelMuscle(sm => (sm === m ? null : m))} selected={selMuscle} />
                 </View>
@@ -325,7 +325,7 @@ export default function StrengthStatsScreen() {
                 <TChart pts={pts} t0={Math.max(t0, t1 - 90 * 86_400_000)} t1={t1} color={LOAD_COLOR.Productive} band={[1.0, 1.3]}
                   refs={[{ y: 0.8, color: LOAD_COLOR.Detraining, dash: true }, { y: 1.5, color: LOAD_COLOR.Overtraining, dash: true }]}
                   events={[]} showEvents={false} yfmt={v => `×${v.toFixed(2)}`} innerW={innerW} />
-                <Text style={s.caption}>Last ~7 days vs your usual ~6-week level (rolling averages; ×1.0 = as usual). Green band = Productive (×1.0–1.3); below the blue line = Detraining, above the red one = Overtraining. Runs load the legs.</Text>
+                <Note>Last ~7 days vs your usual ~6-week level (rolling averages; ×1.0 = as usual). Green band = Productive (×1.0–1.3); below the blue line = Detraining, above the red one = Overtraining. Runs load the legs.</Note>
               </>
             ) : <Text style={s.meta}>Calibrating — this area needs a few weeks of history.</Text>;
           })()}
@@ -339,7 +339,8 @@ export default function StrengthStatsScreen() {
           <Text style={s.cardTitle}>Legs: runs + strength</Text>
           <Text style={s.meta}>Last 4 weeks · <Text style={{ color: '#3B82F6' }}>■ runs</Text> · <Text style={{ color: '#F97316' }}>■ strength</Text> · <Text style={{ color: '#2f9e44' }}>— leg freshness</Text> · ⚡ quality run</Text>
           <View style={{ marginTop: 6 }}><LegLoadChart days={legDays} quality={quality} innerW={innerW} /></View>
-          {legDays.length ? <Text style={s.caption}>Leg freshness now {legDays[legDays.length - 1].fresh}% — a quality run is best on a day the green line is high, i.e. not straight after a heavy leg day.</Text> : null}
+          {legDays.length ? <Text style={s.caption}>Leg freshness now {legDays[legDays.length - 1].fresh}%</Text> : null}
+          <Note>A quality run is best on a day the green leg-freshness line is high, i.e. not straight after a heavy leg day.</Note>
         </View>
       </>
     ),
@@ -402,7 +403,8 @@ export default function StrengthStatsScreen() {
         {/* Effort distribution: weekly work sets by reps in reserve */}
         <View style={s.card}>
           <Text style={s.cardTitle}>Effort per week (reps in reserve)</Text>
-          <Text style={s.meta}><Text style={{ color: RIR_COLOR.r0 }}>■ 0 failure</Text> · <Text style={{ color: RIR_COLOR.r1 }}>■ 1</Text> · <Text style={{ color: RIR_COLOR.r2 }}>■ 2</Text> · <Text style={{ color: RIR_COLOR.r3 }}>■ 3+</Text> · <Text style={{ color: c.textFaint }}>■ not rated</Text> — mostly 1–2 = productive; lots of 0 = grinding, lots of 3+ = too light</Text>
+          <Text style={s.meta}><Text style={{ color: RIR_COLOR.r0 }}>■ 0 failure</Text> · <Text style={{ color: RIR_COLOR.r1 }}>■ 1</Text> · <Text style={{ color: RIR_COLOR.r2 }}>■ 2</Text> · <Text style={{ color: RIR_COLOR.r3 }}>■ 3+</Text> · <Text style={{ color: c.textFaint }}>■ not rated</Text></Text>
+          <Note>Mostly 1–2 reps in reserve = productive; lots of 0 = grinding, lots of 3+ = too light.</Note>
           <RirBars weeks={rir} innerW={innerW} />
         </View>
       </>
@@ -426,7 +428,7 @@ export default function StrengthStatsScreen() {
             <>
               <TChart pts={legIdx} t0={t0} t1={t1} color="#F97316" trend events={[]} showEvents={false} yfmt={v => `${Math.round(v)}%`} innerW={innerW}
                 pts2={ecPts} color2="#3B82F6" y2fmt={v => `${Math.round(v)}%`} y2label="speed/beat" />
-              <Text style={s.caption}>Orange: leg strength (leg-exercise e1RMs). Blue: speed per heartbeat on easy, cooler runs (aerobic efficiency). Both as % of their level at the start of this window. Judge it over ~3 months — one block is too short to tell.</Text>
+              <Note>Orange: leg strength (leg-exercise e1RMs). Blue: speed per heartbeat on easy, cooler runs (aerobic efficiency). Both as % of their level at the start of this window. Judge it over ~3 months — one block is too short to tell.</Note>
             </>
           ) : <Text style={s.meta}>Appears after 2 sessions with leg exercises; meaningful after ~3 months.</Text>}
         </View>

@@ -5,6 +5,7 @@ import { Stack, useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
+import { Note } from '../src/components/Notes';
 import { seasonPlanToIcs } from '../src/services/planIcs';
 import { fetchTrainingLoadHistory } from '../src/services/healthkit';
 import { getRaceConfig, RaceConfig, fmtTime } from '../src/services/racePlan';
@@ -139,21 +140,21 @@ export default function SeasonPlanScreen() {
                 <Text style={[s.td, { color: w.tsb < -10 ? '#e74c3c' : w.tsb > 5 ? '#3498db' : c.textSub }]}>{w.tsb >= 0 ? '+' : ''}{w.tsb}</Text>
               </View>
             ))}
-            <Text style={s.note}>
+            <Note style={{ marginTop: 12 }}>
               "Load" = the week's training-load target (same units as CTL/ATL). Base builds the aerobic
               foundation, Build ramps it (↓ = a recovery/deload week), Peak holds the ceiling, then the Taper
               sheds fatigue so form (TSB) rises into race day. The 7-Day Plan executes the current week.
-            </Text>
+            </Note>
           </View>
 
           <TouchableOpacity style={s.exportBtn} onPress={exportIcs}>
             <Text style={s.exportTxt}>📅  Add to calendar (.ics)</Text>
           </TouchableOpacity>
-          <Text style={s.exportHint}>
+          <Note style={{ marginTop: 8, paddingHorizontal: 4 }}>
             Exports the block as a standard calendar file — imports into Apple / Google / Outlook (and any
             calendar-aware tool). TrainingPeaks has no open plan-import format, so a universal calendar is the
             portable way to take your plan with you.
-          </Text>
+          </Note>
         </>
       )}
     </ScrollView>

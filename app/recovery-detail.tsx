@@ -15,6 +15,7 @@ import { KpiTabs } from '../src/components/KpiTabs';
 import { DayNav } from '../src/components/DayNav';
 import { cached } from '../src/services/detailCache';
 import { interpretHrvCv, HrvCvState } from '../src/services/hrvCv';
+import { Note } from '../src/components/Notes';
 
 const CV_COLOR: Record<HrvCvState, string> = {
   unsettled: '#e67e22', 'flat-falling': '#c0392b', drifting: '#e67e22', settled: '#27ae60', normal: '#27ae60',
@@ -243,8 +244,9 @@ export default function RecoveryDetailScreen() {
               valueColor={cvReading.trend === 'down' ? '#c0392b' : cvReading.trend === 'up' ? '#27ae60' : undefined}
               sub="vs a week earlier" />
             <Row label={cvReading.title} value="●" valueColor={CV_COLOR[cvReading.state]} sub={cvReading.advice} />
-            <Row label="Source" value=""
-              sub="Plews et al. 2012, Eur J Appl Physiol · Grosicki, …, Plews, Altini 2026, Am J Physiol Heart Circ Physiol" />
+            <Note label="Source" style={{ paddingHorizontal: 14, paddingTop: 6, paddingBottom: 10 }}>
+              Plews et al. 2012, Eur J Appl Physiol · Grosicki, …, Plews, Altini 2026, Am J Physiol Heart Circ Physiol
+            </Note>
           </Section>
         )}
 
@@ -351,7 +353,7 @@ export default function RecoveryDetailScreen() {
                 </TouchableOpacity>
               );
             })}
-            <Text style={s.hrvHint}>Green = clean · amber = a little missing/noisy · red = gaps/artifacts make it unreliable. Tap for the breakdown; ignored readings are dimmed and excluded from your recovery score.</Text>
+            <Note style={{ paddingHorizontal: 14, paddingTop: 6, paddingBottom: 10 }}>Green = clean · amber = a little missing/noisy · red = gaps/artifacts make it unreliable. Tap for the breakdown; ignored readings are dimmed and excluded from your recovery score.</Note>
           </Section>
         )}
 

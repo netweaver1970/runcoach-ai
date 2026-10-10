@@ -22,6 +22,7 @@ import { pushWorkoutToWatch, watchModuleAvailable, getWatchRecorder } from '../s
 import { sendWorkoutToWatch } from '../src/services/watchRoute';
 import { handOffRouteWorkout } from '../src/services/routeWorkoutHandoff';
 import { getPowerZones } from '../src/services/claude';
+import { Note } from '../src/components/Notes';
 
 const INTENSITY_COLOR: Record<string, string> = {
   rest: '#3498db', easy: '#27ae60', moderate: '#f39c12', hard: '#e74c3c',
@@ -853,18 +854,22 @@ export default function DailyCoachScreen() {
                       {testSending ? 'Sending…' : `🎯 Send ${THRESHOLD_TEST_MIN}-min threshold test${watchWorkout ? ' instead' : ''}`}
                     </Text>
                   </TouchableOpacity>
-                  <Text style={s.testHint}>
+                  <Note>
                     Warm-up, then {THRESHOLD_TEST_MIN} min as hard as you can hold EVENLY (last 60s all-out),
                     cool-down. No power target — that's the point: it measures your true threshold instead of
                     capping you at the current zones. Best on a cool morning (&lt;24°C) with the H10, on fresh legs.
-                  </Text>
+                  </Note>
                   {testTarget && (
                     <Text style={s.testTarget}>
                       Aim {testTarget.low}–{testTarget.high} W. You've already held {testTarget.low} W for{' '}
-                      {testTarget.heldMin} min, so treat it as the FLOOR — finish above it.{'\n'}
+                      {testTarget.heldMin} min, so treat it as the FLOOR — finish above it.
+                    </Text>
+                  )}
+                  {testTarget && (
+                    <Note label="Pacing">
                       First 4 min deliberately easier than feels right; at 10 min it should feel “I can hold
                       this, but I don't want to”. Fading a little is fine — stopping is not.
-                    </Text>
+                    </Note>
                   )}
                   {!watchWorkout && watchMsg ? <Text style={s.watchMsg}>{watchMsg}</Text> : null}
                 </View>
@@ -877,7 +882,7 @@ export default function DailyCoachScreen() {
                   <TouchableOpacity style={s.quickBtn} onPress={sendQuickRun} disabled={quickSending}>
                     <Text style={s.quickBtnText}>{quickSending ? 'Sending…' : '⌚ Send an easy run to the RunCoach watch app'}</Text>
                   </TouchableOpacity>
-                  <Text style={s.testHint}>A short easy Z2 run pushed to the RunCoach app on the watch — a spontaneous run any day, and the way to test the watch cues. Open RunCoach on the watch and press Start.</Text>
+                  <Note>A short easy Z2 run pushed to the RunCoach app on the watch — a spontaneous run any day, and the way to test the watch cues. Open RunCoach on the watch and press Start.</Note>
                 </View>
               )}
 
@@ -902,10 +907,10 @@ export default function DailyCoachScreen() {
             </>
           ) : (
             <>
-              <Text style={s.coachIntro}>
+              <Note style={{ marginTop: 0, marginBottom: 12 }}>
                 A coach-grade session that weighs recovery, HRV, sleep, form and your acute:chronic load — not
                 recovery alone. Structure is instant; tap “Coach's notes” afterwards for the AI narrative.
-              </Text>
+              </Note>
               <TouchableOpacity style={[s.coachBtn, { backgroundColor: status.color }]} onPress={() => requestPlan(false)} disabled={planLoading || loadingH}>
                 {planLoading
                   ? <ActivityIndicator size="small" color="#fff" />

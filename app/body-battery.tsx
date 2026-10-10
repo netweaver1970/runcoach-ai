@@ -7,6 +7,7 @@ import Svg, { Path, Rect, Line, Circle, Text as SvgText, Defs, LinearGradient, S
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { shareJson } from '../src/shareJson';
+import { Note } from '../src/components/Notes';
 import { useThemedStyles, useTheme, Palette } from '../src/theme';
 import {
   computeBodyBattery, BodyBattery, BatteryPoint, saveBodyBatteryCache,
@@ -156,14 +157,13 @@ export default function BodyBatteryScreen() {
             </View>
 
             <Text style={s.note}>
-              Charges when calm or asleep, drains under stress and activity. Stress is heart rate vs your
-              resting baseline, sharpened by HRV when a clean reading is available.
-            </Text>
-            <Text style={s.note}>
               HRV selectivity: <Text style={{ fontWeight: '700' }}>{data.hrvUsed} used</Text> ·{' '}
               {data.hrvRejected} rejected (movement / AFib-app noise filtered out).
             </Text>
-            <Text style={[s.note, { fontStyle: 'italic' }]}>Our estimate — being calibrated against Bevel.</Text>
+            <Note>
+              Charges when calm or asleep, drains under stress and activity. Stress is heart rate vs your
+              resting baseline, sharpened by HRV when a clean reading is available. Our estimate — being calibrated against Bevel.
+            </Note>
 
             <View style={s.debugRow}>
               <TouchableOpacity
@@ -208,10 +208,10 @@ export default function BodyBatteryScreen() {
             {/* Calibration anchor (dev): force the level to a known value and re-integrate. */}
             <View style={s.anchorCard}>
               <Text style={s.anchorTitle}>Calibration anchor (dev)</Text>
-              <Text style={s.note}>
+              <Note>
                 Force the battery to a known value (e.g. a Bevel reading) at a chosen time. The model
                 integrates forward from there — anchor a PAST time to re-align the whole curve through last night.
-              </Text>
+              </Note>
               {anchorInfo && (
                 <Text style={[s.note, { color: c.accent, fontWeight: '700' }]}>
                   Active: {anchorInfo.value}% at {new Date(anchorInfo.at).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -407,7 +407,8 @@ function StressGraph({ data }: { data: BodyBattery }) {
       </Svg>
       <BandIcons bands={[...bands, ...wBands]} x={x} padT={padT} />
       </View>
-      <Text style={s.graphCaption}>Stress · last 24h · 🌙 asleep · dumbbell / runner = workout (stress paused during it + while HR is still recovering)</Text>
+      <Text style={s.graphCaption}>Stress · last 24h · 🌙 asleep · dumbbell / runner = workout</Text>
+      <Note>Stress is paused during a workout and while heart rate is still recovering afterwards.</Note>
     </View>
   );
 }

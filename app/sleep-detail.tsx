@@ -14,6 +14,7 @@ import { DayNav } from '../src/components/DayNav';
 import { SleepStagesCard } from '../src/components/SleepStages';
 import { cached } from '../src/services/detailCache';
 import { computePersonalSleepGoal, loadPersonalSleepGoal } from '../src/services/bevelCalibration';
+import { Note } from '../src/components/Notes';
 
 const SLEEP_COLOR = '#8e44ad';
 const FALLBACK_SLEEP_GOAL = 375; // 6h15m — used until personal goal loads
@@ -511,9 +512,9 @@ export default function SleepDetailScreen() {
         {/* Score Breakdown */}
         <Text style={[s.sectionTitle, { marginTop: 16 }]}>SCORE BREAKDOWN</Text>
         <View style={s.breakdownCard}>
-          <Text style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>
+          <Note style={{ marginTop: 0, marginBottom: 6 }}>
             Bevel 5-pillar model · bar = how you scored on each pillar (0–100), ×weight
-          </Text>
+          </Note>
           {([
             ['Duration',   breakdown.dur,   40],
             ['Efficiency', breakdown.eff,   20],

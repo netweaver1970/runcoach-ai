@@ -20,6 +20,7 @@ import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from 'expo-rou
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
 import { SwipeRow } from '../src/components/SwipeRow';
+import { Note } from '../src/components/Notes';
 import { MacroRings, SplitBar, STD_DRINK_G } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { photoMeal } from '../src/services/foodPhoto';
@@ -280,7 +281,7 @@ export default function FoodMode() {
           <View style={[s.card, s.fuelCard]}>
             <Text style={s.fuelTitle}>⚡ {fuel.title}</Text>
             {fuel.lines.map((l, i) => <Text key={i} style={s.fuelLine}>• {l}</Text>)}
-            <Text style={s.hint}>Shown only for intervals and very long runs — the rest you run fasted.</Text>
+            <Note>Shown only for intervals and very long runs — the rest you run fasted.</Note>
           </View>
         )}
 
@@ -1196,7 +1197,7 @@ function CaffeineCard({ entries, bed }: { entries: FoodEntry[]; bed: number | nu
       {warnDose && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ {Math.round(d.maxDose)} mg within an hour — above the {CAF_DOSE_MAX} mg single-dose guidance.</Text>}
       {warnDay && <Text style={[s.sub, { color: '#e67e22' }]}>⚠️ Above the {CAF_DAY_MAX} mg/day EFSA level for healthy adults.</Text>}
       {cafFinding ? <Text style={[s.sub, { marginTop: 4 }]}>{cafFinding}</Text> : null}
-      <Text style={s.hint}>Typical values (EFSA / USDA) — a real cup varies ±50 %; set your own per food in 📚 Food database.</Text>
+      <Note>Typical values (EFSA / USDA) — a real cup varies ±50 %; set your own per food in 📚 Food database.</Note>
     </View>
   );
 }
@@ -1236,7 +1237,7 @@ function MicrosCard({ entries }: { entries: FoodEntry[] }) {
           </View>
         </View>
       ))}
-      {open && <Text style={s.hint}>% of the EU daily reference (label NRV; sodium vs 2.4 g = 6 g salt, a MAXIMUM). Values: CIQUAL 2025 (Anses) / Open Food Facts; (x/y) = items with a measured value — the rest add nothing, so real intake can be higher. Sweat losses (sodium, potassium) aren't included.</Text>}
+      {open && <Note>% of the EU daily reference (label NRV; sodium vs 2.4 g = 6 g salt, a MAXIMUM). Values: CIQUAL 2025 (Anses) / Open Food Facts; (x/y) = items with a measured value — the rest add nothing, so real intake can be higher. Sweat losses (sodium, potassium) aren't included.</Note>}
     </View>
   );
 }

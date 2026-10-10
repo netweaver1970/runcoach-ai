@@ -21,6 +21,7 @@ import { getEffectiveMaxHr } from '../src/services/claude';
 import { ModeSwitcher } from '../src/components/ModeSwitcher';
 import { ModeHeader } from '../src/components/ModeHeader';
 import { BodyMap } from '../src/components/BodyMap';
+import { Note } from '../src/components/Notes';
 
 // Muscle-map layout for the freshness panel (front / back / legs), Bevel-style colour bands.
 const FRESH_ROWS: { label: string; muscles: Muscle[] }[] = [
@@ -290,7 +291,8 @@ export default function FitnessMode() {
             </View>
           </View>
         ))}
-        <Text style={s.meta}>🟢 recovered ≥75% · 🟡 fatigued · 🔴 depleted &lt;35% · … calibrating (needs 3 sessions in 6 weeks). Runs load calves, quads, hamstrings &amp; glutes.</Text>
+        <Text style={s.meta}>🟢 recovered ≥75% · 🟡 fatigued · 🔴 depleted &lt;35% · … calibrating</Text>
+        <Note>Calibrating = needs 3 sessions in 6 weeks. Runs load calves, quads, hamstrings &amp; glutes.</Note>
       </View>
 
       {/* Muscular load status: last 7 days vs your 6-week average */}
@@ -303,7 +305,7 @@ export default function FitnessMode() {
             <Text style={s.loadVal}>{g.ratio != null ? `×${g.ratio.toFixed(2)}` : `${g.days}/${g.key === 'body' ? 10 : 6} d`}</Text>
           </View>
         ))}
-        <Text style={s.meta}>Recent load vs your longer-term level — weighted averages (7 d / 42 d) like your cardio load, so a break doesn't make the return look like a spike. Runs count for the legs.{groups[0]?.label.endsWith('*') ? ' * Whole body counts only areas with enough history — new areas join once they have a baseline.' : ''}{newStimulus ? ' Strength is a NEW stimulus — ratios run high for the first weeks until your 6-week average catches up.' : ''}</Text>
+        <Note>Recent load vs your longer-term level — weighted averages (7 d / 42 d) like your cardio load, so a break doesn't make the return look like a spike. Runs count for the legs.{groups[0]?.label.endsWith('*') ? ' * Whole body counts only areas with enough history — new areas join once they have a baseline.' : ''}{newStimulus ? ' Strength is a NEW stimulus — ratios run high for the first weeks until your 6-week average catches up.' : ''}</Note>
       </View>
 
       {/* Routines */}
@@ -332,7 +334,7 @@ export default function FitnessMode() {
             </TouchableOpacity>
           ))}
         </View>
-        <Text style={[s.meta, { marginBottom: 8 }]}>Hard sets per muscle (weighted by how much the exercise uses it) · tonnage = kg × reps</Text>
+        <Note style={{ marginBottom: 8 }}>Hard sets per muscle (weighted by how much the exercise uses it) · tonnage = kg × reps</Note>
         {load.length ? load.map(l => (
           <View key={l.muscle} style={s.barRow}>
             <Text style={s.barLbl}>{MUSCLE_LABEL[l.muscle]}</Text>
@@ -379,7 +381,7 @@ export default function FitnessMode() {
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <View style={{ flex: 1 }}>
             <Text style={s.todayName}>Pre-run drills</Text>
-            <Text style={s.meta}>Done before every run — counted on each run into the leg muscles (freshness, muscular load, strain).</Text>
+            <Note>Done before every run — counted on each run into the leg muscles (freshness, muscular load, strain).</Note>
           </View>
           <Switch value={store.drillsOn !== false} onValueChange={v => updateStrength(st => ({ ...st, drillsOn: v })).then(st => setStore({ ...st }))} />
         </View>
@@ -409,7 +411,7 @@ export default function FitnessMode() {
       <View style={[s.card, { flexDirection: 'row', alignItems: 'center', marginTop: 12 }]}>
         <View style={{ flex: 1 }}>
           <Text style={s.todayName}>Save sessions to Apple Health</Text>
-          <Text style={s.meta}>As a Traditional Strength Training workout. If your watch already recorded one at the same time, it's linked instead (no duplicate).</Text>
+          <Note>As a Traditional Strength Training workout. If your watch already recorded one at the same time, it's linked instead (no duplicate).</Note>
         </View>
         <Switch value={store.saveToHealth !== false} onValueChange={v => updateStrength(st => ({ ...st, saveToHealth: v })).then(st => setStore({ ...st }))} />
       </View>

@@ -7,6 +7,7 @@ import { loadSnapshotCache } from '../src/services/healthkit';
 import { loadStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
 import { computePerformanceIndex, weightedGpi, WEIGHT_PRESETS, EMPHASIS_LABEL, Emphasis, GpiPoint, GpiResult } from '../src/services/performanceIndex';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
+import { Note } from '../src/components/Notes';
 
 type Period = '1M' | '3M' | '6M' | '1Y';
 const PERIOD_DAYS: Record<Period, number> = { '1M': 30, '3M': 91, '6M': 182, '1Y': 365 };
@@ -188,10 +189,10 @@ export default function PerformanceScreen() {
     <ScrollView style={s.container} contentContainerStyle={{ padding: 16 }}>
       <Stack.Screen options={{ title: 'Performance' }} />
 
-      <Text style={s.intro}>
+      <Note label="What is this?" style={{ marginTop: 0, marginBottom: 14 }}>
         One line for your overall trajectory — recovery, sleep and training folded together and measured
         against your own baseline. <Text style={{ fontWeight: '700' }}>50 = your starting point</Text>; above 50 means you've improved since then.
-      </Text>
+      </Note>
 
       {loading ? (
         <View style={{ paddingVertical: 60, alignItems: 'center' }}><ActivityIndicator color={c.accent} /><Text style={{ color: c.textFaint, marginTop: 8 }}>Crunching ~12 months…</Text></View>
@@ -230,7 +231,7 @@ export default function PerformanceScreen() {
               </TouchableOpacity>
             ))}
           </View>
-          <Text style={s.emphCaption}>Emphasis — how much training drives the score (Balanced = equal thirds · Performance = training 50% · Fitness-led = 66%).</Text>
+          <Note style={{ marginBottom: 12 }}>Emphasis — how much training drives the score (Balanced = equal thirds · Performance = training 50% · Fitness-led = 66%).</Note>
 
           {/* Period tabs */}
           <View style={s.periodRow}>
@@ -251,10 +252,10 @@ export default function PerformanceScreen() {
           {!result?.enoughData && (
             <Text style={s.note}>⚠️ Your baseline is still thin ({result?.baselineDays ?? 0} days), so the level is approximate — the shape of the trend is already meaningful, the exact number firms up as history builds.</Text>
           )}
-          <Text style={s.note}>
+          <Note>
             Recovery = HRV + resting-HR trend · Sleep = sleep score · Training = 60% fitness (CTL) + 40% aerobic efficiency (speed per heartbeat on easy, non-hot runs).
             Each is a 7-day average vs your first ~8 weeks; missing workouts or watch-off nights don't dent it.
-          </Text>
+          </Note>
         </>
       )}
     </ScrollView>
