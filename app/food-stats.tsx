@@ -10,6 +10,7 @@ import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { TChart, TPt, inWin } from '../src/components/TimeChart';
 import { MacroRings, SplitBar, MACRO_COLOR, STD_DRINK_G } from '../src/components/NutritionViz';
 import { loadDay, dayTotals, Nutr } from '../src/services/foodLog';
+import { foodByKey } from '../src/services/foodDb';
 import { peekDailyComponents, fetchBodyMassHistory } from '../src/services/healthkit';
 import { trainingDayKey } from '../src/services/trainingLoad';
 
@@ -36,7 +37,12 @@ export default function FoodStatsScreen() {
         const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         const log = await loadDay(key).catch(() => null);
         if (!log || !log.entries.length) continue;
-        out.push({ date: key, t: d.getTime(), n: dayTotals(log), burn: dc[key]?.totalEnergy > 0 ? dc[key].totalEnergy : undefined, complete: !!log.complete });
+        // caffeine / alcohol: a logged day without any is a real 0 (not "no data"); entries logged before caffeine was
+        // stored get it from the food table (key × grams), as the day screen's caffeine card does
+        const n = dayTotals(log);
+        const fill = (k: 'caf' | 'alc') => log.entries.reduce((a, e) => a + (e.n[k] ?? (e.grams ? ((foodByKey(e.key)?.per100[k] ?? 0) * e.grams) / 100 : 0)), 0);
+        n.caf = fill('caf'); n.alc = fill('alc');
+        out.push({ date: key, t: d.getTime(), n, burn: dc[key]?.totalEnergy > 0 ? dc[key].totalEnergy : undefined, complete: !!log.complete });
       }
       if (live) setDays(out);
       const bw = await fetchBodyMassHistory(3).then(x => (x as { value: number }[]).filter(v => v.value > 0).slice(-1)[0]?.value).catch(() => undefined);
@@ -106,14 +112,14 @@ export default function FoodStatsScreen() {
               <TChart maxGapMs={GAP} pts={series(d => d.n.fib)} t0={t0} t1={t1} color={MACRO_COLOR.fib} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
                 refs={[{ y: 30, color: MACRO_COLOR.fib, dash: true }]} />
             ), 'Dashed: 30 g/day (EFSA adequate intake for adults ≥ 25 g).')}
-            {win.some(d => (d.n.alc ?? 0) > 0) && card('Alcohol', (
+            {card('Alcohol', (
               <TChart maxGapMs={GAP} pts={series(d => d.n.alc ? d.n.alc / STD_DRINK_G : 0)} t0={t0} t1={t1} color={MACRO_COLOR.alc} events={[]} showEvents={false} yfmt={v => v.toFixed(1)} innerW={innerW}
                 refs={[{ y: 2, color: '#e67e22', dash: true }]} />
-            ), `Standard drinks per day (10 g alcohol each) · window total ${(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) / STD_DRINK_G).toFixed(1)} drinks, ${Math.round(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) * 7)} kcal. Dashed: 2 a day — Belgian guidance is ≤ 10 a week with alcohol-free days.`)}
-            {inWin(series(d => d.n.caf), t0, t1).some(p => p.v > 0) && card('Caffeine', (
+            ), !win.some(d => (d.n.alc ?? 0) > 0) ? 'No alcohol logged in this window — every day at 0 standard drinks.' : `Standard drinks per day (10 g alcohol each) · window total ${(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) / STD_DRINK_G).toFixed(1)} drinks, ${Math.round(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) * 7)} kcal. Dashed: 2 a day — Belgian guidance is ≤ 10 a week with alcohol-free days.`)}
+            {card('Caffeine', (
               <TChart maxGapMs={GAP} pts={series(d => d.n.caf)} t0={t0} t1={t1} color="#8B5E3C" events={[]} showEvents={false} yfmt={v => `${r0(v)}`} innerW={innerW}
                 refs={[{ y: 400, color: '#e67e22', dash: true }]} />
-            ), 'mg per day — dashed: the 400 mg EFSA daily level.')}
+            ), `mg per day (0 on logged days without coffee / tea / cola) — dashed: the 400 mg EFSA daily level.${win.some(d => (d.n.caf ?? 0) > 0) ? '' : ' No caffeine logged in this window.'}`)}
           </>
         )}
       </View>
