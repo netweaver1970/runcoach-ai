@@ -11,6 +11,7 @@ import { Stack, useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { TChart, TPt } from '../src/components/TimeChart';
+import { CardHead } from '../src/components/Notes';
 import { TimeWindowBar, useTimeWindow } from '../src/components/TimeWindowBar';
 import { MacroRings, SplitBar, MACRO_COLOR, STD_DRINK_G } from '../src/components/NutritionViz';
 import { loadAllDays, dayTotals, Nutr } from '../src/services/foodLog';
@@ -97,11 +98,12 @@ export default function FoodStatsScreen() {
   const nComplete = win.filter(d => d.complete).length;
   const wWin = weights.filter(p => p.t >= t0 && p.t <= t1);
   const kg = (wWin.length ? wWin[wWin.length - 1] : weights[weights.length - 1])?.v ?? null;
-  const card = (title: string, body: React.ReactNode, cap?: string) => (
+  // title + ▸ Notes (the standing explanation, collapsed) · the chart · an optional one-line SUMMARY of this window's numbers
+  const card = (title: string, body: React.ReactNode, notes?: string, summary?: string) => (
     <View style={s.card}>
-      <Text style={s.cardTitle}>{title}</Text>
-      {body}
-      {cap ? <Text style={s.cap}>{cap}</Text> : null}
+      <CardHead title={title}>{notes}</CardHead>
+      <View style={{ marginTop: 6 }}>{body}</View>
+      {summary ? <Text style={s.sum}>{summary}</Text> : null}
     </View>
   );
 
@@ -119,23 +121,25 @@ export default function FoodStatsScreen() {
         <MacroRings n={avgN} burnKcal={avgBurn || null} />
         <View style={{ marginTop: 12 }}><SplitBar n={avgN} /></View>
       </>
-    ), `${nComplete} of ${win.length} days marked fully logged — the others may miss items.${kg ? ` Protein ${(avgN.prot! / kg).toFixed(1)} g/kg body weight (${Math.round(kg)} kg).` : ''}${(avgN.rs ?? 0) > 0.5 ? ` Resistant starch ${r0(avgN.rs!)} g/day, not counted as carbs.` : ''}`),
+    ), 'Averages over the counted days in the window. Days not marked fully logged may miss items. Resistant starch is not counted as carbs (2 kcal/g).',
+      `${nComplete}/${win.length} fully logged${kg ? ` · protein ${(avgN.prot! / kg).toFixed(1)} g/kg` : ''}${(avgN.rs ?? 0) > 0.5 ? ` · resistant starch ${r0(avgN.rs!)} g` : ''}`),
     kcal: () => card('Calories vs energy burned', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.kcal)} t0={t0} t1={t1} color={c.accent} trend events={[]} showEvents={false} yfmt={r0} innerW={innerW}
         pts2={series(d => d.burn)} maxGapMs2={GAP} color2="#94a3b8" y2fmt={r0} y2label="watch kcal" />
-    ), `Coloured line: eaten (resistant starch at 2 kcal/g). Grey: the watch's active + resting energy that day — ±15–20 %, so read the trend, not one day.`),
+    ), `Coloured line: eaten (resistant starch at 2 kcal/g). Grey: the watch's active + resting energy that day — ±15–20 %, so read the trend, not one day.`,
+      avgBurn ? `Avg eaten ${r0(avgN.kcal ?? 0)} · burned ${r0(avgBurn)} kcal/day` : undefined),
     deficit: () => card('Calorie deficit + weight', (
       <TChart maxGapMs={GAP} pts={defDays.map(d => ({ t: d.t, v: Math.round(d.burn! - (d.n.kcal ?? 0)), color: d.burn! - (d.n.kcal ?? 0) >= 0 ? '#16a34a' : '#dc2626' }))}
         t0={t0} t1={t1} color="#16a34a" trend events={[]} showEvents={false} yfmt={r0} innerW={innerW} refs={[{ y: 0, color: '#94a3b8', dash: true }]}
         pts2={wWin} color2={WEIGHT_COLOR} y2fmt={v => v.toFixed(1)} y2label="kg" />
-    ), defAvg == null ? 'Needs days marked “fully logged” (before today) with the watch\'s energy burned.'
-      : `Burned (watch) − eaten per day: green = a deficit, red = a surplus; purple = body weight (right axis). Average ${defAvg >= 0 ? 'deficit' : 'surplus'} ${r0(Math.abs(defAvg))} kcal/day ≈ ${(Math.abs(defAvg) * 7 / KCAL_PER_KG).toFixed(2)} kg/week ${defAvg >= 0 ? 'down' : 'up'} if it held every day.`
-        + (wChange != null && wWeeks >= 1 ? ` Weight in this window: ${wChange >= 0 ? '+' : ''}${wChange.toFixed(1)} kg over ${Math.round(wWeeks)} week${Math.round(wWeeks) === 1 ? '' : 's'}.` : '')
-        + ` Fully logged days only (${defDays.length}), today excluded (its burn isn't complete yet). Watch energy is ±15–20 % — trust weeks, not days.`),
+    ), `Burned (watch) − eaten per day: green = a deficit, red = a surplus; purple = body weight (right axis). ≈ ${KCAL_PER_KG} kcal per kg of body fat. Fully logged days only, today excluded (its burn isn't complete yet). Watch energy is ±15–20 % — trust weeks, not days.`,
+      defAvg == null ? 'Needs days marked “fully logged” (before today).'
+        : `Avg ${defAvg >= 0 ? 'deficit' : 'surplus'} ${r0(Math.abs(defAvg))} kcal/day (${defDays.length} d) ≈ ${(Math.abs(defAvg) * 7 / KCAL_PER_KG).toFixed(2)} kg/wk${wChange != null && wWeeks >= 1 ? ` · weight ${wChange >= 0 ? '+' : ''}${wChange.toFixed(1)} kg in ${Math.round(wWeeks)} wk` : ''}`),
     protein: () => card('Protein', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.prot)} t0={t0} t1={t1} color={MACRO_COLOR.prot} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
         {...(kg ? { refs: [{ y: 1.6 * kg, color: MACRO_COLOR.prot, dash: true }] } : {})} />
-    ), kg ? `Dashed: 1.6 g/kg (${Math.round(1.6 * kg)} g) — the level that supports strength + endurance training.` : undefined),
+    ), kg ? `Dashed: 1.6 g/kg (${Math.round(1.6 * kg)} g) — the level that supports strength + endurance training.` : undefined,
+      `Avg ${r0(avgN.prot ?? 0)} g/day`),
     carbs: () => card('Carbs', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.carb)} t0={t0} t1={t1} color={MACRO_COLOR.carb} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
         pts2={series(d => d.n.rs)} maxGapMs2={GAP} color2={MACRO_COLOR.fib} y2fmt={v => `${r0(v)}g`} y2label="resist. starch" />
@@ -150,11 +154,13 @@ export default function FoodStatsScreen() {
     alcohol: () => card('Alcohol', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.alc ? d.n.alc / STD_DRINK_G : 0)} t0={t0} t1={t1} color={MACRO_COLOR.alc} events={[]} showEvents={false} yfmt={v => v.toFixed(1)} innerW={innerW}
         refs={[{ y: 2, color: '#e67e22', dash: true }]} />
-    ), !win.some(d => (d.n.alc ?? 0) > 0) ? 'No alcohol logged in this window — every day at 0 standard drinks.' : `Standard drinks per day (10 g alcohol each) · window total ${(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) / STD_DRINK_G).toFixed(1)} drinks, ${Math.round(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) * 7)} kcal. Dashed: 2 a day — Belgian guidance is ≤ 10 a week with alcohol-free days.`),
+    ), 'Standard drinks per day (10 g alcohol each). Dashed: 2 a day — Belgian guidance is ≤ 10 a week with alcohol-free days.',
+      !win.some(d => (d.n.alc ?? 0) > 0) ? 'No alcohol logged in this window.' : `Total ${(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) / STD_DRINK_G).toFixed(1)} drinks · ${Math.round(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) * 7)} kcal`),
     caffeine: () => card('Caffeine', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.caf)} t0={t0} t1={t1} color="#8B5E3C" events={[]} showEvents={false} yfmt={v => `${r0(v)}`} innerW={innerW}
         refs={[{ y: 400, color: '#e67e22', dash: true }]} />
-    ), `mg per day (0 on logged days without coffee / tea / cola) — dashed: the 400 mg EFSA daily level.${win.some(d => (d.n.caf ?? 0) > 0) ? '' : ' No caffeine logged in this window.'}`),
+    ), 'mg per day (0 on logged days without coffee / tea / cola) — dashed: the 400 mg EFSA daily level.',
+      win.some(d => (d.n.caf ?? 0) > 0) ? `Avg ${r0(avg(d => d.n.caf))} mg/day` : 'No caffeine logged in this window.'),
   };
 
   return (
@@ -179,7 +185,7 @@ export default function FoodStatsScreen() {
             </View>
           ) : (
             <>
-              {nPartial > 0 && <Text style={[s.cap, { marginBottom: 8 }]}>{nPartial} day{nPartial > 1 ? 's' : ''} with only a few items logged {nPartial > 1 ? 'are' : 'is'} left out — log the whole day (or mark it “fully logged”) to count it. Lines break over days without food logged.</Text>}
+              {nPartial > 0 && <Text style={[s.cap, { marginTop: 0, marginBottom: 6 }]}>{nPartial} partly logged day{nPartial > 1 ? 's' : ''} left out — mark a day “fully logged” to count it.</Text>}
               {!win.length ? <Text style={s.cap}>No fully logged day in this window yet.</Text>
                 : layout.filter(l => l.on).map(l => <React.Fragment key={l.id}>{CARD[l.id]()}</React.Fragment>)}
             </>
@@ -192,7 +198,8 @@ export default function FoodStatsScreen() {
 
 const makeStyles = (c: Palette) => StyleSheet.create({
   screen:    { flex: 1, backgroundColor: c.bg },
-  card:      { backgroundColor: c.surface, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: c.border, marginBottom: 12 },
+  card:      { backgroundColor: c.surface, borderRadius: 14, padding: 10, borderWidth: 1, borderColor: c.border, marginBottom: 10 },
+  sum:       { color: c.textSub, fontSize: 12, marginTop: 4, fontVariant: ['tabular-nums'] },
   cardTitle: { color: c.text, fontSize: 15, fontWeight: '700', marginBottom: 8 },
   cap:       { color: c.textSub, fontSize: 12, lineHeight: 17, marginTop: 6 },
   editRow:   { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border },

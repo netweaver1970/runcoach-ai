@@ -9,13 +9,13 @@ import { useTheme, useThemedStyles, Palette } from '../theme';
 
 export const EV_COLOR: Record<string, string> = { medical: '#ef4444', life: '#10b981' };
 export interface Ev { t: number; label: string; category: string }
-export const TS_H = 96;
+export const TS_H = 76;   // compact (Geert 2026-10-10: "make graphs more compact"; was 96)
 export const TS_YW = 34;
 export const dLabel = (t: number, yearly: boolean) =>
   new Date(t).toLocaleDateString('en-GB', yearly ? { month: 'short', year: '2-digit' } : { day: 'numeric', month: 'short' });
 
 // ─── Time-windowed series chart: cursor + events + date x-axis + optional band/refs/trend ─────────
-export const TX_H = 20;
+export const TX_H = 16;
 export interface TPt { t: number; v: number; color?: string }
 // The points inside the shared window, in draw order — exactly the set TChart plots. Card captions use this
 // too, so their "latest"/Δ numbers describe the chart on screen rather than the whole run history.
