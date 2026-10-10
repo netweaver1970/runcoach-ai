@@ -8,7 +8,9 @@
  *     + the strength history, picks the frequency, then places routines greedily under HARD rules:
  *       · leg-dominant work never the day before intervals / tempo / a long run, nor on a long-run day; best on the
  *         same day as a quality run (after it — "hard days hard") or before a rest day;
- *       · muscles rest by the RPE of the session that trained them (≤ 5 → 1 day, 6–7 → 2, ≥ 8 → 3, +1 if graded hard);
+ *       · a routine's main muscles must be FRESH that day by the Muscle Freshness model (≥ 75 %, legs ≥ 65 %), PROJECTED
+ *         forward over the week from the logged sessions + runs + the planned runs (Geert 2026-10-10: "switch the weekly
+ *         strength plan to freshness too"); fallback without it: the RPE rest days (≤ 5 → 1, 6–7 → 2, ≥ 8 → 3, +1 hard);
  *       · today: readiness < 20 → no lifting; 20–34 → at most a LIGHT upper session (extra); 35–49 → upper only, −1 set;
  *       · one session a day; sessions spread (no back-to-back unless 4/week).
  *     Then TAILORS each day: weights from the 3-stable-sessions progression (suggestWeight), −1 set on a low-readiness
@@ -33,7 +35,7 @@ const PREHAB_IDS = ['heel_drop', 'glute_bridge', 'clamshell', 'side_plank'];
 const PREHAB_ROUTINE = 'runner_strength';
 const MAX_PREHAB = 3;
 // bump when the planning logic changes → stored plans re-plan at once (not tomorrow)
-const PLAN_LOGIC_VER = 'v2';
+const PLAN_LOGIC_VER = 'v3';   // v3: freshness-projected recovery
 const LEG_SHARE = 0.4;          // routine is "legs" when ≥ 40 % of its set-weighted involvement is legs
 const MIN_GAP_DAYS = 2;         // a PLANNED session's muscles: ≥ 48 h (assumed RPE ~7) before the same muscles again
 const NO_LIFT_READY = 20;       // readiness below this → no lifting today at all
@@ -97,6 +99,30 @@ interface Ctx {
   lightDays?: Set<number>;        // days holding a LIGHT session (low-readiness today) → only a 1-day gap around them
   legCap?: number;                // max leg-dominant sessions in the 7 days (1 while the running is building)
   fresh?: Map<Muscle, number>;    // Muscle Freshness % (strength + runs + drills, the Fitness screen's model) — Daily custom
+  freshDays?: Map<number, Map<Muscle, number>>;   // the same, PROJECTED to each plan day's session time (weekly plan)
+}
+
+/** Freshness gate: the Fitness screen's "Recovered" band; legs a notch lower (an easy run dips them ~70 % for hours). */
+const freshNeed = (m: Muscle) => (LEGS.includes(m) ? 65 : 75);
+/** Planned run → the freshness model's run event: minutes × an intensity by kind (avg HR as a share of max). */
+const RUN_HR: Record<string, number> = { rest: 0, easy: 0.72, long: 0.75, tempo: 0.85, intervals: 0.88, hard: 0.88 };
+/**
+ * Muscle Freshness PROJECTED to each plan day's session time (17:00; today: now if later): the logged sessions + runs
+ * decay forward, and the PLANNED runs of the week load the legs on their days (as the model counts real runs). Same
+ * model + same numbers as the Fitness screen's Muscle Freshness card.
+ */
+function projectFreshness(st: StrengthStore, days: RunDay[], runs: { date: string; duration: number; avgHeartRate?: number }[], maxHr: number): Map<number, Map<Muscle, number>> {
+  const today = days[0]?.date;
+  const ranToday = runs.some(r => localDateKey(new Date(r.date)) === today);
+  const planned = days.map((d, j) => ({ d, j })).filter(({ d, j }) => d.runMin > 0 && (RUN_HR[d.kind] ?? 0.72) > 0 && (j > 0 || !ranToday))
+    .map(({ d }) => ({ date: new Date(`${d.date}T08:00:00`).toISOString(), duration: d.runMin * 60, avgHeartRate: Math.round((RUN_HR[d.kind] ?? 0.72) * maxHr) }));
+  const ev = muscleEvents(st, [...runs, ...planned], maxHr);
+  const out = new Map<number, Map<Muscle, number>>();
+  days.forEach((d, i) => {
+    const t = Math.max(new Date(`${d.date}T17:00:00`).getTime(), i === 0 ? Date.now() : 0);
+    out.set(i, new Map(muscleFreshness(ev, t).map(f => [f.muscle, f.pct])));
+  });
+  return out;
 }
 
 /** Hard rules — shared by the deterministic placer and the AI validator. Returns a reason when NOT allowed. */
@@ -118,9 +144,14 @@ function blocked(c: Ctx, i: number, r: Routine, placed: Map<number, string>, tra
     if (next && (QUALITY.has(next.kind) || next.kind === 'long')) return `${next.label} tomorrow`;
   }
   for (const m of p.primaries) {
+    const fp = c.freshDays?.get(i)?.get(m);
+    if (fp != null) {
+      if (fp < freshNeed(m)) return `${MUSCLE_LABEL[m].toLowerCase()} ${Math.round(fp)} % fresh ${i === 0 ? 'today' : `on ${wd(day.date)}`} — needs ${freshNeed(m)} %`;
+    } else {
     const last = trained[m];
     const since = last ? dayDiff(last.date, day.date) : 99;
     if (last && since >= 0 && since < last.gap) return `${MUSCLE_LABEL[m].toLowerCase()} trained ${since === 0 ? 'that day' : `${since} day${since > 1 ? 's' : ''} before`}${last.rpe ? ` at RPE ${last.rpe}` : ''} — needs ${last.gap} day${last.gap > 1 ? 's' : ''}`;
+    }
     // a planned session elsewhere in the week (placement isn't chronological): 48 h either side; a LIGHT one 24 h
     for (const [j, id] of placed) {
       if (j === i) continue;
@@ -265,8 +296,10 @@ function draftPlan(c: Ctx, target: number): PlannedStrengthDay[] {
     if (best) {
       placed.set(0, best.r.id); extra = 1;
       const t = tailor(c, 0, best.r, 'session');
+      const f0 = c.freshDays?.get(0);
       const fresh = c.prof.get(best.r.id)!.primaries.map(m => trained[m]).filter((x): x is Trained => !!x && x.date !== c.today);
-      const rpeNote = fresh.length ? ` — its muscles have had their recovery (last trained at RPE ${Math.max(...fresh.map(f => f.rpe ?? 7))})` : '';
+      const rpeNote = f0 ? ` — its muscles are fresh (≥ ${Math.min(...c.prof.get(best.r.id)!.primaries.map(m => Math.round(f0.get(m) ?? 100)))} %)`
+        : fresh.length ? ` — its muscles have had their recovery (last trained at RPE ${Math.max(...fresh.map(f => f.rpe ?? 7))})` : '';
       out[0] = { date: c.today, kind: 'session', routineId: best.r.id, name: best.r.name, items: t.items, changes: t.changes,
         minutes: estimateMinutes({ ...best.r, items: t.items }), why: `${c.readiness < LIGHT_READY ? 'Light session only' : 'Lighter session'}: readiness ${c.readiness}${rpeNote}. ${c.readiness < LIGHT_READY ? 'Keep every set ~3 reps short of failure; skip it if you feel worse once warm.' : 'One set fewer each; stop if the warm-up feels heavy.'}`, run: c.days[0].label };
     } else c.lightDays = undefined;
@@ -342,8 +375,14 @@ async function buildContext(st: StrengthStore): Promise<{ c: Ctx; prevWeekRunMin
   for (const x of st.sessions) if (x.finishedAt && x.tailored !== 'prehab' && (!lastDone.get(x.routineId) || lastDone.get(x.routineId)! < x.date)) lastDone.set(x.routineId, x.date);
   const c: Ctx = { st, today, days, readiness: plan?.genReadiness, avgReady: ready.length ? ready.reduce((a, v) => a + v, 0) / ready.length : undefined,
     routines, prof, lastDone, hourNow: new Date().getHours() };
+  try {
+    const { getEffectiveMaxHr } = require('./claude') as typeof import('./claude');
+    const maxHr = (await getEffectiveMaxHr().catch(() => 188)) || 188;
+    c.freshDays = projectFreshness(st, days, ((snap?.runs ?? []) as any[]), maxHr);
+  } catch { /* no projection → the RPE rest-day rule */ }
+  const runsWeek = ((snap?.runs ?? []) as { date: string }[]).filter(r => localDateKey(new Date(r.date)) >= addDays(today, -7)).length;
   const sigParts = [today, plan?.generatedAt ?? '-', caches[0]?.generatedAt ?? caches.find(Boolean)?.generatedAt ?? '-',
-    String(st.sessions.filter(x => x.finishedAt).length), String(Math.max(0, ...routines.map(r => r.updatedAt ?? 0))), c.hourNow >= 21 ? 'late' : 'day', currentKit(st), PLAN_LOGIC_VER];
+    String(st.sessions.filter(x => x.finishedAt).length), String(Math.max(0, ...routines.map(r => r.updatedAt ?? 0))), c.hourNow >= 21 ? 'late' : 'day', currentKit(st), PLAN_LOGIC_VER, `r${runsWeek}`];
   return { c, prevWeekRunMin, sigParts };
 }
 
@@ -363,6 +402,7 @@ async function aiRefine(c: Ctx, draft: PlannedStrengthDay[], target: number, tar
     today: c.today, equipmentToday: `${c.st.here?.name ?? 'Merelbeke'}: ${KITS[currentKit(c.st)].label} (the app swaps exercises that aren't possible here; future days assume home)`, readinessToday: c.readiness ?? null, readinessWeekAvg: c.avgReady != null ? Math.round(c.avgReady) : null,
     runPlan: c.days.map(d => ({ date: d.date, weekday: wd(d.date), run: d.label, kind: d.kind, ...(d.commitment ? { commitment: d.commitment } : {}) })),
     fatiguedMuscles: fresh, recentSessions: recent,
+    notFreshByDay: c.days.map((d, i) => ({ date: d.date, muscles: [...(c.freshDays?.get(i) ?? new Map<Muscle, number>())].filter(([m, v]) => v < freshNeed(m)).map(([m, v]) => `${MUSCLE_LABEL[m]} ${Math.round(v)}%`) })),
     routines: c.routines.map(r => ({ id: r.id, name: r.name, legDominant: (c.prof.get(r.id)?.legShare ?? 0) >= LEG_SHARE, lastDone: c.lastDone.get(r.id) ?? null,
       exercises: r.items.map(it => ({ id: it.exerciseId, name: exerciseById(c.st, it.exerciseId)?.name ?? it.exerciseId, sets: it.sets, reps: `${it.repsLo}-${it.repsHi}`, ...(it.altIds?.length ? { alternatives: it.altIds } : {}) })) })),
     draftTarget: target, draftTargetWhy: targetWhy,
@@ -372,8 +412,8 @@ async function aiRefine(c: Ctx, draft: PlannedStrengthDay[], target: number, tar
 Rules (hard — a violation is discarded):
 - Use ONLY the given routine ids. kind "session" = a full routine; "prehab" = the short runner prehab (routineId "${PREHAB_ROUTINE}"); "rest" = no lifting.
 - Leg-dominant routines: never on a long-run day, never the day before intervals/tempo/hard/long. Best the same day as a quality run (after it) or before a rest day.
-- Muscle recovery follows the RPE of the session that trained them: RPE ≤ 5 → 1 day, 6–7 → 2 days, ≥ 8 → 3 days (+1 day for an exercise graded hard); planned sessions need 2 days between the same muscles. One session per day. Days marked done stay as they are.
-- Today: no lifting if readiness < ${NO_LIFT_READY}; ${NO_LIFT_READY}–${LIGHT_READY - 1} → at most a LIGHT upper session (muscles recovered by the RPE rule; it's extra, on top of the week's count); ${LIGHT_READY}–49 → upper body only.
+- Muscle recovery follows MUSCLE FRESHNESS: a routine's main muscles must be ≥ 75 % fresh that day (legs ≥ 65 %) — "notFreshByDay" lists, per date, the muscles below that (projected from the logged sessions + runs + the planned runs); planned sessions need 2 days between the same muscles. One session per day. Days marked done stay as they are.
+- Today: no lifting if readiness < ${NO_LIFT_READY}; ${NO_LIFT_READY}–${LIGHT_READY - 1} → at most a LIGHT upper session (muscles fresh; it's extra, on top of the week's count); ${LIGHT_READY}–49 → upper body only.
 - 2–4 sessions in the 7 days (fewer when recovery is low, more when recovery is good and lifting is consistent). A running BUILD limits LEG days (max ${c.legCap ?? 2} this week), not upper-body sessions. Spread sessions — avoid 4+ day holes. A short session already done today counts as half.
 Tailoring per session day (optional): setsDelta per exercise id (-1 or +1 only), swap an exercise ONLY to one of its listed alternatives.
 Return ONLY JSON: {"target":n,"summary":"≤40 words, the week's strength logic","days":[{"date":"YYYY-MM-DD","kind":"session|prehab|rest","routineId":"id or null","setsDelta":{"exId":-1},"swap":{"exId":"altId"},"why":"≤20 words, specific to that day"}]} — exactly the 7 dates given.`;
@@ -493,7 +533,7 @@ export function strengthTodayLine(plan: StrengthAutoPlan | null | undefined): st
 }
 
 /** Harness hooks (harness/strengthplantest.mjs) — not used by the app. */
-export const __test = { draftPlan, adaptiveTarget, profile, blocked, runLabel, composeDaily: (c: Ctx, avoid?: string[]) => composeDaily(c, avoid), freshnessNow };
+export const __test = { draftPlan, adaptiveTarget, profile, blocked, runLabel, composeDaily: (c: Ctx, avoid?: string[]) => composeDaily(c, avoid), freshnessNow, projectFreshness };
 
 
 // ── "Daily custom" routine ────────────────────────────────────────────────────────────────────────────────────────
