@@ -412,6 +412,7 @@ export default function DailyCoachScreen() {
         advisableLow:  strainObj?.safeLow,
         advisableHigh: strainObj?.safeHigh,
         readiness:    strainObj ? readiness.readiness : undefined,
+        recoveryStale,   // no overnight recovery yet → keep the caution + skip the hard-rest floor on an ESTIMATED readiness
         drivers:      strainObj ? readiness.drivers : undefined,
         recentStrain: strainHistUpTo.slice(-10),
         recentTimeOnFeet:  tof?.series14,

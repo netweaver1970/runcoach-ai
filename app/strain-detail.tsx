@@ -256,6 +256,7 @@ export default function StrainDetailScreen() {
         advisableLow:  strainToday?.safeLow,
         advisableHigh: strainToday?.safeHigh,
         readiness:    readiness.readiness,
+        recoveryStale,   // no overnight recovery yet → keep the caution + skip the hard-rest floor on an ESTIMATED readiness
         drivers:      readiness.drivers,
         recentStrain: strainHistUpTo.slice(-10),
         recentTimeOnFeet:  tof?.series14,
