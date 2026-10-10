@@ -13,6 +13,7 @@ import { loadDay, dayTotals, Nutr } from '../src/services/foodLog';
 import { peekDailyComponents, fetchBodyMassHistory } from '../src/services/healthkit';
 import { trainingDayKey } from '../src/services/trainingLoad';
 
+const GAP = 1.5 * 86_400_000;   // no line across days that weren't logged
 const RANGES = [{ id: 14, label: '2 wk' }, { id: 30, label: '1 mo' }, { id: 90, label: '3 mo' }, { id: 365, label: '1 yr' }];
 interface Day { date: string; t: number; n: Nutr & { waterMl: number }; burn?: number; complete: boolean }
 
@@ -46,7 +47,12 @@ export default function FoodStatsScreen() {
 
   if (!days) return <View style={[s.screen, { justifyContent: 'center' }]}><Stack.Screen options={{ title: 'Food stats' }} /><ActivityIndicator color={c.accent} /></View>;
   const t1 = Date.now(), t0 = t1 - range * 86_400_000;
-  const win = days.filter(d => d.t >= t0);
+  // a day with only a few items logged (not marked fully logged, under 60 % of what the watch says you burned — or under
+  // 1000 kcal when that's unknown) isn't a day of eating: leave it out, or it drags every average and trend down
+  const partial = (d: Day) => !d.complete && (d.n.kcal ?? 0) < (d.burn ? 0.6 * d.burn : 1000);
+  const allWin = days.filter(d => d.t >= t0);
+  const win = allWin.filter(d => !partial(d));
+  const nPartial = allWin.length - win.length;
   const innerW = Math.max(0, w - 24);
   const avg = (f: (d: Day) => number | undefined) => { const v = win.map(f).filter((x): x is number => typeof x === 'number'); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; };
   const avgN: Nutr = { kcal: avg(d => d.n.kcal), prot: avg(d => d.n.prot), carb: avg(d => d.n.carb), fat: avg(d => d.n.fat), fib: avg(d => d.n.fib), rs: avg(d => d.n.rs), alc: avg(d => d.n.alc) };
@@ -72,7 +78,8 @@ export default function FoodStatsScreen() {
         ))}
       </View>
       <View onLayout={(e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width)}>
-        {!win.length ? <Text style={s.cap}>No logged food in this window yet.</Text> : (
+        {nPartial > 0 && <Text style={[s.cap, { marginBottom: 8 }]}>{nPartial} day{nPartial > 1 ? 's' : ''} with only a few items logged {nPartial > 1 ? 'are' : 'is'} left out — log the whole day (or mark it “fully logged”) to count it. Lines break over days without food logged.</Text>}
+        {!win.length ? <Text style={s.cap}>No fully logged day in this window yet.</Text> : (
           <>
             {card(`Daily average · ${win.length} logged day${win.length > 1 ? 's' : ''}`, (
               <>
@@ -81,30 +88,30 @@ export default function FoodStatsScreen() {
               </>
             ), `${nComplete} of ${win.length} days marked fully logged — the others may miss items.${kg ? ` Protein ${(avgN.prot! / kg).toFixed(1)} g/kg body weight (${Math.round(kg)} kg).` : ''}${(avgN.rs ?? 0) > 0.5 ? ` Resistant starch ${r0(avgN.rs!)} g/day, not counted as carbs.` : ''}`)}
             {card('Calories vs energy burned', (
-              <TChart pts={series(d => d.n.kcal)} t0={t0} t1={t1} color={c.accent} trend events={[]} showEvents={false} yfmt={r0} innerW={innerW}
+              <TChart maxGapMs={GAP} pts={series(d => d.n.kcal)} t0={t0} t1={t1} color={c.accent} trend events={[]} showEvents={false} yfmt={r0} innerW={innerW}
                 pts2={series(d => d.burn)} color2="#94a3b8" y2fmt={r0} y2label="watch kcal" />
             ), `Orange: eaten (resistant starch at 2 kcal/g). Grey: the watch's active + resting energy that day — ±15–20 %, so read the trend, not one day.`)}
             {card('Protein', (
-              <TChart pts={series(d => d.n.prot)} t0={t0} t1={t1} color={MACRO_COLOR.prot} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
+              <TChart maxGapMs={GAP} pts={series(d => d.n.prot)} t0={t0} t1={t1} color={MACRO_COLOR.prot} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
                 {...(kg ? { refs: [{ y: 1.6 * kg, color: MACRO_COLOR.prot, dash: true }] } : {})} />
             ), kg ? `Dashed: 1.6 g/kg (${Math.round(1.6 * kg)} g) — the level that supports strength + endurance training.` : undefined)}
             {card('Carbs', (
-              <TChart pts={series(d => d.n.carb)} t0={t0} t1={t1} color={MACRO_COLOR.carb} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
+              <TChart maxGapMs={GAP} pts={series(d => d.n.carb)} t0={t0} t1={t1} color={MACRO_COLOR.carb} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
                 pts2={series(d => d.n.rs)} color2={MACRO_COLOR.fib} y2fmt={v => `${r0(v)}g`} y2label="resist. starch" />
             ), 'Available carbs (resistant starch shown separately in green).')}
             {card('Fat', (
-              <TChart pts={series(d => d.n.fat)} t0={t0} t1={t1} color={MACRO_COLOR.fat} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW} />
+              <TChart maxGapMs={GAP} pts={series(d => d.n.fat)} t0={t0} t1={t1} color={MACRO_COLOR.fat} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW} />
             ))}
             {card('Fibre', (
-              <TChart pts={series(d => d.n.fib)} t0={t0} t1={t1} color={MACRO_COLOR.fib} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
+              <TChart maxGapMs={GAP} pts={series(d => d.n.fib)} t0={t0} t1={t1} color={MACRO_COLOR.fib} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
                 refs={[{ y: 30, color: MACRO_COLOR.fib, dash: true }]} />
             ), 'Dashed: 30 g/day (EFSA adequate intake for adults ≥ 25 g).')}
             {win.some(d => (d.n.alc ?? 0) > 0) && card('Alcohol', (
-              <TChart pts={series(d => d.n.alc ? d.n.alc / STD_DRINK_G : 0)} t0={t0} t1={t1} color={MACRO_COLOR.alc} events={[]} showEvents={false} yfmt={v => v.toFixed(1)} innerW={innerW}
+              <TChart maxGapMs={GAP} pts={series(d => d.n.alc ? d.n.alc / STD_DRINK_G : 0)} t0={t0} t1={t1} color={MACRO_COLOR.alc} events={[]} showEvents={false} yfmt={v => v.toFixed(1)} innerW={innerW}
                 refs={[{ y: 2, color: '#e67e22', dash: true }]} />
             ), `Standard drinks per day (10 g alcohol each) · window total ${(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) / STD_DRINK_G).toFixed(1)} drinks, ${Math.round(win.reduce((a, d) => a + (d.n.alc ?? 0), 0) * 7)} kcal. Dashed: 2 a day — Belgian guidance is ≤ 10 a week with alcohol-free days.`)}
             {inWin(series(d => d.n.caf), t0, t1).some(p => p.v > 0) && card('Caffeine', (
-              <TChart pts={series(d => d.n.caf)} t0={t0} t1={t1} color="#8B5E3C" events={[]} showEvents={false} yfmt={v => `${r0(v)}`} innerW={innerW}
+              <TChart maxGapMs={GAP} pts={series(d => d.n.caf)} t0={t0} t1={t1} color="#8B5E3C" events={[]} showEvents={false} yfmt={v => `${r0(v)}`} innerW={innerW}
                 refs={[{ y: 400, color: '#e67e22', dash: true }]} />
             ), 'mg per day — dashed: the 400 mg EFSA daily level.')}
           </>
