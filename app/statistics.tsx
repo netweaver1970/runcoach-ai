@@ -11,7 +11,7 @@ import { loadEvents } from '../src/services/timelineEvents';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import { loadSnapshotCache, fetchHealthSnapshot, saveSnapshotCache, fetchTrainingLoadHistory, fetchBodyMassHistory } from '../src/services/healthkit';
-import { loadStatsRuns, saveStatsRuns, mergeRuns } from '../src/services/statsRunsCache';
+import { loadStatsRuns, saveStatsRuns, mergeRuns, applyTempBackfill, loadTempBackfill, backfillTemps } from '../src/services/statsRunsCache';
 import { repairWorkStats, clearWorkStatsRepairCache, RepairedWork } from '../src/services/workStatsRepair';
 import { clearWorkoutCache } from '../src/services/workoutClassifier';
 import { getPowerZones } from '../src/services/claude';
@@ -621,7 +621,15 @@ export default function StatisticsScreen() {
       // merge in the durable stats-runs cache (full history from a past deep-load) and persist the union —
       // snapshot wins per-uuid (fresh work stats), older runs beyond the window are retained. History never shrinks.
       const snapRuns = (snap as any)?.runs ?? [];
-      const runs = mergeRuns(snapRuns, await loadStatsRuns());
+      const runs = applyTempBackfill(mergeRuns(snapRuns, await loadStatsRuns()), await loadTempBackfill());
+      // runs with no temperature of their own (pre-Oct 2025): fill from the weather archive, then redraw once.
+      // `tbRuns` / `curRep` let whichever of the backfill and the stationary repair finishes last draw with both.
+      let tbRuns = runs, curRep: Record<string, any> | undefined;
+      backfillTemps(runs).then(async n => {
+        if (!n) return;
+        tbRuns = applyTempBackfill(runs, await loadTempBackfill());
+        saveStatsRuns(tbRuns); setAllRuns(tbRuns); setEf(efficiencyTrend(tbRuns, curRep));
+      }).catch(() => {});
       if (runs.length) saveStatsRuns(runs);   // persist the union so history survives the next startup scan
       setAllRuns(runs);
       setMaxHR((snap as any)?.estimatedMaxHR || 188);
@@ -631,7 +639,7 @@ export default function StatisticsScreen() {
       // Stationary-time repair (needs a detail fetch per run, cached by uuid) — re-derives work stats over
       // running-only seconds so a phone-call run keeps a CORRECT point instead of being discarded.
       repairWorkStats(runs)
-        .then(rep => { setRepairs(rep); setEf(efficiencyTrend(runs, rep)); })
+        .then(rep => { curRep = rep; setRepairs(rep); setEf(efficiencyTrend(tbRuns, rep)); })
         .catch(() => {});
       setAcwr(acwrSeries((snap as any)?.trainingLoad ?? []));   // instant, short (~45d) — replaced below
       // Full-history CTL/ATL for ACWR (snapshot only holds ~45d), + body-weight overlay for the EC chart.
