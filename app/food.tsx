@@ -23,7 +23,7 @@ import { SwipeRow } from '../src/components/SwipeRow';
 import { MacroRings, SplitBar, STD_DRINK_G } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { photoMeal } from '../src/services/foodPhoto';
-import { loadLearned, learn, confirmLearned } from '../src/services/foodLearn';
+import { loadLearned, learn, confirmLearned, setOwnResolver } from '../src/services/foodLearn';
 import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
 import { caffeineHrv, cafHrvSummary } from '../src/services/caffeineHrv';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -400,6 +400,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
   const s = useThemedStyles(makeStyles);
   const [lib, setLib] = useState(lib0);
   const [q, setQ] = useState('');
+  const qRef = useRef(q); qRef.current = q;   // read in callbacks memoised on earlier renders (learnChip)
   const [tab, setTab] = useState<Tab>('recent');
   const [mode, setMode] = useState<Mode>(startMeal ? { m: 'meal', meal: startMeal } : { m: 'search' });
   // 📷 photo of the plate → the AI lists the foods + amounts → the same tick-off preview as typing / voice
@@ -460,7 +461,16 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
 
   useEffect(() => { cachedProducts().then(setOffCache).catch(() => {}); loadLearned().catch(() => {}); }, []);
   // a "still to find" part (from a photo, typing or voice) found by hand → LEARN it: next time that phrase resolves
-  const learnChip = (item: FoodItem) => { const act = activeChipRef.current; if (act && item?.per100) learn(act, item, 'user').catch(() => {}); };
+  // Only with evidence it's the same food: you SEARCHED for it (typed text in the box), or the names share a word —
+  // tapping an unrelated Recent while a chip is open must not teach "dragon fruit" = coffee.
+  const learnChip = (item: FoodItem) => {
+    const act = activeChipRef.current;
+    if (!act || !item?.per100) return;
+    const aw = norm(act).split(' ').filter(w => w.length >= 3), iw = norm(`${item.name} ${item.nameAlt ?? ''}`).split(' ');
+    const overlap = aw.some(w => iw.some(x => x.startsWith(w.slice(0, 4))));
+    if (overlap || qRef.current.trim().length >= 2) learn(act, item, 'user').catch(() => {});
+  };
+  useEffect(() => { setOwnResolver(key => lib.custom.find(x => x.key === key) ?? null); }, [lib]);
 
   const boost = useMemo(() => {
     const b: Record<string, number> = {};

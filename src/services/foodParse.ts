@@ -102,12 +102,15 @@ export function parseFragment(frag: string, boost?: Record<string, number>, find
   if (!query && unit && unitTok) query = /^(boterham|sneetje|snee|sneden|slice|tranche)/.test(norm(unitTok)) ? 'brood' : unitTok;
   if (!query) return null;
   // a phrase you (or the AI, for a photo) already matched before wins over the table search
-  const lr = learnedFor(query);
-  const own = lr ? undefined : findOwn?.(query);
+  const lr0 = learnedFor(query);
+  const own = lr0 && !lr0.weak ? undefined : findOwn?.(query);
   // with the one-word fallback: a fragment is short, and "rolled oats" must still find oats
   const found = searchFoodsEx(query, 4, boost).items;
+  // a weak learned match (one word, taught once) is the FIRST alternative, not the pick
+  const lr = lr0 && (!lr0.weak || (!own && !found.length)) ? lr0 : null;
   const food = lr?.item ?? own ?? found[0];
-  const alternatives = lr || own ? found.filter(f => f.key !== food?.key).slice(0, 3) : found.slice(1);
+  const alternatives = [...(lr0 && !lr ? [lr0.item] : []), ...found].filter(f => f.key !== food?.key)
+    .filter((f, i, a) => a.findIndex(x => x.key === f.key) === i).slice(0, lr || own ? 3 : 4);
   const n = qty ?? 1;
   let grams: number;
   // a food whose own serving IS that spoon ("1 heaped tbsp" psyllium ≈ 7 g) uses its weight, not the generic 15 g

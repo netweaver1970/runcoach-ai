@@ -69,6 +69,7 @@ const FILES = [
   'runcoach-strength.json',         // strength routines + logged sessions
   'runcoach-supplements.json',      // supplement list + daily intake log
   'runcoach-food-library.json',     // food library: custom foods, saved meals, favourites, recents
+  'runcoach-food-learned.json',     // self-learned phrase → food matches (photos / typing / voice)
   'runcoach-labs.json',             // imported blood-test / clinical-lab history
   'runcoach-hrv-ignore.json',       // user-ignored HRV readings (excluded from recovery/HRV KPIs)
   'runcoach-hrv-layout.json',       // HRV-reading-detail card order/visibility

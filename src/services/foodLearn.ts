@@ -15,6 +15,12 @@ export interface Learned { key: string; snap: FoodItem; by: 'user' | 'ai'; n: nu
 const FILE = `${FileSystem.documentDirectory}runcoach-food-learned.json`;
 let MEM: Record<string, Learned> = {};
 let loaded = false;
+let loading: Promise<void> | null = null;
+let saving: Promise<void> = Promise.resolve();
+/** Your own foods resolve LIVE (an edited own food logs its new values; a deleted one is no longer learned).
+ *  Set by the Food screen from the library; returns null when the key no longer exists. */
+let ownResolver: ((key: string) => FoodItem | null) | null = null;
+export function setOwnResolver(fn: (key: string) => FoodItem | null): void { ownResolver = fn; }
 
 /** The lookup key for a phrase: normalised, without articles / filler, singular-ish. */
 export function learnKey(phrase: string): string {
@@ -22,21 +28,38 @@ export function learnKey(phrase: string): string {
     .map(w => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)).join(' ');
 }
 
-export async function loadLearned(): Promise<void> {
-  try {
-    const i = await FileSystem.getInfoAsync(FILE);
-    MEM = i.exists ? JSON.parse(await FileSystem.readAsStringAsync(FILE)) ?? {} : {};
-  } catch { MEM = {}; }
-  loaded = true;
+export function loadLearned(): Promise<void> {
+  if (loaded) return Promise.resolve();
+  if (!loading) loading = (async () => {
+    try {
+      const i = await FileSystem.getInfoAsync(FILE);
+      if (i.exists) {
+        const txt = await FileSystem.readAsStringAsync(FILE);
+        try { MEM = JSON.parse(txt) ?? {}; }
+        catch { await FileSystem.writeAsStringAsync(`${FILE}.bad`, txt).catch(() => {}); MEM = {}; }   // keep a corrupt file aside
+      }
+    } catch { MEM = {}; }
+    loaded = true;
+  })();
+  return loading;
 }
-async function save(): Promise<void> { try { await FileSystem.writeAsStringAsync(FILE, JSON.stringify(MEM)); } catch { /* best-effort */ } }
+/** Saves run one after another (each writes the CURRENT memory), so an older copy can never land last. */
+function save(): Promise<void> {
+  saving = saving.then(() => FileSystem.writeAsStringAsync(FILE, JSON.stringify(MEM))).catch(() => {});
+  return saving;
+}
 
 /** Synchronous lookup for the parser (empty until loadLearned() ran). The live table item wins over the snapshot. */
-export function learnedFor(phrase: string): { item: FoodItem; by: 'user' | 'ai' } | null {
+export function learnedFor(phrase: string): { item: FoodItem; by: 'user' | 'ai'; weak: boolean } | null {
   if (!loaded) return null;
-  const e = MEM[learnKey(phrase)];
+  const k = learnKey(phrase);
+  const e = MEM[k];
   if (!e) return null;
-  return { item: (e.key.startsWith('ciqual:') || e.key.startsWith('builtin:') ? foodByKey(e.key) : undefined) ?? e.snap, by: e.by };
+  let item: FoodItem | undefined = e.key.startsWith('ciqual:') || e.key.startsWith('builtin:') ? foodByKey(e.key) : undefined;
+  if (!item && e.key.startsWith('custom:') && ownResolver) { const own = ownResolver(e.key); if (!own) return null; item = own; }
+  // a ONE-word phrase ("rice", "milk") taught only once doesn't take over the table yet — it's offered, not assumed
+  const weak = !k.includes(' ') && e.n < 2;
+  return { item: item ?? e.snap, by: e.by, weak };
 }
 
 /** Remember phrase → food. A 'user' entry is never overwritten by an 'ai' one. */

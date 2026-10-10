@@ -64,8 +64,8 @@ const NL: Record<string, string[]> = {
   tomaat: ['tomate', 'tomato'], tomaten: ['tomate', 'tomato'], komkommer: ['concombre', 'cucumber'], sla: ['laitue', 'salade', 'lettuce'],
   wortel: ['carotte', 'carrot'], wortelen: ['carotte', 'carrot'], ui: ['oignon', 'onion'], look: ['ail', 'garlic'],
   knoflook: ['ail', 'garlic'], paprika: ['poivron', 'pepper'], broccoli: ['brocoli', 'broccoli'], bloemkool: ['chou', 'cauliflower'],
-  spinazie: ['epinard', 'spinach'], prei: ['poireau', 'leek'], champignons: ['champignon', 'mushroom'], erwten: ['pois', 'peas'],
-  boontjes: ['haricot', 'bean'], bonen: ['haricot', 'bean'], witloof: ['endive', 'chicory'], courgette: ['courgette'],
+  spinazie: ['epinard', 'spinach'], prei: ['poireau', 'leek'], champignons: ['champignon', 'mushroom'], erwten: ['garden peas', 'pois'],
+  boontjes: ['french bean'], bonen: ['haricot', 'bean'], witloof: ['endive', 'chicory'], courgette: ['courgette'],
   aubergine: ['aubergine'], mais: ['mais', 'corn'], avocado: ['avocat', 'avocado'], spruitjes: ['chou', 'brussels'],
   aardappel: ['potato'], aardappelen: ['potato'], patat: ['french fries'], frieten: ['french fries'], frietjes: ['french fries'], patatjes: ['french fries'], fritten: ['french fries'],
   friet: ['french fries'], zoete: ['douce', 'sweet'], linzen: ['lentille', 'lentil'], kikkererwten: ['pois chiche', 'chickpea'],
@@ -117,6 +117,7 @@ const NL: Record<string, string[]> = {
   wentelteefjes: ['french toast'], chocolademousse: ['chocolate mousse'], citroentaart: ['lemon tart'], kaastaart: ['cheesecake'],
   driekoningentaart: ['twelfth night'], cannele: ['canele'],
   // English words CIQUAL names differently
+  green: ['vert', 'garden'], erwtjes: ['garden peas'], peas: ['garden peas'], sperzieboon: ['french bean'], prinsessenboon: ['french bean'], snijboon: ['flat bean'],
   rolled: ['flakes'], oatmeal: ['oat flakes'], havervlokken: ['oat flakes'], vlokken: ['flakes'], zout: ['salt', 'sel'], porridge: ['oat flakes boiled'], granola: ['granola'],
   fries: ['french fries'], chips: ['crisps', 'french fries'],
   cappuccino: ['cappuccino'], broodje: ['sandwich'], koekjes: ['biscuit', 'cookie'], zero: ['without added sugars'], light: ['without added sugars', 'allege'], sportdrank: ['sports drink'], isotoon: ['sports drink'],
@@ -273,7 +274,14 @@ function searchTable(query: string, limit: number, boost?: Record<string, number
     }
     if (!ok) continue;
     // first word of the FR and/or EN name = what the food IS ("Butter, …" beats "Butter bean")
-    for (const f of r.first) if (f && exp.some(alts => alts.some(ph => ph.w[0] === f || (!ph.exact && ph.w[0].length >= 3 && f.startsWith(ph.w[0]))))) s += 1.5;
+    // Per language (FR "Beurre" + EN "Butter" = really butter, beats "Butter bean"), but the SAME word twice counts
+    // once: CIQUAL's French "Potatoes ou wedges…" starts with the English word too, and the double bonus put spiced
+    // wedges above plain potato (Geert 2026-10-10)
+    const firsts: string[] = [];
+    for (const f of r.first) if (f && exp.some(alts => alts.some(ph => ph.w[0] === f || (!ph.exact && ph.w[0].length >= 3 && f.startsWith(ph.w[0]))))) firsts.push(f);
+    // "potatoes" next to "potato" = one word in two spellings (the same word in both languages, "orange", still counts twice)
+    const plural = firsts.length === 2 && firsts[0] !== firsts[1] && (firsts[0] === firsts[1] + 's' || firsts[0] === firsts[1] + 'es' || firsts[1] === firsts[0] + 's' || firsts[1] === firsts[0] + 'es');
+    s += 1.5 * (plural ? 1 : firsts.length);
     s -= Math.min(r.nWords, 14) * 0.18;
     if (r.generic) s += 0.6;
     const name = norm((r.item.nameAlt ?? '') + ' ' + r.item.name);

@@ -64,12 +64,14 @@ async function aiResolve(items: PhotoItem[]): Promise<void> {
   const list = todo.map((x, i) => `${i}. "${x.it.name}" (${x.it.amount} ${x.it.unit})\n` + x.cands.map((c, j) => `   ${j}: ${c.name}`).join('\n')).join('\n');
   setUsageFeature('food-photo-match');
   const txt = await callLLM({ maxTokens: 300, temperature: 0, messages: [{ role: 'user', content:
-    `Each numbered item below is a food seen in a meal photo, followed by candidate foods from a food-composition table. For each item pick the candidate that is the SAME food (or the nutritionally closest stand-in: same food type, similar fat / sugar / protein). Use -1 only when no candidate is a reasonable stand-in.\nReturn ONLY JSON: {"picks":[index per item, in order]}\n\n${list}` }] });
+    `Each numbered item below is a food seen in a meal photo, followed by candidate foods from a food-composition table. For each item pick the candidate that is the SAME food (or the nutritionally closest stand-in: same food type, similar fat / sugar / protein). Use -1 only when no candidate is a reasonable stand-in.\nReturn ONLY JSON: {"picks":[{"item":<item number>,"pick":<candidate number or -1>}]}\n\n${list}` }] });
   const js = extractJsonObject(txt);
-  const picks: unknown[] = js ? (JSON.parse(js)?.picks ?? []) : [];
+  const raw: unknown[] = js ? (JSON.parse(js)?.picks ?? []) : [];
+  const byItem = new Map<number, number>();
+  for (const p of raw) { const o = p as { item?: unknown; pick?: unknown }; if (typeof o?.item === 'number' && typeof o?.pick === 'number') byItem.set(o.item, o.pick); }
   for (let i = 0; i < todo.length; i++) {
-    const j = Number(picks[i]);
-    const c = Number.isInteger(j) && j >= 0 ? todo[i].cands[j] : undefined;
+    const j = byItem.get(i);
+    const c = typeof j === 'number' && Number.isInteger(j) && j >= 0 ? todo[i].cands[j] : undefined;
     if (c) { await learn(todo[i].it.name, c, 'ai'); todo[i].it.resolved = 'ai'; }
   }
 }
@@ -93,7 +95,7 @@ export async function photoMeal(source: 'camera' | 'library'): Promise<PhotoResu
   const js = extractJsonObject(txt);
   if (!js) throw new Error('The AI didn\'t return a food list — try again, or with the plate fully in view.');
   const o = JSON.parse(js);
-  const clean = (v: unknown) => String(v ?? '').replace(/[,;+\n]/g, ' ').replace(/\b(and|with|en|met|et|avec)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  const clean = (v: unknown) => String(v ?? '').replace(/[,;+\n]/g, ' ').replace(/\b(and|with|en|met|et|avec|plus)\b/gi, ' ').replace(/\s+/g, ' ').trim();
   const items: PhotoItem[] = (Array.isArray(o?.items) ? o.items : [])
     .map((x: any) => ({ name: clean(x?.name), alt: (Array.isArray(x?.alt) ? x.alt : []).map(clean).filter(Boolean).slice(0, 3),
       amount: Math.max(1, Math.round(Number(x?.amount) || 0)), unit: x?.unit === 'ml' ? 'ml' as const : 'g' as const, sure: x?.sure !== false }))
