@@ -496,7 +496,20 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
   const mine = useMemo(() => (dqt.length < 2 || /^\d{8,14}$/.test(dqt) ? [] as FoodItem[] : ownMatches(dqt)), [dqt, ownMatches]);
   // A typed meal ("2 eieren, toast met boter") is parsed LIVE and shown inline — never hidden behind a button,
   // and search results for the whole phrase are not shown (they only matched part of it and confused things).
-  const parsed = useMemo(() => (phrase ? parseMeal(dqt, boost, t => ownMatches(t)[0]) : []), [phrase, dqt, boost, ownMatches]);
+  // In a parsed meal one of YOUR foods only wins when the words really name it: they cover at least half of its name
+  // ("boni yoghurt drink" → your Boni drink), not one shared word ("teaspoon of honey" must not become your
+  // "Oats 'N Honey Granola Bars" — Geert 2026-10-10). A product you logged before needs a third. Else the table wins.
+  const ownFor = useCallback((text: string): FoodItem | undefined => {
+    const filler = /^(of|van|de|het|the|a|an|een|and|en|met|with|n)$/;
+    const qw = norm(text).split(' ').filter(w => w.length > 1 && !filler.test(w));
+    if (!qw.length) return undefined;
+    return ownMatches(text).find(f => {
+      const nw = norm(f.name).split(' ').filter(w => w.length > 2 && !filler.test(w));
+      const cover = qw.length / Math.max(1, nw.length);
+      return cover >= 0.5 || (cover >= 0.34 && lib.recents.some(r => r.key === f.key));
+    });
+  }, [ownMatches, lib]);
+  const parsed = useMemo(() => (phrase ? parseMeal(dqt, boost, ownFor) : []), [phrase, dqt, boost, ownFor]);
   const showParse = phrase && parsed.length > 0 && !asOne;
   const recentOf = (key: string) => lib.recents.find(r => r.key === key);
 

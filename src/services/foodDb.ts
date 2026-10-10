@@ -283,6 +283,9 @@ function searchTable(query: string, limit: number, boost?: Record<string, number
     const plural = firsts.length === 2 && firsts[0] !== firsts[1] && (firsts[0] === firsts[1] + 's' || firsts[0] === firsts[1] + 'es' || firsts[1] === firsts[0] + 's' || firsts[1] === firsts[0] + 'es');
     s += 1.5 * (plural ? 1 : firsts.length);
     s -= Math.min(r.nWords, 14) * 0.18;
+    // the words as ONE phrase, in order, in the name ("olive oil" → "Olive oil, extra virgin", not "Olive, black, in oil")
+    // — in the name's HEAD (before the first comma / bracket), so "Spring vegetables (… green beans …)" doesn't qualify
+    if (qt.length >= 2 && ` ${norm(r.item.name.split(/[,(]/)[0])} `.includes(` ${qt.join(' ')} `)) s += 2;
     if (r.generic) s += 0.6;
     const name = norm((r.item.nameAlt ?? '') + ' ' + r.item.name);
     const qn = norm(query);
