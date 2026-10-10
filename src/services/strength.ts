@@ -27,6 +27,7 @@ export interface Exercise {
   name: string;
   muscles: Partial<Record<Muscle, number>>;   // involvement 0–1
   bodyweightFrac?: number;                     // share of body weight moved (dips ≈ 0.95); weight field = added (− = assistance)
+  perSide?: boolean;                           // single-leg / single-side: ONE logged set = BOTH sides; reps + weight are per side
   timed?: boolean;                             // a HOLD (planks): a set's "reps" are SECONDS held; no tonnage / e1RM
   cue?: string;                                // one-line form cue
   video?: ExerciseVideo;
@@ -193,7 +194,7 @@ const EX: Exercise[] = [
   { id: 'single_arm_cable_row', name: 'Single-Arm Cable Row', muscles: { upper_back: 1, lats: 0.7, rear_delts: 0.4, biceps: 0.5 }, cue: 'Low pulley, brace. Row the elbow back past the ribs, then reach forward for a full stretch. Don\'t twist the torso to finish the rep.' },
   { id: 'face_pull', name: 'Face Pull', muscles: { rear_delts: 1, upper_back: 0.6, traps: 0.3 }, cue: 'High pulley, rope at face height, thumbs back. Pull to the forehead, elbows high, spreading the rope apart. Don\'t lean back or shrug.' },
   { id: 'bayesian_cable_curl', name: 'Bayesian Cable Curl', muscles: { biceps: 1, forearms: 0.25 }, cue: 'Back to the low pulley, staggered stance, arm behind you. Curl without moving the elbow forward; full stretch on the way down. Don\'t swing.' },
-  { id: 'bulgarian_split_squat', name: 'Bulgarian Split Squat', muscles: { quads: 1, glutes: 0.8, adductors: 0.4 }, bodyweightFrac: 0.8, cue: 'Rear foot on the Marcy seat. Drop straight down, front shin near vertical; drive up through the front foot. Don\'t let the front knee cave in. Weight = dumbbells in hand.' },
+  { id: 'bulgarian_split_squat', name: 'Bulgarian Split Squat', muscles: { quads: 1, glutes: 0.8, adductors: 0.4 }, bodyweightFrac: 0.8, perSide: true, cue: 'Rear foot on the Marcy seat. Drop straight down, front shin near vertical; drive up through the front foot. Don\'t let the front knee cave in. Weight = dumbbells in hand.' },
   { id: 'goblet_squat', name: 'Goblet Squat', muscles: { quads: 1, glutes: 0.7, adductors: 0.4 }, bodyweightFrac: 0.8, cue: 'Dumbbell at the chest, elbows in. Sit between the heels, chest up, knees over the toes; stand through the whole foot. Don\'t round the lower back.' },
   { id: 'cable_squat', name: 'Cable Squat', muscles: { quads: 1, glutes: 0.7, adductors: 0.3 }, bodyweightFrac: 0.8, cue: 'Low pulley, handle at the chest. Sit the hips down and back, torso upright, drive up through the whole foot. Don\'t lean back into a hip hinge.' },
   { id: 'close_grip_pushup', name: 'Close-Grip Push-up', muscles: { triceps: 1, chest: 0.6, front_delts: 0.4 }, bodyweightFrac: 0.65, cue: 'Hands under the shoulders, elbows brushing the ribs, body in one line. Knees down to make it easier. Don\'t let the hips sag.' },
@@ -201,15 +202,15 @@ const EX: Exercise[] = [
 
   // ── Runner strength (2026-10-08): the knowledge file's durability moves as loggable exercises + the drills' lunges ──
   { id: 'forward_lunge', name: 'Forward Lunge', muscles: { quads: 1, glutes: 0.7, adductors: 0.4, hamstrings: 0.3, calves: 0.2 }, bodyweightFrac: 0.8, cue: 'Step forward, lower until both knees reach ~90°, front knee over the toes, torso tall; push back to standing. Don\'t let the front knee cave in.' },
-  { id: 'heel_drop', name: 'Eccentric Heel Drop', muscles: { calves: 1 }, bodyweightFrac: 1, cue: 'Rise on both feet, shift onto one, lower that heel slowly (~3 s) below the step. Do straight- and bent-knee sets. Don\'t drop fast or bounce.' },
-  { id: 'single_leg_squat', name: 'Single-Leg Squat (box / pistol progression)', muscles: { quads: 1, glutes: 0.8, adductors: 0.3, hamstrings: 0.2, calves: 0.2 }, bodyweightFrac: 0.9, cue: 'Sit back to a box or the Marcy seat, knee over the second toe, hips level. Control down, drive up. Don\'t let the knee cave in or the hip drop.' },
-  { id: 'step_down', name: 'Step-Down', muscles: { quads: 1, glutes: 0.6, calves: 0.2 }, bodyweightFrac: 0.9, cue: 'Stand on a step, slowly lower the free heel to tap the floor, then stand. Knee over the second toe, pelvis level. Don\'t let the knee dive inward.' },
+  { id: 'heel_drop', name: 'Eccentric Heel Drop', muscles: { calves: 1 }, bodyweightFrac: 1, perSide: true, cue: 'Rise on both feet, shift onto one, lower that heel slowly (~3 s) below the step. Do straight- and bent-knee sets. Don\'t drop fast or bounce.' },
+  { id: 'single_leg_squat', name: 'Single-Leg Squat (box / pistol progression)', muscles: { quads: 1, glutes: 0.8, adductors: 0.3, hamstrings: 0.2, calves: 0.2 }, bodyweightFrac: 0.9, perSide: true, cue: 'Sit back to a box or the Marcy seat, knee over the second toe, hips level. Control down, drive up. Don\'t let the knee cave in or the hip drop.' },
+  { id: 'step_down', name: 'Step-Down', muscles: { quads: 1, glutes: 0.6, calves: 0.2 }, bodyweightFrac: 0.9, perSide: true, cue: 'Stand on a step, slowly lower the free heel to tap the floor, then stand. Knee over the second toe, pelvis level. Don\'t let the knee dive inward.' },
   { id: 'glute_bridge', name: 'Glute Bridge / Single-Leg Bridge', muscles: { glutes: 1, hamstrings: 0.5, lower_back: 0.2 }, bodyweightFrac: 0.5, cue: 'Feet flat, ribs down. Squeeze the glutes to lift the hips to a straight knee–hip–shoulder line, pause, lower. Don\'t over-arch the lower back.' },
   { id: 'clamshell', name: 'Clamshell / Hip Abduction', muscles: { glutes: 0.8 }, cue: 'Side-lying, hips stacked, heels together. Open the top knee only as far as the pelvis stays still, lower slowly. Don\'t roll the hips back.' },
   { id: 'tibialis_raise', name: 'Tibialis Raise', muscles: { calves: 0.4 }, bodyweightFrac: 0.3, cue: 'Back to a wall, heels ~30 cm out, legs straight. Lift the toes as high as you can, lower slowly. Don\'t let the heels lift or the hips rock. (Front shin — counted under lower leg.)' },
   { id: 'nordic_curl', name: 'Nordic Curl (assisted)', muscles: { hamstrings: 1, glutes: 0.3, calves: 0.2 }, bodyweightFrac: 0.6, cue: 'Anchor the ankles, body straight from knees to head. Lower as slowly as you can, catch with the hands, push back up. Don\'t bend at the hips.' },
-  { id: 'copenhagen_plank', name: 'Copenhagen Plank', muscles: { adductors: 1, abs: 0.5 }, bodyweightFrac: 0.5, timed: true, cue: 'Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don\'t let the hips sag or pike.' },
-  { id: 'side_plank', name: 'Side Plank', muscles: { abs: 1, glutes: 0.3 }, bodyweightFrac: 0.5, timed: true, cue: 'Elbow under the shoulder, body one straight line from head to heels, hips lifted; breathe. Don\'t let the hips sag or rotate.' },
+  { id: 'copenhagen_plank', name: 'Copenhagen Plank', muscles: { adductors: 1, abs: 0.5 }, bodyweightFrac: 0.5, perSide: true, timed: true, cue: 'Top knee on the Marcy seat (short lever), elbow under the shoulder. Lift the hips into a straight line and hold. Don\'t let the hips sag or pike.' },
+  { id: 'side_plank', name: 'Side Plank', muscles: { abs: 1, glutes: 0.3 }, bodyweightFrac: 0.5, perSide: true, timed: true, cue: 'Elbow under the shoulder, body one straight line from head to heels, hips lifted; breathe. Don\'t let the hips sag or rotate.' },
   { id: 'front_plank', name: 'Plank', muscles: { abs: 1, front_delts: 0.2 }, bodyweightFrac: 0.6, timed: true, cue: 'Forearms under the shoulders, squeeze glutes and brace, body one straight line. Don\'t let the hips sag or pike up.' },
   // ── body-weight / dumbbell coverage for training away from home (2026-10-08) ──
   { id: 'pushup', name: 'Push-up', muscles: { chest: 1, triceps: 0.6, front_delts: 0.5, abs: 0.2 }, bodyweightFrac: 0.65, cue: 'Hands just wider than the shoulders, body one straight line, elbows ~45° from the torso. Chest to a fist above the floor, push the floor away. Too hard → hands on a bench or the knees.' },
@@ -744,7 +745,7 @@ export function muscleLoad(s: StrengthStore, sessions: StrengthSession[], fallba
       if (!isWorkSet(l)) continue;
       const ex = exerciseById(s, l.exerciseId);
       if (!ex) continue;
-      const load = ex.timed ? 0 : Math.max(0, (l.weightKg || 0) + (ex.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0));   // a hold has no tonnage
+      const load = ex.timed ? 0 : Math.max(0, (l.weightKg || 0) + (ex.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0)) * sidesOf(ex);   // a hold has no tonnage
       for (const [m, inv] of Object.entries(ex.muscles) as [Muscle, number][]) {
         const a = acc.get(m) ?? { t: 0, h: 0 };
         a.t += load * l.reps * inv;
@@ -768,7 +769,7 @@ export function sessionTonnage(s: StrengthStore, x: StrengthSession, fallbackBod
     if (!isWorkSet(l)) continue;
     const ex = exerciseById(s, l.exerciseId);
     if (ex?.timed) continue;   // a hold (seconds) isn't kg × reps
-    t += Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0)) * l.reps;
+    t += Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (x.bodyKg ?? fallbackBodyKg) : 0)) * l.reps * sidesOf(ex);
   }
   return Math.round(t);
 }
@@ -798,6 +799,11 @@ export async function strengthLineForLLM(): Promise<string> {
 
 // ── Personal records / estimated 1RM ─────────────────────────────────────────────────────────────────────────
 /** Load actually moved on a set: external kg + the body-weight share (dips, split squats, push-ups…). */
+/** A single-leg / single-side exercise's logged set covers BOTH sides (Geert 2026-10-10: heel drops "2 sets on each
+ *  leg, 12 reps" were counted as one leg → half the volume). Load + e1RM stay per side; tonnage counts both. */
+export const sidesOf = (ex: Exercise | undefined) => (ex?.perSide ? 2 : 1);
+/** kg → "780 kg" / "4.7 t" (no locale thousands dot: "2.338 kg" read as 2.3 kg). */
+export const kgText = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1)} t` : `${Math.round(kg)} kg`);
 export function setLoadKg(ex: Exercise | undefined, l: SetLog, bodyKg?: number): number {
   return Math.max(0, (l.weightKg || 0) + (ex?.bodyweightFrac ? ex.bodyweightFrac * (bodyKg ?? 80) : 0));
 }
@@ -826,8 +832,8 @@ export function exerciseHistory(s: StrengthStore, exerciseId: string): ExerciseS
       topKg = Math.max(topKg, ex?.bodyweightFrac ? l.weightKg : kg);   // body-weight moves: "heaviest" = added kg (−20 → −15 = less assistance)
       if (ex?.timed) continue;   // holds: seconds, not kg × reps → no e1RM / volume (bestReps = longest hold)
       bestE = Math.max(bestE, e1rm(kg, l.reps, l.rir) ?? 0);
-      bestV = Math.max(bestV, kg * l.reps);
-      vol += kg * l.reps;
+      bestV = Math.max(bestV, kg * l.reps * sidesOf(ex));
+      vol += kg * l.reps * sidesOf(ex);
     }
     out.push({ feel: x.feel?.[exerciseId], bestReps: Math.max(...sets.map(l => l.reps)), bodyKg: x.bodyKg, sessionId: x.id, date: x.date, at: x.finishedAt, topKg, bestE1rm: bestE || null, bestSetVol: Math.round(bestV), volume: Math.round(vol), sets: sets.length });
   }
@@ -1071,7 +1077,7 @@ export function sessionBreakdown(s: StrengthStore, sessionId: string): SessionBr
       topKg: Math.max(...sets.map(l => l.weightKg)),
       // body-weight moves: the kg field is ADDED weight (− = assistance) → "BW", "BW+5", "BW−20"
       load: (() => { const t = Math.max(...sets.map(l => l.weightKg)); return ex?.bodyweightFrac ? (t === 0 ? 'BW' : `BW${t > 0 ? '+' : '−'}${Math.abs(t)}`) : `${t} kg`; })(),
-      volume: Math.round(sets.reduce((a, l) => a + setLoadKg(ex, l, x.bodyKg) * l.reps, 0)), feel: x.feel?.[id] };
+      volume: Math.round(sets.reduce((a, l) => a + setLoadKg(ex, l, x.bodyKg) * l.reps * sidesOf(ex), 0)), feel: x.feel?.[id] };
   });
   const r = s.routines.find(q => q.id === x.routineId);
   const win = strengthWindow(x, r);

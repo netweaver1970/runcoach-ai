@@ -4,7 +4,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator
 import { Stack, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { TChart, trendDelta, signed } from '../src/components/TimeChart';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
-import { StrengthStore, loadStrength, exerciseById, exerciseHistory, MUSCLE_LABEL, Muscle, Feel, FEEL_LABEL, setExerciseFeel, exerciseMetricSeries, ExMetric, EX_METRIC_LABEL } from '../src/services/strength';
+import { StrengthStore, loadStrength, exerciseById, exerciseHistory, MUSCLE_LABEL, Muscle, Feel, FEEL_LABEL, setExerciseFeel, exerciseMetricSeries, ExMetric, EX_METRIC_LABEL, kgText } from '../src/services/strength';
 // tap a history row to grade (or re-grade) how the exercise felt that day: – → Easy → OK → Hard → –
 const NEXT_FEEL: Record<string, Feel | undefined> = { none: 'easy', easy: 'ok', ok: 'hard', hard: undefined };
 const FEEL_COLOR: Record<Feel, string> = { easy: '#2f9e44', ok: '#8a8f98', hard: '#e5484d' };
@@ -50,8 +50,8 @@ export default function StrengthExerciseScreen() {
         <View style={s.grid}>
           <View style={s.pr}><Text style={s.prVal}>{best(x => x.bestE1rm ?? 0) || '—'}</Text><Text style={s.prLbl}>est. 1RM kg</Text></View>
           <View style={s.pr}><Text style={s.prVal}>{best(x => x.topKg)}</Text><Text style={s.prLbl}>{bw ? 'most added kg' : 'heaviest kg'}</Text></View>
-          <View style={s.pr}><Text style={s.prVal}>{best(x => x.bestSetVol).toLocaleString()}</Text><Text style={s.prLbl}>best set kg×reps</Text></View>
-          <View style={s.pr}><Text style={s.prVal}>{best(x => x.volume).toLocaleString()}</Text><Text style={s.prLbl}>best session kg</Text></View>
+          <View style={s.pr}><Text style={s.prVal}>{kgText(best(x => x.bestSetVol))}</Text><Text style={s.prLbl}>best set (kg × reps)</Text></View>
+          <View style={s.pr}><Text style={s.prVal}>{kgText(best(x => x.volume))}</Text><Text style={s.prLbl}>best session</Text></View>
         </View>
       ) : <Text style={s.meta}>No sets logged yet — records appear after your first session.</Text>}
       {bw ? <Text style={s.meta}>Body-weight exercise: loads include {Math.round(ex.bodyweightFrac! * 100)}% of your body weight.</Text> : null}

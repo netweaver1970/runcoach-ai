@@ -7,8 +7,7 @@ import { fetchBodyMassHistory } from '../src/services/healthkit';
 import { ExerciseThumb, ExercisePeek } from '../src/components/ExercisePeek';
 import {
   StrengthStore, StrengthSession, SetLog, loadStrength, updateStrength, exerciseById, suggestWeight, lastSetsFor,
-  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, flatRoutine, supersetGroups,
-} from '../src/services/strength';
+  localDateKey, newId, sessionTonnage, repRange, sessionPRs, syncSessionToHealth, autoUpdatedRoutine, isWorkSet, Feel, FEEL_LABEL, routinesForDate, plannedDay, baseRoutineId, DAILY_CUSTOM_ID, adaptRoutineToKit, currentKit, flatRoutine, supersetGroups, kgText } from '../src/services/strength';
 
 const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.max(0, sec % 60)).padStart(2, '0')}`;
 
@@ -357,7 +356,7 @@ export default function StrengthSessionScreen() {
       // never let a slow HealthKit hold the confirmation (Finish is already locked): ≤ 5 s, then the backfill finishes it
       const hk = await Promise.race([syncSessionToHealth(fin.id).catch(() => null), new Promise<null>(r => setTimeout(() => r(null), 5000))]);
       const hkLine = !hk ? '' : hk.status === 'saved' ? '\n❤️ Saved to Apple Health (heart rate + effort attach in the background)' : hk.status === 'exists' ? '\n❤️ Linked to your watch workout in Health' : '\n⚠ Not saved to Apple Health';
-      const sum = `${fin.sets.filter(isWorkSet).length} sets · ${sessionTonnage(st, fin).toLocaleString()} kg · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
+      const sum = `${fin.sets.filter(isWorkSet).length} sets · ${kgText(sessionTonnage(st, fin))} · ${Math.round((fin.finishedAt! - fin.startedAt) / 60000)} min`;
       Alert.alert(prs.length ? '🏆 New personal records' : '✅ Session saved',
         (prs.length ? `${prs.map(p => `${p.name}: ${p.kind} ${p.value}${p.kind === 'Set volume' ? '' : ' kg'} (was ${p.prev})`).join('\n')}\n\n${sum}` : sum) + hkLine + updLine,
         [{ text: 'OK', onPress: () => router.back() }]);
@@ -395,7 +394,7 @@ export default function StrengthSessionScreen() {
         </View>
       )}
       <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 60 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-        <Text style={s.meta}>{sess.sets.filter(isWorkSet).length}/{sess.sets.length} sets · {elapsedMin} min · {sessionTonnage(store, sess).toLocaleString()} kg lifted</Text>
+        <Text style={s.meta}>{sess.sets.filter(isWorkSet).length}/{sess.sets.length} sets · {elapsedMin} min · {kgText(sessionTonnage(store, sess))} lifted</Text>
 
         {order.map((exId, ei) => {
           const ex = exerciseById(store, exId);
@@ -408,7 +407,7 @@ export default function StrengthSessionScreen() {
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <ExerciseThumb ex={ex} open={peek === exId} onToggle={() => setPeek(p => (p === exId ? null : exId))} />
                 <TouchableOpacity style={{ flex: 1 }} onPress={() => router.push({ pathname: '/strength-exercise' as any, params: { id: exId } })}>
-                  <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId} ›{exId === nextEx ? <Text style={s.nextTag}>  NEXT</Text> : null}</Text>
+                  <Text style={s.exName}>{String.fromCharCode(97 + ei)}. {ex?.name ?? exId}{ex?.perSide ? <Text style={s.nextTag}>  per leg / side</Text> : null} ›{exId === nextEx ? <Text style={s.nextTag}>  NEXT</Text> : null}</Text>
                 </TouchableOpacity>
                 {ex?.video && <TouchableOpacity onPress={() => Linking.openURL(ex.video!.url)} hitSlop={8}><Text style={s.link}>▶ video</Text></TouchableOpacity>}
               </View>

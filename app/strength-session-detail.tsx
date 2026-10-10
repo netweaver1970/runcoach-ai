@@ -5,8 +5,7 @@ import Svg, { Polyline, Line, Text as SvgText } from 'react-native-svg';
 import { useTheme, useThemedStyles, Palette } from '../src/theme';
 import {
   StrengthStore, loadStrength, sessionBreakdown, sessionPRs, strengthWindow, MUSCLE_LABEL, Muscle, FEEL_LABEL, sessionStrainLoad,
-  Feel, setExerciseFeel, exerciseById, updateStrength,
-} from '../src/services/strength';
+  Feel, setExerciseFeel, exerciseById, updateStrength, kgText } from '../src/services/strength';
 import { fetchHrSamples, loadSnapshotCache } from '../src/services/healthkit';
 import { getEffectiveMaxHr } from '../src/services/claude';
 import { zoneStrainLoad, strainFromLoad } from '../src/services/trainingLoad';
@@ -136,7 +135,7 @@ export default function StrengthSessionDetail() {
                 </TouchableOpacity>
               ))}
             </View>
-            {!ex?.timed ? <Text style={s.meta}>{e.volume.toLocaleString()} kg volume</Text> : null}
+            {!ex?.timed ? <Text style={s.meta}>{kgText(e.volume)} volume{ex?.perSide ? ' (both legs)' : ''}</Text> : null}
             {/* the post-exercise feel, right here (Hard = this session doesn't count toward a raise) — tap again clears */}
             <View style={s.feelRow}>
               {(['easy', 'ok', 'hard'] as Feel[]).map(f => {
