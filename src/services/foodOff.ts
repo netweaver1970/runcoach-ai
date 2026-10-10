@@ -18,11 +18,56 @@ import type { FoodItem, Nutr } from './foodLog';
 const UA = 'RunCoachAI/1.0 (https://github.com/netweaver1970/runcoach-ai)';
 const BASE = 'https://world.openfoodfacts.org';
 const CACHE = `${FileSystem.documentDirectory}food-db-cache.json`;
-const FIELDS = 'code,product_name,product_name_nl,product_name_fr,product_name_en,generic_name,brands,quantity,serving_size,serving_quantity,nutriments,image_front_small_url,countries_tags';
+const FIELDS = 'code,lang,categories_tags,product_name,product_name_nl,product_name_fr,product_name_en,generic_name_nl,generic_name_en,generic_name,brands,quantity,serving_size,serving_quantity,nutriments,image_front_small_url,countries_tags';
 export const OFF_CREDIT = 'Product data © Open Food Facts contributors, ODbL. Images CC-BY-SA.';
 export const OFF_URL = 'https://world.openfoodfacts.org';
 
-export interface OffProduct extends FoodItem { image?: string; quantity?: string; incomplete?: boolean; implausible?: boolean; rcn8?: boolean }
+export interface OffProduct extends FoodItem { image?: string; quantity?: string; incomplete?: boolean; implausible?: boolean; rcn8?: boolean;
+  /** the name is a stand-in (no Dutch / English name on OFF) → the original-language name to translate */
+  nameFrom?: string }
+
+/**
+ * Dutch or English names only (Geert 2026-10-10: "I scanned the salmon and got French names — Dutch or English").
+ * Order: OFF's Dutch / English product name → the main product name when its language IS nl/en → Dutch / English
+ * generic name → the most specific ENGLISH category ("en:smoked-salmons" → "Smoked salmon"). The original (French)
+ * name stays as nameAlt so searching it still works, and `nameFrom` lets a scan translate it properly (translateName).
+ */
+function nlEnName(p: any): { name: string; from?: string } {
+  const s = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const direct = s(p.product_name_nl) || s(p.product_name_en) || ((p.lang === 'nl' || p.lang === 'en') ? s(p.product_name) : '')
+    || s(p.generic_name_nl) || s(p.generic_name_en);
+  if (direct) return { name: direct };
+  const orig = s(p.product_name) || s(p.product_name_fr) || s(p.generic_name);
+  const cat = enCategory(p);
+  if (cat) return { name: cat, ...(orig ? { from: orig } : {}) };
+  return { name: orig, ...(orig ? { from: orig } : {}) };
+}
+function enCategory(p: any): string | undefined {
+  const tags: string[] = Array.isArray(p.categories_tags) ? p.categories_tags.filter((t: unknown) => typeof t === 'string' && t.startsWith('en:')) : [];
+  const t = tags[tags.length - 1];   // OFF lists general → specific
+  if (!t) return undefined;
+  const ws = t.slice(3).split('-').filter(Boolean);
+  if (!ws.length) return undefined;
+  const last = ws[ws.length - 1];
+  ws[ws.length - 1] = /ies$/.test(last) ? last.replace(/ies$/, 'y') : /(ss|us|is)$/.test(last) ? last : /(ches|shes|xes|sses)$/.test(last) ? last.replace(/es$/, '') : last.replace(/s$/, '');
+  const out = ws.join(' ');
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+/** Translate a product's original-language name to a short English name with the configured AI (scan only — one call,
+ *  cached with the product). Falls back silently (the category name stays) when there's no key / no network. */
+async function translateName(item: OffProduct): Promise<OffProduct> {
+  if (!item.nameFrom) return item;
+  try {
+    const L = require('./llm') as typeof import('./llm');
+    const st = await L.getLLMStatus().catch(() => ({ hasKey: false, reachable: false }));
+    if (!st.hasKey || !st.reachable) return item;
+    L.setUsageFeature('food-name');
+    const txt = await L.callLLM({ maxTokens: 40, temperature: 0, messages: [{ role: 'user', content:
+      `Translate this supermarket product name to a short, natural ENGLISH product name (keep weights / counts, drop the brand${item.brand ? ` "${item.brand}"` : ''}). Reply with the name only, no quotes.\n\n${item.nameFrom}` }] });
+    const name = String(txt ?? '').split('\n')[0].replace(/^["'“”]+|["'“”]+$/g, '').trim();
+    return name && name.length <= 80 ? { ...item, name, nameFrom: undefined } : item;
+  } catch { return item; }
+}
 
 /** Energy vs macros (4/4/9 + 7 for alcohol) more than ±25 % apart, or > 900 kcal/100 g → probably mis-entered on OFF. */
 export function implausible(n: Nutr): boolean {
@@ -99,7 +144,8 @@ export const DRINK_NAME = /drink|drank|boisson|à boire|a boire|trinkjoghurt|sha
 function toItem(p: any): OffProduct | null {
   if (!p) return null;
   const code = String(p.code ?? '');
-  const name = String(p.product_name_nl || p.product_name_en || p.product_name || p.product_name_fr || p.generic_name || '').trim();
+  const nm = nlEnName(p);
+  const name = nm.name;
   const per100 = mapNutriments(p.nutriments);
   // serving_quantity is often missing while the text serving_size ("240 g", "1 bouteille (240 ml)") is there
   const sq = num(p.serving_quantity) ?? servingFromText(p.serving_size);
@@ -121,6 +167,7 @@ function toItem(p: any): OffProduct | null {
     key: `off:${code}`, src: 'off', id: code,
     name: name || `Product ${code}`,
     nameAlt: [p.product_name_fr, p.product_name].find((x: unknown) => typeof x === 'string' && x && x !== name) as string | undefined,
+    ...(nm.from ? { nameFrom: nm.from } : {}),
     brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() : Array.isArray(p.brands) && p.brands.length ? String(p.brands[0]).trim() : undefined,
     per100,
     ...(pack ? { serving: pack } : sq && sq > 0 && sq < 2000 && !isEcho100(sq, p.serving_size) ? { serving: { g: sq, label: '1 serving' } } : {}),
@@ -139,6 +186,66 @@ async function readCache(): Promise<Cache> {
   try { const i = await FileSystem.getInfoAsync(CACHE); if (!i.exists) return {}; return JSON.parse(await FileSystem.readAsStringAsync(CACHE)); } catch { return {}; }
 }
 async function writeCache(c: Cache): Promise<void> { try { await FileSystem.writeAsStringAsync(CACHE, JSON.stringify(c)); } catch { /* ignore */ } }
+/**
+ * ONE-TIME (flag file): re-name products scanned before the Dutch/English rule — re-fetch each cached product, apply
+ * nlEnName + translateName, and where the name changed rename it everywhere (logs, meals, recents, favourites).
+ * Only French-only products change: Dutch / English names were already preferred. Leaves the flag unset when the
+ * network is down so it retries on the next Food screen visit.
+ */
+const RENAME_FLAG = `${FileSystem.documentDirectory}food-names-nlen.flag`;
+let renaming = false;
+export async function relocalizeCachedProducts(): Promise<number> {
+  if (renaming) return 0;
+  renaming = true;
+  try {
+    // products still carrying an untranslated name (AI was unreachable when scanned) → retry the translation
+    const pending = (await cachedProducts()).filter(x => x.nameFrom);
+    if (pending.length) {
+      const c0 = await readCache();
+      const L = require('./foodLog') as typeof import('./foodLog');
+      let k = 0;
+      for (const it of pending) {
+        const t = await translateName(it);
+        if (t.nameFrom) continue;
+        for (const [ean, hit] of Object.entries(c0)) if (hit.item?.key === it.key) c0[ean] = { ...hit, item: { ...hit.item, name: t.name, nameFrom: undefined } };
+        await L.renameFoodEverywhere(it.key, t.name).catch(() => {});
+        k++;
+      }
+      if (k) await writeCache(c0);
+      if ((await FileSystem.getInfoAsync(RENAME_FLAG).catch(() => ({ exists: true }))).exists) return k;
+    }
+    if ((await FileSystem.getInfoAsync(RENAME_FLAG).catch(() => ({ exists: true }))).exists) return 0;
+    const c = await readCache();
+    const done = new Map<string, OffProduct>();   // key → renamed item (UPC/EAN aliases share one key)
+    let failed = false, n = 0;
+    for (const [ean, hit] of Object.entries(c)) {
+      const old = hit.item;
+      if (!old) continue;
+      let fresh = done.get(old.key);
+      if (!fresh) {
+        try {
+          const j = await get(`${BASE}/api/v2/product/${ean}.json?fields=${FIELDS}`);
+          const raw = j?.status === 1 ? toItem(j.product) : null;
+          if (!raw) continue;
+          fresh = await translateName(raw);
+          done.set(old.key, fresh);
+        } catch { failed = true; continue; }
+      }
+      if (fresh.name && fresh.name !== old.name) {
+        c[ean] = { ...hit, item: { ...old, name: fresh.name, nameAlt: fresh.nameAlt ?? old.nameAlt, ...(fresh.nameFrom ? { nameFrom: fresh.nameFrom } : {}) } };
+        n++;
+      }
+    }
+    if (n) {
+      await writeCache(c);
+      const L = require('./foodLog') as typeof import('./foodLog');
+      for (const [key, it] of done) await L.renameFoodEverywhere(key, it.name).catch(() => {});
+    }
+    if (!failed) await FileSystem.writeAsStringAsync(RENAME_FLAG, '1').catch(() => {});
+    return n;
+  } finally { renaming = false; }
+}
+
 export async function cachedProducts(): Promise<OffProduct[]> {
   const c = await readCache();
   const byKey = new Map<string, OffProduct>();
@@ -169,7 +276,8 @@ export async function lookupBarcode(code: string, refresh = false): Promise<{ it
   const hit = c[ean];
   if (!refresh && hit && (hit.item || Date.now() - new Date(hit.at).getTime() < 7 * 86_400_000)) return { item: hit.item, cached: true };
   const j = await get(`${BASE}/api/v2/product/${ean}.json?fields=${FIELDS}`);
-  const item = j?.status === 1 ? toItem(j.product) : null;
+  const raw = j?.status === 1 ? toItem(j.product) : null;
+  const item = raw ? await translateName(raw) : null;   // no Dutch / English name on OFF → a proper English one
   c[ean] = { at: new Date().toISOString(), item };
   await writeCache(c);
   return { item, cached: false };

@@ -41,7 +41,7 @@ import {
   DayLog, FoodLibrary, FoodEntry, FoodItem, Recent, SavedMeal, Nutr, FavItem,
 } from '../src/services/foodLog';
 import { sportsByKey } from '../src/services/foodSports';
-import { lookupBarcode, searchOff, rememberProduct, cachedProducts, validBarcode, OFF_CREDIT, OFF_URL, OffProduct, isEcho100, DRINK_NAME } from '../src/services/foodOff';
+import { lookupBarcode, searchOff, rememberProduct, cachedProducts, validBarcode, OFF_CREDIT, OFF_URL, OffProduct, isEcho100, DRINK_NAME, relocalizeCachedProducts } from '../src/services/foodOff';
 import { parseMeal, looksLikeMeal, ParsedItem, MAX_ITEM_GRAMS } from '../src/services/foodParse';
 import { loadSnapshotCache, fetchBodyMassHistory, peekDailyComponents } from '../src/services/healthkit';
 import { loadCachedPlan } from '../src/services/coach';
@@ -105,6 +105,8 @@ export default function FoodMode() {
   }, [date, isToday]);
 
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+  // one-time: products scanned with a French-only name get a Dutch / English one (then the day reloads)
+  useEffect(() => { relocalizeCachedProducts().then(n => { if (n) reload(); }).catch(() => {}); }, [reload]);
   useEffect(() => {
     let live = true;
     loadSnapshotCache().then(snap => {

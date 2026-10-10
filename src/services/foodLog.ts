@@ -673,6 +673,14 @@ export async function renameInLogs(key: string, name: string): Promise<void> {
   });
   await mutateLib(l => { l.meals = l.meals.map(m => ({ ...m, items: m.items.map(i => (i.key === key ? { ...i, name } : i)) })); });
 }
+/** A product got a better (Dutch / English) name → logs, meals, recents, favourites and kept snapshots all follow. */
+export async function renameFoodEverywhere(key: string, name: string): Promise<void> {
+  await renameInLogs(key, name);
+  await mutateLib(l => {
+    l.recents = l.recents.map(r => (r.key === key ? { ...r, name } : r));
+    for (const m of [l.favItems, l.kept]) if (m?.[key]) m[key] = { ...m[key], name };
+  });
+}
 /** Set (null = clear) your caffeine value (mg per 100) for a food-table / product food. */
 export async function setCaffeine(key: string, mg: number | null): Promise<void> {
   await mutateLib(l => { const m = { ...(l.caf ?? {}) }; if (mg != null && mg >= 0) m[key] = mg; else delete m[key]; l.caf = m; });
