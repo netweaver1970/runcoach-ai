@@ -106,7 +106,9 @@ export default function FoodStatsScreen() {
   );
 
   // DEFICIT = energy burned (watch) − eaten, on days that have both. Positive = a deficit (below what you burned).
-  const defDays = win.filter(d => d.burn && d.n.kcal != null);
+  // only FULLY LOGGED days (a half-logged day fakes a deficit) and not today (its burn is only the day so far)
+  const todayKey = new Date().toLocaleDateString('en-CA');
+  const defDays = win.filter(d => d.complete && d.burn && d.n.kcal != null && d.date !== todayKey);
   const defAvg = defDays.length ? defDays.reduce((a, d) => a + (d.burn! - (d.n.kcal ?? 0)), 0) / defDays.length : null;
   const wChange = wWin.length >= 2 ? wWin[wWin.length - 1].v - wWin[0].v : null;
   const wWeeks = wWin.length >= 2 ? (wWin[wWin.length - 1].t - wWin[0].t) / (7 * 86_400_000) : 0;
@@ -120,23 +122,23 @@ export default function FoodStatsScreen() {
     ), `${nComplete} of ${win.length} days marked fully logged — the others may miss items.${kg ? ` Protein ${(avgN.prot! / kg).toFixed(1)} g/kg body weight (${Math.round(kg)} kg).` : ''}${(avgN.rs ?? 0) > 0.5 ? ` Resistant starch ${r0(avgN.rs!)} g/day, not counted as carbs.` : ''}`),
     kcal: () => card('Calories vs energy burned', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.kcal)} t0={t0} t1={t1} color={c.accent} trend events={[]} showEvents={false} yfmt={r0} innerW={innerW}
-        pts2={series(d => d.burn)} color2="#94a3b8" y2fmt={r0} y2label="watch kcal" />
+        pts2={series(d => d.burn)} maxGapMs2={GAP} color2="#94a3b8" y2fmt={r0} y2label="watch kcal" />
     ), `Coloured line: eaten (resistant starch at 2 kcal/g). Grey: the watch's active + resting energy that day — ±15–20 %, so read the trend, not one day.`),
     deficit: () => card('Calorie deficit + weight', (
       <TChart maxGapMs={GAP} pts={defDays.map(d => ({ t: d.t, v: Math.round(d.burn! - (d.n.kcal ?? 0)), color: d.burn! - (d.n.kcal ?? 0) >= 0 ? '#16a34a' : '#dc2626' }))}
         t0={t0} t1={t1} color="#16a34a" trend events={[]} showEvents={false} yfmt={r0} innerW={innerW} refs={[{ y: 0, color: '#94a3b8', dash: true }]}
         pts2={wWin} color2={WEIGHT_COLOR} y2fmt={v => v.toFixed(1)} y2label="kg" />
-    ), defAvg == null ? 'Needs logged days with the watch\'s energy burned.'
+    ), defAvg == null ? 'Needs days marked “fully logged” (before today) with the watch\'s energy burned.'
       : `Burned (watch) − eaten per day: green = a deficit, red = a surplus; purple = body weight (right axis). Average ${defAvg >= 0 ? 'deficit' : 'surplus'} ${r0(Math.abs(defAvg))} kcal/day ≈ ${(Math.abs(defAvg) * 7 / KCAL_PER_KG).toFixed(2)} kg/week ${defAvg >= 0 ? 'down' : 'up'} if it held every day.`
         + (wChange != null && wWeeks >= 1 ? ` Weight in this window: ${wChange >= 0 ? '+' : ''}${wChange.toFixed(1)} kg over ${Math.round(wWeeks)} week${Math.round(wWeeks) === 1 ? '' : 's'}.` : '')
-        + ' Watch energy is ±15–20 % and days that aren\'t fully logged over-state the deficit — trust weeks, not days.'),
+        + ` Fully logged days only (${defDays.length}), today excluded (its burn isn't complete yet). Watch energy is ±15–20 % — trust weeks, not days.`),
     protein: () => card('Protein', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.prot)} t0={t0} t1={t1} color={MACRO_COLOR.prot} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
         {...(kg ? { refs: [{ y: 1.6 * kg, color: MACRO_COLOR.prot, dash: true }] } : {})} />
     ), kg ? `Dashed: 1.6 g/kg (${Math.round(1.6 * kg)} g) — the level that supports strength + endurance training.` : undefined),
     carbs: () => card('Carbs', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.carb)} t0={t0} t1={t1} color={MACRO_COLOR.carb} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW}
-        pts2={series(d => d.n.rs)} color2={MACRO_COLOR.fib} y2fmt={v => `${r0(v)}g`} y2label="resist. starch" />
+        pts2={series(d => d.n.rs)} maxGapMs2={GAP} color2={MACRO_COLOR.fib} y2fmt={v => `${r0(v)}g`} y2label="resist. starch" />
     ), 'Available carbs (resistant starch shown separately in green).'),
     fat: () => card('Fat', (
       <TChart maxGapMs={GAP} pts={series(d => d.n.fat)} t0={t0} t1={t1} color={MACRO_COLOR.fat} trend events={[]} showEvents={false} yfmt={v => `${r0(v)}g`} innerW={innerW} />

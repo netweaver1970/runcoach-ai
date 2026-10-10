@@ -11,8 +11,10 @@ export type WinRange = '1M' | '3M' | '6M' | '1Y' | '5Y' | 'All';
 export const WIN_RANGES: WinRange[] = ['1M', '3M', '6M', '1Y', '5Y', 'All'];
 export const WIN_DAYS: Record<WinRange, number> = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365, '5Y': 1825, All: 0 };
 
+/** The live window ends at the END of today — data stamped later today (noon-stamped days) must not fall out. */
+const endOfToday = () => { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); };
 /** Window state: range + paging offset → [t0, t1]. `dataStart` = the oldest data point (for "All"). */
-export function useTimeWindow(initial: WinRange, dataStart: number | null, end = Date.now()) {
+export function useTimeWindow(initial: WinRange, dataStart: number | null, end = endOfToday()) {
   const [range, setRangeS] = useState<WinRange>(initial);
   const [offset, setOffset] = useState(0);
   const setRange = (r: WinRange) => { setRangeS(r); setOffset(0); };

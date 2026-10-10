@@ -38,7 +38,7 @@ export const trendDelta = (vals: number[]): number | null => {
   const f = olsFit(vals); return f ? f.m * (vals.length - 1) : null;
 };
 export const signed = (v: number, dp: number) => `${v >= 0 ? '+' : ''}${v.toFixed(dp)}`;
-export function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries, maxGapMs }: {
+export function TChart({ pts, t0, t1, color, band, refs, trend, events, showEvents, yfmt, innerW, pts2, color2, y2fmt, y2label, bandSeries, maxGapMs, maxGapMs2 }: {
   pts: TPt[]; t0: number; t1: number; color: string;
   band?: [number, number]; refs?: { y: number; color: string; dash?: boolean }[];
   trend?: boolean; events: Ev[]; showEvents: boolean; yfmt: (v: number) => string; innerW: number;
@@ -46,6 +46,8 @@ export function TChart({ pts, t0, t1, color, band, refs, trend, events, showEven
   bandSeries?: { t: number; lo: number; hi: number }[];
   /** don't draw a line between points further apart than this (days not logged ≠ a straight line through them) */
   maxGapMs?: number;
+  /** the same for the secondary series (a sparse one like weigh-ins should keep its line → leave unset) */
+  maxGapMs2?: number;
 }) {
   const { c } = useTheme();
   const ch = useThemedStyles(makeCh);
@@ -123,7 +125,7 @@ export function TChart({ pts, t0, t1, color, band, refs, trend, events, showEven
           {refs?.map((r, i) => <View key={`r${i}`} style={{ position: 'absolute', left: 0, right: 0, top: toY(r.y), height: 1, backgroundColor: r.color, opacity: r.dash ? 0.5 : 0.9 }} />)}
           {bandWin.map((b, i) => { const xL = x(b.t); const gap = (i < bandWin.length - 1 ? x(bandWin[i + 1].t) : xL + 3) - xL; const w = Math.min(Math.max(3, gap), plotW * 0.05); const top = toY(b.hi); return <View key={`bd${i}`} pointerEvents="none" style={{ position: 'absolute', left: xL - w / 2, top, width: Math.max(2, w), height: Math.max(1, toY(b.lo) - top), backgroundColor: '#3B82F61f' }} />; })}
           {evIn.map((e, i) => <View key={`e${i}`} pointerEvents="none" style={{ position: 'absolute', top: 0, height: TS_H, left: x(e.t), width: 1, backgroundColor: EV_COLOR[e.category] ?? c.textFaint, opacity: 0.5 }} />)}
-          {has2 && win2.map((p, i) => { if (i === 0 || (maxGapMs != null && p.t - win2[i - 1].t > maxGapMs)) return null; const x1 = x(win2[i - 1].t), y1 = toY2(win2[i - 1].v), x2 = x(p.t), y2 = toY2(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s2${i}`} pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c2, opacity: 0.5, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
+          {has2 && win2.map((p, i) => { if (i === 0 || (maxGapMs2 != null && p.t - win2[i - 1].t > maxGapMs2)) return null; const x1 = x(win2[i - 1].t), y1 = toY2(win2[i - 1].v), x2 = x(p.t), y2 = toY2(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s2${i}`} pointerEvents="none" style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: c2, opacity: 0.5, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
           {win.map((p, i) => { if (i === 0 || (maxGapMs != null && p.t - win[i - 1].t > maxGapMs)) return null; const x1 = x(win[i - 1].t), y1 = toY(win[i - 1].v), x2 = x(p.t), y2 = toY(p.v); const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), ang = Math.atan2(dy, dx) * 180 / Math.PI; return <View key={`s${i}`} style={{ position: 'absolute', left: (x1 + x2) / 2 - len / 2, top: (y1 + y2) / 2 - 1, width: len, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: `${ang}deg` }] }} />; })}
           {win.map((p, i) => <View key={`d${i}`} style={{ position: 'absolute', left: x(p.t) - 2.5, top: toY(p.v) - 2.5, width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.color ?? color, borderWidth: 1, borderColor: c.surface }} />)}
           {trendEl}

@@ -560,7 +560,7 @@ async function shardPaths(): Promise<string[]> {
 export async function loadAllDays(): Promise<DayLog[]> {
   const out: DayLog[] = [];
   for (const p of await shardPaths()) {
-    const sh = await readJson<Shard>(p, { v: 1, days: {} });
+    const sh = await readJson<Shard>(p, { v: 1, days: {} }).catch(() => ({ v: 1, days: {} }) as Shard);   // one bad month ≠ no history
     for (const [date, d] of Object.entries(sh.days ?? {})) out.push({ ...d, date: d.date ?? date, entries: d.entries ?? [], water: d.water ?? [] });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
