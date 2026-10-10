@@ -6,6 +6,7 @@
  */
 import { searchFoodsEx, defaultServing, norm } from './foodDb';
 import type { FoodItem } from './foodLog';
+import { learnedFor } from './foodLearn';
 
 export interface ParsedItem {
   text: string;            // the fragment as typed
@@ -16,6 +17,8 @@ export interface ParsedItem {
   alternatives: FoodItem[];
   grams: number;
   sure: boolean;           // false = no unit/qty given or weak match → highlight for review
+  learned?: 'user' | 'ai'; // matched from the learned phrase → food memory (foodLearn)
+  firstKey?: string;       // the food first proposed — the review list learns when you pick another
 }
 
 // Split on list separators and "with/and" in all three languages. "met" is kept as a split so
@@ -98,11 +101,13 @@ export function parseFragment(frag: string, boost?: Record<string, number>, find
   // "3 boterhammen" / "2 slices": the unit word IS the food
   if (!query && unit && unitTok) query = /^(boterham|sneetje|snee|sneden|slice|tranche)/.test(norm(unitTok)) ? 'brood' : unitTok;
   if (!query) return null;
-  const own = findOwn?.(query);
+  // a phrase you (or the AI, for a photo) already matched before wins over the table search
+  const lr = learnedFor(query);
+  const own = lr ? undefined : findOwn?.(query);
   // with the one-word fallback: a fragment is short, and "rolled oats" must still find oats
   const found = searchFoodsEx(query, 4, boost).items;
-  const food = own ?? found[0];
-  const alternatives = own ? found.slice(0, 3) : found.slice(1);
+  const food = lr?.item ?? own ?? found[0];
+  const alternatives = lr || own ? found.filter(f => f.key !== food?.key).slice(0, 3) : found.slice(1);
   const n = qty ?? 1;
   let grams: number;
   // a food whose own serving IS that spoon ("1 heaped tbsp" psyllium ≈ 7 g) uses its weight, not the generic 15 g
@@ -125,7 +130,8 @@ export function parseFragment(frag: string, boost?: Record<string, number>, find
   const countable = !unit && qty != null && qty >= 10 && qty <= 24 && !!food && qty * defaultServing(food).g <= MAX_ITEM_GRAMS;
   return {
     text, query, qty: n, unit: unit?.key ?? (!unit && qty != null && qty >= 10 ? 'g' : undefined), food, alternatives, grams,
-    sure: !!food && (qty != null || unit != null) && grams <= MAX_ITEM_GRAMS && !countable && !powderInLiquid,
+    sure: !!food && (qty != null || unit != null) && grams <= MAX_ITEM_GRAMS && !countable && !powderInLiquid && lr?.by !== 'ai',
+    ...(lr ? { learned: lr.by } : {}), ...(food ? { firstKey: food.key } : {}),
   };
 }
 

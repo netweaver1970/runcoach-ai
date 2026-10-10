@@ -23,6 +23,7 @@ import { SwipeRow } from '../src/components/SwipeRow';
 import { MacroRings, SplitBar, STD_DRINK_G } from '../src/components/NutritionViz';
 import { useDictation, cleanDictation } from '../src/components/useDictation';
 import { photoMeal } from '../src/services/foodPhoto';
+import { loadLearned, learn, confirmLearned } from '../src/services/foodLearn';
 import { caffeineDay, usualBedtimeMin, fmtClock, CAF_DAY_MAX, CAF_DOSE_MAX, CAF_HALF_LIFE_H, CAF_CUTOFF_H } from '../src/services/caffeine';
 import { caffeineHrv, cafHrvSummary } from '../src/services/caffeineHrv';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -408,7 +409,8 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
     setPhotoBusy(true);
     photoMeal(src).then(r => {
       if (!r) return;
-      setPhotoNote({ phrase: r.phrase, text: `📷 ${r.dish ?? 'Your meal'} — ${r.items.length} item${r.items.length > 1 ? 's' : ''} recognised${r.items.some(i => !i.sure) ? ' (some unsure)' : ''}. Amounts are estimates: check them, tap a name for another match, untick what's wrong.` });
+      const ai = r.items.filter(i => i.resolved === 'ai').length;
+      setPhotoNote({ phrase: r.phrase, text: `📷 ${r.dish ?? 'Your meal'} — ${r.items.length} item${r.items.length > 1 ? 's' : ''} recognised${r.items.some(i => !i.sure) ? ' (some unsure)' : ''}${ai ? ` · ${ai} matched by the AI from the food table (marked ?)` : ''}. Amounts are estimates: check them, tap a name for another match, untick what's wrong — the app learns your choices.` });
       setAsOne(false); setQ(r.phrase); setDq(r.phrase); setMode({ m: 'search' });
     }).catch((e: any) => Alert.alert('Photo', String(e?.message ?? e))).finally(() => setPhotoBusy(false));
   };
@@ -456,7 +458,9 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
   }, 'plain-text', hhmm(when));
   const busy = useRef(false);
 
-  useEffect(() => { cachedProducts().then(setOffCache).catch(() => {}); }, []);
+  useEffect(() => { cachedProducts().then(setOffCache).catch(() => {}); loadLearned().catch(() => {}); }, []);
+  // a "still to find" part (from a photo, typing or voice) found by hand → LEARN it: next time that phrase resolves
+  const learnChip = (item: FoodItem) => { const act = activeChipRef.current; if (act && item?.per100) learn(act, item, 'user').catch(() => {}); };
 
   const boost = useMemo(() => {
     const b: Record<string, number> = {};
@@ -517,6 +521,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
     const typed = chipGrams();                          // "200 g quinoa" typed in the meal → keep the 200 g
     if (!longPress && !typed && rec?.grams) {
       if (item.src === 'off') await rememberProduct(item as OffProduct).catch(() => undefined);
+      learnChip(item);
       await logged([await logFood(item, { grams: rec.grams, via: 'search', date, groupId, t: at, label })]); return;
     }
     Keyboard.dismiss();
@@ -532,6 +537,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
     // a remembered serving (or a fixed quick-add) logs in one tap; a favourite never logged before asks the amount
     if ((!longPress && r.grams) || !r.per100) {
       const asRecent: Recent = { key: r.key, name: r.name, src: r.src, per100: r.per100, n: r.n, grams: r.grams, ...ownExtras(r.key, r), count: 0, last: '', hrs: [] };
+      if (r.per100) learnChip({ key: r.key, src: r.src, id: idOf(r.key), name: r.name, per100: r.per100, ...ownExtras(r.key, r) });
       await logged([await logRecent(asRecent, date, 'recent', groupId, at, label)]);
       return;
     }
@@ -758,6 +764,7 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
             onCancel={() => setMode({ m: 'search' })}
             onConfirm={g => guard(async () => {
               if (mode.item.src === 'off') await rememberProduct(mode.item as OffProduct);
+              learnChip(mode.item);
               await logged([await logFood(mode.item, { grams: g, via: mode.item.src === 'off' ? 'ean' : 'search', date, groupId, t: at, label })]);
             })} />
         ) : mode.m === 'quick' ? (
@@ -855,6 +862,13 @@ function AddSheet({ date, lib: lib0, onClose, startMeal, target }: { date: strin
                   // one atomic write for the matched items; every unmatched part becomes a "still to find" chip
                   // (with its typed grams) and the search jumps to the first one — nothing is dropped
                   const es = items.length ? await logFoods(items.map(it => ({ item: it.food!, grams: it.grams })), { via: 'parse', date, groupId, t: at, label }) : [];
+                  // LEARN from the review: another match picked → that phrase means this food from now on; an AI-picked
+                  // match logged unchanged → confirmed
+                  for (const it of items) {
+                    if (!it.food) continue;
+                    if (it.firstKey && it.food.key !== it.firstKey) learn(it.query, it.food, 'user').catch(() => {});
+                    else if (it.learned === 'ai') confirmLearned(it.query, it.food.key).catch(() => {});
+                  }
                   if (es.length) pushBatch(es);
                   if (saveAs && es.length) await saveMeal(saveAs, es);   // …and kept as a saved meal to re-use
                   // keep typed grams only when the unit has a fixed weight (g, ml, tbsp, glass…) — "2 sneetjes xyz" has none

@@ -132,6 +132,9 @@ export function expandToken(t: string): Phrase[] {
   const out: Phrase[] = [{ w: [t], exact: false }];
   // naive plurals: "oats" → "oat", "lentilles" → "lentille"; Dutch "bananen" → "banaan"-ish, "koekjes" → "koek"
   if (t.length > 3 && t.endsWith('s')) out.push({ w: [t.slice(0, -1)], exact: false });
+  // English -es / -ies plurals: "potatoes" → "potato", "berries" → "berry", "peaches" → "peach" (photo / typed names)
+  if (t.length > 4 && /(oes|ches|shes|xes)$/.test(t)) out.push({ w: [t.slice(0, -2)], exact: false });
+  if (t.length > 4 && t.endsWith('ies')) out.push({ w: [t.slice(0, -3) + 'y'], exact: false });
   const nlBase = t.length > 5 && t.endsWith('jes') ? t.slice(0, -3) : t.length > 5 && t.endsWith('en') ? t.slice(0, -2) : null;
   if (nlBase && NL[t] === undefined) {
     // bananen → banan → banaan (double the vowel back); chocoladekoeken → chocoladekoek — whichever base is in the
