@@ -551,7 +551,11 @@ async function freshnessNow(st: StrengthStore): Promise<Map<Muscle, number> | un
     return new Map(muscleFreshness(muscleEvents(st, ((snap?.runs ?? []) as any[]), maxHr || 188)).map(f => [f.muscle, f.pct]));
   } catch { return undefined; }
 }
-const FRESH_OK = 75;   // the Fitness screen's "Recovered" band
+const FRESH_OK = 75;        // the Fitness screen's "Recovered" band
+// Legs: an ordinary easy run dips quads / glutes / hamstrings to ~70 % for a few hours (the model scales to your
+// habitual load), so 75 % would make "legs or not" depend on WHEN Fitness is first opened that day. 65 % still keeps
+// them out after a long or hard run (~50 %); the run-plan rules (quality / long run ahead) stay on top.
+const FRESH_OK_LEGS = 65;
 
 function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source: string } | null {
   if (c.readiness != null && c.readiness < NO_LIFT_READY) return null;   // the plan says no lifting today
@@ -580,7 +584,7 @@ function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source:
   const pct = (m: Muscle) => c.fresh?.get(m);
   const recovered = (m: Muscle) => {
     const p = pct(m);
-    if (p != null) return p >= FRESH_OK;
+    if (p != null) return p >= (LEGS.includes(m) ? FRESH_OK_LEGS : FRESH_OK);
     const t = trained[m]; return !t || dayDiff(t.date, c.today) >= t.gap;
   };
   // priority: the days since a muscle last took strength work (≤ 7) × how fresh it is now
@@ -624,8 +628,11 @@ function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source:
     const base: RoutineItem = { exerciseId: it.exerciseId, sets, repsLo: it.repsLo, repsHi: it.repsHi, restSec: it.restSec, ...(it.tempo ? { tempo: it.tempo } : {}), ...(it.altIds?.length ? { altIds: it.altIds } : {}) };
     return { ...base, weightKg: suggestWeight(c.st, { ...base, weightKg: it.weightKg }).kg ?? it.weightKg };
   });
+  // say why there are no legs when it's the freshness (not the run plan) that kept them out
+  const legLow = !legsWhyNot && c.fresh ? (['quads', 'glutes', 'hamstrings'] as Muscle[]).map(m => c.fresh!.get(m) ?? 100).reduce((a, v) => Math.min(a, v), 100) : 100;
+  const legsNote = legsWhyNot ? ` · no legs (${legsWhyNot})` : legLow < FRESH_OK_LEGS ? ` · no legs (legs ${Math.round(legLow)} % fresh)` : '';
   const focus = (Object.keys(covered) as Muscle[]).slice(0, 5).map(m => MUSCLE_LABEL[m].toLowerCase());
-  const src = `Composed for ${wd(c.today)} ${c.today.slice(8)}/${c.today.slice(5, 7)} · ${c.st.here?.name ? `${c.st.here.name}, ` : ''}${KITS[kit].label.toLowerCase()} — targets ${c.fresh ? `fresh (≥ ${FRESH_OK} %)` : 'recovered'} ${focus.join(', ')}${legsWhyNot ? ` · no legs (${legsWhyNot})` : ''}${light ? ` · lighter: readiness ${ready}` : ''}`;
+  const src = `Composed for ${wd(c.today)} ${c.today.slice(8)}/${c.today.slice(5, 7)} · ${c.st.here?.name ? `${c.st.here.name}, ` : ''}${KITS[kit].label.toLowerCase()} — targets ${c.fresh ? `fresh (≥ ${FRESH_OK} %)` : 'recovered'} ${focus.join(', ')}${legsNote}${light ? ` · lighter: readiness ${ready}` : ''}`;
   return { items, source: src };
 }
 
