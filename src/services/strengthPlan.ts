@@ -96,6 +96,7 @@ interface Ctx {
   routines: Routine[]; prof: Map<string, Profile>; lastDone: Map<string, string>; hourNow: number;
   lightDays?: Set<number>;        // days holding a LIGHT session (low-readiness today) → only a 1-day gap around them
   legCap?: number;                // max leg-dominant sessions in the 7 days (1 while the running is building)
+  fresh?: Map<Muscle, number>;    // Muscle Freshness % (strength + runs + drills, the Fitness screen's model) — Daily custom
 }
 
 /** Hard rules — shared by the deterministic placer and the AI validator. Returns a reason when NOT allowed. */
@@ -492,7 +493,7 @@ export function strengthTodayLine(plan: StrengthAutoPlan | null | undefined): st
 }
 
 /** Harness hooks (harness/strengthplantest.mjs) — not used by the app. */
-export const __test = { draftPlan, adaptiveTarget, profile, blocked, runLabel, composeDaily: (c: Ctx, avoid?: string[]) => composeDaily(c, avoid) };
+export const __test = { draftPlan, adaptiveTarget, profile, blocked, runLabel, composeDaily: (c: Ctx, avoid?: string[]) => composeDaily(c, avoid), freshnessNow };
 
 
 // ── "Daily custom" routine ────────────────────────────────────────────────────────────────────────────────────────
@@ -516,6 +517,7 @@ export async function ensureDailyCustom(opts: { force?: boolean } = {}): Promise
     }
     if (busy(st) || (!opts.force && fresh(st))) return false;
     const { c } = await buildContext(st);
+    c.fresh = await freshnessNow(st);
     const prev = opts.force ? st.routines.find(r => r.id === DAILY_CUSTOM_ID)?.items.map(i => i.exerciseId) : undefined;
     const composed = composeDaily(c, prev);
     let changed = false;
@@ -539,6 +541,18 @@ export async function ensureDailyCustom(opts: { force?: boolean } = {}): Promise
   } catch { return false; }
 }
 
+/** Muscle Freshness % per muscle right now — the SAME model the Fitness screen shows (strength sessions + runs + pre-run
+ *  drills, decayed, vs your habitual load). Without the run history (cache missing) it still counts the strength. */
+async function freshnessNow(st: StrengthStore): Promise<Map<Muscle, number> | undefined> {
+  try {
+    const hk = require('./healthkit') as typeof import('./healthkit');
+    const { getEffectiveMaxHr } = require('./claude') as typeof import('./claude');
+    const [snap, maxHr] = await Promise.all([hk.loadSnapshotCache().catch(() => null), getEffectiveMaxHr().catch(() => 188)]);
+    return new Map(muscleFreshness(muscleEvents(st, ((snap?.runs ?? []) as any[]), maxHr || 188)).map(f => [f.muscle, f.pct]));
+  } catch { return undefined; }
+}
+const FRESH_OK = 75;   // the Fitness screen's "Recovered" band
+
 function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source: string } | null {
   if (c.readiness != null && c.readiness < NO_LIFT_READY) return null;   // the plan says no lifting today
   if (c.hourNow >= 21) return null;
@@ -560,8 +574,17 @@ function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source:
   const PREHAB_ONLY = new Set(['heel_drop', 'tibialis_raise', 'clamshell', 'step_down']);   // durability drills, not a session's core
   for (const e of allExercises(c.st)) if (!cand.has(e.id) && !PREHAB_ONLY.has(e.id)) cand.set(e.id, defaultItem(e));
   for (const [id] of cand) if (!exerciseAvailable(exerciseById(c.st, id), kit)) cand.delete(id);
-  const recovered = (m: Muscle) => { const t = trained[m]; return !t || dayDiff(t.date, c.today) >= t.gap; };
-  const waited = (m: Muscle) => { const t = trained[m]; return t ? Math.min(7, dayDiff(t.date, c.today)) : 7; };
+  // RECOVERED = the Muscle Freshness model (Geert 2026-10-10: "is it really custom based on muscle freshness?") — a main
+  // muscle must read Recovered (≥ 75 %) there, so runs / drills count for the legs and a heavy session counts more than a
+  // light one. Fallback (no freshness): the RPE recovery gap since the last hard session.
+  const pct = (m: Muscle) => c.fresh?.get(m);
+  const recovered = (m: Muscle) => {
+    const p = pct(m);
+    if (p != null) return p >= FRESH_OK;
+    const t = trained[m]; return !t || dayDiff(t.date, c.today) >= t.gap;
+  };
+  // priority: the days since a muscle last took strength work (≤ 7) × how fresh it is now
+  const waited = (m: Muscle) => { const t = trained[m]; const d = t ? Math.min(7, dayDiff(t.date, c.today)) : 7; const p = pct(m); return p != null ? d * (p / 100) : d; };
   const scored = [...cand.values()].map(it => {
     const ex = exerciseById(c.st, it.exerciseId);
     if (!ex) return null;
@@ -602,7 +625,7 @@ function composeDaily(c: Ctx, avoid?: string[]): { items: RoutineItem[]; source:
     return { ...base, weightKg: suggestWeight(c.st, { ...base, weightKg: it.weightKg }).kg ?? it.weightKg };
   });
   const focus = (Object.keys(covered) as Muscle[]).slice(0, 5).map(m => MUSCLE_LABEL[m].toLowerCase());
-  const src = `Composed for ${wd(c.today)} ${c.today.slice(8)}/${c.today.slice(5, 7)} · ${c.st.here?.name ? `${c.st.here.name}, ` : ''}${KITS[kit].label.toLowerCase()} — targets recovered ${focus.join(', ')}${legsWhyNot ? ` · no legs (${legsWhyNot})` : ''}${light ? ` · lighter: readiness ${ready}` : ''}`;
+  const src = `Composed for ${wd(c.today)} ${c.today.slice(8)}/${c.today.slice(5, 7)} · ${c.st.here?.name ? `${c.st.here.name}, ` : ''}${KITS[kit].label.toLowerCase()} — targets ${c.fresh ? `fresh (≥ ${FRESH_OK} %)` : 'recovered'} ${focus.join(', ')}${legsWhyNot ? ` · no legs (${legsWhyNot})` : ''}${light ? ` · lighter: readiness ${ready}` : ''}`;
   return { items, source: src };
 }
 
