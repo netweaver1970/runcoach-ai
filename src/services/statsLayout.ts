@@ -25,14 +25,18 @@ export const STAT_CARD_TITLES: Record<StatCardId, string> = {
   volume:     'Volume vs Budget',
 };
 
-// Default order = the historical top-to-bottom order; everything enabled. (Performance leads — it's the
+// EC (speed÷power) + its weight-adjusted twin: ≈ constant by construction with Apple Watch's MODELLED power
+// (2026-10-10) → hidden by default (still in Customise as a data check).
+const OFF_BY_DEFAULT = new Set<StatCardId>(['ec', 'ecn']);
+// Default order = the historical top-to-bottom order; everything enabled except OFF_BY_DEFAULT. (Performance leads — it's the
 // headline overall-trajectory metric, moved here from the home screen.)
 export const DEFAULT_STATS_LAYOUT: StatCard[] = [
   'performance', 'pmc', 'weeklyTss', 'pdc', 'race', 'ef', 'ec', 'ecn', 'se', 'efftrend', 'intensity', 'mix', 'acwr', 'decoupling', 'volume',
-].map(id => ({ id: id as StatCardId, on: true }));
+].map(id => ({ id: id as StatCardId, on: !OFF_BY_DEFAULT.has(id as StatCardId) }));
 
 const ALL_IDS = DEFAULT_STATS_LAYOUT.map(c => c.id);
 const FILE = `${FileSystem.documentDirectory}runcoach-stats-layout.json`;
+const MIG_FILE = `${FileSystem.documentDirectory}runcoach-stats-layout-ec-off.flag`;
 
 /** Merge a saved layout with the defaults: drop unknown ids, slot any NEW card (enabled) in after its default predecessor. */
 function reconcile(saved: StatCard[]): StatCard[] {
@@ -56,7 +60,17 @@ export async function loadStatsLayout(): Promise<StatCard[]> {
     const info = await FileSystem.getInfoAsync(FILE);
     if (!info.exists) return DEFAULT_STATS_LAYOUT;
     const parsed = JSON.parse(await FileSystem.readAsStringAsync(FILE)) as StatCard[];
-    if (Array.isArray(parsed) && parsed.length) return reconcile(parsed);
+    if (Array.isArray(parsed) && parsed.length) {
+      // one-time: switch the EC cards off in an existing layout (the user can switch them back on in Customise)
+      const mig = await FileSystem.getInfoAsync(MIG_FILE).catch(() => ({ exists: true }));
+      if (!mig.exists) {
+        const out = reconcile(parsed).map(c => (OFF_BY_DEFAULT.has(c.id) ? { ...c, on: false } : c));
+        await saveStatsLayout(out);
+        await FileSystem.writeAsStringAsync(MIG_FILE, '1').catch(() => {});
+        return out;
+      }
+      return reconcile(parsed);
+    }
     return DEFAULT_STATS_LAYOUT;
   } catch { return DEFAULT_STATS_LAYOUT; }
 }

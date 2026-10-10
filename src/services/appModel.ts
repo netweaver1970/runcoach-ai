@@ -67,6 +67,7 @@ export async function buildAppModelPrompt(): Promise<string> {
     tripSummary ? `• TRAVEL (athlete's saved trips — plan around these): ${tripSummary}` : '',
     adherence ? `• ${adherence}` : '',
     fuelPreferenceLine(fuelLongMin),
+    '• EFFICIENCY RATIOS (2026-10-10): Apple Watch running power is MODELLED from speed + slope + body weight, not measured. So EC = speed÷power is ≈ CONSTANT by construction (it only moves with body weight, hills and GPS noise) — NEVER report EC as economy progress or decline. EF = power÷HR ≈ SE × body weight (a weight change shifts it). SE = speed÷HR (speed per heartbeat) is THE aerobic-efficiency signal — lead with it; heat (runs ≥19°C) and yohimbine lower it. Power stays valid for pacing/zones/load (it is a slope-adjusted speed × weight).',
     '• WAYFINDER ROUTE RUNS: an easy/long/tempo session run on a route has a DISTANCE-based work step (it ends 200 m before the route finish), so its work minutes can differ from the prescribed minutes — judge the session by route completion and intensity, not by minutes over/under.',
     foodLine,
     strengthLine,

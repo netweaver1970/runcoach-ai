@@ -1,3 +1,4 @@
+import { HEAT_C } from '../src/services/runStats';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, LayoutChangeEvent, Switch } from 'react-native';
 import { Stack, useFocusEffect, useRouter } from 'expo-router';
@@ -68,7 +69,7 @@ function LegLoadChart({ days, quality, innerW }: { days: LegDay[]; quality: Set<
 
 const LAYOUT_KEY = 'strength_stats_layout_v1';
 const DEFAULT_CARDS = ['volume', 'sets', 'areas', 'muscles', 'load', 'legs', 'e1rm', 'records', 'rir', 'strain', 'economy', 'rpe'];
-const CARD_TITLE: Record<string, string> = {'volume': 'Weekly volume', 'sets': 'Weekly work sets', 'areas': 'Hard sets per area', 'muscles': 'Sets per muscle', 'load': 'Muscular load over time', 'legs': 'Legs: runs + strength', 'e1rm': 'Exercise progress', 'records': 'Records', 'rir': 'Effort per week (RIR)', 'strain': 'Daily strain composition', 'economy': 'Leg strength × running economy', 'rpe': 'Session effort (RPE)'};
+const CARD_TITLE: Record<string, string> = {'volume': 'Weekly volume', 'sets': 'Weekly work sets', 'areas': 'Hard sets per area', 'muscles': 'Sets per muscle', 'load': 'Muscular load over time', 'legs': 'Legs: runs + strength', 'e1rm': 'Exercise progress', 'records': 'Records', 'rir': 'Effort per week (RIR)', 'strain': 'Daily strain composition', 'economy': 'Leg strength × speed per heartbeat', 'rpe': 'Session effort (RPE)'};
 const EX_METRICS: ExMetric[] = ['e1rm', 'heaviest', 'volume', 'sets', 'reps', 'rel'];
 const EX_METRIC_NOTE: Record<ExMetric, string> = {
   e1rm: 'Effort-adjusted Epley estimated 1RM per session (gold = a record; purple = heaviest kg)',
@@ -141,7 +142,7 @@ export default function StrengthStatsScreen() {
   const [exMetric, setExMetric] = useState<ExMetric>('e1rm');
   const [strainParts, setStrainParts] = useState<StrainDay[] | null>(null);
   const [weights, setWeights] = useState<{ t: number; v: number }[]>([]);
-  const [econRuns, setEconRuns] = useState<{ t: number; wp: number; pw: number; easy: boolean }[]>([]);
+  const [econRuns, setEconRuns] = useState<{ t: number; wp: number; hr: number; easy: boolean }[]>([]);
   const [editing, setEditing] = useState(false);
   const [layout, setLayout] = useState<{ id: string; on: boolean }[]>(DEFAULT_CARDS.map(id => ({ id, on: true })));
   const saveLayout = (l: { id: string; on: boolean }[]) => { setLayout(l); SecureStore.setItemAsync(LAYOUT_KEY, JSON.stringify(l)).catch(() => {}); };
@@ -170,7 +171,9 @@ export default function StrengthStatsScreen() {
     fetchBodyMassHistory(24).then(w => setWeights((w as { date: string; value: number }[]).filter(x => x.value > 0).map(x => ({ t: new Date(x.date).getTime(), v: x.value })))).catch(() => {});
     Promise.all([loadSnapshotCache().catch(() => null), loadStatsRuns().catch(() => [])]).then(([sn, cached]) => {
       const rr = mergeRuns(((sn as any)?.runs ?? []) as any, cached as any) as any[];
-      setEconRuns(rr.filter(r => r.workPace > 0 && r.workPower > 0).map(r => ({ t: new Date(r.date).getTime(), wp: r.workPace, pw: r.workPower, easy: r.label === 'Z2' || r.label === 'Recovery' })).sort((a, b) => a.t - b.t));
+      // EASY, non-hot runs with a trustworthy HR — speed per heartbeat depends on intensity and heat
+      setEconRuns(rr.filter(r => r.workPace > 0 && r.workHR > 0 && (r.label === 'Z2' || r.label === 'Recovery' || r.label === 'LongRun') && !((r.tempC ?? -99) >= HEAT_C) && !r.hrUnreliableManual && !r.hrLowRes)
+        .map(r => ({ t: new Date(r.date).getTime(), wp: r.workPace, hr: r.workHR, easy: true })).sort((a, b) => a.t - b.t));
     }).catch(() => {});
     Promise.all([loadSnapshotCache(), getEffectiveMaxHr().catch(() => 188)])
       .then(([sn, mx]) => setRuns({ runs: (sn?.runs ?? []) as any[], maxHr: mx || 188 })).catch(() => setRuns({ runs: [], maxHr: 188 }));
@@ -218,12 +221,10 @@ export default function StrengthStatsScreen() {
   const mFmt = (v: number) => (exMetric === 'rel' ? `${v.toFixed(2)}×` : exMetric === 'volume' ? kgFmt(v) : `${Math.round(v)}`);
   const rir = rirWeekly(st, 12);
   const legIdxAll: TPt[] = legStrengthIndex(st);
-  // WEIGHT-ADJUSTED running economy (speed ÷ power × body weight — power ∝ mass, so this cancels a weight change, same as
-  // the Statistics "ecn" card) on the work segments; both lines as % of their own baseline IN the window = the median
-  // of the first 3 points (easy runs preferred for economy), so one odd run can't set the scale
-  const nearW = (t: number) => { let best: number | null = null, bd = Infinity; for (const w of weights) { const d = Math.abs(w.t - t); if (d < bd) { bd = d; best = w.v; } } return bd <= 45 * 86_400_000 ? best : null; };
-  const ecAll = econRuns.filter(r => r.t >= t0 && r.t <= t1).map(r => { const kg = nearW(r.t); return kg ? { t: r.t, v: ((1000 / r.wp) / r.pw) * kg, easy: r.easy } : null; })
-    .filter(Boolean) as { t: number; v: number; easy: boolean }[];
+  // SPEED PER HEARTBEAT (SE = speed ÷ work HR) on easy, non-hot runs — the aerobic-efficiency signal. NOT speed÷power:
+  // Apple Watch power is modelled from speed + slope + weight, so that ratio is ≈ constant by construction (2026-10-10).
+  // Both lines as % of their own baseline IN the window = the median of the first 3 points, so one odd run can't set it.
+  const ecAll = econRuns.filter(r => r.t >= t0 && r.t <= t1).map(r => ({ t: r.t, v: (60000 / r.wp) / r.hr, easy: r.easy }));
   const med3 = (a: number[]) => { const x = a.slice(0, 3).sort((p, q) => p - q); return x.length ? x[Math.floor(x.length / 2)] : 0; };
   const ecBase = med3((ecAll.filter(r => r.easy).length >= 3 ? ecAll.filter(r => r.easy) : ecAll).map(r => r.v));
   const ecPts: TPt[] = ecBase > 0 ? ecAll.map(r => ({ t: r.t, v: Math.round((r.v / ecBase) * 1000) / 10 })) : [];
@@ -427,8 +428,8 @@ export default function StrengthStatsScreen() {
           {legIdx.length >= 2 ? (
             <>
               <TChart pts={legIdx} t0={t0} t1={t1} color="#F97316" trend events={[]} showEvents={false} yfmt={v => `${Math.round(v)}%`} innerW={innerW}
-                pts2={ecPts} color2="#3B82F6" y2fmt={v => `${Math.round(v)}%`} y2label="economy" />
-              <Text style={s.caption}>Orange: leg strength (leg-exercise e1RMs). Blue: running economy, weight-adjusted (speed ÷ power-per-kg on work segments). Both as % of their level at the start of this window. Judge it over ~3 months — one block is too short to tell.</Text>
+                pts2={ecPts} color2="#3B82F6" y2fmt={v => `${Math.round(v)}%`} y2label="speed/beat" />
+              <Text style={s.caption}>Orange: leg strength (leg-exercise e1RMs). Blue: speed per heartbeat on easy, cooler runs (aerobic efficiency). Both as % of their level at the start of this window. Judge it over ~3 months — one block is too short to tell.</Text>
             </>
           ) : <Text style={s.meta}>Appears after 2 sessions with leg exercises; meaningful after ~3 months.</Text>}
         </View>

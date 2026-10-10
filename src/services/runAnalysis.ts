@@ -167,7 +167,7 @@ Write a sharp, specific post-run review grounded in the numbers. Crucially:
 • Recognise the planned warm-up, drills, work reps and cool-down. Refer to the drills explicitly as the prescribed drills block.
 • The prescription already accounts for HRV/recovery/load/heat — respect it. wHR = work-only HR.
 • The APP MODEL block (in the data) is authoritative on how ToF / the cap / load / the athlete's settings work — use it, never guess at the app's accounting.
-• If an EFFICIENCY TRENDS line is provided, state the EC/EF/SE direction (improving / flat / declining) in "What stood out" — LEAD with EC (speed÷power, HR-independent, the truest economy signal); mention EF/SE only if they diverge from EC.
+• If an EFFICIENCY TRENDS line is provided, state the SE direction (speed per heartbeat — the aerobic-efficiency signal; improving / flat / declining) in "What stood out"; mention EF only if it diverges from SE. NEVER cite EC (speed÷power) as economy — with Apple Watch's modelled power it is ≈ constant by construction.
 • If a SECOND RUN OF THE DAY note is present, this run is a deliberate top-up completing the day's volume — NEVER criticise running twice or a short/easy second run; judge the COMBINED day against the prescription and, if the combined volume now meets it, approve.
 
 BREVITY IS REQUIRED — this is read on a phone, glanceable. Lead with the point; cut filler, hedging and throat-clearing. No "it's worth noting", no restating the data back. Every bullet carries a number and a consequence.
@@ -197,7 +197,7 @@ async function efficiencyTrendContext(runs: RunWorkout[]): Promise<string> {
   const dp = { ec: 3, ef: 2, se: 2 } as const;
   const parts = sum.items.map(it => `${it.key.toUpperCase()} ${it.change >= 0 ? '+' : ''}${it.change.toFixed(dp[it.key])} (${it.dir})`);
   return `EFFICIENCY TRENDS over the last ${sum.runs} aerobic runs (OLS change across the window; higher = better): ${parts.join(' · ')}. `
-    + `EC = speed÷power is HR-INDEPENDENT — trust it most for the true economy trend; EF & SE are HR-based. `
+    + `SE = speed÷HR is the aerobic-efficiency signal to lead with (hot runs read low); EF = power÷HR ≈ SE × body weight. `
     + `(The athlete sees these exact numbers on the Statistics "Efficiency Trends" card.)`;
 }
 

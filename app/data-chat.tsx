@@ -27,7 +27,7 @@ const SUGGEST: Record<ChatMode, string[]> = {
   ],
   labs: ['Summarise what stands out across all my labs', 'How is my iron panel trending?', 'Read my lipids / cardiovascular risk', 'Anything I should raise with my GP?'],
   biology: ['How is my weight trend vs my training?', 'Is my recent loss fat or lean mass?', 'How does my blood pressure look over time?', 'Any event that clearly moved a metric?'],
-  stats: ['Is my running economy actually declining, or is it my weight?', 'How is my aerobic fitness (EF/EC) trending?', 'Is my intensity mix well polarised?', 'What do my power curve and critical power say about my zones?'],
+  stats: ['Is my speed per heartbeat (SE) improving?', 'How is my aerobic fitness (SE/EF) trending?', 'Is my intensity mix well polarised?', 'What do my power curve and critical power say about my zones?'],
 };
 
 export default function DataChat() {

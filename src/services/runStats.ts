@@ -79,7 +79,7 @@ function statsFor(r: RunWorkout, repairs?: Record<string, RepairedWorkLike | nul
 export interface RepairedWorkLike { wPower: number; wHR: number; wPaceSec: number; stationaryPct: number }
 
 export interface EffTrendItem {
-  key: 'ec' | 'ef' | 'se';
+  key: 'ef' | 'se';   // no EC: ≈ constant with modelled watch power
   change: number;                           // OLS change across the runs (slope × (n−1)); higher = better
   mean: number;
   dir: 'improving' | 'flat' | 'declining';  // flat = |change| < 1% of the mean
@@ -94,7 +94,9 @@ export function efficiencyTrendSummary(pts: EfPoint[], n = 12): { runs: number; 
   const aer = pts.filter(p => p.aerobic).slice(-n);
   const items: EffTrendItem[] = [];
   if (aer.length < 3) return { runs: aer.length, items };
-  for (const key of ['ec', 'ef', 'se'] as const) {
+  // EC (speed÷power) is NOT summarised: Apple Watch power is modelled from speed + slope + weight, so EC is ≈ constant
+  // by construction and its "trend" is only weight / hill / GPS noise (Geert 2026-10-10). SE leads.
+  for (const key of ['se', 'ef'] as const) {
     const v = aer.map(p => p[key]).filter(x => x > 0);
     if (v.length < 3) continue;
     const m = v.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;

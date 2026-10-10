@@ -267,15 +267,15 @@ async function statsKit(): Promise<ToolKit> {
   const context =
     `Running performance analytics (${runs.length} runs, maxHR ${maxHR}):\n`
     + `EFFICIENCY (higher=better, steady aerobic runs; sensor/label glitches already removed):\n`
-    + `• EC speed÷power — HR-INDEPENDENT, most trustworthy: latest ${f(tEc?.latest)} (${chg(tEc)}).\n`
-    + `• EF power÷HR (HR-based): latest ${f(tEf?.latest)} (${chg(tEf)}).\n`
-    + `• SE speed÷HR (HR-based): latest ${f(tSe?.latest)} (${chg(tSe)}).\n`
+    + `• SE speed÷HR — speed per heartbeat, THE aerobic-efficiency signal (hot runs read low): latest ${f(tSe?.latest)} (${chg(tSe)}).\n`
+    + `• EF power÷HR ≈ SE × body weight: latest ${f(tEf?.latest)} (${chg(tEf)}).\n`
+    + `• EC speed÷power — ≈ CONSTANT by construction (Apple Watch power is modelled from speed+slope+weight), NOT an economy signal: latest ${f(tEc?.latest)} (${chg(tEc)}).\n`
     + (zs ? `INTENSITY (last 8wk): easy ${zs.easyPct}% / moderate ${zs.modPct}% / hard ${zs.hardPct}%, polarization ${zs.polarizationIndex} (>0 polarised), ${zs.minutes} min.\n` : '')
     + (load ? `LOAD: CTL(fitness) ${f(load.ctl)}, ATL(fatigue) ${f(load.atl)}, TSB(form) ${f(load.tsb ?? load.ctl - load.atl)}, ACWR ${acwr.length ? f(acwr[acwr.length - 1].ratio) : '—'} (0.8–1.3 sweet spot).\n` : '')
     + (curve ? `POWER-DURATION (best W): 5s ${watt(5)}, 1min ${watt(60)}, 5min ${watt(300)}, 20min ${watt(1200)}, 60min ${watt(3600)}; Critical Power ≈ ${curve.cp ?? '—'} W.\n` : '')
     + (pz ? `POWER ZONES (W): recovery≤${pz.recoveryMax}, Z2≤${pz.z2Max}, tempo ${pz.tempoMin}–${pz.tempoMax}, intervals≥${pz.intervalsMin}.\n` : '')
     + (dc.length ? `AEROBIC DECOUPLING (Pw:HR drift, <5% strong base): latest ${f(dc[dc.length - 1].pct)}%, recent median ${f(dcMed)}%.\n` : '')
-    + `HEAT: runs ≥19°C are flagged hot (tempC/hot on the efficiency + decoupling tools). Heat raises HR for the same effort, so hot runs read LOW on EF/SE and HIGH on decoupling — weather, not fitness. EC (speed÷power) is HR-independent and unaffected: prefer it across a hot spell.\n`
+    + `HEAT: runs ≥19°C are flagged hot (tempC/hot on the efficiency + decoupling tools). Heat raises HR for the same effort, so hot runs read LOW on EF/SE and HIGH on decoupling — weather, not fitness. Across a hot spell judge SE on the cooler runs — EC can't stand in (≈ constant by construction).\n`
     + (wt ? `BODY WEIGHT: latest ${f(wt.latest)} kg${wt.points?.[0] ? `, was ${f(wt.points[0].value)} kg in ${String(wt.points[0].date).slice(0, 7)}` : ''} (${wt.n ?? wt.points?.length ?? 0} readings, trend ${f(wt.trendPerWeek) ?? 0} kg/wk ${wt.trendDir ?? ''}). Power is estimated from mass, so weight change shifts EC — call get_body_series(weight) to line the full series up against EC.\n` : '')
     + (ecWtRho != null ? `EC↔WEIGHT: Spearman rho ${f(ecWtRho)} across ${ecW.length} paired runs (strong NEGATIVE ⇒ EC rises as weight falls = mass-estimate artifact; near 0 ⇒ EC change is real/pace/device).\n` : '')
     + (evLines.length ? `TIMELINE: ${evLines.join('; ')}\n` : '');
@@ -342,8 +342,7 @@ const SYSTEM: Record<ChatMode, string> = {
     'You are a running-performance analyst for an athlete reviewing their OWN training statistics. Answer from THE DATA BELOW ' +
     '(efficiency EC/EF/SE, intensity distribution & polarization, load CTL/ATL/TSB/ACWR, power-duration curve & critical power, ' +
     'aerobic decoupling, power zones, body weight). Be BRIEF and concrete — a few sentences or a short list; the user can ask follow-ups. ' +
-    'Use these facts correctly: EC = speed÷power is HR-INDEPENDENT so it is the most trustworthy economy signal; EF/SE are HR-based and heat-sensitive. ' +
-    'Running power is estimated from body mass (power ∝ mass), so a RISING EC that tracks FALLING weight is likely the mass estimate, not a real economy gain — a precomputed EC↔weight Spearman rho is in the data (a NEGATIVE rho, EC up as weight down, = the artifact), and get_body_series(weight) gives the full weigh-in series to line up against get_efficiency_history. ' +
+    'Use these facts correctly: Apple Watch running power is MODELLED from speed + slope + body weight, not measured. So EC = speed÷power is ≈ constant by construction — it only moves with body weight, hills and GPS noise and must NEVER be presented as economy progress (a precomputed EC↔weight Spearman rho is in the data: a NEGATIVE rho = EC up as weight down = the mass artifact). SE = speed÷HR (speed per heartbeat) is THE aerobic-efficiency signal; EF = power÷HR ≈ SE × body weight. SE/EF are HR-based and heat-sensitive. Power stays valid for pacing, zones, the power curve and load. ' +
     'For the full per-run series call the tools (do call them rather than saying you lack data). Note association≠causation and flag confounders (heat, HR dropout, device change). Not medical advice. ' +
     'Use light markdown — short paragraphs, bullets, and small tables where they help.',
 };

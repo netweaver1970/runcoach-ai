@@ -494,9 +494,8 @@ function WeeklyTssBars({ runs, t0, t1, innerW }: { runs: any[]; t0: number; t1: 
 // shows exactly the EC / EF / SE numbers the review cites. It is a RUN-COUNT window (last 12 steady aerobic runs
 // up to the page's end), not the time window — paging back shows what the trend was at that point.
 const TREND_META = {
-  ec: { name: 'Economy (EC)', sub: 'speed ÷ power · HR-independent', dp: 3 },
-  ef: { name: 'Efficiency (EF)', sub: 'power ÷ HR', dp: 2 },
-  se: { name: 'Speed eff. (SE)', sub: 'speed ÷ HR', dp: 2 },
+  se: { name: 'Speed per beat (SE)', sub: 'speed ÷ HR · aerobic efficiency', dp: 2 },
+  ef: { name: 'Efficiency (EF)', sub: 'power ÷ HR · ≈ SE × weight', dp: 2 },
 } as const;
 const DIR_COLOR = { improving: '#16a34a', flat: '#94a3b8', declining: '#dc2626' } as const;
 
@@ -509,9 +508,10 @@ function EffTrendsCard({ ef, t1 }: { ef: EfPoint[]; t1: number }) {
     <View style={s.card}>
       <CardHead title="Efficiency Trends">
         The least-squares (OLS) trend the AI run review quotes after every run: a straight line fitted through your
-        last {aer.length || 12} steady aerobic runs, read as start → end of that line. Higher = better for all three.
-        {' '}“Flat” = the line moved less than 1% of the average. EC (speed ÷ power) is HR-independent, so heat, caffeine
-        and poor sleep don't bend it — trust it most for the true economy trend; EF and SE carry HR and dip in the heat.
+        last {aer.length || 12} steady aerobic runs, read as start → end of that line. Higher = better.
+        {' '}“Flat” = the line moved less than 1% of the average. SE (speed per heartbeat) is the one to trust; EF ≈ SE × your
+        weight (watch power is modelled from speed, slope and weight), so a weight change shifts it. Both dip in the heat.
+        {' '}Speed ÷ power (EC) isn't listed: with modelled watch power it is ≈ constant by construction.
         {' '}Uses the last 12 aerobic runs up to the end of the page, not the time window — page back to see the trend at that point.
       </CardHead>
       {!sum.items.length ? (
@@ -889,7 +889,7 @@ export default function StatisticsScreen() {
       return (
       <View style={s.card}>
         <CardHead title="Efficiency Factor">
-          Power ÷ HR per run. Rising = a better aerobic engine, even if CTL looks flat.
+          Power ÷ HR per run. Watch power is modelled from speed, slope and weight, so EF ≈ speed-per-heartbeat × your weight — a weight change shifts it (lighter → lower) without any fitness change. SE is the cleaner read.
           {' '}Grey line = trend. Green = steady aerobic runs.
           {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].ef.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
           {ad != null ? `  ·  Aerobic runs alone: trend ${signed(ad, 2)} (${ad >= 0 ? 'improving' : 'down'}).` : ''}
@@ -909,10 +909,10 @@ export default function StatisticsScreen() {
       return (
       <View style={s.card}>
         <CardHead title="Running Economy (EC)">
-          Speed ÷ power — HR-INDEPENDENT, so it's the most trustworthy (and heat-proof: no 🟠 flags needed here). Rising = more speed per watt.
+          Speed ÷ power. ⚠️ NOT a fitness signal: Apple Watch power is MODELLED from your speed, the slope and your body weight, so this ratio is ≈ constant by construction — it only moves with body weight, hills and GPS noise. Use it as a data check; read aerobic efficiency on Speed Efficiency (SE).
           {' '}Grey line = trend.
           {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].ec.toFixed(3)} (trend ${signed(d, 3)} over the window).` : ''}
-          {wt.length >= 2 ? '  Purple = body weight (right axis) — if EC RISES as weight falls, it\'s the power-from-mass estimate (power ∝ mass), not a real economy gain.' : ''}
+          {wt.length >= 2 ? '  Purple = body weight (right axis) — EC rises as weight falls: the power-from-mass estimate, not economy.' : ''}
           {nRep ? `  ${nRep} run${nRep === 1 ? '' : 's'} had stationary time (unpaused stops) removed from the work averages before plotting.` : ''}
         </CardHead>
         <TChart innerW={innerW} t0={t0} t1={t1} color={CTL_BLUE} events={events} showEvents={showEvents} trend yfmt={(v) => v.toFixed(3)}
@@ -935,7 +935,7 @@ export default function StatisticsScreen() {
       return (
         <View style={s.card}>
           <CardHead title="Economy (weight-adjusted)">
-            Speed ÷ power-per-kg — i.e. raw EC × body weight, which cancels the mass term (watch/pod power ∝ your weight). THIS is the economy signal to trust across a weight change: rising = a genuine efficiency gain, not just a lighter body inflating raw EC.
+            Speed ÷ power-per-kg (raw EC × body weight). ⚠️ With Apple Watch power this is ≈ CONSTANT by construction (~58 = the standard ~1 J/kg/m cost of running the watch's model assumes) — it can't show an economy change. Kept as a data check only; read aerobic efficiency on Speed Efficiency (SE).
             {' '}Grey line = trend.
             {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].v.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
           </CardHead>
@@ -951,7 +951,7 @@ export default function StatisticsScreen() {
       return (
       <View style={s.card}>
         <CardHead title="Speed Efficiency (SE)">
-          Speed ÷ HR per run. Rising = more speed per heartbeat (HR-based, like EF).
+          Speed ÷ HR per run — speed per heartbeat, THE aerobic-efficiency signal (no modelled power, no body weight). Rising = a better aerobic engine.
           {' '}Grey line = trend.
           {pw.length >= 2 && d != null ? ` Latest ${pw[pw.length - 1].se.toFixed(2)} (trend ${signed(d, 2)} over the window).` : ''}
           {pw.some(x => x.hot) ? `  🟠 = run ≥${HEAT_C}°C — heat-inflated HR drags SE down independently of fitness.` : ''}

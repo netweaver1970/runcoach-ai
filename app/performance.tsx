@@ -252,7 +252,7 @@ export default function PerformanceScreen() {
             <Text style={s.note}>⚠️ Your baseline is still thin ({result?.baselineDays ?? 0} days), so the level is approximate — the shape of the trend is already meaningful, the exact number firms up as history builds.</Text>
           )}
           <Text style={s.note}>
-            Recovery = HRV + resting-HR trend · Sleep = sleep score · Training = 60% fitness (CTL) + 40% efficiency (economy).
+            Recovery = HRV + resting-HR trend · Sleep = sleep score · Training = 60% fitness (CTL) + 40% aerobic efficiency (speed per heartbeat on easy, non-hot runs).
             Each is a 7-day average vs your first ~8 weeks; missing workouts or watch-off nights don't dent it.
           </Text>
         </>

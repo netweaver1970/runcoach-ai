@@ -531,8 +531,8 @@ compact markdown table, not a paragraph. Keep prose to a one-line takeaway under
 verbatim). The EFFICIENCY and TRAINING LOAD tables are PRECOMPUTED — reproduce/interpret them, never recompute.
 4. NEUTRAL and factual — report what happened without moralising. If a logged run deviated from the plan, state it \
 plainly (one line); do NOT call it a mistake, a "spike", or a risk unless the load/recovery numbers actually show harm.
-wHR=work-only HR. HRr=HR-reserve ((HR−rest)/(max−rest); ~0.6=Z2, ~0.7=Z3, ~0.85=threshold). EC=speed÷power \
-(HR-INDEPENDENT, trust most), EF=power÷HR, SE=speed÷HR; higher=better.
+wHR=work-only HR. HRr=HR-reserve ((HR−rest)/(max−rest); ~0.6=Z2, ~0.7=Z3, ~0.85=threshold). SE=speed÷HR \
+(aerobic efficiency — trust it most), EF=power÷HR (≈ SE × body weight), EC=speed÷power (≈ constant with modelled watch power — NOT an economy signal); higher=better.
 
 ${buildTodayStatus(snap, todayPlan)}
 
@@ -546,10 +546,10 @@ Write the review using EXACTLY these headers:
 
 **Fitness Snapshot** — current level from VO2Max + recent runs (2–3 sentences).
 **What's Working** — 1–2 specific positives with numbers (a mini table is fine).
-**Efficiency Trend** — reproduce the EFFICIENCY table (or the same-type subset) and give a one-line verdict: economy improving / flat / declining. Note any HRr shift (e.g. same run type now reaching a higher HR-reserve = harder/more real).
+**Efficiency Trend** — reproduce the EFFICIENCY table (or the same-type subset) and give a one-line verdict: aerobic efficiency (SE) improving / flat / declining. Note any HRr shift (e.g. same run type now reaching a higher HR-reserve = harder/more real).
 **Training Load** — reproduce the TRAINING LOAD table + one line on the trend and what's driving it (running vs cross-training/dance).
 **Recovery & Sleep** — today's score + RMSSD/RHR vs baseline + recent sleep. A small table (metric | value | baseline) is welcome.
-**Watch Out For** — only genuine warning signs the numbers actually show (under-recovery, a declining EC trend, ACWR out of range). If nothing is wrong, say so — don't manufacture risk.
+**Watch Out For** — only genuine warning signs the numbers actually show (under-recovery, a declining SE trend, ACWR out of range). If nothing is wrong, say so — don't manufacture risk.
 
 Skip any section whose data is missing. TODAY's status is context only: if a run is already logged, today's session is DONE — never claim the runner ran on or despite a rest day.`;
 }
@@ -587,8 +587,8 @@ asks for depth. Lead with the answer, then at most 3 supporting numbers. No prea
 "Let me look at..."), no restating the question, no summary of what you just said, no section headers or \
 tables unless the data genuinely needs a grid — a run-vs-recent comparison DOES. A run analysis compares \
 this session against recent same-type runs using NORMALIZED efficiency ratios (never raw pace/watts, which \
-aren't comparable) — LEAD with EC (HR-independent), then EF & SE — flags what improved or declined, then \
-the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). Efficiency ratios (higher=better; compare THESE across runs): EC=speed÷power (running economy — HR-INDEPENDENT, trust it most), EF=power÷HR, SE=speed÷HR (both HR-based; on days yohimbine was taken HR is auto-corrected dose-dependently and marked "(yoh-HRcorr)"). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
+aren't comparable) — LEAD with SE (speed per heartbeat), then EF; ignore EC for progress — flags what improved or declined, then \
+the verdict vs the plan and one next step. Weeks start on Monday. wHR=work-only HR (excl. warm-up/recovery/between-reps). Efficiency ratios (higher=better; compare THESE across runs): SE=speed÷HR (aerobic efficiency — trust it most), EF=power÷HR (≈ SE × body weight: Apple Watch power is modelled from speed+slope+weight), EC=speed÷power (≈ constant by construction — NOT an economy signal) (SE/EF are HR-based; on days yohimbine was taken HR is auto-corrected dose-dependently and marked "(yoh-HRcorr)"). HRV=RMSSD (sleep-stage-weighted: deep×3 REM×2 light×1).
 
 ${PROGRAM_DESIGN}
 ${knowledge && knowledge.trim() ? `\n## The athlete's coaching files (their own editable setup — schedule, zones, rules, Training Model). Follow these; the Training Model file explains how the ToF budget & load model work.\n${knowledge.trim()}\n` : ''}
@@ -599,7 +599,7 @@ ${buildDataBlock(snap, maxRuns)}`;
   }
 
   if (runContext && runContext.trim()) {
-    prompt += `\n\n## Run analysis context (use this data to answer). Give a STATISTICAL / EFFICIENCY comparison of this run against the recent same-type runs below, ALWAYS via the normalized efficiency ratios (never raw pace/watts, which aren't comparable across efforts). A compact markdown table (columns: EC=speed÷power · EF=power÷HR · SE=speed÷HR) comparing this run to those is welcome. EC is HR-INDEPENDENT — trust it most for the trend; EF/SE are HR-based and already yohimbine-corrected on flagged days. Then call out what improved or declined, the verdict vs the day's plan, and one concrete next step. Keep it focused (~300 words); don't re-list every raw row.\n${runContext.trim()}`;
+    prompt += `\n\n## Run analysis context (use this data to answer). Give a STATISTICAL / EFFICIENCY comparison of this run against the recent same-type runs below, ALWAYS via the normalized efficiency ratios (never raw pace/watts, which aren't comparable across efforts). A compact markdown table (columns: SE=speed÷HR · EF=power÷HR) comparing this run to those is welcome. SE (speed per heartbeat) is the efficiency signal to trust; EF ≈ SE × body weight; EC (speed÷power) is ≈ constant with modelled watch power — don't read it as economy. SE/EF are already yohimbine-corrected on flagged days. Then call out what improved or declined, the verdict vs the day's plan, and one concrete next step. Keep it focused (~300 words); don't re-list every raw row.\n${runContext.trim()}`;
   }
 
   return prompt;
@@ -624,19 +624,19 @@ Write in second person ("The runner..."). Be concise — this note is injected i
 
 // Yohimbine (+coffee) raises HR, which deflates the HR-based efficiency ratios; the caller passes a
 // per-day bpm offset (dose-dependent, from the supplement log) that we subtract before EF/SE. The
-// HR-INDEPENDENT ratio (EC = speed÷power) needs no correction — it's the robust comparator.
+// EC (speed÷power) needs no correction but carries no fitness signal (watch power is modelled from speed+slope+weight).
 const dayKeyOf = (dt: any): string => { const d = new Date(dt); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
 // Normalized efficiency ratios so power & pace compare ACROSS runs (raw watts/pace don't). speed = m/min.
-//   EC = speed ÷ power (running economy — HR-INDEPENDENT, listed first), EF = power ÷ HR, SE = speed ÷ HR.
+//   SE = speed ÷ HR (aerobic efficiency, listed first), EF = power ÷ HR, EC = speed ÷ power (≈ constant — modelled power).
 // `hrCorr` bpm is subtracted from HR (yohimbine days) for the two HR-based ratios. Higher = better.
 function effRatios(paceSec: number, power: number, hr: number, hrCorr = 0): string {
   const spd = paceSec > 0 ? 60000 / paceSec : 0;
   const h   = hr > 0 ? Math.max(1, hr - hrCorr) : 0;
   const out: string[] = [];
-  if (spd > 0 && power > 0) out.push(`EC${(spd / power).toFixed(2)}`);   // HR-independent — primary comparator
+  if (spd > 0 && h > 0)     out.push(`SE${(spd / h).toFixed(2)}`);   // speed per heartbeat — the primary comparator
   if (power > 0 && h > 0)   out.push(`EF${(power / h).toFixed(2)}`);
-  if (spd > 0 && h > 0)     out.push(`SE${(spd / h).toFixed(2)}`);
+  if (spd > 0 && power > 0) out.push(`EC${(spd / power).toFixed(2)}`);   // ≈ constant with modelled power — context only
   if (hrCorr > 0 && out.length > 1) out.push('(yoh-HRcorr)');
   return out.join(' ');
 }
@@ -750,8 +750,8 @@ export function buildNewRunUserMessage(
   // reasoning model doesn't sprawl; the system prompt + runContext header set the same bound. (Earlier this
   // was over-tightened to "5-8 lines, no tables" — too brief; the athlete wants the comparison back.)
   const intro = isExplicit
-    ? `Analyze this ${lbl} run and compare it against ${prevLabel} using the efficiency ratios — EC (speed÷power, HR-independent) first, then EF (power÷HR) and SE (speed÷HR): what improved, what declined. A compact comparison table is welcome, then the verdict vs its plan and one next step. Keep it focused (~300 words).`
-    : `I just finished a ${lbl} run. Compare it against ${prevLabel} using the efficiency ratios — EC (speed÷power, HR-independent) first, then EF and SE — flag what improved or declined, then the verdict vs plan and one next step. A compact table is welcome; keep it focused (~300 words).`;
+    ? `Analyze this ${lbl} run and compare it against ${prevLabel} using the efficiency ratios — SE (speed÷HR, aerobic efficiency) first, then EF (power÷HR); EC is ≈ constant with modelled power, skip it: what improved, what declined. A compact comparison table is welcome, then the verdict vs its plan and one next step. Keep it focused (~300 words).`
+    : `I just finished a ${lbl} run. Compare it against ${prevLabel} using the efficiency ratios — SE (speed÷HR) first, then EF; skip EC (≈ constant with modelled power) — flag what improved or declined, then the verdict vs plan and one next step. A compact table is welcome; keep it focused (~300 words).`;
   return `${intro}\n\nThis run:\n${newBlock}\n\nPrevious ${lbl} runs (most recent first):\n${prevLines}`;
 }
 

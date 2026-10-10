@@ -5,7 +5,9 @@
  *
  *   • Recovery  ← HRV (nightly RMSSD, ↑ better) + resting HR (↓ better)   — autonomic health
  *   • Sleep     ← sleep score (↑ better)
- *   • Training  ← 60% fitness (CTL, ↑) + 40% efficiency (EC = speed÷power, ↑)
+ *   • Training  ← 60% fitness (CTL, ↑) + 40% aerobic efficiency (SE = speed÷HR on easy, non-hot runs, ↑)
+ *     (was EC = speed÷power until 2026-10-10 — Apple Watch power is modelled from speed+slope+weight, so EC is
+ *     ≈ constant by construction and carried no fitness signal)
  *
  * Scale: each sub-metric's trailing 7-day average is z-scored against the athlete's EARLIEST ~8 weeks of
  * data (a fixed anchor), mapped to 50 + 12·z (clamped 10–90). So 50 = your baseline; above 50 = improved.
@@ -17,6 +19,7 @@
 
 import { fetchOurDailyComponents, fetchTrainingLoadHistory } from './healthkit';
 import { RunWorkout } from '../types';
+import { HEAT_C } from './runStats';
 
 export interface GpiPoint {
   date:     string;                 // YYYY-MM-DD
@@ -61,19 +64,19 @@ const SUB_LO = 10, SUB_HI = 90;
 const dkey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-/** EC (running economy = speed m/min ÷ power W) per run day — the HR-independent efficiency signal. */
-function ecByDay(runs: RunWorkout[]): Map<string, number> {
-  const m = new Map<string, number>();
+/** SE (speed m/min ÷ work HR = speed per heartbeat) per run day — the aerobic-efficiency signal. EASY runs only (SE
+ *  depends on intensity), and not hot (≥ HEAT_C: heat lifts HR) or with a known-bad HR. Mean of the day's easy runs. */
+const EASY = new Set(['Z2', 'Recovery', 'LongRun']);
+function seByDay(runs: RunWorkout[]): Map<string, number> {
+  const sum = new Map<string, { s: number; n: number }>();
   for (const r of runs ?? []) {
     const paceSec = r.workPace ?? r.pace ?? 0;
-    const power   = r.workPower ?? 0;
-    if (paceSec > 0 && power > 0) {
-      const ec = (60000 / paceSec) / power;
-      const k = r.date.slice(0, 10);
-      m.set(k, Math.max(m.get(k) ?? 0, ec)); // best effort of the day
-    }
+    const hr      = r.workHR ?? 0;
+    if (!(paceSec > 0 && hr > 0) || !EASY.has(r.label ?? '') || (r.tempC ?? -99) >= HEAT_C || r.hrUnreliableManual || r.hrLowRes) continue;
+    const k = r.date.slice(0, 10), cur = sum.get(k) ?? { s: 0, n: 0 };
+    sum.set(k, { s: cur.s + (60000 / paceSec) / hr, n: cur.n + 1 });
   }
-  return m;
+  return new Map([...sum].map(([k, v]) => [k, v.s / v.n]));
 }
 
 /** Mean + (population) SD of the first `n` present values, SD floored so a flat baseline can't blow up z. */
@@ -105,7 +108,7 @@ const avgDefined = (xs: (number | null)[]): number | null => {
 };
 
 /**
- * Build the GPI series over `months` ending at `toDate`. Pass the athlete's runs (for the EC efficiency
+ * Build the GPI series over `months` ending at `toDate`. Pass the athlete's runs (for the SE efficiency
  * sub-signal). Load a long span (e.g. 12 months) once so the fixed baseline is stable across period views.
  */
 export async function computePerformanceIndex(months: number, toDate: Date | undefined, runs: RunWorkout[]): Promise<GpiResult> {
@@ -114,7 +117,7 @@ export async function computePerformanceIndex(months: number, toDate: Date | und
     fetchTrainingLoadHistory(months, toDate).catch(() => []),
   ]);
   const ctlByDay = new Map<string, number>(load.map(l => [l.date, l.ctl]));
-  const ec       = ecByDay(runs);
+  const ec       = seByDay(runs);   // (kept the name: the efficiency sub-signal, now SE)
 
   // Union of all dates we have any signal for, sorted oldest→newest, gap-filled to a continuous daily axis.
   const keys = new Set<string>([...Object.keys(comps), ...ctlByDay.keys(), ...ec.keys()]);
