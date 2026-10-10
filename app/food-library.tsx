@@ -16,10 +16,11 @@ import {
 } from '../src/services/foodLog';
 import { searchFoodsEx, foodByKey, norm, allDrinks, drinkCategory, DRINK_CATS, DrinkCat } from '../src/services/foodDb';
 import { ASIA_ITEMS, ASIA_CATS } from '../src/services/foodAsia';
+import { PATISSERIE_ITEMS } from '../src/services/foodPatisserie';
 import { cachedProducts } from '../src/services/foodOff';
 
 interface Row { key: string; name: string; sub: string; snap: KeptFood['snap']; table?: boolean; cat?: string }
-type Filter = 'all' | 'fav' | MealTag | 'untagged' | 'sgmy';
+type Filter = 'all' | 'fav' | MealTag | 'untagged' | 'sgmy' | 'pat';
 
 const r0 = (v?: number) => (v == null ? '–' : String(Math.round(v)));
 const subOf = (f: { per100?: Nutr; n?: Nutr; unit?: 'g' | 'ml'; brand?: string }) =>
@@ -70,6 +71,10 @@ export default function FoodLibraryScreen() {
     const words = qn.split(' ').filter(Boolean);
     const hit = (r: Row) => !words.length || words.every(w => norm(r.name).split(' ').some(x => x.startsWith(w)));
     // SG/MY: browse the built-in Singapore / Malaysia foods by category (their drinks are on the Drinks tab)
+    if (filter === 'pat') {   // the built-in patisserie (bakery items CIQUAL lacks), A–Z
+      return PATISSERIE_ITEMS.filter(x => !words.length || words.every(w => norm(`${x.name} ${x.aliases.join(' ')}`).split(' ').some(y => y.startsWith(w))))
+        .sort((a, b) => a.name.localeCompare(b.name)).map(f => ({ key: f.key, name: f.name, sub: subOf(f), snap: snapOf(f), table: true, cat: 'Patisserie' }));
+    }
     if (filter === 'sgmy') {
       return ASIA_ITEMS.filter(x => x.unit !== 'ml' && (!words.length || words.every(w => norm(`${x.name} ${x.aliases.join(' ')}`).split(' ').some(y => y.startsWith(w)))))
         .sort((a, b) => ASIA_CATS.indexOf(a.asiaCat) - ASIA_CATS.indexOf(b.asiaCat))
@@ -115,7 +120,7 @@ export default function FoodLibraryScreen() {
   ]); };
 
   const FILTERS: { id: Filter; label: string }[] = [
-    { id: 'all', label: 'All' }, { id: 'fav', label: '★' }, ...MEAL_TAGS.map(t => ({ id: t.id as Filter, label: t.label })), { id: 'untagged', label: 'No meal' }, { id: 'sgmy', label: 'SG/MY' },
+    { id: 'all', label: 'All' }, { id: 'fav', label: '★' }, ...MEAL_TAGS.map(t => ({ id: t.id as Filter, label: t.label })), { id: 'untagged', label: 'No meal' }, { id: 'pat', label: 'Patisserie' }, { id: 'sgmy', label: 'SG/MY' },
   ];
   const meals = lib?.meals ?? [];
   const tabs = (

@@ -6,6 +6,7 @@
  */
 import type { FoodItem } from './foodLog';
 import { ASIA_ITEMS } from './foodAsia';
+import { PATISSERIE_ITEMS } from './foodPatisserie';
 
 export interface SportsItem extends FoodItem { aliases: string[]; supp?: RegExp; note: string; powder?: boolean; drinkCat?: string; full?: boolean }
 
@@ -108,5 +109,5 @@ export const LIQUEURS: SportsItem[] = [
   { ...drink('advocaat', 'Advocaat (egg liqueur)', { kcal: 290, carb: 28.5, sug: 28.4, fat: 6.9, sat: 2, prot: 4.4, alc: 13.6 }, 15, '1 tbsp',
     ['advocaat', 'advokaat', 'eierlikeur', 'eierlikör', 'egg liqueur', 'warninks'], 'Egg liqueur ~17 % vol; 1 tbsp ≈ 15 ml ≈ 2 g alcohol, 44 kcal.'), drinkCat: 'Spirits & liqueurs' },
 ];
-SPORTS_ITEMS.push(...COCKTAILS, ...LIQUEURS, ...ASIA_ITEMS);   // drinks are searched / logged like the other built-ins
+SPORTS_ITEMS.push(...COCKTAILS, ...LIQUEURS, ...ASIA_ITEMS, ...PATISSERIE_ITEMS);   // drinks are searched / logged like the other built-ins
 export const sportsByKey = (key: string) => SPORTS_ITEMS.find(s => s.key === key);

@@ -110,6 +110,12 @@ const NL: Record<string, string[]> = {
   groentesoep: ['soupe legumes', 'vegetable soup'], peperkoek: ['gingerbread'], ontbijtkoek: ['gingerbread'],
   gerookt: ['fume', 'smoked'], gerookte: ['fume', 'smoked'], chocomelk: ['chocolate milk beverage'],
   pils: ['biere', 'beer'], gehakt: ['minced steak', 'minced meat'], speculoos: ['speculoos'], thee: ['tea brewed', 'the'],
+  // patisserie (Geert 2026-10-10) — Dutch / Belgian names of pastries CIQUAL has under French/English names
+  chocoladekoek: ['chocolate croissant'], chocoladebroodje: ['chocolate croissant'], rozijnenkoek: ['raisin puff pastry'],
+  appeltaart: ['apple tart'], amandelcroissant: ['croissant almonds'], millefeuille: ['mille feuille'], tompouce: ['mille feuille'],
+  soes: ['chou pastry'], soesje: ['chou pastry'], roomsoes: ['chou pastry custard'], appelflap: ['apple turnover'],
+  wentelteefjes: ['french toast'], chocolademousse: ['chocolate mousse'], citroentaart: ['lemon tart'], kaastaart: ['cheesecake'],
+  driekoningentaart: ['twelfth night'], cannele: ['canele'],
   // English words CIQUAL names differently
   rolled: ['flakes'], oatmeal: ['oat flakes'], havervlokken: ['oat flakes'], vlokken: ['flakes'], zout: ['salt', 'sel'], porridge: ['oat flakes boiled'], granola: ['granola'],
   fries: ['french fries'], chips: ['crisps', 'french fries'],
@@ -127,10 +133,11 @@ export function expandToken(t: string): Phrase[] {
   // naive plurals: "oats" → "oat", "lentilles" → "lentille"; Dutch "bananen" → "banaan"-ish, "koekjes" → "koek"
   if (t.length > 3 && t.endsWith('s')) out.push({ w: [t.slice(0, -1)], exact: false });
   const nlBase = t.length > 5 && t.endsWith('jes') ? t.slice(0, -3) : t.length > 5 && t.endsWith('en') ? t.slice(0, -2) : null;
-  if (nlBase && NL[nlBase] === undefined) {
-    // bananen → banan → banaan (double the vowel back) — only used if that base is in the dictionary
+  if (nlBase && NL[t] === undefined) {
+    // bananen → banan → banaan (double the vowel back); chocoladekoeken → chocoladekoek — whichever base is in the
+    // dictionary (the direct stem used to be skipped, so plain plurals like "chocoladekoeken" found nothing)
     const dv = nlBase.replace(/([aeou])([^aeiou])$/, '$1$1$2');
-    const base = NL[dv] ? dv : NL[nlBase] ? nlBase : null;
+    const base = NL[nlBase] ? nlBase : NL[dv] ? dv : null;
     if (base) for (const alt of NL[base]) { const ws = words(alt).filter(w => !STOP.has(w)); if (ws.length) out.push({ w: ws, exact: true }); }
   }
   // translations must hit a WHOLE word (or its plural): "brood"→"bread" must not match "breaded"

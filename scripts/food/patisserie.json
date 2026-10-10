@@ -1,0 +1,617 @@
+[
+  {
+    "id": "bread_pudding_belgian",
+    "name": "Bread pudding (broodpudding)",
+    "aliases": [
+      "broodpudding",
+      "brood pudding",
+      "pudding au pain",
+      "bread pudding",
+      "broodpudding met rozijnen"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 203,
+      "prot": 5.7,
+      "carb": 31.2,
+      "sug": 19.0,
+      "fat": 5.9,
+      "sat": 3.1,
+      "fib": 1.1,
+      "na": 162
+    },
+    "unit": "g",
+    "serving": {
+      "g": 110,
+      "label": "1 slice (~110 g)"
+    },
+    "source": "ESTIMATE: recipe-based (Flemish bakery broodpudding: 500 g stale white bread, 1 L whole milk, 4 eggs, 200 g brown sugar, 150 g raisins, 50 g butter, 12% baking loss; ingredient values NEVO/USDA generic). Cross-check: USDA FNDDS 13210110 \"Pudding, bread with raisins\" = 156 kcal (moister, less bread) - Belgian bakery slices are denser."
+  },
+  {
+    "id": "bread_and_butter_pudding",
+    "name": "Bread and butter pudding",
+    "aliases": [
+      "bread and butter pudding",
+      "bread & butter pudding",
+      "bread n butter pudding"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 235,
+      "prot": 6.0,
+      "carb": 22.9,
+      "sug": 13.1,
+      "fat": 13.0,
+      "sat": 7.4,
+      "fib": 0.9,
+      "na": 146
+    },
+    "unit": "g",
+    "serving": {
+      "g": 150,
+      "label": "1 portion (~150 g)"
+    },
+    "source": "ESTIMATE: recipe-based (UK classic: 180 g buttered white bread + 30 g butter, 3 eggs, 310 g whole milk, 150 g double/whipping cream, 50 g sugar, 50 g sultanas, 10% baking loss). Commercial UK range ~160-240 kcal/100 g (e.g. M&S label 240 kcal, F 15.1)."
+  },
+  {
+    "id": "rice_tart_belgian",
+    "name": "Rice tart (rijsttaart)",
+    "aliases": [
+      "rijsttaart",
+      "rijsttaartje",
+      "rijstetaart",
+      "rijstevlaai",
+      "rijstvlaai",
+      "tarte au riz",
+      "tartelette au riz",
+      "rice tart",
+      "rice flan"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 211,
+      "prot": 4.5,
+      "carb": 34.5,
+      "sug": 17.5,
+      "fat": 6.0,
+      "sat": 3.0,
+      "fib": 0.7,
+      "na": 262
+    },
+    "unit": "g",
+    "serving": {
+      "g": 120,
+      "label": "1 tartlet or slice (~120 g)"
+    },
+    "source": "NEVO-Online 2025 9.0, code 489 \"Vlaai rijste-\" (Flan filled w rice pudding), https://nevo-online.rivm.nl. Matches Belgian label Partout \"Rijsttaart stuk 120g\" (211 kcal, F 5.5, C 34.9, sugars 19)."
+  },
+  {
+    "id": "sugar_tart_belgian",
+    "name": "Sugar tart (suikertaart)",
+    "aliases": [
+      "suikertaart",
+      "suiker taart",
+      "tarte au sucre",
+      "tarte au sucre brun",
+      "tarte a la cassonade",
+      "tarte au sucre et vergeoise",
+      "sugar tart"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 357,
+      "prot": 5.5,
+      "carb": 60.7,
+      "sug": 43.3,
+      "fat": 10.4,
+      "sat": 6.6,
+      "fib": 1.5,
+      "na": 295
+    },
+    "unit": "g",
+    "serving": {
+      "g": 80,
+      "label": "1 slice (~80 g)"
+    },
+    "source": "Product label: Defroidmont (BE) \"Tarte au sucre et vergeoise\", per 100 g via Open Food Facts / informationsnutritionnelles.fr (1495 kJ). Fibre not declared -> 1.5 g estimated."
+  },
+  {
+    "id": "mattentaart",
+    "name": "Mattentaart (Geraardsbergse mattentaart)",
+    "aliases": [
+      "mattentaart",
+      "mattentaartje",
+      "geraardsbergse mattentaart",
+      "tarte au maton",
+      "tartelette au maton",
+      "maton tart",
+      "curd tart geraardsbergen"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 374,
+      "prot": 10.5,
+      "carb": 37.7,
+      "sug": 21.5,
+      "fat": 20.1,
+      "sat": 10.6,
+      "fib": 0.5,
+      "na": 300
+    },
+    "unit": "g",
+    "serving": {
+      "g": 100,
+      "label": "1 tartlet (~100 g)"
+    },
+    "source": "Product label: Partout \"Mattentaart stuk 115g\" (BE), PS in foodservice https://psinfoodservice.com/en/product/2610578-partout-mattentaart-stuk-115g/ (salt 0.75 g -> Na 300 mg). Diversi Foods mattentaartje 115 g similar (388 kcal)."
+  },
+  {
+    "id": "frangipane_tartlet",
+    "name": "Frangipane tartlet (frangipanetaartje)",
+    "aliases": [
+      "frangipanetaartje",
+      "frangipane taartje",
+      "frangipanetaart",
+      "frangipane",
+      "tartelette frangipane",
+      "frangipane tartlet",
+      "almond tartlet"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 428,
+      "prot": 5.6,
+      "carb": 48.6,
+      "sug": 23.6,
+      "fat": 23.4,
+      "sat": 8.7,
+      "fib": 1.5,
+      "na": 270
+    },
+    "unit": "g",
+    "serving": {
+      "g": 80,
+      "label": "1 tartlet (~80 g)"
+    },
+    "source": "Product labels, average of Molco \"Frangipanetaartje\" 80 g (puff pastry, frangipane, white icing) and Holeki \"Frangipane taartje rond\" (with apricot jam, fondant), PS in foodservice codes 1751441 / 1760461, https://psinfoodservice.com"
+  },
+  {
+    "id": "merveilleux",
+    "name": "Meringue cream pastry",
+    "aliases": [
+      "merveilleux",
+      "merveilleux chocolat",
+      "merveilleux au chocolat",
+      "meringue cream cake",
+      "meringue whipped cream pastry"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 431,
+      "prot": 4.8,
+      "carb": 40,
+      "sug": 40,
+      "fat": 27,
+      "sat": 18,
+      "fib": 3.2,
+      "na": 56
+    },
+    "unit": "g",
+    "serving": {
+      "g": 85,
+      "label": "1 individual (~85 g)"
+    },
+    "source": "Product label: Picard \"2 merveilleux au chocolat\" (175 g), per 100 g via Open Food Facts. Other labels 347-431 kcal (Casino 376)."
+  },
+  {
+    "id": "cramique",
+    "name": "Raisin brioche (kramiek)",
+    "aliases": [
+      "kramiek",
+      "cramique",
+      "cramique aux raisins",
+      "rozijnenbrioche",
+      "raisin brioche"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 332,
+      "prot": 7.4,
+      "carb": 57,
+      "sug": 19,
+      "fat": 7.7,
+      "sat": 3.6,
+      "fib": 2.7,
+      "na": 400
+    },
+    "unit": "g",
+    "serving": {
+      "g": 40,
+      "label": "1 slice (~40 g)"
+    },
+    "source": "Product label: Delhaize (BE) \"Cramique\", per 100 g via Open Food Facts. NEVO 244 \"Tarwerozijnenbrood wit\" (272 kcal, F 2.7) is the leaner Dutch raisin bread."
+  },
+  {
+    "id": "craquelin",
+    "name": "Sugar bread (suikerbrood)",
+    "aliases": [
+      "suikerbrood",
+      "craquelin",
+      "craquelin brioche",
+      "pearl sugar brioche",
+      "sugar bread",
+      "suikerbrood met parelsuiker"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 360,
+      "prot": 6.7,
+      "carb": 65,
+      "sug": 27,
+      "fat": 7.5,
+      "sat": 3.7,
+      "fib": 2.0,
+      "na": 400
+    },
+    "unit": "g",
+    "serving": {
+      "g": 40,
+      "label": "1 slice (~40 g)"
+    },
+    "source": "Product label: Belgian \"Mini Craquelins Frais\" per 100 g via Open Food Facts (fibre not declared -> 2.0 estimated). Note: Dutch Fries suikerbrood is leaner - NEVO 2355 \"Tarwesuikerbrood wit\" 306 kcal, F 3.0, sugars 28.5."
+  },
+  {
+    "id": "liege_waffle",
+    "name": "Liège waffle (Luikse wafel)",
+    "aliases": [
+      "luikse wafel",
+      "luikse wafels",
+      "suikerwafel",
+      "parelsuikerwafel",
+      "gaufre de liege",
+      "gaufre liegeoise",
+      "liege waffle",
+      "liège waffle",
+      "pearl sugar waffle"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 446,
+      "prot": 5.7,
+      "carb": 57.1,
+      "sug": 29.5,
+      "fat": 21.3,
+      "sat": 9.7,
+      "fib": 1.5,
+      "na": 270
+    },
+    "unit": "g",
+    "serving": {
+      "g": 90,
+      "label": "1 waffle (~90 g; packaged ~55 g)"
+    },
+    "source": "NEVO-Online 2025 9.0, code 2661 \"Wafel Luikse-\" (average of O'Lacy, Albert Heijn, Lotus, Bellbake), https://nevo-online.rivm.nl"
+  },
+  {
+    "id": "brussels_waffle",
+    "name": "Brussels waffle (Brusselse wafel)",
+    "aliases": [
+      "brusselse wafel",
+      "brusselse wafels",
+      "gaufre de bruxelles",
+      "gaufres de bruxelles",
+      "brussels waffle",
+      "belgian waffle plain",
+      "wafel met poedersuiker"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 303,
+      "prot": 5.4,
+      "carb": 39.0,
+      "sug": 10.5,
+      "fat": 13.4,
+      "sat": 1.2,
+      "fib": 1.0,
+      "na": 195
+    },
+    "unit": "g",
+    "serving": {
+      "g": 93,
+      "label": "1 waffle with icing sugar (~93 g)"
+    },
+    "source": "Product labels, average of Delhaize (BE), Carrefour \"Les Belges\" (BE) and Thiriet \"Gaufres de Bruxelles\" (via Open Food Facts) + ESTIMATE 8 g icing sugar per 85 g waffle. Street/bakery waffles made with butter will have more saturated fat."
+  },
+  {
+    "id": "berliner_custard",
+    "name": "Berliner with custard (berlinerbol)",
+    "aliases": [
+      "berlinerbol",
+      "berliner bol",
+      "berliner",
+      "boule de berlin",
+      "berliner met pudding",
+      "berliner met banketbakkersroom",
+      "custard doughnut",
+      "cream filled doughnut"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 293,
+      "prot": 5.3,
+      "carb": 44.4,
+      "sug": 18.9,
+      "fat": 10.0,
+      "sat": 3.1,
+      "fib": 1.7,
+      "na": 248
+    },
+    "unit": "g",
+    "serving": {
+      "g": 90,
+      "label": "1 berliner (~90 g)"
+    },
+    "source": "NEVO-Online 2025 9.0, code 1470 \"Berliner bol\", https://nevo-online.rivm.nl. Belgian bakery versions with generous pastry cream can run ~300-350 kcal/100 g (AH label 346)."
+  },
+  {
+    "id": "cinnamon_roll",
+    "name": "Cinnamon roll (kaneelbroodje)",
+    "aliases": [
+      "kaneelbroodje",
+      "kaneelbroodjes",
+      "kaneelbol",
+      "kaneelrol",
+      "cinnamon roll",
+      "cinnamon bun",
+      "kanelbulle",
+      "roule a la cannelle",
+      "escargot cannelle"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 342,
+      "prot": 5.4,
+      "carb": 42.5,
+      "sug": 16.8,
+      "fat": 16.2,
+      "sat": 8.2,
+      "fib": 1.8,
+      "na": 277
+    },
+    "unit": "g",
+    "serving": {
+      "g": 100,
+      "label": "1 roll (~100 g)"
+    },
+    "source": "Product labels, average of glazed kaneelbroodje from Albert Heijn, Picnic, PLUS and Crisp (NL), via Open Food Facts. US-style cream-cheese-frosted bun is richer: USDA SR Legacy 18964 \"Cinnamon buns, frosted\" 452 kcal, F 26.6."
+  },
+  {
+    "id": "pastel_de_nata",
+    "name": "Portuguese custard tart (pastel de nata)",
+    "aliases": [
+      "pastel de nata",
+      "pasteis de nata",
+      "pastéis de nata",
+      "pastel de belem",
+      "portuguese custard tart",
+      "portuguese egg tart"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 272,
+      "prot": 4.4,
+      "carb": 38.7,
+      "sug": 17.9,
+      "fat": 10.9,
+      "sat": 5.3,
+      "fib": 1.5,
+      "na": 254
+    },
+    "unit": "g",
+    "serving": {
+      "g": 65,
+      "label": "1 tart (~65 g)"
+    },
+    "source": "Product labels, average of 6 (Lidl, Gamberina, Polinorte PT, HMF, a Portuguese bakery entry, Pret) via Open Food Facts / pret.co.uk; fibre set to 1.5 (labels 0.9-4.0, median-ish)."
+  },
+  {
+    "id": "apple_strudel",
+    "name": "Apple strudel (appelstrudel)",
+    "aliases": [
+      "appelstrudel",
+      "apfelstrudel",
+      "strudel aux pommes",
+      "apple strudel",
+      "appel strudel"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 274,
+      "prot": 3.3,
+      "carb": 41.1,
+      "sug": 25.8,
+      "fat": 11.2,
+      "sat": 2.0,
+      "fib": 2.2,
+      "na": 135
+    },
+    "unit": "g",
+    "serving": {
+      "g": 120,
+      "label": "1 slice (~120 g)"
+    },
+    "source": "USDA FoodData Central SR Legacy 18354 \"Strudel, apple\" (fdcId 175032). Butter-made bakery strudel has more saturated fat (USDA FNDDS 53440000: 281 kcal, sat 7.6). Not the Dutch appelcarre (NEVO 833)."
+  },
+  {
+    "id": "cupcake_buttercream",
+    "name": "Cupcake with buttercream",
+    "aliases": [
+      "cupcake",
+      "cupcakes",
+      "cupcake met botercreme",
+      "cupcake met boterroom",
+      "cupcake buttercream",
+      "vanilla cupcake"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 435,
+      "prot": 3.8,
+      "carb": 50.7,
+      "sug": 39.7,
+      "fat": 24.1,
+      "sat": 15.1,
+      "fib": 0.6,
+      "na": 292
+    },
+    "unit": "g",
+    "serving": {
+      "g": 80,
+      "label": "1 cupcake (~80 g)"
+    },
+    "source": "ESTIMATE: recipe-based (50 g butter sponge = NEVO 1969 \"Cake m roomboter\" + 30 g butter buttercream: 32% butter, 64% icing sugar, 4% milk). USDA FNDDS bakery cupcakes with white icing (53120270) = 359 kcal but use shortening-based icing."
+  },
+  {
+    "id": "carrot_cake",
+    "name": "Carrot cake with cream-cheese frosting (worteltaart)",
+    "aliases": [
+      "carrot cake",
+      "carrotcake",
+      "worteltaart",
+      "wortelcake",
+      "gateau aux carottes",
+      "carrot cake cream cheese"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 357,
+      "prot": 4.5,
+      "carb": 36.9,
+      "sug": 25.6,
+      "fat": 20.9,
+      "sat": 6.3,
+      "fib": 1.5,
+      "na": 220
+    },
+    "unit": "g",
+    "serving": {
+      "g": 110,
+      "label": "1 slice (~110 g)"
+    },
+    "source": "NEVO-Online 2025 9.0, code 5254 \"Carrotcake\" (with walnuts and cream-cheese glaze), https://nevo-online.rivm.nl"
+  },
+  {
+    "id": "javanais",
+    "name": "Coffee butter-cream almond pastry",
+    "aliases": [
+      "javanais",
+      "javanaisgebakje",
+      "coffee buttercream cake",
+      "gateau javanais"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 430,
+      "prot": 5.7,
+      "carb": 37.8,
+      "sug": 32.8,
+      "fat": 28.2,
+      "sat": 15.2,
+      "fib": 1.5,
+      "na": 88
+    },
+    "unit": "g",
+    "serving": {
+      "g": 90,
+      "label": "1 individual pastry (~90 g)"
+    },
+    "source": "Product labels, average of 4 Belgian javanais (La Lorraine, Delhaize, Paul Gaelens artisanal, Holeki) via Open Food Facts; fibre set to 1.5 (labels 0.9-3.7)."
+  },
+  {
+    "id": "miserable_cake",
+    "name": "Almond butter-cream cake",
+    "aliases": [
+      "miserable",
+      "misérable",
+      "miserable gebakje",
+      "gateau miserable",
+      "almond buttercream cake",
+      "mini miserable"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 437,
+      "prot": 7.2,
+      "carb": 42.4,
+      "sug": 39.0,
+      "fat": 26.2,
+      "sat": 13.4,
+      "fib": 1.5,
+      "na": 61
+    },
+    "unit": "g",
+    "serving": {
+      "g": 90,
+      "label": "1 individual pastry (~90 g)"
+    },
+    "source": "Product labels, average of 4 Belgian misérable (incl. Carrefour BE 125 g) via Open Food Facts; fibre set to 1.5 (only one label declared, 1.3)."
+  },
+  {
+    "id": "religieuse",
+    "name": "Double cream puff, chocolate or coffee (dubbele soes)",
+    "aliases": [
+      "religieuse",
+      "religieuse chocolat",
+      "religieuse au chocolat",
+      "religieuse cafe",
+      "religieuse au cafe",
+      "dubbele soes"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 265,
+      "prot": 4.4,
+      "carb": 30.9,
+      "sug": 21.1,
+      "fat": 13.5,
+      "sat": 7.9,
+      "fib": 1.2,
+      "na": 139
+    },
+    "unit": "g",
+    "serving": {
+      "g": 110,
+      "label": "1 pastry (~110 g)"
+    },
+    "source": "Product labels, average of 5 chocolate religieuses (Tartefrais, Hafner, Patigel, La Campaniere, unbranded) via Open Food Facts; coffee version is equivalent within label spread."
+  },
+  {
+    "id": "pain_a_la_grecque",
+    "name": "Brussels Greek bread (Grieks brood)",
+    "aliases": [
+      "pain a la grecque",
+      "pain à la grecque",
+      "grieks brood",
+      "griekse brood",
+      "brussels greek bread",
+      "dandoy pain a la grecque"
+    ],
+    "category": "Patisserie",
+    "per100": {
+      "kcal": 409,
+      "prot": 7.3,
+      "carb": 70,
+      "sug": 45,
+      "fat": 10.8,
+      "sat": 7,
+      "fib": 1.5,
+      "na": 240
+    },
+    "unit": "g",
+    "serving": {
+      "g": 65,
+      "label": "1 piece (~65 g)"
+    },
+    "source": "Product label: Maison Dandoy (Brussels) \"Pain a la grecque\", per 100 g via Open Food Facts."
+  }
+]
