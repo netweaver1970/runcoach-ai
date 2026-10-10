@@ -35,6 +35,9 @@ const AEROBIC = new Set(['Z2', 'Recovery', 'LongRun', 'Tempo']);
 // so without a floor the robust-σ collapses and normal variation (a real economy dip) looks like a
 // spike. floor = the smallest run-to-run swing we still treat as real, keeping honest dips in.
 // Input/output are index-aligned; 0 means "skip" and never participates in a neighbour window.
+/** Measured running power (not the app's estimate, not walk-level). */
+const realPower = (r: RunWorkout, power: number) => !r.isEstimatedPower && power >= 140;
+
 function despikeLocal(vals: number[], floor: number, radius = 3, k = 3.5): number[] {
   const n = vals.length;
   if (n < 5) return vals.slice();
@@ -127,7 +130,10 @@ export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, Rep
     // now passes on its true numbers.
     .filter(r => {
       const st = statsFor(r, repairs);
-      if (!(st.power >= 140) || !(st.hr > 0) || !(st.pace >= 200 && st.pace <= 600) || r.isEstimatedPower) return false;
+      // SE (speed÷HR) needs only pace + HR, so runs WITHOUT measured power (before Oct 2025 the watch recorded none →
+      // the app estimated it) still count for SE; EF / EC need real power (Geert 2026-10-10: "so few datapoints").
+      if (!(st.hr > 0) || !(st.pace >= 200 && st.pace <= 600)) return false;
+      if (!r.isEstimatedPower && st.power > 0 && st.power < 140) return false;   // measured but walk-level power
       // A REPAIRED run has already had its stationary seconds removed, so the cadence gate no longer applies
       // to it — that gate is the fallback for runs we could not re-derive (no structured work window, or no
       // detail available). Interval sessions stay exempt: between-rep standing lowers their mean by design.
@@ -143,10 +149,12 @@ export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, Rep
       // manual flag only, NOT the auto-detector: the latter over-fires on older/sparser HR recordings and
       // would blank months of EF/SE history.
       const hrBad = !!r.hrUnreliableManual || !!r.hrLowRes;
+      const pw = realPower(r, st.power);
       return {
         date: r.date.slice(0, 10),
-        ef: hrBad ? 0 : r3(st.power / st.hr),
-        ec: speed > 0 ? r3(speed / st.power) : 0,
+        ef: hrBad || !pw ? 0 : r3(st.power / st.hr),
+        ec: pw && speed > 0 ? r3(speed / st.power) : 0,
+        pw,
         se: (!hrBad && speed > 0) ? r3(speed / st.hr) : 0,
         label: r.label ?? 'Run',
         aerobic: AEROBIC.has(r.label ?? ''),
@@ -167,8 +175,9 @@ export function efficiencyTrend(runs: RunWorkout[], repairs?: Record<string, Rep
   // SE = EF × EC exactly (speed÷HR = power÷HR · speed÷power). So if EITHER factor was rejected as a
   // glitch, SE is untrustworthy too — drop it even when SE alone didn't look extreme (e.g. a run whose
   // pace over-read inflated EC also inflates SE, but by less than SE's own noise floor).
-  const se = seRaw.map((v, i) => (ef[i] > 0 && ec[i] > 0) ? v : 0);
-  return base.map((p, i) => ({ ...p, ef: ef[i], ec: ec[i], se: se[i] }));
+  // Runs without measured power have no EF/EC to cross-check → their SE stands on its own despike.
+  const se = seRaw.map((v, i) => (!base[i].pw || (ef[i] > 0 && ec[i] > 0)) ? v : 0);
+  return base.map(({ pw: _pw, ...p }, i) => ({ ...p, ef: ef[i], ec: ec[i], se: se[i] }));
 }
 
 // ── Time-in-zone + polarization over a window. zones are % of each run's time; weight by run minutes. ────
