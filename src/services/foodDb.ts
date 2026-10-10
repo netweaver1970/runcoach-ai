@@ -294,6 +294,8 @@ function searchTable(query: string, limit: number, boost?: Record<string, number
     // "boter"/"butter" means the normal product; light versions only when asked
     if (/\b(allege|allegee|reduced fat|light|reduite)\b/.test(name) && !/light|allege|halvarine|minder vet|reduced/.test(qn)) s -= 0.7;
     if (/\b(moulu|poudre|powder|ground|soluble|lyophilise|feuille|feuilles|leaf|leaves)\b/.test(name) && !/poudre|powder|ground|moulu|soluble|leaf|feuille/.test(qn)) s -= 1.5;
+    // the OIL of a food only when asked for ("almonds" / "avocado" → the nut / fruit, not almond / avocado oil)
+    if (/\b(oil|huile)\b/.test(norm(r.item.name)) && !/\b(oil|olie|huile)\b/.test(qn) && !/^(olive|oil|huile)/.test(qn)) s -= 1.5;
     if (qCook) s += COOK.test(name) ? 1.5 : 0;
     else if (qRaw) s += RAWW.test(name) ? 1.5 : 0;
     else {

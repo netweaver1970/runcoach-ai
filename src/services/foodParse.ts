@@ -153,5 +153,11 @@ export function looksLikeMeal(text: string): boolean {
   const t = text.trim();
   if (t.length < 4) return false;
   if (SPLIT.test(` ${t} `) && t.split(SPLIT).filter(Boolean).length >= 2) return true;
-  return /^(\d+([.,]\d+)?|½|een|twee|drie|one|two|three|un|une|deux|trois)\s+\S/i.test(t) || /\d\s*(g|gr|ml|cl|el|tl)\b/i.test(t);
+  if (/^(\d+([.,]\d+)?|½|een|twee|drie|one|two|three|un|une|deux|trois)\s+\S/i.test(t) || /\d\s*(g|gr|ml|cl|el|tl)\b/i.test(t)) return true;
+  // everyday spoken / typed amounts (Geert 2026-10-10: "Half a pear" was searched as one food → cheese "half matured"):
+  // a number word or article first ("half a pear", "a banana", "some grapes"), or a unit word before the food
+  // ("a glass of milk", "slice of bread", "handful of almonds")
+  const w = norm(t).split(' ').filter(Boolean);
+  if (w.length >= 2 && (WORD_NUM[w[0]] != null || /^(some|wat|enkele|few|several|halve|halverwege)$/.test(w[0]))) return true;
+  return w.length >= 2 && w.slice(0, -1).some(x => UNITS.some(u => u.re.test(x)));
 }
